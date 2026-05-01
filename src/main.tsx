@@ -44,6 +44,12 @@ function formatActivityTime(value: string) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function errorMessage(err: unknown, fallback: string) {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string" && err.trim()) return err;
+  return fallback;
+}
+
 function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
@@ -68,6 +74,7 @@ function App() {
   const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [appError, setAppError] = useState<string | null>(null);
 
   async function refresh() {
     const next = await invoke<Bootstrap>("bootstrap");
@@ -79,26 +86,44 @@ function App() {
     setActiveThreadId((prev) => {
       const rootIds = new Set(next.messages.filter((item) => !item.thread_root_id).map((item) => item.id));
       if (prev && rootIds.has(prev)) return prev;
-      const repliedRootIds = new Set(next.messages.flatMap((item) => (item.thread_root_id ? [item.thread_root_id] : [])));
-      return next.messages.find((item) => !item.thread_root_id && repliedRootIds.has(item.id))?.id || null;
+      return null;
     });
   }
 
   async function mutate(command: string, args: Record<string, unknown> = {}) {
-    await invoke(command, args);
-    await refresh();
+    try {
+      await invoke(command, args);
+      await refresh();
+    } catch (err) {
+      const message = errorMessage(err, `${command} failed`);
+      setAppError(message);
+      console.error(err);
+      throw err;
+    }
   }
 
   useEffect(() => {
-    refresh().catch((err) => console.error(err));
+    refresh().catch((err) => {
+      setAppError(errorMessage(err, "Failed to load LocalSlock state"));
+      console.error(err);
+    });
   }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      refresh().catch((err) => console.error(err));
+      refresh().catch((err) => {
+        setAppError(errorMessage(err, "Failed to refresh LocalSlock state"));
+        console.error(err);
+      });
     }, 1500);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!appError) return;
+    const timer = window.setTimeout(() => setAppError(null), 6500);
+    return () => window.clearTimeout(timer);
+  }, [appError]);
 
   const channel = useMemo(() => {
     return data?.channels.find((c) => c.id === activeChannelId) ?? data?.channels[0] ?? null;
@@ -330,6 +355,9 @@ function App() {
 
   function selectChannel(channelId: string) {
     setActiveChannelId(channelId);
+    setDraft("");
+    setReplyDraft("");
+    setTaskDraft("");
     const repliedRootIds = new Set(
       data?.messages
         .filter((message) => message.channel_id === channelId && message.thread_root_id)
@@ -649,6 +677,13 @@ function App() {
           setReplyDraft={setReplyDraft}
           sendReply={sendReply}
         />
+      )}
+
+      {appError && (
+        <div className="app-toast error" role="alert">
+          <span>{appError}</span>
+          <button onClick={() => setAppError(null)} aria-label="Dismiss error">Dismiss</button>
+        </div>
       )}
 
       <Modal

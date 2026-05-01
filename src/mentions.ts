@@ -37,7 +37,7 @@ export function filterMentionAgents(agents: Agent[], query: string) {
 
 export function mentionedAgentsForBody(body: string, agents: Agent[]) {
   return agents.filter((agent) => {
-    const pattern = new RegExp(`(^|\\\\s)@${escapeRegExp(agent.handle)}(?=$|\\\\s|[.,;:!?])`);
+    const pattern = new RegExp(`(^|\\s)@${escapeRegExp(agent.handle)}(?=$|\\s|[.,;:!?])`);
     return pattern.test(body);
   });
 }
