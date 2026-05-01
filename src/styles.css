@@ -1028,7 +1028,7 @@ mark {
 
 .thread {
   display: grid;
-  grid-template-rows: auto auto auto auto 1fr auto auto;
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto auto;
   background: var(--panel);
   backdrop-filter: blur(26px);
 }
@@ -1079,10 +1079,112 @@ mark {
   color: var(--muted);
 }
 
+.dispatch-panel {
+  display: grid;
+  gap: 10px;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.dispatch-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dispatch-title h3 {
+  margin: 0;
+}
+
+.dispatch-title span {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(52, 199, 89, 0.14);
+  color: #167d32;
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.dispatch-panel select,
+.dispatch-panel textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--ink);
+  outline: none;
+}
+
+.dispatch-panel select {
+  padding: 9px 11px;
+}
+
+.dispatch-panel textarea {
+  min-height: 70px;
+  resize: vertical;
+  padding: 11px;
+}
+
+.dispatch-panel button {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border-radius: 13px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.dispatch-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.work-list {
+  display: grid;
+  gap: 7px;
+}
+
+.work-card {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.work-card.running {
+  border-color: rgba(10, 132, 255, 0.26);
+}
+
+.work-card.failed {
+  border-color: rgba(255, 59, 48, 0.28);
+}
+
+.work-card.done {
+  border-color: rgba(52, 199, 89, 0.26);
+}
+
+.work-card strong {
+  font-size: 12px;
+}
+
+.work-card span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .runtime-panel {
   display: grid;
   gap: 10px;
-  max-height: 250px;
+  max-height: 220px;
   overflow: auto;
   padding: 16px 22px;
   border-bottom: 1px solid var(--line);
@@ -1240,7 +1342,7 @@ mark {
 .activity-panel {
   display: grid;
   gap: 10px;
-  max-height: 290px;
+  max-height: 250px;
   overflow: auto;
   padding: 16px 22px;
   border-bottom: 1px solid var(--line);

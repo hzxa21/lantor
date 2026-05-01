@@ -87,6 +87,7 @@ struct AgentRun {
     id: Uuid,
     agent_id: Uuid,
     agent_handle: String,
+    work_item_id: Option<Uuid>,
     command: String,
     working_directory: String,
     status: String,
@@ -110,6 +111,25 @@ struct AgentActivity {
 }
 
 #[derive(Debug, Serialize)]
+struct AgentWorkItem {
+    id: Uuid,
+    agent_id: Uuid,
+    agent_handle: String,
+    channel_id: Option<Uuid>,
+    channel_name: Option<String>,
+    thread_root_id: Option<Uuid>,
+    task_id: Option<Uuid>,
+    task_number: Option<i64>,
+    title: String,
+    context: String,
+    status: String,
+    run_id: Option<Uuid>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
 struct SupervisorStatus {
     pid: Option<i32>,
     status: String,
@@ -130,6 +150,7 @@ struct SupervisorCommand {
     command_type: String,
     agent_id: Option<Uuid>,
     run_id: Option<Uuid>,
+    work_item_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +181,7 @@ struct Bootstrap {
     messages: Vec<Message>,
     tasks: Vec<Task>,
     agent_runs: Vec<AgentRun>,
+    agent_work_items: Vec<AgentWorkItem>,
     agent_activities: Vec<AgentActivity>,
     supervisor: SupervisorStatus,
     launch_agent: LaunchAgentStatus,
@@ -302,17 +324,51 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         r#"
+        create table if not exists agent_work_items (
+            id uuid primary key default gen_random_uuid(),
+            agent_id uuid not null references agents(id) on delete cascade,
+            channel_id uuid references channels(id) on delete set null,
+            thread_root_id uuid references messages(id) on delete set null,
+            task_id uuid references tasks(id) on delete set null,
+            title text not null,
+            context text not null default '',
+            status text not null default 'queued',
+            run_id uuid references agent_runs(id) on delete set null,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now(),
+            completed_at timestamptz
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "alter table agent_runs add column if not exists work_item_id uuid references agent_work_items(id) on delete set null",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         create table if not exists supervisor_commands (
             id uuid primary key default gen_random_uuid(),
             command_type text not null,
             agent_id uuid references agents(id) on delete cascade,
             run_id uuid references agent_runs(id) on delete cascade,
+            work_item_id uuid references agent_work_items(id) on delete set null,
             status text not null default 'pending',
             error text not null default '',
             created_at timestamptz not null default now(),
             updated_at timestamptz not null default now()
         )
         "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "alter table supervisor_commands add column if not exists work_item_id uuid references agent_work_items(id) on delete set null",
     )
     .execute(pool)
     .await?;
@@ -351,6 +407,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let messages = load_messages(&state.pool).await?;
     let tasks = load_tasks(&state.pool).await?;
     let agent_runs = load_agent_runs(&state.pool).await?;
+    let agent_work_items = load_agent_work_items(&state.pool).await?;
     let agent_activities = load_agent_activities(&state.pool).await?;
     let supervisor = load_supervisor_status(&state.pool).await?;
     let launch_agent = load_launch_agent_status()?;
@@ -362,6 +419,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         messages,
         tasks,
         agent_runs,
+        agent_work_items,
         agent_activities,
         supervisor,
         launch_agent,
@@ -667,6 +725,185 @@ async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResul
     .await?;
 
     Ok(())
+}
+
+#[tauri::command]
+async fn dispatch_agent_work(
+    agent_id: Uuid,
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+    task_id: Option<Uuid>,
+    title: String,
+    context: String,
+    state: State<'_, AppState>,
+) -> CommandResult<Uuid> {
+    let agent_handle: Option<String> =
+        sqlx::query_scalar("select handle from agents where id = $1")
+            .bind(agent_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(to_string)?;
+    let Some(agent_handle) = agent_handle else {
+        return Err("agent does not exist".to_owned());
+    };
+
+    let active_run: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from agent_runs
+        where agent_id = $1
+          and stopped_at is null
+          and status in ('starting', 'running', 'stopping')
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(to_string)?;
+    if active_run.is_some() {
+        return Err(
+            "agent already has an active run; stop it before dispatching run-once work".to_owned(),
+        );
+    }
+
+    let pending_start: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from supervisor_commands
+        where command_type = 'start_agent'
+          and agent_id = $1
+          and status in ('pending', 'running')
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(to_string)?;
+    if pending_start.is_some() {
+        return Err("agent already has a pending start command".to_owned());
+    }
+
+    let mut resolved_channel_id = channel_id;
+    let mut resolved_thread_root_id = thread_root_id;
+    let mut resolved_title = title.trim().to_owned();
+
+    if let Some(task_id) = task_id {
+        let row = sqlx::query(
+            r#"
+            select channel_id, message_id, title
+            from tasks
+            where id = $1
+            "#,
+        )
+        .bind(task_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(to_string)?;
+        resolved_channel_id = Some(row.get("channel_id"));
+        resolved_thread_root_id = Some(row.get("message_id"));
+        if resolved_title.is_empty() {
+            resolved_title = row.get("title");
+        }
+    }
+
+    if resolved_channel_id.is_none() {
+        if let Some(thread_root_id) = resolved_thread_root_id {
+            resolved_channel_id =
+                sqlx::query_scalar("select channel_id from messages where id = $1")
+                    .bind(thread_root_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .map_err(to_string)?;
+        }
+    }
+
+    if resolved_title.is_empty() {
+        resolved_title = match resolved_thread_root_id {
+            Some(thread_root_id) => {
+                let body: Option<String> =
+                    sqlx::query_scalar("select body from messages where id = $1")
+                        .bind(thread_root_id)
+                        .fetch_optional(&state.pool)
+                        .await
+                        .map_err(to_string)?;
+                body.and_then(|body| {
+                    body.lines()
+                        .next()
+                        .map(|line| line.chars().take(120).collect())
+                })
+                .filter(|line: &String| !line.trim().is_empty())
+                .unwrap_or_else(|| "LocalSlock work item".to_owned())
+            }
+            None => "LocalSlock work item".to_owned(),
+        };
+    }
+
+    let work_context = context.trim();
+    let work_item_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_work_items (
+            agent_id, channel_id, thread_root_id, task_id, title, context, status
+        )
+        values ($1, $2, $3, $4, $5, $6, 'queued')
+        returning id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(resolved_channel_id)
+    .bind(resolved_thread_root_id)
+    .bind(task_id)
+    .bind(&resolved_title)
+    .bind(work_context)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    if let Some(task_id) = task_id {
+        sqlx::query(
+            r#"
+            update tasks
+            set assignee_agent_id = $2,
+                status = 'in_progress',
+                updated_at = now()
+            where id = $1
+            "#,
+        )
+        .bind(task_id)
+        .bind(agent_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+    }
+
+    sqlx::query(
+        r#"
+        insert into supervisor_commands (command_type, agent_id, work_item_id)
+        values ('start_agent', $1, $2)
+        "#,
+    )
+    .bind(agent_id)
+    .bind(work_item_id)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+    sqlx::query("update agents set status = 'queued' where id = $1")
+        .bind(agent_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "dispatch",
+        "Work item dispatched",
+        format!("#{work_item_id} to @{agent_handle}: {resolved_title}"),
+    )
+    .await?;
+
+    Ok(work_item_id)
 }
 
 #[tauri::command]
@@ -1105,6 +1342,7 @@ async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
             r.id,
             r.agent_id,
             a.handle as agent_handle,
+            r.work_item_id,
             r.command,
             r.working_directory,
             r.status,
@@ -1129,6 +1367,7 @@ async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
             id: row.get("id"),
             agent_id: row.get("agent_id"),
             agent_handle: row.get("agent_handle"),
+            work_item_id: row.get("work_item_id"),
             command: row.get("command"),
             working_directory: row.get("working_directory"),
             status: row.get("status"),
@@ -1137,6 +1376,59 @@ async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
             log: row.get("log"),
             started_at: row.get("started_at"),
             stopped_at: row.get("stopped_at"),
+        })
+        .collect())
+}
+
+async fn load_agent_work_items(pool: &PgPool) -> CommandResult<Vec<AgentWorkItem>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            w.id,
+            w.agent_id,
+            a.handle as agent_handle,
+            w.channel_id,
+            c.name as channel_name,
+            w.thread_root_id,
+            w.task_id,
+            t.number as task_number,
+            w.title,
+            w.context,
+            w.status,
+            w.run_id,
+            w.created_at,
+            w.updated_at,
+            w.completed_at
+        from agent_work_items w
+        join agents a on a.id = w.agent_id
+        left join channels c on c.id = w.channel_id
+        left join tasks t on t.id = w.task_id
+        order by w.created_at desc
+        limit 80
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| AgentWorkItem {
+            id: row.get("id"),
+            agent_id: row.get("agent_id"),
+            agent_handle: row.get("agent_handle"),
+            channel_id: row.get("channel_id"),
+            channel_name: row.get("channel_name"),
+            thread_root_id: row.get("thread_root_id"),
+            task_id: row.get("task_id"),
+            task_number: row.get("task_number"),
+            title: row.get("title"),
+            context: row.get("context"),
+            status: row.get("status"),
+            run_id: row.get("run_id"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            completed_at: row.get("completed_at"),
         })
         .collect())
 }
@@ -1585,9 +1877,14 @@ async fn wait_for_agent_run(
     pool: PgPool,
     agent_id: Uuid,
     run_id: Uuid,
+    work_item_id: Option<Uuid>,
+    pipe_tasks: Vec<tokio::task::JoinHandle<()>>,
     mut child: tokio::process::Child,
 ) {
     let result = child.wait().await;
+    for task in pipe_tasks {
+        let _ = task.await;
+    }
     let (run_status, agent_status, exit_code, log_line) = match result {
         Ok(status) if status.success() => (
             "exited",
@@ -1631,6 +1928,37 @@ async fn wait_for_agent_run(
         .bind(agent_status)
         .execute(&pool)
         .await;
+
+    if let Some(work_item_id) = work_item_id {
+        let work_status = if run_status == "exited" {
+            "done"
+        } else {
+            "failed"
+        };
+        let _ = sqlx::query(
+            r#"
+            update agent_work_items
+            set status = $2,
+                completed_at = now(),
+                updated_at = now()
+            where id = $1
+            "#,
+        )
+        .bind(work_item_id)
+        .bind(work_status)
+        .execute(&pool)
+        .await;
+        let _ = record_agent_activity(
+            &pool,
+            Some(agent_id),
+            Some(run_id),
+            "dispatch",
+            format!("Work item {work_status}"),
+            work_item_id.to_string(),
+        )
+        .await;
+    }
+
     let _ = record_agent_activity(
         &pool,
         Some(agent_id),
@@ -1654,6 +1982,39 @@ fn effective_launch_command(
 
     "printf 'LocalSlock placeholder runtime. Configure launch_command to run a real agent.\\n'; sleep 3600"
         .to_owned()
+}
+
+fn build_work_item_prompt(
+    work_item_id: Uuid,
+    title: &str,
+    context: &str,
+    channel_name: Option<&str>,
+    task_number: Option<i64>,
+    thread_root_id: Option<Uuid>,
+) -> String {
+    let mut lines = vec![
+        "Current LocalSlock work item:".to_owned(),
+        format!("id: {work_item_id}"),
+        format!("title: {title}"),
+    ];
+    if let Some(channel_name) = channel_name {
+        lines.push(format!("channel: #{channel_name}"));
+    }
+    if let Some(task_number) = task_number {
+        lines.push(format!("task: #{task_number}"));
+    }
+    if let Some(thread_root_id) = thread_root_id {
+        lines.push(format!("thread_root_id: {thread_root_id}"));
+    }
+    if !context.trim().is_empty() {
+        lines.push("context:".to_owned());
+        lines.push(context.trim().to_owned());
+    }
+    lines.push(
+        "When you finish, write results back with LOCAL_SLOCK_EVENT lines and update task status if applicable."
+            .to_owned(),
+    );
+    lines.join("\n")
 }
 
 async fn run_supervisor() -> CommandResult<()> {
@@ -1705,6 +2066,18 @@ async fn mark_orphaned_agent_runs(pool: &PgPool) -> CommandResult<()> {
     .execute(pool)
     .await
     .map_err(to_string)?;
+    sqlx::query(
+        r#"
+        update agent_work_items
+        set status = 'failed',
+            completed_at = now(),
+            updated_at = now()
+        where status = 'running'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
 
     Ok(())
 }
@@ -1731,7 +2104,7 @@ async fn write_supervisor_heartbeat(pool: &PgPool) -> CommandResult<()> {
 async fn claim_next_supervisor_command(pool: &PgPool) -> CommandResult<Option<SupervisorCommand>> {
     let row = sqlx::query(
         r#"
-        select id, command_type, agent_id, run_id
+        select id, command_type, agent_id, run_id, work_item_id
         from supervisor_commands
         where status = 'pending'
         order by created_at asc
@@ -1751,6 +2124,7 @@ async fn claim_next_supervisor_command(pool: &PgPool) -> CommandResult<Option<Su
         command_type: row.get("command_type"),
         agent_id: row.get("agent_id"),
         run_id: row.get("run_id"),
+        work_item_id: row.get("work_item_id"),
     };
 
     sqlx::query(
@@ -1800,7 +2174,7 @@ async fn process_supervisor_command(
             let Some(agent_id) = command.agent_id else {
                 return Err("start_agent command missing agent_id".to_owned());
             };
-            supervisor_start_agent(pool, agent_id).await
+            supervisor_start_agent(pool, agent_id, command.work_item_id).await
         }
         "stop_run" => {
             let Some(run_id) = command.run_id else {
@@ -1812,7 +2186,11 @@ async fn process_supervisor_command(
     }
 }
 
-async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<()> {
+async fn supervisor_start_agent(
+    pool: &PgPool,
+    agent_id: Uuid,
+    work_item_id: Option<Uuid>,
+) -> CommandResult<()> {
     let row = sqlx::query(
         r#"
         select handle, runtime, model, launch_command, working_directory
@@ -1831,21 +2209,89 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
     let launch_command: String = row.get("launch_command");
     let command_text = effective_launch_command(launch_command, runtime, model, handle.clone());
     let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
+    let work_item_prompt = match work_item_id {
+        Some(work_item_id) => {
+            let row = sqlx::query(
+                r#"
+                select
+                    w.title,
+                    w.context,
+                    c.name as channel_name,
+                    t.number as task_number,
+                    w.thread_root_id
+                from agent_work_items w
+                left join channels c on c.id = w.channel_id
+                left join tasks t on t.id = w.task_id
+                where w.id = $1 and w.agent_id = $2
+                "#,
+            )
+            .bind(work_item_id)
+            .bind(agent_id)
+            .fetch_one(pool)
+            .await
+            .map_err(to_string)?;
+            let title: String = row.get("title");
+            let context: String = row.get("context");
+            let channel_name: Option<String> = row.get("channel_name");
+            let task_number: Option<i64> = row.get("task_number");
+            let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+            build_work_item_prompt(
+                work_item_id,
+                &title,
+                &context,
+                channel_name.as_deref(),
+                task_number,
+                thread_root_id,
+            )
+        }
+        None => String::new(),
+    };
+    let initial_log = if work_item_prompt.is_empty() {
+        format!("$ {command_text}\n")
+    } else {
+        format!("$ {command_text}\n\n[work item]\n{work_item_prompt}\n")
+    };
 
     let run_id: Uuid = sqlx::query_scalar(
         r#"
-        insert into agent_runs (agent_id, command, working_directory, status, log)
-        values ($1, $2, $3, 'starting', $4)
+        insert into agent_runs (agent_id, work_item_id, command, working_directory, status, log)
+        values ($1, $2, $3, $4, 'starting', $5)
         returning id
         "#,
     )
     .bind(agent_id)
+    .bind(work_item_id)
     .bind(&command_text)
     .bind(&working_directory)
-    .bind(format!("$ {command_text}\n"))
+    .bind(initial_log)
     .fetch_one(pool)
     .await
     .map_err(to_string)?;
+    if let Some(work_item_id) = work_item_id {
+        sqlx::query(
+            r#"
+            update agent_work_items
+            set status = 'running',
+                run_id = $2,
+                updated_at = now()
+            where id = $1
+            "#,
+        )
+        .bind(work_item_id)
+        .bind(run_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            Some(run_id),
+            "dispatch",
+            "Work item running",
+            work_item_id.to_string(),
+        )
+        .await?;
+    }
     record_agent_activity(
         pool,
         Some(agent_id),
@@ -1861,6 +2307,13 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
     command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
     command.env("LOCAL_SLOCK_AGENT_HANDLE", &handle);
     command.env("LOCAL_SLOCK_RUN_ID", run_id.to_string());
+    command.env(
+        "LOCAL_SLOCK_WORK_ITEM_ID",
+        work_item_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(String::new),
+    );
+    command.env("LOCAL_SLOCK_WORK_ITEM_PROMPT", &work_item_prompt);
     #[cfg(unix)]
     command.process_group(0);
     if !working_directory.is_empty() {
@@ -1889,6 +2342,21 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
                 .execute(pool)
                 .await
                 .map_err(to_string)?;
+            if let Some(work_item_id) = work_item_id {
+                sqlx::query(
+                    r#"
+                    update agent_work_items
+                    set status = 'failed',
+                        completed_at = now(),
+                        updated_at = now()
+                    where id = $1
+                    "#,
+                )
+                .bind(work_item_id)
+                .execute(pool)
+                .await
+                .map_err(to_string)?;
+            }
             record_agent_activity(
                 pool,
                 Some(agent_id),
@@ -1925,28 +2393,36 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
     )
     .await?;
 
+    let mut pipe_tasks = Vec::new();
     if let Some(stdout) = child.stdout.take() {
-        tokio::spawn(pipe_run_output(
+        pipe_tasks.push(tokio::spawn(pipe_run_output(
             pool.clone(),
             agent_id,
             run_id,
             stdout,
             "stdout",
             true,
-        ));
+        )));
     }
     if let Some(stderr) = child.stderr.take() {
-        tokio::spawn(pipe_run_output(
+        pipe_tasks.push(tokio::spawn(pipe_run_output(
             pool.clone(),
             agent_id,
             run_id,
             stderr,
             "stderr",
             false,
-        ));
+        )));
     }
 
-    tokio::spawn(wait_for_agent_run(pool.clone(), agent_id, run_id, child));
+    tokio::spawn(wait_for_agent_run(
+        pool.clone(),
+        agent_id,
+        run_id,
+        work_item_id,
+        pipe_tasks,
+        child,
+    ));
 
     Ok(())
 }
@@ -2166,6 +2642,7 @@ pub fn run() {
             claim_task,
             delete_agent,
             delete_channel,
+            dispatch_agent_work,
             install_supervisor_service,
             mark_channel_read,
             send_message,

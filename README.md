@@ -9,6 +9,7 @@ Local-only Slock-style desktop console for one human and multiple local agents.
 - Clean initialization: the app creates schema only and does not seed demo data.
 - UI operations for channels, messages, thread replies, channel-scoped tasks, and agent profiles.
 - Agent runtime runs through a local `--supervisor` mode with start/stop controls, process status, and persisted run logs in Postgres.
+- Agent dispatch supports run-once work items assigned from the current channel/thread/task context.
 - Agent activity feed records profile changes, run lifecycle changes, stdout event ingestion, message creation, and task changes as durable Postgres state.
 - Single Apple-style Liquid Glass visual direction.
 - No cloud server, no multi-human permissions, no web deployment.
@@ -22,7 +23,7 @@ This version establishes the local product shell and data model first. It intent
 3. Collaboration semantics: local search, unread state, thread follow/unfollow, channel membership, and local notifications.
 4. Desktop productization: settings, backup/import, shortcuts, packaging, and visual polish.
 
-Current runtime boundary: each agent profile can store a shell `launch_command` and optional `working_directory`. If the command is empty, LocalSlock starts a harmless placeholder process so the start/stop/log loop can be tested before wiring a real agent CLI. The desktop app auto-spawns the same binary in `--supervisor` mode; that supervisor owns spawn/kill/log collection through a Postgres command queue. A future launchd wrapper can make the supervisor survive without opening the desktop UI.
+Current runtime boundary: each agent profile can store a shell `launch_command` and optional `working_directory`. If the command is empty, LocalSlock starts a harmless placeholder process so the start/stop/log loop can be tested before wiring a real agent CLI. The desktop app auto-spawns the same binary in `--supervisor` mode; that supervisor owns spawn/kill/log collection through a Postgres command queue. Dispatch is deliberately run-once in this slice: a work item queues a single agent run, injects the work context into environment variables, and records completion when the process exits.
 
 The Runtime panel can also install a user LaunchAgent at `~/Library/LaunchAgents/local.localslock.supervisor.plist`. That makes macOS keep the `--supervisor` process alive via `launchctl`; uninstall removes the plist and unloads the service.
 
@@ -46,6 +47,13 @@ Supported event types in this slice:
 - `task_claim`: requires `task_number`; defaults to the current agent, or use `assignee_handle` / `unassigned`.
 
 The supervisor injects `LOCAL_SLOCK_AGENT_ID`, `LOCAL_SLOCK_AGENT_HANDLE`, and `LOCAL_SLOCK_RUN_ID` into each agent process.
+
+For dispatched work items, the supervisor also injects:
+
+- `LOCAL_SLOCK_WORK_ITEM_ID`: the work item UUID;
+- `LOCAL_SLOCK_WORK_ITEM_PROMPT`: a human-readable prompt containing the work item title, channel, task/thread metadata, conversation context, and extra human instruction.
+
+Launch presets pass both the base LocalSlock protocol prompt and `LOCAL_SLOCK_WORK_ITEM_PROMPT` into the selected runtime. Custom commands can read these environment variables directly.
 
 ## Agent Activity Feed
 

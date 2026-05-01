@@ -77,6 +77,7 @@ type AgentRun = {
   id: string;
   agent_id: string;
   agent_handle: string;
+  work_item_id: string | null;
   command: string;
   working_directory: string;
   status: string;
@@ -85,6 +86,24 @@ type AgentRun = {
   log: string;
   started_at: string;
   stopped_at: string | null;
+};
+
+type AgentWorkItem = {
+  id: string;
+  agent_id: string;
+  agent_handle: string;
+  channel_id: string | null;
+  channel_name: string | null;
+  thread_root_id: string | null;
+  task_id: string | null;
+  task_number: number | null;
+  title: string;
+  context: string;
+  status: string;
+  run_id: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
 };
 
 type AgentActivity = {
@@ -118,6 +137,7 @@ type Bootstrap = {
   messages: Message[];
   tasks: Task[];
   agent_runs: AgentRun[];
+  agent_work_items: AgentWorkItem[];
   agent_activities: AgentActivity[];
   supervisor: SupervisorStatus;
   launch_agent: LaunchAgentStatus;
@@ -184,6 +204,7 @@ function presetPrompt(form: AgentForm) {
     `You are ${name}, a local agent running inside LocalSlock.`,
     "You collaborate with one local human through channels, threads, and tasks.",
     "When you need to write back to LocalSlock, print exactly one stdout line beginning with LOCAL_SLOCK_EVENT followed by JSON.",
+    "If LOCAL_SLOCK_WORK_ITEM_PROMPT is set, treat it as the current assigned work item and complete that work item.",
     "Supported JSON events:",
     '{"type":"message","channel":"local-slock","body":"..."}',
     '{"type":"message","channel":"local-slock","thread_root_id":"uuid","body":"..."}',
@@ -203,13 +224,13 @@ function buildPresetCommand(form: AgentForm) {
   const quotedModel = shellQuote(model);
 
   if (form.runtime === "codex") {
-    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} exec --model ${quotedModel} "$LOCAL_SLOCK_PROMPT"`;
+    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} exec --model ${quotedModel} "$LOCAL_SLOCK_PROMPT\n\n$LOCAL_SLOCK_WORK_ITEM_PROMPT"`;
   }
   if (form.runtime === "claude") {
-    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} -p "$LOCAL_SLOCK_PROMPT" --model ${quotedModel}`;
+    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} -p "$LOCAL_SLOCK_PROMPT\n\n$LOCAL_SLOCK_WORK_ITEM_PROMPT" --model ${quotedModel}`;
   }
   if (form.runtime === "kimi") {
-    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} --prompt "$LOCAL_SLOCK_PROMPT" --model ${quotedModel}`;
+    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} --prompt "$LOCAL_SLOCK_PROMPT\n\n$LOCAL_SLOCK_WORK_ITEM_PROMPT" --model ${quotedModel}`;
   }
   return "";
 }
@@ -244,6 +265,8 @@ function App() {
   const [agentDraft, setAgentDraft] = useState<AgentForm>(EMPTY_AGENT_FORM);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [agentEdit, setAgentEdit] = useState<AgentForm>(EMPTY_AGENT_FORM);
+  const [dispatchAgentId, setDispatchAgentId] = useState("");
+  const [dispatchContext, setDispatchContext] = useState("");
 
   async function refresh() {
     const next = await invoke<Bootstrap>("bootstrap");
@@ -266,6 +289,13 @@ function App() {
   useEffect(() => {
     refresh().catch((err) => console.error(err));
   }, []);
+
+  useEffect(() => {
+    setDispatchAgentId((prev) => {
+      if (data?.agents.some((agent) => agent.id === prev)) return prev;
+      return data?.agents[0]?.id || "";
+    });
+  }, [data?.agents]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -369,7 +399,19 @@ function App() {
         agentId: item.agent_id,
       }));
 
-    return [...channelHits, ...taskHits, ...messageHits, ...agentHits, ...activityHits].slice(0, 9);
+    const workItemHits = data.agent_work_items
+      .filter((item) => `${item.agent_handle} ${item.status} ${item.title} ${item.context}`.toLowerCase().includes(query))
+      .map((item) => ({
+        id: item.id,
+        kind: "work",
+        title: item.title,
+        detail: `${item.agent_handle} · ${item.status}`,
+        channelId: item.channel_id,
+        threadId: item.thread_root_id,
+        agentId: item.agent_id,
+      }));
+
+    return [...channelHits, ...taskHits, ...messageHits, ...agentHits, ...workItemHits, ...activityHits].slice(0, 9);
   }, [data, searchQuery]);
 
   function taskForMessage(messageId: string) {
@@ -584,6 +626,44 @@ function App() {
 
   async function stopAgent(run: AgentRun) {
     await mutate("stop_agent", { runId: run.id });
+  }
+
+  function buildDispatchContext() {
+    const parts = [];
+    if (channel) parts.push(`Channel: #${channel.name}`);
+    if (activeTask) {
+      parts.push(`Task #${activeTask.number}: ${activeTask.title}`);
+      parts.push(`Task status: ${activeTask.status}`);
+    }
+    if (activeRoot) {
+      parts.push(`Thread root by ${activeRoot.sender_name} at ${formatTime(activeRoot.created_at)}:`);
+      parts.push(activeRoot.body);
+    }
+    if (replies.length > 0) {
+      parts.push("Recent replies:");
+      replies.slice(-8).forEach((reply) => {
+        parts.push(`- ${reply.sender_name} at ${formatTime(reply.created_at)}: ${reply.body}`);
+      });
+    }
+    if (dispatchContext.trim()) {
+      parts.push("Human instruction:");
+      parts.push(dispatchContext.trim());
+    }
+    return parts.join("\n\n");
+  }
+
+  async function dispatchCurrentContext() {
+    if (!channel || !dispatchAgentId) return;
+    const title = activeTask?.title || (activeRoot ? firstLines(activeRoot.body, 1) : `Work in #${channel.name}`);
+    await mutate("dispatch_agent_work", {
+      agentId: dispatchAgentId,
+      channelId: channel.id,
+      threadRootId: activeRoot?.id ?? null,
+      taskId: activeTask?.id ?? null,
+      title,
+      context: buildDispatchContext(),
+    });
+    setDispatchContext("");
   }
 
   async function installSupervisorService() {
@@ -1055,6 +1135,48 @@ function App() {
             <span>Tasks</span>
             <strong>{data.tasks.length}</strong>
           </div>
+        </section>
+
+        <section className="dispatch-panel">
+          <div className="dispatch-title">
+            <h3>Agent Dispatch</h3>
+            <span>run-once</span>
+          </div>
+          <select
+            value={dispatchAgentId}
+            onChange={(event) => setDispatchAgentId(event.target.value)}
+            disabled={data.agents.length === 0}
+          >
+            {data.agents.length === 0 && <option value="">No agents</option>}
+            {data.agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                @{agent.handle} · {agent.status}
+              </option>
+            ))}
+          </select>
+          <textarea
+            value={dispatchContext}
+            onChange={(event) => setDispatchContext(event.target.value)}
+            placeholder={activeTask ? "Instruction for this task" : activeRoot ? "Instruction for this thread" : "Instruction for this channel"}
+          />
+          <button disabled={!channel || !dispatchAgentId} onClick={dispatchCurrentContext}>
+            <Sparkles size={14} /> Send to agent
+          </button>
+          {data.agent_work_items.length === 0 ? (
+            <p className="empty-mini">Dispatched work items will appear here.</p>
+          ) : (
+            <div className="work-list">
+              {data.agent_work_items.slice(0, 4).map((item) => (
+                <article key={item.id} className={`work-card ${item.status}`}>
+                  <strong>{item.title}</strong>
+                  <span>
+                    @{item.agent_handle} · {item.status}
+                    {item.task_number ? ` · task #${item.task_number}` : ""}
+                  </span>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="runtime-panel">
