@@ -112,6 +112,27 @@ button {
   padding: 22px 18px 14px;
 }
 
+.search-box {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--muted);
+}
+
+.search-box input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  outline: none;
+}
+
 .quick-actions button,
 .channel,
 .section-title button,
@@ -150,6 +171,58 @@ button {
   background: var(--badge);
   color: var(--accent);
   font-size: 13px;
+}
+
+.search-results {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.search-results > span {
+  padding: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.search-results button {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  padding: 9px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.42);
+  text-align: left;
+}
+
+.search-results button strong {
+  justify-self: start;
+  background: rgba(10, 132, 255, 0.1);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.search-results button span {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-results button small {
+  grid-column: 2;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .channel-block,
@@ -671,12 +744,31 @@ mark {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  margin-top: 12px;
   padding: 8px 11px;
   border-radius: 999px;
   background: rgba(10, 132, 255, 0.12);
   color: var(--accent);
   font-weight: 750;
+}
+
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.follow-pill {
+  padding: 8px 11px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.follow-pill.active {
+  background: rgba(52, 199, 89, 0.14);
+  color: #167d32;
 }
 
 .task-board {

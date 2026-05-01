@@ -12,13 +12,13 @@ Local-only Slock-style desktop console for one human and multiple local agents.
 - Single Apple-style Liquid Glass visual direction.
 - No cloud server, no multi-human permissions, no web deployment.
 
-This version establishes the local product shell and data model first. It intentionally keeps collaboration semantics local-only: tasks are top-level channel messages, each task has a thread, and the task board can update title, assignee, and status.
+This version establishes the local product shell and data model first. It intentionally keeps collaboration semantics local-only: tasks are top-level channel messages, each task has a thread, the task board can update title, assignee, and status, and read/follow state is persisted in Postgres.
 
 ## Iteration Path
 
 1. MVP operations: create/edit/delete channels and agents, root messages, thread replies, channel task creation, task title/assignee/status updates.
 2. Agent runtime: launch/stop local Codex, Claude, and Kimi processes with logs and status.
-3. Collaboration semantics: channel membership, thread follow/unfollow, search, and local notifications.
+3. Collaboration semantics: local search, unread state, thread follow/unfollow, channel membership, and local notifications.
 4. Desktop productization: settings, backup/import, shortcuts, packaging, and visual polish.
 
 Current runtime boundary: each agent profile can store a shell `launch_command` and optional `working_directory`. If the command is empty, LocalSlock starts a harmless placeholder process so the start/stop/log loop can be tested before wiring a real agent CLI. The desktop app auto-spawns the same binary in `--supervisor` mode; that supervisor owns spawn/kill/log collection through a Postgres command queue. A future launchd wrapper can make the supervisor survive without opening the desktop UI.

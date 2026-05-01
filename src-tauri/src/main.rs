@@ -60,6 +60,7 @@ struct Message {
     sender_role: String,
     body: String,
     is_task: bool,
+    thread_followed: bool,
     task_number: Option<i64>,
     task_status: Option<String>,
     created_at: DateTime<Utc>,
@@ -198,9 +199,15 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             sender_role text not null default 'human',
             body text not null,
             is_task boolean not null default false,
+            thread_followed boolean not null default true,
             created_at timestamptz not null default now()
         )
         "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "alter table messages add column if not exists thread_followed boolean not null default true",
     )
     .execute(pool)
     .await?;
@@ -266,6 +273,17 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             pid integer,
             status text not null default 'offline',
             updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        create table if not exists channel_read_state (
+            channel_id uuid primary key references channels(id) on delete cascade,
+            last_read_at timestamptz not null default '-infinity'::timestamptz
         )
         "#,
     )
@@ -783,12 +801,60 @@ async fn update_task_title(
     Ok(())
 }
 
+#[tauri::command]
+async fn mark_channel_read(channel_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        insert into channel_read_state (channel_id, last_read_at)
+        values ($1, now())
+        on conflict (channel_id) do update set last_read_at = excluded.last_read_at
+        "#,
+    )
+    .bind(channel_id)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_thread_followed(
+    thread_root_id: Uuid,
+    followed: bool,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        update messages
+        set thread_followed = $2
+        where id = $1 and thread_root_id is null
+        "#,
+    )
+    .bind(thread_root_id)
+    .bind(followed)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
 async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
     let rows = sqlx::query(
         r#"
-        select id, name, description, unread_count
-        from channels
-        order by case when name = 'local-slock' then 0 else 1 end, name
+        select
+            c.id,
+            c.name,
+            c.description,
+            count(m.id) filter (
+                where m.created_at > coalesce(r.last_read_at, '-infinity'::timestamptz)
+            )::integer as unread_count
+        from channels c
+        left join channel_read_state r on r.channel_id = c.id
+        left join messages m on m.channel_id = c.id
+        group by c.id, c.name, c.description
+        order by case when c.name = 'local-slock' then 0 else 1 end, c.name
         "#,
     )
     .fetch_all(pool)
@@ -858,6 +924,7 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
             m.sender_role,
             m.body,
             m.is_task,
+            m.thread_followed,
             t.number as task_number,
             t.status as task_status,
             m.created_at
@@ -880,6 +947,7 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
             sender_role: row.get("sender_role"),
             body: row.get("body"),
             is_task: row.get("is_task"),
+            thread_followed: row.get("thread_followed"),
             task_number: row.get("task_number"),
             task_status: row.get("task_status"),
             created_at: row.get("created_at"),
@@ -1584,12 +1652,14 @@ pub fn run() {
             delete_agent,
             delete_channel,
             install_supervisor_service,
+            mark_channel_read,
             send_message,
             start_agent,
             stop_agent,
             uninstall_supervisor_service,
             update_agent,
             update_channel,
+            update_thread_followed,
             update_task_title,
             update_task_status
         ])

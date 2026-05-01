@@ -53,6 +53,7 @@ type Message = {
   sender_role: string;
   body: string;
   is_task: boolean;
+  thread_followed: boolean;
   task_number: number | null;
   task_status: string | null;
   created_at: string;
@@ -110,6 +111,16 @@ type Bootstrap = {
   launch_agent: LaunchAgentStatus;
 };
 
+type SearchResult = {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  channelId: string | null;
+  threadId: string | null;
+  agentId: string | null;
+};
+
 type AgentForm = {
   handle: string;
   displayName: string;
@@ -156,6 +167,7 @@ function App() {
   const [replyDraft, setReplyDraft] = useState("");
   const [taskDraft, setTaskDraft] = useState("");
   const [taskTitleDrafts, setTaskTitleDrafts] = useState<Record<string, string>>({});
+  const [searchQuery, setSearchQuery] = useState("");
   const [newChannel, setNewChannel] = useState("");
   const [channelNameDraft, setChannelNameDraft] = useState("");
   const [channelDescriptionDraft, setChannelDescriptionDraft] = useState("");
@@ -218,6 +230,66 @@ function App() {
     return data.tasks.find((task) => task.message_id === activeRoot.id) ?? null;
   }, [data, activeRoot]);
 
+  const followedThreads = useMemo(() => {
+    return rootMessages.filter((message) => message.thread_followed).length;
+  }, [rootMessages]);
+
+  const searchResults = useMemo(() => {
+    if (!data) return [];
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return [];
+
+    const channelHits = data.channels
+      .filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(query))
+      .map((item) => ({
+        id: item.id,
+        kind: "channel",
+        title: `#${item.name}`,
+        detail: item.description || "channel",
+        channelId: item.id,
+        threadId: null,
+        agentId: null,
+      }));
+
+    const taskHits = data.tasks
+      .filter((item) => `${item.title} ${item.status} ${item.channel_name} ${item.assignee_name ?? ""}`.toLowerCase().includes(query))
+      .map((item) => ({
+        id: item.id,
+        kind: "task",
+        title: `#${item.number} ${item.title}`,
+        detail: `${item.channel_name} · ${item.status.replace("_", " ")}`,
+        channelId: item.channel_id,
+        threadId: item.message_id,
+        agentId: null,
+      }));
+
+    const messageHits = data.messages
+      .filter((item) => `${item.sender_name} ${item.body}`.toLowerCase().includes(query))
+      .map((item) => ({
+        id: item.id,
+        kind: item.thread_root_id ? "reply" : "message",
+        title: firstLines(item.body, 1),
+        detail: `${item.sender_name} · ${formatTime(item.created_at)}`,
+        channelId: item.channel_id,
+        threadId: item.thread_root_id ?? item.id,
+        agentId: null,
+      }));
+
+    const agentHits = data.agents
+      .filter((item) => `${item.handle} ${item.display_name} ${item.runtime} ${item.model} ${item.description}`.toLowerCase().includes(query))
+      .map((item) => ({
+        id: item.id,
+        kind: "agent",
+        title: `@${item.handle}`,
+        detail: `${item.runtime} · ${item.model}`,
+        channelId: null,
+        threadId: null,
+        agentId: item.id,
+      }));
+
+    return [...channelHits, ...taskHits, ...messageHits, ...agentHits].slice(0, 9);
+  }, [data, searchQuery]);
+
   function taskForMessage(messageId: string) {
     return data?.tasks.find((task) => task.message_id === messageId) ?? null;
   }
@@ -226,6 +298,11 @@ function App() {
     setChannelNameDraft(channel?.name ?? "");
     setChannelDescriptionDraft(channel?.description ?? "");
   }, [channel?.id, channel?.name, channel?.description]);
+
+  useEffect(() => {
+    if (!activeChannelId) return;
+    invoke("mark_channel_read", { channelId: activeChannelId }).catch((err) => console.error(err));
+  }, [activeChannelId, data?.messages.length]);
 
   async function createChannel() {
     const name = newChannel.trim().replace(/^#/, "");
@@ -360,6 +437,25 @@ function App() {
     setActiveTab("chat");
   }
 
+  function openSearchResult(result: SearchResult) {
+    if (result.agentId) {
+      const agent = data?.agents.find((item) => item.id === result.agentId);
+      if (agent) startEditAgent(agent);
+    }
+    if (result.channelId) setActiveChannelId(result.channelId);
+    if (result.threadId) {
+      setActiveThreadId(result.threadId);
+      setActiveTab("chat");
+    }
+  }
+
+  async function toggleThreadFollow(message: Message) {
+    await mutate("update_thread_followed", {
+      threadRootId: message.id,
+      followed: !message.thread_followed,
+    });
+  }
+
   function activeRunFor(agentId: string) {
     return data?.agent_runs.find((run) => run.agent_id === agentId && ACTIVE_RUN_STATUSES.has(run.status)) ?? null;
   }
@@ -399,10 +495,29 @@ function App() {
         </nav>
 
         <section className="quick-actions">
-          <button><Search size={18} /> Search <span>⌘K</span></button>
-          <button><MessageSquare size={18} /> Threads <strong>{rootMessages.length}</strong></button>
+          <label className="search-box">
+            <Search size={18} />
+            <input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search local state"
+            />
+          </label>
+          <button><MessageSquare size={18} /> Threads <strong>{followedThreads}/{rootMessages.length}</strong></button>
           <button><LayoutList size={18} /> Tasks <strong>{data.tasks.length}</strong></button>
           <button><Sparkles size={18} /> Agents <strong>{data.agents.length}</strong></button>
+          {searchQuery.trim() && (
+            <div className="search-results">
+              {searchResults.length === 0 && <span>No local results</span>}
+              {searchResults.map((result) => (
+                <button key={`${result.kind}-${result.id}`} onClick={() => openSearchResult(result)}>
+                  <strong>{result.kind}</strong>
+                  <span>{result.title}</span>
+                  <small>{result.detail}</small>
+                </button>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="channel-block">
@@ -662,7 +777,18 @@ function App() {
                         <span>updated {formatTime(linkedTask.updated_at)}</span>
                       </div>
                     )}
-                    <button className="reply-pill"><MessageSquare size={15} /> Open thread</button>
+                    <div className="message-actions">
+                      <button className="reply-pill"><MessageSquare size={15} /> Open thread</button>
+                      <button
+                        className={`follow-pill ${message.thread_followed ? "active" : ""}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleThreadFollow(message);
+                        }}
+                      >
+                        {message.thread_followed ? "Following" : "Muted"}
+                      </button>
+                    </div>
                   </div>
                 </article>
               );
@@ -756,6 +882,11 @@ function App() {
             <h2>Thread <span>{channel ? `- #${channel.name}` : "- no channel"}</span></h2>
             <p>{activeRoot ? `Root ${activeRoot.id.slice(0, 8)}` : "No thread selected"}</p>
           </div>
+          {activeRoot && (
+            <button onClick={() => toggleThreadFollow(activeRoot)}>
+              {activeRoot.thread_followed ? "Following" : "Muted"}
+            </button>
+          )}
           <button onClick={() => setActiveThreadId(null)}><X size={18} /></button>
         </header>
 
