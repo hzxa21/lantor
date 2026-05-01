@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    env,
+    env, fs,
+    path::PathBuf,
     process::{Command as StdCommand, Stdio},
     time::Duration,
 };
@@ -19,6 +20,7 @@ use uuid::Uuid;
 
 const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/localslock";
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
+const LAUNCH_AGENT_LABEL: &str = "local.localslock.supervisor";
 
 #[derive(Clone)]
 struct AppState {
@@ -96,6 +98,14 @@ struct SupervisorStatus {
     updated_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize)]
+struct LaunchAgentStatus {
+    label: String,
+    plist_path: String,
+    installed: bool,
+    loaded: bool,
+}
+
 #[derive(Debug)]
 struct SupervisorCommand {
     id: Uuid,
@@ -113,6 +123,7 @@ struct Bootstrap {
     tasks: Vec<Task>,
     agent_runs: Vec<AgentRun>,
     supervisor: SupervisorStatus,
+    launch_agent: LaunchAgentStatus,
 }
 
 type CommandResult<T> = Result<T, String>;
@@ -268,6 +279,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let tasks = load_tasks(&state.pool).await?;
     let agent_runs = load_agent_runs(&state.pool).await?;
     let supervisor = load_supervisor_status(&state.pool).await?;
+    let launch_agent = load_launch_agent_status()?;
 
     Ok(Bootstrap {
         db_url: state.db_url.clone(),
@@ -277,6 +289,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         tasks,
         agent_runs,
         supervisor,
+        launch_agent,
     })
 }
 
@@ -581,6 +594,58 @@ async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<(
         .map_err(to_string)?;
 
     Ok(())
+}
+
+#[tauri::command]
+async fn install_supervisor_service(
+    state: State<'_, AppState>,
+) -> CommandResult<LaunchAgentStatus> {
+    let plist_path = launch_agent_plist_path()?;
+    let exe_path = env::current_exe().map_err(to_string)?;
+    let plist = render_launch_agent_plist(&exe_path, &state.db_url);
+
+    if let Some(parent) = plist_path.parent() {
+        fs::create_dir_all(parent).map_err(to_string)?;
+    }
+    fs::write(&plist_path, plist).map_err(to_string)?;
+
+    let domain = launch_agent_domain()?;
+    let service = launch_agent_service_target(&domain);
+    let _ = StdCommand::new("launchctl")
+        .arg("bootout")
+        .arg(&service)
+        .output();
+
+    run_launchctl(&["bootstrap", &domain, &plist_path.to_string_lossy()])?;
+    run_launchctl(&["kickstart", "-k", &service])?;
+
+    load_launch_agent_status()
+}
+
+#[tauri::command]
+async fn uninstall_supervisor_service(
+    state: State<'_, AppState>,
+) -> CommandResult<LaunchAgentStatus> {
+    let domain = launch_agent_domain()?;
+    let service = launch_agent_service_target(&domain);
+    let _ = StdCommand::new("launchctl")
+        .arg("bootout")
+        .arg(&service)
+        .output();
+
+    let plist_path = launch_agent_plist_path()?;
+    match fs::remove_file(&plist_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.to_string()),
+    }
+
+    sqlx::query("update supervisor_state set status = 'offline', updated_at = now() where id = 1")
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+
+    load_launch_agent_status()
 }
 
 #[tauri::command]
@@ -890,6 +955,28 @@ async fn load_supervisor_status(pool: &PgPool) -> CommandResult<SupervisorStatus
         pid: row.get("pid"),
         status,
         updated_at: Some(updated_at),
+    })
+}
+
+fn load_launch_agent_status() -> CommandResult<LaunchAgentStatus> {
+    let plist_path = launch_agent_plist_path()?;
+    let installed = plist_path.exists();
+    let loaded = launch_agent_domain()
+        .map(|domain| {
+            StdCommand::new("launchctl")
+                .arg("print")
+                .arg(launch_agent_service_target(&domain))
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+    Ok(LaunchAgentStatus {
+        label: LAUNCH_AGENT_LABEL.to_owned(),
+        plist_path: plist_path.to_string_lossy().to_string(),
+        installed,
+        loaded,
     })
 }
 
@@ -1309,6 +1396,102 @@ fn spawn_supervisor_process(database_url: &str) {
     }
 }
 
+fn launch_agent_plist_path() -> CommandResult<PathBuf> {
+    let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{LAUNCH_AGENT_LABEL}.plist")))
+}
+
+fn launch_agent_domain() -> CommandResult<String> {
+    let output = StdCommand::new("id")
+        .arg("-u")
+        .output()
+        .map_err(to_string)?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if uid.is_empty() {
+        return Err("failed to resolve current uid".to_owned());
+    }
+    Ok(format!("gui/{uid}"))
+}
+
+fn launch_agent_service_target(domain: &str) -> String {
+    format!("{domain}/{LAUNCH_AGENT_LABEL}")
+}
+
+fn run_launchctl(args: &[&str]) -> CommandResult<()> {
+    let output = StdCommand::new("launchctl")
+        .args(args)
+        .output()
+        .map_err(to_string)?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(format!(
+        "launchctl {} failed: {}{}",
+        args.join(" "),
+        stderr.trim(),
+        if stdout.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" {}", stdout.trim())
+        }
+    ))
+}
+
+fn render_launch_agent_plist(exe_path: &std::path::Path, database_url: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{}</string>
+    <string>--supervisor</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LOCAL_SLOCK_DATABASE_URL</key>
+    <string>{}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{}</string>
+  <key>StandardErrorPath</key>
+  <string>{}</string>
+</dict>
+</plist>
+"#,
+        xml_escape(LAUNCH_AGENT_LABEL),
+        xml_escape(&exe_path.to_string_lossy()),
+        xml_escape(database_url),
+        xml_escape("/tmp/localslock-supervisor.out.log"),
+        xml_escape("/tmp/localslock-supervisor.err.log"),
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 fn normalize_channel_name(name: &str) -> String {
     name.trim()
         .trim_start_matches('#')
@@ -1351,9 +1534,11 @@ pub fn run() {
             claim_task,
             delete_agent,
             delete_channel,
+            install_supervisor_service,
             send_message,
             start_agent,
             stop_agent,
+            uninstall_supervisor_service,
             update_agent,
             update_channel,
             update_task_status

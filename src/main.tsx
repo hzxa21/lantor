@@ -88,6 +88,13 @@ type SupervisorStatus = {
   updated_at: string | null;
 };
 
+type LaunchAgentStatus = {
+  label: string;
+  plist_path: string;
+  installed: boolean;
+  loaded: boolean;
+};
+
 type Bootstrap = {
   db_url: string;
   channels: Channel[];
@@ -96,6 +103,7 @@ type Bootstrap = {
   tasks: Task[];
   agent_runs: AgentRun[];
   supervisor: SupervisorStatus;
+  launch_agent: LaunchAgentStatus;
 };
 
 type AgentForm = {
@@ -310,6 +318,14 @@ function App() {
 
   async function stopAgent(run: AgentRun) {
     await mutate("stop_agent", { runId: run.id });
+  }
+
+  async function installSupervisorService() {
+    await mutate("install_supervisor_service");
+  }
+
+  async function uninstallSupervisorService() {
+    await mutate("uninstall_supervisor_service");
   }
 
   if (!data) {
@@ -674,6 +690,24 @@ function App() {
               supervisor {data.supervisor.status}
               {data.supervisor.pid ? ` · ${data.supervisor.pid}` : ""}
             </span>
+          </div>
+          <div className="service-card">
+            <div>
+              <strong>LaunchAgent</strong>
+              <span>
+                {data.launch_agent.installed ? "installed" : "not installed"} ·{" "}
+                {data.launch_agent.loaded ? "loaded" : "not loaded"}
+              </span>
+              <code>{data.launch_agent.plist_path}</code>
+            </div>
+            <div className="service-actions">
+              <button onClick={installSupervisorService}>
+                <Sparkles size={14} /> Install
+              </button>
+              <button className="danger" onClick={uninstallSupervisorService}>
+                <Trash2 size={14} /> Uninstall
+              </button>
+            </div>
           </div>
           {data.agent_runs.length === 0 && (
             <p className="empty-mini">Start an agent to create the first local run log.</p>

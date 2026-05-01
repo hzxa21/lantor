@@ -882,6 +882,62 @@ mark {
   color: #a05a00;
 }
 
+.service-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.service-card strong,
+.service-card span,
+.service-card code {
+  display: block;
+}
+
+.service-card span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.service-card code {
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: rgba(17, 24, 39, 0.88);
+  color: rgba(255, 255, 255, 0.82);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  padding: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.service-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(10, 132, 255, 0.12);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.service-actions .danger {
+  background: rgba(255, 59, 48, 0.12);
+  color: #d70015;
+}
+
 .run-card {
   display: grid;
   gap: 7px;

@@ -23,6 +23,8 @@ Runtime process control is intentionally left as the next slice. This version es
 
 Current runtime boundary: each agent profile can store a shell `launch_command` and optional `working_directory`. If the command is empty, LocalSlock starts a harmless placeholder process so the start/stop/log loop can be tested before wiring a real agent CLI. The desktop app auto-spawns the same binary in `--supervisor` mode; that supervisor owns spawn/kill/log collection through a Postgres command queue. A future launchd wrapper can make the supervisor survive without opening the desktop UI.
 
+The Runtime panel can also install a user LaunchAgent at `~/Library/LaunchAgents/local.localslock.supervisor.plist`. That makes macOS keep the `--supervisor` process alive via `launchctl`; uninstall removes the plist and unloads the service.
+
 ## Run
 
 ```bash
