@@ -55,8 +55,10 @@ function App() {
       return next.channels[0]?.id || "";
     });
     setActiveThreadId((prev) => {
-      if (prev && next.messages.some((item) => item.id === prev)) return prev;
-      return next.messages.find((m) => !m.thread_root_id)?.id || null;
+      const rootIds = new Set(next.messages.filter((item) => !item.thread_root_id).map((item) => item.id));
+      if (prev && rootIds.has(prev)) return prev;
+      const repliedRootIds = new Set(next.messages.flatMap((item) => (item.thread_root_id ? [item.thread_root_id] : [])));
+      return next.messages.find((item) => !item.thread_root_id && repliedRootIds.has(item.id))?.id || null;
     });
   }
 
@@ -91,6 +93,16 @@ function App() {
     if (!data || !activeRoot) return [];
     return data.messages.filter((m) => m.thread_root_id === activeRoot.id);
   }, [data, activeRoot]);
+
+  const threadedRootMessages = useMemo(() => {
+    if (!data || !channel) return [];
+    const repliedRootIds = new Set(
+      data.messages
+        .filter((message) => message.channel_id === channel.id && message.thread_root_id)
+        .map((message) => message.thread_root_id),
+    );
+    return rootMessages.filter((message) => repliedRootIds.has(message.id));
+  }, [data, channel, rootMessages]);
 
   const visibleTasks = useMemo(() => {
     if (!data || !channel) return [];
@@ -132,8 +144,8 @@ function App() {
   }, [data]);
 
   const followedThreads = useMemo(() => {
-    return rootMessages.filter((message) => message.thread_followed).length;
-  }, [rootMessages]);
+    return threadedRootMessages.filter((message) => message.thread_followed).length;
+  }, [threadedRootMessages]);
 
   const selectedAgent = useMemo(() => {
     if (!data || !selectedAgentId) return null;
@@ -278,7 +290,12 @@ function App() {
 
   function selectChannel(channelId: string) {
     setActiveChannelId(channelId);
-    const first = data?.messages.find((m) => m.channel_id === channelId && !m.thread_root_id);
+    const repliedRootIds = new Set(
+      data?.messages
+        .filter((message) => message.channel_id === channelId && message.thread_root_id)
+        .map((message) => message.thread_root_id) ?? [],
+    );
+    const first = data?.messages.find((m) => m.channel_id === channelId && !m.thread_root_id && repliedRootIds.has(m.id));
     setActiveThreadId(first?.id ?? null);
   }
 
@@ -526,7 +543,7 @@ function App() {
       <Sidebar
         data={data}
         channel={channel}
-        rootMessages={rootMessages}
+        rootMessages={threadedRootMessages}
         followedThreads={followedThreads}
         searchQuery={searchQuery}
         searchResults={searchResults}

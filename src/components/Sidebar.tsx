@@ -132,7 +132,7 @@ export function Sidebar({
           </button>
         ))}
         {rootMessages.length === 0 && (
-          <div className="empty-mini">Threads appear after root messages.</div>
+          <div className="empty-mini">Threads appear after a message gets replies.</div>
         )}
       </section>
 

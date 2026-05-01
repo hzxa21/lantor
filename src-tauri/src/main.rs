@@ -1275,6 +1275,7 @@ async fn queue_mentions_as_work_items(
     if mentions.is_empty() {
         return Ok(());
     }
+    let reply_thread_root_id = thread_root_id.unwrap_or(message_id);
 
     let channel_name: String = sqlx::query_scalar("select name from channels where id = $1")
         .bind(channel_id)
@@ -1315,7 +1316,7 @@ async fn queue_mentions_as_work_items(
             pool,
             channel_id,
             &channel_name,
-            thread_root_id,
+            Some(reply_thread_root_id),
             message_id,
             body,
         )
@@ -1331,7 +1332,7 @@ async fn queue_mentions_as_work_items(
         )
         .bind(agent_id)
         .bind(channel_id)
-        .bind(thread_root_id)
+        .bind(reply_thread_root_id)
         .bind(message_id)
         .bind(task_id)
         .bind(&title)
