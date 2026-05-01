@@ -37,6 +37,10 @@ function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
 }
 
+function phaseClass(kind: string) {
+  return `phase-${kind.replace(/[^a-z0-9_-]/gi, "-")}`;
+}
+
 function formatActivityTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return formatTime(value);
@@ -74,7 +78,7 @@ export function AgentDetailDrawer({
               <p>@{agent.handle} · {agent.runtime} · {agent.model}</p>
               {phase && (
                 <div className="agent-phase-line">
-                  <span className={`phase-badge ${phase.kind}`}>{phase.label}</span>
+                  <span className={`phase-badge ${phaseClass(phase.kind)}`}>{phase.label}</span>
                   <small>{phase.detail}</small>
                 </div>
               )}
@@ -108,9 +112,9 @@ export function AgentDetailDrawer({
             {activities.length > 0 && (
               <div className="activity-timeline" role="log" aria-label={`${agent.handle} activity`}>
                 {activities.map((activity) => (
-                  <article key={activity.id} className={`activity-timeline-row ${activity.kind}`}>
+                  <article key={activity.id} className="activity-timeline-row" data-kind={activity.kind}>
                     <time>{formatActivityTime(activity.created_at)}</time>
-                    <span className={`activity-dot ${activity.kind}`} aria-hidden="true" />
+                    <span className="activity-dot" data-kind={activity.kind} aria-hidden="true" />
                     <div className="activity-timeline-body">
                       <div className="activity-timeline-title">
                         <strong>{activity.title}</strong>

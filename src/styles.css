@@ -2281,27 +2281,27 @@ mark,
   text-transform: uppercase;
 }
 
-.phase-badge.thinking {
+.phase-badge.phase-thinking {
   background: rgba(90, 200, 250, 0.16);
   color: #0071a8;
 }
 
-.phase-badge.acting,
-.phase-badge.event,
-.phase-badge.message,
-.phase-badge.task {
+.phase-badge.phase-acting,
+.phase-badge.phase-event,
+.phase-badge.phase-message,
+.phase-badge.phase-task {
   background: rgba(52, 199, 89, 0.16);
   color: #167d32;
 }
 
-.phase-badge.tools {
+.phase-badge.phase-tools {
   background: rgba(255, 159, 10, 0.18);
   color: #9a5a00;
 }
 
-.phase-badge.error,
-.phase-badge.event_error,
-.phase-badge.run_error {
+.phase-badge.phase-error,
+.phase-badge.phase-event_error,
+.phase-badge.phase-run_error {
   background: rgba(255, 69, 58, 0.15);
   color: #c91810;
 }
@@ -2433,27 +2433,27 @@ mark,
   display: none;
 }
 
-.activity-dot.thinking {
+.activity-dot[data-kind="thinking"] {
   background: #64d2ff;
   box-shadow: 0 0 0 3px rgba(100, 210, 255, 0.14);
 }
 
-.activity-dot.acting,
-.activity-dot.event,
-.activity-dot.message,
-.activity-dot.task {
+.activity-dot[data-kind="acting"],
+.activity-dot[data-kind="event"],
+.activity-dot[data-kind="message"],
+.activity-dot[data-kind="task"] {
   background: #32d74b;
   box-shadow: 0 0 0 3px rgba(50, 215, 75, 0.14);
 }
 
-.activity-dot.tools {
+.activity-dot[data-kind="tools"] {
   background: #ffd43b;
   box-shadow: 0 0 0 3px rgba(255, 212, 59, 0.14);
 }
 
-.activity-dot.error,
-.activity-dot.event_error,
-.activity-dot.run_error {
+.activity-dot[data-kind="error"],
+.activity-dot[data-kind="event_error"],
+.activity-dot[data-kind="run_error"] {
   background: #ff453a;
   box-shadow: 0 0 0 3px rgba(255, 69, 58, 0.14);
 }
@@ -2498,9 +2498,9 @@ mark,
   -webkit-line-clamp: 2;
 }
 
-.activity-timeline-row.error .activity-timeline-body p,
-.activity-timeline-row.event_error .activity-timeline-body p,
-.activity-timeline-row.run_error .activity-timeline-body p {
+.activity-timeline-row[data-kind="error"] .activity-timeline-body p,
+.activity-timeline-row[data-kind="event_error"] .activity-timeline-body p,
+.activity-timeline-row[data-kind="run_error"] .activity-timeline-body p {
   color: #c91810;
 }
 
