@@ -651,6 +651,22 @@ mark {
   white-space: pre-wrap;
 }
 
+.message-task-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.message-task-line span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
 .reply-pill {
   display: inline-flex;
   align-items: center;
@@ -670,6 +686,63 @@ mark {
   padding: 24px;
 }
 
+.task-create {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid rgba(10, 132, 255, 0.16);
+  border-radius: 22px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(222, 238, 255, 0.55));
+  box-shadow: 0 16px 35px rgba(25, 30, 40, 0.06);
+}
+
+.task-create h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.task-create p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.task-create textarea,
+.task-card input,
+.thread-task-card input,
+.thread-task-card select {
+  width: 100%;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
+  outline: none;
+}
+
+.task-create textarea {
+  min-height: 70px;
+  resize: vertical;
+}
+
+.task-create button {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 850;
+}
+
+.task-create button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .task-card {
   padding: 16px;
   border: 1px solid var(--line);
@@ -677,8 +750,28 @@ mark {
   background: var(--panel);
 }
 
+.task-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
 .task-card span {
   color: var(--accent);
+  font-weight: 850;
+}
+
+.task-card-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(10, 132, 255, 0.1);
+  color: var(--accent);
+  font-size: 12px;
   font-weight: 850;
 }
 
@@ -1005,6 +1098,22 @@ mark {
   border: 1px solid var(--line);
   border-radius: 22px;
   background: var(--panel-strong);
+}
+
+.thread-task-card {
+  display: grid;
+  gap: 10px;
+  margin: 0 22px 8px;
+  padding: 14px;
+  border: 1px solid rgba(10, 132, 255, 0.2);
+  border-radius: 19px;
+  background: rgba(228, 241, 255, 0.62);
+}
+
+.thread-task-card strong {
+  color: var(--accent);
+  font-size: 12px;
+  text-transform: uppercase;
 }
 
 .reply-list {

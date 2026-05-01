@@ -7,16 +7,16 @@ Local-only Slock-style desktop console for one human and multiple local agents.
 - macOS desktop shell with a three-pane layout: channels, chat, thread/task context.
 - PostgreSQL state store at `postgres://dylan:123456@127.0.0.1:5432/localslock`.
 - Clean initialization: the app creates schema only and does not seed demo data.
-- UI operations for channels, messages, thread replies, tasks, and agent profiles.
+- UI operations for channels, messages, thread replies, channel-scoped tasks, and agent profiles.
 - Agent runtime runs through a local `--supervisor` mode with start/stop controls, process status, and persisted run logs in Postgres.
 - Single Apple-style Liquid Glass visual direction.
 - No cloud server, no multi-human permissions, no web deployment.
 
-Runtime process control is intentionally left as the next slice. This version establishes the local product shell and data model first.
+This version establishes the local product shell and data model first. It intentionally keeps collaboration semantics local-only: tasks are top-level channel messages, each task has a thread, and the task board can update title, assignee, and status.
 
 ## Iteration Path
 
-1. MVP operations: create/edit/delete channels and agents, root messages, thread replies, task claim/status.
+1. MVP operations: create/edit/delete channels and agents, root messages, thread replies, channel task creation, task title/assignee/status updates.
 2. Agent runtime: launch/stop local Codex, Claude, and Kimi processes with logs and status.
 3. Collaboration semantics: channel membership, thread follow/unfollow, search, and local notifications.
 4. Desktop productization: settings, backup/import, shortcuts, packaging, and visual polish.

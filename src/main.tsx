@@ -61,11 +61,15 @@ type Message = {
 type Task = {
   id: string;
   number: number;
+  message_id: string;
+  channel_id: string;
   title: string;
   status: string;
   channel_name: string;
   assignee_id: string | null;
   assignee_name: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type AgentRun = {
@@ -150,6 +154,8 @@ function App() {
   const [activeTab, setActiveTab] = useState<"chat" | "tasks">("chat");
   const [draft, setDraft] = useState("");
   const [replyDraft, setReplyDraft] = useState("");
+  const [taskDraft, setTaskDraft] = useState("");
+  const [taskTitleDrafts, setTaskTitleDrafts] = useState<Record<string, string>>({});
   const [newChannel, setNewChannel] = useState("");
   const [channelNameDraft, setChannelNameDraft] = useState("");
   const [channelDescriptionDraft, setChannelDescriptionDraft] = useState("");
@@ -201,6 +207,20 @@ function App() {
     if (!data || !activeRoot) return [];
     return data.messages.filter((m) => m.thread_root_id === activeRoot.id);
   }, [data, activeRoot]);
+
+  const visibleTasks = useMemo(() => {
+    if (!data || !channel) return [];
+    return data.tasks.filter((task) => task.channel_id === channel.id);
+  }, [data, channel]);
+
+  const activeTask = useMemo(() => {
+    if (!data || !activeRoot) return null;
+    return data.tasks.find((task) => task.message_id === activeRoot.id) ?? null;
+  }, [data, activeRoot]);
+
+  function taskForMessage(messageId: string) {
+    return data?.tasks.find((task) => task.message_id === messageId) ?? null;
+  }
 
   useEffect(() => {
     setChannelNameDraft(channel?.name ?? "");
@@ -289,6 +309,17 @@ function App() {
     setDraft("");
   }
 
+  async function createTaskFromBoard() {
+    if (!channel || !taskDraft.trim()) return;
+    await mutate("send_message", {
+      channelId: channel.id,
+      threadRootId: null,
+      body: taskDraft.trim(),
+      asTask: true,
+    });
+    setTaskDraft("");
+  }
+
   async function sendReply() {
     if (!channel || !activeRoot || !replyDraft.trim()) return;
     await mutate("send_message", {
@@ -304,8 +335,29 @@ function App() {
     await mutate("update_task_status", { taskId: task.id, status });
   }
 
+  async function saveTaskTitle(task: Task) {
+    const title = (taskTitleDrafts[task.id] ?? task.title).trim();
+    if (!title || title === task.title) return;
+    await mutate("update_task_title", { taskId: task.id, title });
+    setTaskTitleDrafts((current) => {
+      const next = { ...current };
+      delete next[task.id];
+      return next;
+    });
+  }
+
+  function setTaskTitleDraft(task: Task, title: string) {
+    setTaskTitleDrafts((current) => ({ ...current, [task.id]: title }));
+  }
+
   async function claimTask(task: Task, agentId: string) {
     await mutate("claim_task", { taskId: task.id, agentId: agentId || null });
+  }
+
+  function openTask(task: Task) {
+    setActiveChannelId(task.channel_id);
+    setActiveThreadId(task.message_id);
+    setActiveTab("chat");
   }
 
   function activeRunFor(agentId: string) {
@@ -583,40 +635,80 @@ function App() {
                 <p>Create a channel in the left sidebar, then send messages or tasks.</p>
               </div>
             )}
-            {rootMessages.map((message) => (
-              <article
-                key={message.id}
-                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""}`}
-                onClick={() => setActiveThreadId(message.id)}
-              >
-                <div className="avatar">{message.sender_name.slice(0, 1)}</div>
-                <div className="message-body">
-                  <div className="meta">
-                    <strong>{message.sender_name}</strong>
-                    <span>{message.sender_role}</span>
-                    <time>{formatTime(message.created_at)}</time>
-                    {message.task_number && <mark><CheckCircle2 size={14} /> #{message.task_number}</mark>}
+            {rootMessages.map((message) => {
+              const linkedTask = taskForMessage(message.id);
+              return (
+                <article
+                  key={message.id}
+                  className={`message-card ${message.id === activeRoot?.id ? "focused" : ""}`}
+                  onClick={() => setActiveThreadId(message.id)}
+                >
+                  <div className="avatar">{message.sender_name.slice(0, 1)}</div>
+                  <div className="message-body">
+                    <div className="meta">
+                      <strong>{message.sender_name}</strong>
+                      <span>{message.sender_role}</span>
+                      <time>{formatTime(message.created_at)}</time>
+                      {linkedTask && (
+                        <mark>
+                          <CheckCircle2 size={14} /> #{linkedTask.number} · {linkedTask.status.replace("_", " ")}
+                        </mark>
+                      )}
+                    </div>
+                    <p>{firstLines(message.body)}</p>
+                    {linkedTask && (
+                      <div className="message-task-line">
+                        <span>{linkedTask.assignee_name || "unassigned"}</span>
+                        <span>updated {formatTime(linkedTask.updated_at)}</span>
+                      </div>
+                    )}
+                    <button className="reply-pill"><MessageSquare size={15} /> Open thread</button>
                   </div>
-                  <p>{firstLines(message.body)}</p>
-                  <button className="reply-pill"><MessageSquare size={15} /> Open thread</button>
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
         ) : (
           <div className="task-board">
-            {data.tasks.length === 0 && (
+            <section className="task-create">
+              <div>
+                <h2>Create task in {channel ? `#${channel.name}` : "a channel"}</h2>
+                <p>Tasks are top-level messages with status, assignee, and a thread.</p>
+              </div>
+              <textarea
+                value={taskDraft}
+                onChange={(event) => setTaskDraft(event.target.value)}
+                disabled={!channel}
+                placeholder={channel ? "Task title or short brief" : "Create a channel before creating tasks"}
+              />
+              <button disabled={!channel || !taskDraft.trim()} onClick={createTaskFromBoard}>
+                <Plus size={15} /> Create Task
+              </button>
+            </section>
+            {visibleTasks.length === 0 && (
               <div className="empty-state">
                 <LayoutList size={34} />
-                <h2>No tasks yet</h2>
-                <p>Use “Send Task” in a channel to create the first local task.</p>
+                <h2>No tasks in this channel</h2>
+                <p>Create a task above or use “Send Task” in the channel composer.</p>
               </div>
             )}
-            {data.tasks.map((task) => (
+            {visibleTasks.map((task) => (
               <article className="task-card" key={task.id}>
-                <span>#{task.number}</span>
-                <h3>{task.title}</h3>
-                <p>{task.channel_name} · {task.assignee_name || "unassigned"}</p>
+                <div className="task-card-head">
+                  <span>#{task.number}</span>
+                  <button onClick={() => openTask(task)}>
+                    <MessageSquare size={14} /> Open thread
+                  </button>
+                </div>
+                <input
+                  value={taskTitleDrafts[task.id] ?? task.title}
+                  onChange={(event) => setTaskTitleDraft(task, event.target.value)}
+                  onBlur={() => saveTaskTitle(task)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") saveTaskTitle(task);
+                  }}
+                />
+                <p>{task.channel_name} · {task.assignee_name || "unassigned"} · updated {formatTime(task.updated_at)}</p>
                 <div className="task-controls">
                   <select value={task.assignee_id ?? ""} onChange={(event) => claimTask(task, event.target.value)}>
                     <option value="">Unassigned</option>
@@ -737,6 +829,43 @@ function App() {
             </div>
             <p>{activeRoot.body}</p>
           </article>
+        )}
+
+        {activeTask && (
+          <section className="thread-task-card">
+            <div className="task-card-head">
+              <span>Task #{activeTask.number}</span>
+              <strong>{activeTask.status.replace("_", " ")}</strong>
+            </div>
+            <input
+              value={taskTitleDrafts[activeTask.id] ?? activeTask.title}
+              onChange={(event) => setTaskTitleDraft(activeTask, event.target.value)}
+              onBlur={() => saveTaskTitle(activeTask)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") saveTaskTitle(activeTask);
+              }}
+            />
+            <select
+              value={activeTask.assignee_id ?? ""}
+              onChange={(event) => claimTask(activeTask, event.target.value)}
+            >
+              <option value="">Unassigned</option>
+              {data.agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>{agent.display_name}</option>
+              ))}
+            </select>
+            <div className="status-row">
+              {TASK_STATUSES.map((status) => (
+                <button
+                  key={status}
+                  className={activeTask.status === status ? "active" : ""}
+                  onClick={() => updateTaskStatus(activeTask, status)}
+                >
+                  {status.replace("_", " ")}
+                </button>
+              ))}
+            </div>
+          </section>
         )}
 
         <section className="reply-list">

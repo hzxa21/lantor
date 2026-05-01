@@ -69,11 +69,15 @@ struct Message {
 struct Task {
     id: Uuid,
     number: i64,
+    message_id: Uuid,
+    channel_id: Uuid,
     title: String,
     status: String,
     channel_name: String,
     assignee_id: Option<Uuid>,
     assignee_name: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]
@@ -742,6 +746,43 @@ async fn update_task_status(
     Ok(())
 }
 
+#[tauri::command]
+async fn update_task_title(
+    task_id: Uuid,
+    title: String,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("task title is empty".to_owned());
+    }
+
+    let mut tx = state.pool.begin().await.map_err(to_string)?;
+    let message_id: Uuid = sqlx::query_scalar(
+        r#"
+        update tasks
+        set title = $2, updated_at = now()
+        where id = $1
+        returning message_id
+        "#,
+    )
+    .bind(task_id)
+    .bind(title)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(to_string)?;
+
+    sqlx::query("update messages set body = $2 where id = $1")
+        .bind(message_id)
+        .bind(title)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_string)?;
+
+    tx.commit().await.map_err(to_string)?;
+    Ok(())
+}
+
 async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
     let rows = sqlx::query(
         r#"
@@ -852,11 +893,15 @@ async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
         select
             t.id,
             t.number,
+            t.message_id,
+            t.channel_id,
             t.title,
             t.status,
             c.name as channel_name,
             t.assignee_agent_id as assignee_id,
-            a.display_name as assignee_name
+            a.display_name as assignee_name,
+            t.created_at,
+            t.updated_at
         from tasks t
         join channels c on c.id = t.channel_id
         left join agents a on a.id = t.assignee_agent_id
@@ -872,11 +917,15 @@ async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
         .map(|row| Task {
             id: row.get("id"),
             number: row.get("number"),
+            message_id: row.get("message_id"),
+            channel_id: row.get("channel_id"),
             title: row.get("title"),
             status: row.get("status"),
             channel_name: row.get("channel_name"),
             assignee_id: row.get("assignee_id"),
             assignee_name: row.get("assignee_name"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
         })
         .collect())
 }
@@ -1541,6 +1590,7 @@ pub fn run() {
             uninstall_supervisor_service,
             update_agent,
             update_channel,
+            update_task_title,
             update_task_status
         ])
         .run(tauri::generate_context!())
