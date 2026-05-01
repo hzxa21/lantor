@@ -55,6 +55,8 @@ For dispatched work items, the supervisor also injects:
 
 Launch presets pass both the base LocalSlock protocol prompt and `LOCAL_SLOCK_WORK_ITEM_PROMPT` into the selected runtime. Custom commands can read these environment variables directly.
 
+Human messages can also create work items by mentioning an existing agent handle such as `@Hancock`. In this slice, a mention queues a run-once work item when that agent has no active or pending run; if the agent is already busy, LocalSlock records the mention in activity instead of starting a second concurrent process.
+
 ## Agent Activity Feed
 
 LocalSlock persists agent activity in `agent_activities` instead of deriving it from run logs. The feed is intentionally queryable state: it links activity to an agent and, when available, a run. This gives the UI a stable timeline for:

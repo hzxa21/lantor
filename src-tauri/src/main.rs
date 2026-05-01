@@ -1210,6 +1210,163 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     Ok(new_work_item_id)
 }
 
+fn extract_agent_mentions(body: &str) -> Vec<String> {
+    let mut handles = Vec::new();
+    let mut chars = body.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if ch != '@' {
+            continue;
+        }
+        if body[..idx]
+            .chars()
+            .next_back()
+            .map(|prev| prev.is_ascii_alphanumeric() || prev == '_' || prev == '-' || prev == '.')
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let mut handle = String::new();
+        while let Some((_, next)) = chars.peek().copied() {
+            if next.is_ascii_alphanumeric() || next == '_' || next == '-' {
+                handle.push(next);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if !handle.is_empty() && !handles.contains(&handle) {
+            handles.push(handle);
+        }
+    }
+    handles
+}
+
+async fn queue_mentions_as_work_items(
+    pool: &PgPool,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    task_id: Option<Uuid>,
+    body: &str,
+) -> CommandResult<()> {
+    let mentions = extract_agent_mentions(body);
+    if mentions.is_empty() {
+        return Ok(());
+    }
+
+    let channel_name: String = sqlx::query_scalar("select name from channels where id = $1")
+        .bind(channel_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    let title = body
+        .lines()
+        .next()
+        .map(|line| line.chars().take(120).collect::<String>())
+        .filter(|line| !line.trim().is_empty())
+        .unwrap_or_else(|| format!("Mention in #{channel_name}"));
+
+    for handle in mentions {
+        let agent_id: Option<Uuid> = sqlx::query_scalar("select id from agents where handle = $1")
+            .bind(&handle)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string)?;
+        let Some(agent_id) = agent_id else {
+            continue;
+        };
+
+        let active_run: Option<Uuid> = sqlx::query_scalar(
+            r#"
+            select id
+            from agent_runs
+            where agent_id = $1
+              and stopped_at is null
+              and status in ('starting', 'running', 'stopping')
+            limit 1
+            "#,
+        )
+        .bind(agent_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+        let pending_start: Option<Uuid> = sqlx::query_scalar(
+            r#"
+            select id
+            from supervisor_commands
+            where command_type = 'start_agent'
+              and agent_id = $1
+              and status in ('pending', 'running')
+            limit 1
+            "#,
+        )
+        .bind(agent_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+        if active_run.is_some() || pending_start.is_some() {
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "mention",
+                "Mention received while agent is busy",
+                format!("#{channel_name}: {title}"),
+            )
+            .await?;
+            continue;
+        }
+
+        let context = format!(
+            "Channel: #{channel_name}\n\nMentioned message:\n{body}\n\nReply with LOCAL_SLOCK_EVENT lines when useful."
+        );
+        let work_item_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_work_items (
+                agent_id, channel_id, thread_root_id, task_id, title, context, status
+            )
+            values ($1, $2, $3, $4, $5, $6, 'queued')
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .bind(task_id)
+        .bind(&title)
+        .bind(&context)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+        sqlx::query(
+            r#"
+            insert into supervisor_commands (command_type, agent_id, work_item_id)
+            values ('start_agent', $1, $2)
+            "#,
+        )
+        .bind(agent_id)
+        .bind(work_item_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+        sqlx::query("update agents set status = 'queued' where id = $1")
+            .bind(agent_id)
+            .execute(pool)
+            .await
+            .map_err(to_string)?;
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            None,
+            "mention",
+            "Mention dispatched",
+            format!("#{channel_name}: {title}"),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
     let row = sqlx::query(
@@ -1335,22 +1492,34 @@ async fn send_message(
     .await
     .map_err(to_string)?;
 
+    let mut task_id = None;
     if as_task {
-        sqlx::query(
-            r#"
+        task_id = Some(
+            sqlx::query_scalar(
+                r#"
             insert into tasks (message_id, channel_id, title, status)
             values ($1, $2, $3, 'todo')
+            returning id
             "#,
-        )
-        .bind(msg_id)
-        .bind(channel_id)
-        .bind(body.lines().next().unwrap_or("Untitled task"))
-        .execute(&mut *tx)
-        .await
-        .map_err(to_string)?;
+            )
+            .bind(msg_id)
+            .bind(channel_id)
+            .bind(body.lines().next().unwrap_or("Untitled task"))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(to_string)?,
+        );
     }
 
     tx.commit().await.map_err(to_string)?;
+    queue_mentions_as_work_items(
+        &state.pool,
+        channel_id,
+        thread_root_id.or(Some(msg_id)),
+        task_id,
+        body.trim(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -3034,5 +3203,22 @@ fn main() {
         }
     } else {
         run();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_agent_mentions;
+
+    #[test]
+    fn extracts_unique_agent_mentions() {
+        let mentions = extract_agent_mentions("ping @Hancock and @agent-2, then @Hancock again");
+        assert_eq!(mentions, vec!["Hancock", "agent-2"]);
+    }
+
+    #[test]
+    fn ignores_empty_or_email_like_at_signs() {
+        let mentions = extract_agent_mentions("email a@b.com and a lone @ sign");
+        assert!(mentions.is_empty());
     }
 }
