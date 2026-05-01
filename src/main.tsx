@@ -38,6 +38,12 @@ function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
 }
 
+function formatActivityTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return formatTime(value);
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
 function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
@@ -922,7 +928,7 @@ function App() {
                 <div className="activity-timeline" role="log" aria-label={`${selectedAgent.handle} activity`}>
                   {selectedAgentActivities.map((activity) => (
                     <article key={activity.id} className={`activity-timeline-row ${activity.kind}`}>
-                      <time>{formatTime(activity.created_at)}</time>
+                      <time>{formatActivityTime(activity.created_at)}</time>
                       <span className={`activity-dot ${activity.kind}`} aria-hidden="true" />
                       <div className="activity-timeline-body">
                         <div className="activity-timeline-title">
