@@ -82,6 +82,12 @@ type AgentRun = {
   stopped_at: string | null;
 };
 
+type SupervisorStatus = {
+  pid: number | null;
+  status: string;
+  updated_at: string | null;
+};
+
 type Bootstrap = {
   db_url: string;
   channels: Channel[];
@@ -89,6 +95,7 @@ type Bootstrap = {
   messages: Message[];
   tasks: Task[];
   agent_runs: AgentRun[];
+  supervisor: SupervisorStatus;
 };
 
 type AgentForm = {
@@ -162,6 +169,13 @@ function App() {
 
   useEffect(() => {
     refresh().catch((err) => console.error(err));
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      refresh().catch((err) => console.error(err));
+    }, 1500);
+    return () => window.clearInterval(timer);
   }, []);
 
   const channel = useMemo(() => {
@@ -654,7 +668,13 @@ function App() {
         </section>
 
         <section className="runtime-panel">
-          <h3>Runtime Runs</h3>
+          <div className="runtime-title">
+            <h3>Runtime Runs</h3>
+            <span className={`supervisor-chip ${data.supervisor.status}`}>
+              supervisor {data.supervisor.status}
+              {data.supervisor.pid ? ` · ${data.supervisor.pid}` : ""}
+            </span>
+          </div>
           {data.agent_runs.length === 0 && (
             <p className="empty-mini">Start an agent to create the first local run log.</p>
           )}

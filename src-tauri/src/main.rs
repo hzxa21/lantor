@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{env, process::Stdio};
+use std::{
+    env,
+    process::{Command as StdCommand, Stdio},
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -9,10 +13,12 @@ use tauri::{Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::Command,
+    time::sleep,
 };
 use uuid::Uuid;
 
 const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/localslock";
+const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
 
 #[derive(Clone)]
 struct AppState {
@@ -84,6 +90,21 @@ struct AgentRun {
 }
 
 #[derive(Debug, Serialize)]
+struct SupervisorStatus {
+    pid: Option<i32>,
+    status: String,
+    updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug)]
+struct SupervisorCommand {
+    id: Uuid,
+    command_type: String,
+    agent_id: Option<Uuid>,
+    run_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
 struct Bootstrap {
     db_url: String,
     channels: Vec<Channel>,
@@ -91,6 +112,7 @@ struct Bootstrap {
     messages: Vec<Message>,
     tasks: Vec<Task>,
     agent_runs: Vec<AgentRun>,
+    supervisor: SupervisorStatus,
 }
 
 type CommandResult<T> = Result<T, String>;
@@ -205,20 +227,35 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // A desktop restart loses process handles. Keep historical logs, but do not
-    // pretend LocalSlock can still control those processes.
     sqlx::query(
         r#"
-        update agent_runs
-        set status = 'unknown', stopped_at = coalesce(stopped_at, now())
-        where stopped_at is null and status in ('starting', 'running', 'stopping')
+        create table if not exists supervisor_commands (
+            id uuid primary key default gen_random_uuid(),
+            command_type text not null,
+            agent_id uuid references agents(id) on delete cascade,
+            run_id uuid references agent_runs(id) on delete cascade,
+            status text not null default 'pending',
+            error text not null default '',
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
         "#,
     )
     .execute(pool)
     .await?;
-    sqlx::query("update agents set status = 'idle' where status in ('running', 'stopping')")
-        .execute(pool)
-        .await?;
+
+    sqlx::query(
+        r#"
+        create table if not exists supervisor_state (
+            id integer primary key default 1 check (id = 1),
+            pid integer,
+            status text not null default 'offline',
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     Ok(())
 }
@@ -230,6 +267,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let messages = load_messages(&state.pool).await?;
     let tasks = load_tasks(&state.pool).await?;
     let agent_runs = load_agent_runs(&state.pool).await?;
+    let supervisor = load_supervisor_status(&state.pool).await?;
 
     Ok(Bootstrap {
         db_url: state.db_url.clone(),
@@ -238,6 +276,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         messages,
         tasks,
         agent_runs,
+        supervisor,
     })
 }
 
@@ -466,111 +505,40 @@ async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResul
         return Err("agent already has an active run".to_owned());
     }
 
-    let row = sqlx::query(
+    let pending_start: Option<Uuid> = sqlx::query_scalar(
         r#"
-        select handle, runtime, model, launch_command, working_directory
-        from agents
-        where id = $1
+        select id
+        from supervisor_commands
+        where command_type = 'start_agent'
+          and agent_id = $1
+          and status in ('pending', 'running')
+        limit 1
         "#,
     )
     .bind(agent_id)
-    .fetch_one(&state.pool)
+    .fetch_optional(&state.pool)
     .await
     .map_err(to_string)?;
 
-    let command_text = effective_launch_command(
-        row.get("launch_command"),
-        row.get("runtime"),
-        row.get("model"),
-        row.get("handle"),
-    );
-    let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
-
-    let run_id: Uuid = sqlx::query_scalar(
-        r#"
-        insert into agent_runs (agent_id, command, working_directory, status, log)
-        values ($1, $2, $3, 'starting', $4)
-        returning id
-        "#,
-    )
-    .bind(agent_id)
-    .bind(&command_text)
-    .bind(&working_directory)
-    .bind(format!("$ {command_text}\n"))
-    .fetch_one(&state.pool)
-    .await
-    .map_err(to_string)?;
-
-    let mut command = Command::new("/bin/zsh");
-    command.arg("-lc").arg(&command_text);
-    #[cfg(unix)]
-    command.process_group(0);
-    if !working_directory.is_empty() {
-        command.current_dir(&working_directory);
+    if pending_start.is_some() {
+        return Err("agent already has a pending start command".to_owned());
     }
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            let error_log = format!("failed to start process: {err}\n");
-            sqlx::query(
-                r#"
-                update agent_runs
-                set status = 'failed', log = right(log || $2, 20000), stopped_at = now()
-                where id = $1
-                "#,
-            )
-            .bind(run_id)
-            .bind(error_log)
-            .execute(&state.pool)
-            .await
-            .map_err(to_string)?;
-            sqlx::query("update agents set status = 'error' where id = $1")
-                .bind(agent_id)
-                .execute(&state.pool)
-                .await
-                .map_err(to_string)?;
-            return Err(err.to_string());
-        }
-    };
-
-    let pid = child.id().map(|id| id as i32);
-    sqlx::query("update agent_runs set status = 'running', pid = $2 where id = $1")
-        .bind(run_id)
-        .bind(pid)
-        .execute(&state.pool)
-        .await
-        .map_err(to_string)?;
-    sqlx::query("update agents set status = 'running' where id = $1")
+    sqlx::query(
+        r#"
+        insert into supervisor_commands (command_type, agent_id)
+        values ('start_agent', $1)
+        "#,
+    )
+    .bind(agent_id)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+    sqlx::query("update agents set status = 'queued' where id = $1")
         .bind(agent_id)
         .execute(&state.pool)
         .await
         .map_err(to_string)?;
-
-    if let Some(stdout) = child.stdout.take() {
-        tauri::async_runtime::spawn(pipe_run_output(
-            state.pool.clone(),
-            run_id,
-            stdout,
-            "stdout",
-        ));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        tauri::async_runtime::spawn(pipe_run_output(
-            state.pool.clone(),
-            run_id,
-            stderr,
-            "stderr",
-        ));
-    }
-
-    tauri::async_runtime::spawn(wait_for_agent_run(
-        state.pool.clone(),
-        agent_id,
-        run_id,
-        child,
-    ));
 
     Ok(())
 }
@@ -590,11 +558,17 @@ async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<(
     .map_err(to_string)?;
 
     let agent_id: Uuid = row.get("agent_id");
-    let pid: Option<i32> = row.get("pid");
-    let Some(pid) = pid else {
-        return Err("agent run does not have a pid yet".to_owned());
-    };
-
+    sqlx::query(
+        r#"
+        insert into supervisor_commands (command_type, agent_id, run_id)
+        values ('stop_run', $1, $2)
+        "#,
+    )
+    .bind(agent_id)
+    .bind(run_id)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
     sqlx::query("update agent_runs set status = 'stopping' where id = $1")
         .bind(run_id)
         .execute(&state.pool)
@@ -606,23 +580,6 @@ async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<(
         .await
         .map_err(to_string)?;
 
-    let status = Command::new("kill")
-        .arg("-TERM")
-        .arg(format!("-{pid}"))
-        .status()
-        .await
-        .map_err(to_string)?;
-
-    if !status.success() {
-        return Err(format!("failed to terminate process group {pid}: {status}"));
-    }
-
-    append_run_log(
-        &state.pool,
-        run_id,
-        format!("sent SIGTERM to process group {pid}\n"),
-    )
-    .await?;
     Ok(())
 }
 
@@ -902,6 +859,40 @@ async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
         .collect())
 }
 
+async fn load_supervisor_status(pool: &PgPool) -> CommandResult<SupervisorStatus> {
+    let row = sqlx::query(
+        r#"
+        select pid, status, updated_at
+        from supervisor_state
+        where id = 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+
+    let Some(row) = row else {
+        return Ok(SupervisorStatus {
+            pid: None,
+            status: "offline".to_owned(),
+            updated_at: None,
+        });
+    };
+
+    let updated_at: DateTime<Utc> = row.get("updated_at");
+    let status = if Utc::now().signed_duration_since(updated_at).num_seconds() > 10 {
+        "stale".to_owned()
+    } else {
+        row.get("status")
+    };
+
+    Ok(SupervisorStatus {
+        pid: row.get("pid"),
+        status,
+        updated_at: Some(updated_at),
+    })
+}
+
 async fn append_run_log(pool: &PgPool, run_id: Uuid, line: String) -> CommandResult<()> {
     sqlx::query("update agent_runs set log = right(log || $2, 20000) where id = $1")
         .bind(run_id)
@@ -999,6 +990,325 @@ fn effective_launch_command(
         .to_owned()
 }
 
+async fn run_supervisor() -> CommandResult<()> {
+    let database_url = db_url();
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .map_err(to_string)?;
+    migrate(&pool).await.map_err(to_string)?;
+
+    let acquired: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)")
+        .bind(SUPERVISOR_LOCK_ID)
+        .fetch_one(&pool)
+        .await
+        .map_err(to_string)?;
+
+    if !acquired {
+        return Ok(());
+    }
+
+    mark_orphaned_agent_runs(&pool).await?;
+
+    loop {
+        write_supervisor_heartbeat(&pool).await?;
+        if let Some(command) = claim_next_supervisor_command(&pool).await? {
+            let command_id = command.id;
+            let result = process_supervisor_command(&pool, command).await;
+            finish_supervisor_command(&pool, command_id, result.err()).await?;
+        }
+        sleep(Duration::from_millis(800)).await;
+    }
+}
+
+async fn mark_orphaned_agent_runs(pool: &PgPool) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        update agent_runs
+        set status = 'unknown', stopped_at = coalesce(stopped_at, now())
+        where stopped_at is null and status in ('starting', 'running', 'stopping')
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    sqlx::query(
+        "update agents set status = 'idle' where status in ('queued', 'running', 'stopping')",
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
+async fn write_supervisor_heartbeat(pool: &PgPool) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        insert into supervisor_state (id, pid, status, updated_at)
+        values (1, $1, 'running', now())
+        on conflict (id) do update set
+            pid = excluded.pid,
+            status = excluded.status,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(std::process::id() as i32)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
+async fn claim_next_supervisor_command(pool: &PgPool) -> CommandResult<Option<SupervisorCommand>> {
+    let row = sqlx::query(
+        r#"
+        select id, command_type, agent_id, run_id
+        from supervisor_commands
+        where status = 'pending'
+        order by created_at asc
+        limit 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let command = SupervisorCommand {
+        id: row.get("id"),
+        command_type: row.get("command_type"),
+        agent_id: row.get("agent_id"),
+        run_id: row.get("run_id"),
+    };
+
+    sqlx::query(
+        "update supervisor_commands set status = 'running', updated_at = now() where id = $1",
+    )
+    .bind(command.id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(Some(command))
+}
+
+async fn finish_supervisor_command(
+    pool: &PgPool,
+    command_id: Uuid,
+    error: Option<String>,
+) -> CommandResult<()> {
+    let (status, error) = match error {
+        Some(error) => ("failed", error),
+        None => ("done", String::new()),
+    };
+
+    sqlx::query(
+        r#"
+        update supervisor_commands
+        set status = $2, error = $3, updated_at = now()
+        where id = $1
+        "#,
+    )
+    .bind(command_id)
+    .bind(status)
+    .bind(error)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
+async fn process_supervisor_command(
+    pool: &PgPool,
+    command: SupervisorCommand,
+) -> CommandResult<()> {
+    match command.command_type.as_str() {
+        "start_agent" => {
+            let Some(agent_id) = command.agent_id else {
+                return Err("start_agent command missing agent_id".to_owned());
+            };
+            supervisor_start_agent(pool, agent_id).await
+        }
+        "stop_run" => {
+            let Some(run_id) = command.run_id else {
+                return Err("stop_run command missing run_id".to_owned());
+            };
+            supervisor_stop_run(pool, run_id).await
+        }
+        other => Err(format!("unknown supervisor command: {other}")),
+    }
+}
+
+async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<()> {
+    let row = sqlx::query(
+        r#"
+        select handle, runtime, model, launch_command, working_directory
+        from agents
+        where id = $1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    let command_text = effective_launch_command(
+        row.get("launch_command"),
+        row.get("runtime"),
+        row.get("model"),
+        row.get("handle"),
+    );
+    let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
+
+    let run_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_runs (agent_id, command, working_directory, status, log)
+        values ($1, $2, $3, 'starting', $4)
+        returning id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(&command_text)
+    .bind(&working_directory)
+    .bind(format!("$ {command_text}\n"))
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    let mut command = Command::new("/bin/zsh");
+    command.arg("-lc").arg(&command_text);
+    #[cfg(unix)]
+    command.process_group(0);
+    if !working_directory.is_empty() {
+        command.current_dir(&working_directory);
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            let error_log = format!("failed to start process: {err}\n");
+            sqlx::query(
+                r#"
+                update agent_runs
+                set status = 'failed', log = right(log || $2, 20000), stopped_at = now()
+                where id = $1
+                "#,
+            )
+            .bind(run_id)
+            .bind(error_log)
+            .execute(pool)
+            .await
+            .map_err(to_string)?;
+            sqlx::query("update agents set status = 'error' where id = $1")
+                .bind(agent_id)
+                .execute(pool)
+                .await
+                .map_err(to_string)?;
+            return Err(err.to_string());
+        }
+    };
+
+    let pid = child.id().map(|id| id as i32);
+    sqlx::query("update agent_runs set status = 'running', pid = $2 where id = $1")
+        .bind(run_id)
+        .bind(pid)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+    sqlx::query("update agents set status = 'running' where id = $1")
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+
+    if let Some(stdout) = child.stdout.take() {
+        tokio::spawn(pipe_run_output(pool.clone(), run_id, stdout, "stdout"));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(pipe_run_output(pool.clone(), run_id, stderr, "stderr"));
+    }
+
+    tokio::spawn(wait_for_agent_run(pool.clone(), agent_id, run_id, child));
+
+    Ok(())
+}
+
+async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
+    let row = sqlx::query(
+        r#"
+        select agent_id, pid
+        from agent_runs
+        where id = $1 and stopped_at is null
+        "#,
+    )
+    .bind(run_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    let agent_id: Uuid = row.get("agent_id");
+    let pid: Option<i32> = row.get("pid");
+    let Some(pid) = pid else {
+        return Err("agent run does not have a pid yet".to_owned());
+    };
+
+    sqlx::query("update agent_runs set status = 'stopping' where id = $1")
+        .bind(run_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+    sqlx::query("update agents set status = 'stopping' where id = $1")
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+
+    let status = Command::new("kill")
+        .arg("-TERM")
+        .arg(format!("-{pid}"))
+        .status()
+        .await
+        .map_err(to_string)?;
+
+    if !status.success() {
+        return Err(format!("failed to terminate process group {pid}: {status}"));
+    }
+
+    append_run_log(
+        pool,
+        run_id,
+        format!("sent SIGTERM to process group {pid}\n"),
+    )
+    .await?;
+    Ok(())
+}
+
+fn spawn_supervisor_process(database_url: &str) {
+    let Ok(exe) = env::current_exe() else {
+        eprintln!("failed to resolve current executable for LocalSlock supervisor");
+        return;
+    };
+
+    if let Err(err) = StdCommand::new(exe)
+        .arg("--supervisor")
+        .env("LOCAL_SLOCK_DATABASE_URL", database_url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        eprintln!("failed to spawn LocalSlock supervisor: {err}");
+    }
+}
+
 fn normalize_channel_name(name: &str) -> String {
     name.trim()
         .trim_start_matches('#')
@@ -1021,6 +1331,7 @@ pub fn run() {
     .expect("failed to connect LocalSlock Postgres database");
 
     tauri::async_runtime::block_on(migrate(&pool)).expect("failed to initialize LocalSlock schema");
+    spawn_supervisor_process(&database_url);
 
     tauri::Builder::default()
         .manage(AppState {
@@ -1052,5 +1363,11 @@ pub fn run() {
 }
 
 fn main() {
-    run();
+    if env::args().any(|arg| arg == "--supervisor") {
+        if let Err(err) = tauri::async_runtime::block_on(run_supervisor()) {
+            eprintln!("LocalSlock supervisor stopped: {err}");
+        }
+    } else {
+        run();
+    }
 }

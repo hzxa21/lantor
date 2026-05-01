@@ -402,6 +402,10 @@ button {
   color: #8e8e93;
 }
 
+.dot.queued {
+  color: #0a84ff;
+}
+
 .dot.running {
   color: #34c759;
 }
@@ -848,6 +852,34 @@ mark {
 
 .runtime-panel h3 {
   margin: 0;
+}
+
+.runtime-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.supervisor-chip {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.supervisor-chip.running {
+  background: rgba(52, 199, 89, 0.14);
+  color: #167d32;
+}
+
+.supervisor-chip.stale,
+.supervisor-chip.offline {
+  background: rgba(255, 149, 0, 0.15);
+  color: #a05a00;
 }
 
 .run-card {
