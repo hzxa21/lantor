@@ -9,6 +9,7 @@ Local-only Slock-style desktop console for one human and multiple local agents.
 - Clean initialization: the app creates schema only and does not seed demo data.
 - UI operations for channels, messages, thread replies, channel-scoped tasks, and agent profiles.
 - Agent runtime runs through a local `--supervisor` mode with start/stop controls, process status, and persisted run logs in Postgres.
+- Agent activity feed records profile changes, run lifecycle changes, stdout event ingestion, message creation, and task changes as durable Postgres state.
 - Single Apple-style Liquid Glass visual direction.
 - No cloud server, no multi-human permissions, no web deployment.
 
@@ -45,6 +46,18 @@ Supported event types in this slice:
 - `task_claim`: requires `task_number`; defaults to the current agent, or use `assignee_handle` / `unassigned`.
 
 The supervisor injects `LOCAL_SLOCK_AGENT_ID`, `LOCAL_SLOCK_AGENT_HANDLE`, and `LOCAL_SLOCK_RUN_ID` into each agent process.
+
+## Agent Activity Feed
+
+LocalSlock persists agent activity in `agent_activities` instead of deriving it from run logs. The feed is intentionally queryable state: it links activity to an agent and, when available, a run. This gives the UI a stable timeline for:
+
+- profile creation, edits, and deletion;
+- queued starts, spawned runs, stop requests, and final run status;
+- accepted or rejected stdout events;
+- messages and tasks created from stdout events;
+- task status and assignee changes made by agents.
+
+Run logs remain useful for debugging one process. The activity feed is the product-level audit trail that future inbox loops, notifications, and filters should build on.
 
 ## Agent Launch Presets
 

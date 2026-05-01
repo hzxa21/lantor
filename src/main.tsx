@@ -87,6 +87,17 @@ type AgentRun = {
   stopped_at: string | null;
 };
 
+type AgentActivity = {
+  id: string;
+  agent_id: string | null;
+  agent_handle: string;
+  run_id: string | null;
+  kind: string;
+  title: string;
+  detail: string;
+  created_at: string;
+};
+
 type SupervisorStatus = {
   pid: number | null;
   status: string;
@@ -107,6 +118,7 @@ type Bootstrap = {
   messages: Message[];
   tasks: Task[];
   agent_runs: AgentRun[];
+  agent_activities: AgentActivity[];
   supervisor: SupervisorStatus;
   launch_agent: LaunchAgentStatus;
 };
@@ -345,7 +357,19 @@ function App() {
         agentId: item.id,
       }));
 
-    return [...channelHits, ...taskHits, ...messageHits, ...agentHits].slice(0, 9);
+    const activityHits = data.agent_activities
+      .filter((item) => `${item.agent_handle} ${item.kind} ${item.title} ${item.detail}`.toLowerCase().includes(query))
+      .map((item) => ({
+        id: item.id,
+        kind: "activity",
+        title: item.title,
+        detail: `${item.agent_handle || "unknown"} · ${formatTime(item.created_at)}`,
+        channelId: null,
+        threadId: null,
+        agentId: item.agent_id,
+      }));
+
+    return [...channelHits, ...taskHits, ...messageHits, ...agentHits, ...activityHits].slice(0, 9);
   }, [data, searchQuery]);
 
   function taskForMessage(messageId: string) {
@@ -1075,6 +1099,31 @@ function App() {
                 {run.exit_code !== null ? ` · exit ${run.exit_code}` : ""}
               </small>
               {run.log && <pre>{run.log.trim().split("\n").slice(-8).join("\n")}</pre>}
+            </article>
+          ))}
+        </section>
+
+        <section className="activity-panel">
+          <div className="activity-title">
+            <h3>Agent Activity</h3>
+            <span>{data.agent_activities.length}</span>
+          </div>
+          {data.agent_activities.length === 0 && (
+            <p className="empty-mini">Agent activity appears here after profile edits, run lifecycle changes, and stdout events.</p>
+          )}
+          {data.agent_activities.slice(0, 12).map((activity) => (
+            <article key={activity.id} className={`activity-card ${activity.kind}`}>
+              <div className="activity-icon">
+                {activity.agent_handle.slice(0, 1).toUpperCase() || "A"}
+              </div>
+              <div>
+                <div className="activity-meta">
+                  <strong>{activity.title}</strong>
+                  <span>{formatTime(activity.created_at)}</span>
+                </div>
+                <p>{activity.detail || activity.kind}</p>
+                <small>@{activity.agent_handle || "unknown"} · {activity.kind}</small>
+              </div>
             </article>
           ))}
         </section>

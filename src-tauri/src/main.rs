@@ -98,6 +98,18 @@ struct AgentRun {
 }
 
 #[derive(Debug, Serialize)]
+struct AgentActivity {
+    id: Uuid,
+    agent_id: Option<Uuid>,
+    agent_handle: String,
+    run_id: Option<Uuid>,
+    kind: String,
+    title: String,
+    detail: String,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
 struct SupervisorStatus {
     pid: Option<i32>,
     status: String,
@@ -148,6 +160,7 @@ struct Bootstrap {
     messages: Vec<Message>,
     tasks: Vec<Task>,
     agent_runs: Vec<AgentRun>,
+    agent_activities: Vec<AgentActivity>,
     supervisor: SupervisorStatus,
     launch_agent: LaunchAgentStatus,
 }
@@ -272,6 +285,23 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         r#"
+        create table if not exists agent_activities (
+            id uuid primary key default gen_random_uuid(),
+            agent_id uuid references agents(id) on delete set null,
+            agent_handle text not null default '',
+            run_id uuid references agent_runs(id) on delete set null,
+            kind text not null,
+            title text not null,
+            detail text not null default '',
+            created_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         create table if not exists supervisor_commands (
             id uuid primary key default gen_random_uuid(),
             command_type text not null,
@@ -321,6 +351,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let messages = load_messages(&state.pool).await?;
     let tasks = load_tasks(&state.pool).await?;
     let agent_runs = load_agent_runs(&state.pool).await?;
+    let agent_activities = load_agent_activities(&state.pool).await?;
     let supervisor = load_supervisor_status(&state.pool).await?;
     let launch_agent = load_launch_agent_status()?;
 
@@ -331,6 +362,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         messages,
         tasks,
         agent_runs,
+        agent_activities,
         supervisor,
         launch_agent,
     })
@@ -423,7 +455,7 @@ async fn create_agent(
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_else(|| "A".to_owned());
 
-    sqlx::query(
+    let agent_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agents (
             handle, display_name, role, status, runtime, model, avatar, description,
@@ -437,6 +469,7 @@ async fn create_agent(
             avatar = excluded.avatar,
             launch_command = excluded.launch_command,
             working_directory = excluded.working_directory
+        returning id
         "#,
     )
     .bind(normalized_handle)
@@ -446,9 +479,18 @@ async fn create_agent(
     .bind(avatar)
     .bind(launch_command.trim())
     .bind(working_directory.trim())
-    .execute(&state.pool)
+    .fetch_one(&state.pool)
     .await
     .map_err(to_string)?;
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "profile",
+        "Agent profile saved",
+        format!("runtime={} model={}", runtime.trim(), model.trim()),
+    )
+    .await?;
 
     Ok(())
 }
@@ -506,6 +548,15 @@ async fn update_agent(
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "profile",
+        "Agent profile updated",
+        format!("runtime={} model={}", runtime.trim(), model.trim()),
+    )
+    .await?;
 
     Ok(())
 }
@@ -530,6 +581,16 @@ async fn delete_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResu
     if active_run.is_some() {
         return Err("stop the agent before deleting it".to_owned());
     }
+
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "profile",
+        "Agent profile deleted",
+        "",
+    )
+    .await?;
 
     sqlx::query("delete from agents where id = $1")
         .bind(agent_id)
@@ -595,6 +656,15 @@ async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResul
         .execute(&state.pool)
         .await
         .map_err(to_string)?;
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "run",
+        "Start queued",
+        "Waiting for supervisor to launch the agent",
+    )
+    .await?;
 
     Ok(())
 }
@@ -635,6 +705,15 @@ async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<(
         .execute(&state.pool)
         .await
         .map_err(to_string)?;
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        Some(run_id),
+        "run",
+        "Stop requested",
+        "Stop command queued for supervisor",
+    )
+    .await?;
 
     Ok(())
 }
@@ -1062,6 +1141,34 @@ async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
         .collect())
 }
 
+async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity>> {
+    let rows = sqlx::query(
+        r#"
+        select id, agent_id, agent_handle, run_id, kind, title, detail, created_at
+        from agent_activities
+        order by created_at desc
+        limit 80
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| AgentActivity {
+            id: row.get("id"),
+            agent_id: row.get("agent_id"),
+            agent_handle: row.get("agent_handle"),
+            run_id: row.get("run_id"),
+            kind: row.get("kind"),
+            title: row.get("title"),
+            detail: row.get("detail"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
+}
+
 async fn load_supervisor_status(pool: &PgPool) -> CommandResult<SupervisorStatus> {
     let row = sqlx::query(
         r#"
@@ -1118,6 +1225,43 @@ fn load_launch_agent_status() -> CommandResult<LaunchAgentStatus> {
     })
 }
 
+async fn record_agent_activity(
+    pool: &PgPool,
+    agent_id: Option<Uuid>,
+    run_id: Option<Uuid>,
+    kind: &str,
+    title: impl AsRef<str>,
+    detail: impl AsRef<str>,
+) -> CommandResult<()> {
+    let agent_handle = match agent_id {
+        Some(agent_id) => sqlx::query_scalar("select handle from agents where id = $1")
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string)?
+            .unwrap_or_else(|| "unknown".to_owned()),
+        None => String::new(),
+    };
+
+    sqlx::query(
+        r#"
+        insert into agent_activities (agent_id, agent_handle, run_id, kind, title, detail)
+        values ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(agent_id)
+    .bind(agent_handle)
+    .bind(run_id)
+    .bind(kind)
+    .bind(title.as_ref())
+    .bind(detail.as_ref())
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
 async fn append_run_log(pool: &PgPool, run_id: Uuid, line: String) -> CommandResult<()> {
     sqlx::query("update agent_runs set log = right(log || $2, 20000) where id = $1")
         .bind(run_id)
@@ -1149,12 +1293,30 @@ async fn pipe_run_output<R>(
                         Ok(Some(note)) => {
                             let _ =
                                 append_run_log(&pool, run_id, format!("[event] {note}\n")).await;
+                            let _ = record_agent_activity(
+                                &pool,
+                                Some(agent_id),
+                                Some(run_id),
+                                "event",
+                                "Stdout event accepted",
+                                note,
+                            )
+                            .await;
                         }
                         Ok(None) => {}
                         Err(err) => {
                             let _ =
                                 append_run_log(&pool, run_id, format!("[event] rejected: {err}\n"))
                                     .await;
+                            let _ = record_agent_activity(
+                                &pool,
+                                Some(agent_id),
+                                Some(run_id),
+                                "event_error",
+                                "Stdout event rejected",
+                                err.to_string(),
+                            )
+                            .await;
                         }
                     }
                 }
@@ -1204,6 +1366,23 @@ async fn handle_agent_event(
                 as_task.unwrap_or(false),
             )
             .await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                if as_task.unwrap_or(false) {
+                    "task"
+                } else {
+                    "message"
+                },
+                if as_task.unwrap_or(false) {
+                    "Task created from stdout event"
+                } else {
+                    "Message posted from stdout event"
+                },
+                format!("message_id={msg_id}"),
+            )
+            .await?;
             Ok(format!("message accepted {msg_id}"))
         }
         AgentEvent::TaskStatus {
@@ -1230,6 +1409,15 @@ async fn handle_agent_event(
             if affected == 0 {
                 return Err(format!("task #{task_number} does not exist"));
             }
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "task",
+                format!("Task #{task_number} status changed"),
+                format!("status={status}"),
+            )
+            .await?;
             Ok(format!("task #{task_number} status set to {status}"))
         }
         AgentEvent::TaskClaim {
@@ -1259,6 +1447,17 @@ async fn handle_agent_event(
             if affected == 0 {
                 return Err(format!("task #{task_number} does not exist"));
             }
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "task",
+                format!("Task #{task_number} assignee changed"),
+                assignee_handle
+                    .as_deref()
+                    .unwrap_or("claimed by current agent"),
+            )
+            .await?;
             Ok(format!("task #{task_number} assignee updated"))
         }
     }
@@ -1423,7 +1622,7 @@ async fn wait_for_agent_run(
     .bind(run_id)
     .bind(run_status)
     .bind(exit_code)
-    .bind(log_line)
+    .bind(&log_line)
     .execute(&pool)
     .await;
 
@@ -1432,6 +1631,15 @@ async fn wait_for_agent_run(
         .bind(agent_status)
         .execute(&pool)
         .await;
+    let _ = record_agent_activity(
+        &pool,
+        Some(agent_id),
+        Some(run_id),
+        "run",
+        format!("Run {run_status}"),
+        log_line.trim(),
+    )
+    .await;
 }
 
 fn effective_launch_command(
@@ -1638,6 +1846,15 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
     .fetch_one(pool)
     .await
     .map_err(to_string)?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(run_id),
+        "run",
+        "Run created",
+        "Supervisor is preparing the launch command",
+    )
+    .await?;
 
     let mut command = Command::new("/bin/zsh");
     command.arg("-lc").arg(&command_text);
@@ -1672,6 +1889,15 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
                 .execute(pool)
                 .await
                 .map_err(to_string)?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "run_error",
+                "Run failed to start",
+                err.to_string(),
+            )
+            .await?;
             return Err(err.to_string());
         }
     };
@@ -1688,6 +1914,16 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
         .execute(pool)
         .await
         .map_err(to_string)?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(run_id),
+        "run",
+        "Run started",
+        pid.map(|pid| format!("pid={pid}"))
+            .unwrap_or_else(|| "pid unavailable".to_owned()),
+    )
+    .await?;
 
     if let Some(stdout) = child.stdout.take() {
         tokio::spawn(pipe_run_output(
@@ -1760,6 +1996,15 @@ async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
         pool,
         run_id,
         format!("sent SIGTERM to process group {pid}\n"),
+    )
+    .await?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(run_id),
+        "run",
+        "Stop signal sent",
+        format!("process_group={pid}"),
     )
     .await?;
     Ok(())
