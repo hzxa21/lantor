@@ -53,6 +53,15 @@ struct Channel {
 }
 
 #[derive(Debug, Serialize)]
+struct ChannelMember {
+    channel_id: Uuid,
+    agent_id: Uuid,
+    agent_handle: String,
+    agent_display_name: String,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
 struct Message {
     id: Uuid,
     channel_id: Uuid,
@@ -177,6 +186,7 @@ enum AgentEvent {
 struct Bootstrap {
     db_url: String,
     channels: Vec<Channel>,
+    channel_members: Vec<ChannelMember>,
     agents: Vec<Agent>,
     messages: Vec<Message>,
     tasks: Vec<Task>,
@@ -397,12 +407,26 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        create table if not exists channel_members (
+            channel_id uuid not null references channels(id) on delete cascade,
+            agent_id uuid not null references agents(id) on delete cascade,
+            created_at timestamptz not null default now(),
+            primary key (channel_id, agent_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 
 #[tauri::command]
 async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let channels = load_channels(&state.pool).await?;
+    let channel_members = load_channel_members(&state.pool).await?;
     let agents = load_agents(&state.pool).await?;
     let messages = load_messages(&state.pool).await?;
     let tasks = load_tasks(&state.pool).await?;
@@ -415,6 +439,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     Ok(Bootstrap {
         db_url: state.db_url.clone(),
         channels,
+        channel_members,
         agents,
         messages,
         tasks,
@@ -473,6 +498,72 @@ async fn update_channel(
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_channel_agent_membership(
+    channel_id: Uuid,
+    agent_id: Uuid,
+    member: bool,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let channel_name: Option<String> =
+        sqlx::query_scalar("select name from channels where id = $1")
+            .bind(channel_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(to_string)?;
+    let Some(channel_name) = channel_name else {
+        return Err("channel does not exist".to_owned());
+    };
+
+    let agent_handle: Option<String> =
+        sqlx::query_scalar("select handle from agents where id = $1")
+            .bind(agent_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(to_string)?;
+    if agent_handle.is_none() {
+        return Err("agent does not exist".to_owned());
+    }
+
+    if member {
+        sqlx::query(
+            r#"
+            insert into channel_members (channel_id, agent_id)
+            values ($1, $2)
+            on conflict (channel_id, agent_id) do nothing
+            "#,
+        )
+        .bind(channel_id)
+        .bind(agent_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+    } else {
+        sqlx::query("delete from channel_members where channel_id = $1 and agent_id = $2")
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&state.pool)
+            .await
+            .map_err(to_string)?;
+    }
+
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "membership",
+        if member {
+            "Agent joined channel"
+        } else {
+            "Agent left channel"
+        },
+        format!("#{channel_name}"),
+    )
+    .await?;
 
     Ok(())
 }
@@ -1418,6 +1509,37 @@ async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
             name: row.get("name"),
             description: row.get("description"),
             unread_count: row.get("unread_count"),
+        })
+        .collect())
+}
+
+async fn load_channel_members(pool: &PgPool) -> CommandResult<Vec<ChannelMember>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            m.channel_id,
+            m.agent_id,
+            a.handle as agent_handle,
+            a.display_name as agent_display_name,
+            m.created_at
+        from channel_members m
+        join agents a on a.id = m.agent_id
+        join channels c on c.id = m.channel_id
+        order by c.name, a.handle
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| ChannelMember {
+            channel_id: row.get("channel_id"),
+            agent_id: row.get("agent_id"),
+            agent_handle: row.get("agent_handle"),
+            agent_display_name: row.get("agent_display_name"),
+            created_at: row.get("created_at"),
         })
         .collect())
 }
@@ -2891,6 +3013,7 @@ pub fn run() {
             mark_channel_read,
             retry_agent_work,
             send_message,
+            set_channel_agent_membership,
             start_agent,
             stop_agent,
             uninstall_supervisor_service,

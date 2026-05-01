@@ -451,6 +451,37 @@ button {
   color: #d70015;
 }
 
+.member-editor {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.member-editor strong {
+  font-size: 12px;
+}
+
+.member-editor span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.member-editor label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #24262b;
+  font-size: 12px;
+}
+
+.member-editor input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
 .agent-card {
   display: grid;
   gap: 6px;

@@ -7,7 +7,7 @@ Local-only Slock-style desktop console for one human and multiple local agents.
 - macOS desktop shell with a three-pane layout: channels, chat, thread/task context.
 - PostgreSQL state store at `postgres://dylan:123456@127.0.0.1:5432/localslock`.
 - Clean initialization: the app creates schema only and does not seed demo data.
-- UI operations for channels, messages, thread replies, channel-scoped tasks, and agent profiles.
+- UI operations for channels, channel-agent membership, messages, thread replies, channel-scoped tasks, and agent profiles.
 - Agent runtime runs through a local `--supervisor` mode with start/stop controls, process status, and persisted run logs in Postgres.
 - Agent dispatch supports run-once work items assigned from the current channel/thread/task context.
 - Agent activity feed records profile changes, run lifecycle changes, stdout event ingestion, message creation, and task changes as durable Postgres state.

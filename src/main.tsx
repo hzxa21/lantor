@@ -45,6 +45,14 @@ type Channel = {
   unread_count: number;
 };
 
+type ChannelMember = {
+  channel_id: string;
+  agent_id: string;
+  agent_handle: string;
+  agent_display_name: string;
+  created_at: string;
+};
+
 type Message = {
   id: string;
   channel_id: string;
@@ -133,6 +141,7 @@ type LaunchAgentStatus = {
 type Bootstrap = {
   db_url: string;
   channels: Channel[];
+  channel_members: ChannelMember[];
   agents: Agent[];
   messages: Message[];
   tasks: Task[];
@@ -327,6 +336,11 @@ function App() {
     return data.tasks.filter((task) => task.channel_id === channel.id);
   }, [data, channel]);
 
+  const channelMemberIds = useMemo(() => {
+    if (!data || !channel) return new Set<string>();
+    return new Set(data.channel_members.filter((member) => member.channel_id === channel.id).map((member) => member.agent_id));
+  }, [data, channel]);
+
   const activeTask = useMemo(() => {
     if (!data || !activeRoot) return null;
     return data.tasks.find((task) => task.message_id === activeRoot.id) ?? null;
@@ -465,6 +479,15 @@ function App() {
     if (!channel) return;
     if (!window.confirm(`Delete #${channel.name} and its messages/tasks?`)) return;
     await mutate("delete_channel", { channelId: channel.id });
+  }
+
+  async function setChannelMember(agentId: string, member: boolean) {
+    if (!channel) return;
+    await mutate("set_channel_agent_membership", {
+      channelId: channel.id,
+      agentId,
+      member,
+    });
   }
 
   async function createAgent() {
@@ -804,6 +827,20 @@ function App() {
               <div className="inline-actions">
                 <button onClick={saveChannel}><Save size={15} /> Save</button>
                 <button className="danger" onClick={deleteChannel}><Trash2 size={15} /> Delete</button>
+              </div>
+              <div className="member-editor">
+                <strong>Agent members</strong>
+                {data.agents.length === 0 && <span>No agents yet.</span>}
+                {data.agents.map((agent) => (
+                  <label key={agent.id}>
+                    <input
+                      type="checkbox"
+                      checked={channelMemberIds.has(agent.id)}
+                      onChange={(event) => setChannelMember(agent.id, event.target.checked)}
+                    />
+                    @{agent.handle}
+                  </label>
+                ))}
               </div>
             </div>
           )}
