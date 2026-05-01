@@ -361,6 +361,10 @@ function App() {
     });
   }, [data, workAgentFilter, workStatusFilter]);
 
+  const queuedWorkItemCount = useMemo(() => {
+    return data?.agent_work_items.filter((item) => item.status === "queued").length ?? 0;
+  }, [data]);
+
   const followedThreads = useMemo(() => {
     return rootMessages.filter((message) => message.thread_followed).length;
   }, [rootMessages]);
@@ -1212,7 +1216,7 @@ function App() {
         <section className="dispatch-panel">
           <div className="dispatch-title">
             <h3>Agent Dispatch</h3>
-            <span>run-once</span>
+            <span>{queuedWorkItemCount} queued</span>
           </div>
           <select
             value={dispatchAgentId}

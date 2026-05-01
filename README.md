@@ -57,6 +57,14 @@ Launch presets pass both the base LocalSlock protocol prompt and `LOCAL_SLOCK_WO
 
 Human messages can also create work items by mentioning an existing agent handle such as `@Hancock`. Mentions always create queued work items; the supervisor starts one work item per agent at a time and automatically schedules the next queued item after the previous run completes.
 
+Backlog behavior is intentionally conservative:
+
+- only one active run is allowed per agent;
+- extra mentions, retries, or manual dispatches remain `queued`;
+- the supervisor schedules the oldest queued work item for each idle agent;
+- cancellation marks queued work items as `cancelled` or sends a stop command for running work;
+- retry creates a new queued work item instead of mutating the historical record.
+
 ## Agent Activity Feed
 
 LocalSlock persists agent activity in `agent_activities` instead of deriving it from run logs. The feed is intentionally queryable state: it links activity to an agent and, when available, a run. This gives the UI a stable timeline for:
