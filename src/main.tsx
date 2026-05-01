@@ -177,7 +177,7 @@ function App() {
     if (!data || !selectedAgent) return [];
     return data.agent_activities
       .filter((activity) => activity.agent_id === selectedAgent.id || activity.agent_handle === selectedAgent.handle)
-      .slice(0, 24);
+      .slice(0, 80);
   }, [data, selectedAgent]);
 
   const selectedAgentLiveActivity = useMemo(() => {
@@ -912,19 +912,29 @@ function App() {
                 <code>{selectedAgent.description || "No notes"}</code>
               </div>
             </section>
-            <section className="detail-section">
-              <h4>Live activity</h4>
+            <section className="detail-section live-activity-section">
+              <div className="detail-section-head">
+                <h4>Live activity</h4>
+                {selectedAgentActivities.length > 0 && <span>Latest {selectedAgentActivities.length}</span>}
+              </div>
               {selectedAgentActivities.length === 0 && <p className="empty-mini">No activity yet.</p>}
-              {selectedAgentActivities.map((activity) => (
-                <article key={activity.id} className={`detail-activity ${activity.kind}`}>
-                  <div className="detail-activity-head">
-                    <strong>{activity.title}</strong>
-                    <span className={`phase-badge ${activity.kind}`}>{phaseForActivity(activity.kind)}</span>
-                  </div>
-                  <span>{formatTime(activity.created_at)} · {activity.kind}</span>
-                  <p>{activity.detail}</p>
-                </article>
-              ))}
+              {selectedAgentActivities.length > 0 && (
+                <div className="activity-timeline" role="log" aria-label={`${selectedAgent.handle} activity`}>
+                  {selectedAgentActivities.map((activity) => (
+                    <article key={activity.id} className={`activity-timeline-row ${activity.kind}`}>
+                      <time>{formatTime(activity.created_at)}</time>
+                      <span className={`activity-dot ${activity.kind}`} aria-hidden="true" />
+                      <div className="activity-timeline-body">
+                        <div className="activity-timeline-title">
+                          <strong>{activity.title}</strong>
+                          <span>{phaseForActivity(activity.kind)}</span>
+                        </div>
+                        <p title={activity.detail}>{activity.detail}</p>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
             </section>
             <section className="detail-section">
               <h4>Work items</h4>

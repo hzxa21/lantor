@@ -2238,7 +2238,149 @@ mark,
   gap: 8px;
 }
 
-.detail-activity,
+.detail-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-section-head > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.live-activity-section {
+  min-height: 0;
+}
+
+.activity-timeline {
+  display: grid;
+  max-height: min(43vh, 520px);
+  min-height: 220px;
+  overflow-y: auto;
+  padding: 6px 4px 6px 0;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.activity-timeline-row {
+  display: grid;
+  grid-template-columns: 92px 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-height: 56px;
+  padding: 7px 8px 7px 0;
+}
+
+.activity-timeline-row time {
+  padding-top: 2px;
+  color: #8e8e93;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.activity-dot {
+  position: relative;
+  display: inline-grid;
+  width: 13px;
+  height: 13px;
+  margin-top: 3px;
+  border: 2px solid #1f2937;
+  border-radius: 999px;
+  background: #ffd43b;
+  box-shadow: 0 0 0 3px rgba(255, 212, 59, 0.14);
+}
+
+.activity-dot::after {
+  position: absolute;
+  top: 13px;
+  left: 50%;
+  width: 1px;
+  height: calc(100% + 38px);
+  background: rgba(142, 142, 147, 0.24);
+  content: "";
+  transform: translateX(-50%);
+}
+
+.activity-timeline-row:last-child .activity-dot::after {
+  display: none;
+}
+
+.activity-dot.thinking {
+  background: #64d2ff;
+  box-shadow: 0 0 0 3px rgba(100, 210, 255, 0.14);
+}
+
+.activity-dot.acting,
+.activity-dot.event,
+.activity-dot.message,
+.activity-dot.task {
+  background: #32d74b;
+  box-shadow: 0 0 0 3px rgba(50, 215, 75, 0.14);
+}
+
+.activity-dot.tools {
+  background: #ffd43b;
+  box-shadow: 0 0 0 3px rgba(255, 212, 59, 0.14);
+}
+
+.activity-dot.error,
+.activity-dot.event_error,
+.activity-dot.run_error {
+  background: #ff453a;
+  box-shadow: 0 0 0 3px rgba(255, 69, 58, 0.14);
+}
+
+.activity-timeline-body {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.activity-timeline-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.activity-timeline-title strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.activity-timeline-title span {
+  color: #8e8e93;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.activity-timeline-body p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: #7b7b81;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.activity-timeline-row.error .activity-timeline-body p,
+.activity-timeline-row.event_error .activity-timeline-body p,
+.activity-timeline-row.run_error .activity-timeline-body p {
+  color: #c91810;
+}
+
 .detail-work {
   display: grid;
   gap: 4px;
@@ -2246,52 +2388,12 @@ mark,
   border: 1px solid var(--line);
   border-radius: 13px;
   background: #fff;
-}
-
-.detail-activity.thinking {
-  border-color: rgba(90, 200, 250, 0.22);
-}
-
-.detail-activity.acting,
-.detail-activity.event,
-.detail-activity.message,
-.detail-activity.task {
-  border-color: rgba(52, 199, 89, 0.22);
-}
-
-.detail-activity.tools {
-  border-color: rgba(255, 159, 10, 0.26);
-}
-
-.detail-activity.error,
-.detail-activity.event_error,
-.detail-activity.run_error {
-  border-color: rgba(255, 69, 58, 0.28);
-  background: rgba(255, 242, 241, 0.72);
-}
-
-.detail-activity-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.detail-work {
   cursor: pointer;
 }
 
-.detail-activity span,
 .detail-work span {
   color: var(--muted);
   font-size: 12px;
-}
-
-.detail-activity p {
-  margin: 0;
-  color: #3a3d43;
-  font-size: 12px;
-  line-height: 1.45;
 }
 
 /* Slack-like conversation pass: keep the Liquid Class shell, make chat read as rows. */
