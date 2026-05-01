@@ -530,6 +530,7 @@ function App() {
         activeRoot={activeRoot}
         rootMessages={rootMessages}
         visibleTasks={visibleTasks}
+        workItems={data.agent_work_items}
         draft={draft}
         taskDraft={taskDraft}
         taskTitleDrafts={taskTitleDrafts}
@@ -554,6 +555,7 @@ function App() {
         <ThreadPanel
           data={data}
           channel={channel}
+          agents={data.agents}
           activeRoot={activeRoot}
           activeTask={activeTask}
           replies={replies}

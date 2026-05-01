@@ -1,10 +1,19 @@
 import { Bot, MessageSquare, Reply, Sparkles, Trash2, X } from "lucide-react";
-import { AgentWorkItem, Bootstrap, Channel, Message, TASK_STATUSES, Task } from "../types";
-import { firstLines, formatTime } from "../ui-utils";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  filterMentionAgents,
+  getMentionState,
+  insertAgentMention,
+  mentionedAgentsForBody,
+  type MentionState,
+} from "../mentions";
+import { Agent, AgentWorkItem, Bootstrap, Channel, Message, TASK_STATUSES, Task } from "../types";
+import { formatTime } from "../ui-utils";
 
 type ThreadPanelProps = {
   data: Bootstrap;
   channel: Channel | null;
+  agents: Agent[];
   activeRoot: Message | null;
   activeTask: Task | null;
   replies: Message[];
@@ -34,6 +43,7 @@ type ThreadPanelProps = {
 export function ThreadPanel({
   data,
   channel,
+  agents,
   activeRoot,
   activeTask,
   replies,
@@ -59,6 +69,82 @@ export function ThreadPanel({
   setReplyDraft,
   sendReply,
 }: ThreadPanelProps) {
+  const [mentionState, setMentionState] = useState<MentionState | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const mentionCandidates = useMemo(() => {
+    return mentionState ? filterMentionAgents(agents, mentionState.query) : [];
+  }, [agents, mentionState]);
+  const threadWorkItems = useMemo(() => {
+    if (!activeRoot) return [];
+    return data.agent_work_items.filter((item) => item.thread_root_id === activeRoot.id);
+  }, [data.agent_work_items, activeRoot]);
+
+  function refreshMentionState(text: string, cursor: number) {
+    setMentionState(getMentionState(text, cursor));
+    setMentionIndex(0);
+  }
+
+  function chooseMention(agent: Agent) {
+    if (!mentionState) return;
+    const { nextText, nextCursor } = insertAgentMention(replyDraft, mentionState, agent.handle);
+    setReplyDraft(nextText);
+    setMentionState(null);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+
+  function openMentionPicker() {
+    const textarea = textareaRef.current;
+    const cursor = textarea?.selectionStart ?? replyDraft.length;
+    const prefix = replyDraft.slice(0, cursor);
+    const suffix = replyDraft.slice(cursor);
+    const separator = prefix.length > 0 && !/\s$/.test(prefix) ? " " : "";
+    const nextText = `${prefix}${separator}@${suffix}`;
+    const nextCursor = prefix.length + separator.length + 1;
+    setReplyDraft(nextText);
+    setMentionState({ query: "", start: nextCursor - 1, end: nextCursor });
+    setMentionIndex(0);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+
+  function handleReplyKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (mentionState && mentionCandidates.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setMentionIndex((current) => (current + 1) % mentionCandidates.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setMentionIndex((current) => (current - 1 + mentionCandidates.length) % mentionCandidates.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        chooseMention(mentionCandidates[mentionIndex] ?? mentionCandidates[0]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMentionState(null);
+        return;
+      }
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (activeRoot && replyDraft.trim()) {
+        sendReply();
+        setMentionState(null);
+      }
+    }
+  }
+
   return (
     <aside className="thread">
       <header>
@@ -82,6 +168,13 @@ export function ThreadPanel({
               <time>{formatTime(activeRoot.created_at)}</time>
             </div>
             <p>{activeRoot.body}</p>
+            {threadWorkItems.length > 0 && (
+              <div className="agent-mention-line">
+                {threadWorkItems.map((item) => (
+                  <strong key={item.id}>@{item.agent_handle} {item.status}</strong>
+                ))}
+              </div>
+            )}
           </article>
         )}
 
@@ -130,32 +223,63 @@ export function ThreadPanel({
               <p>Select a root message after you create one.</p>
             </div>
           )}
-          {replies.map((reply) => (
-            <article key={reply.id}>
-              <div className="avatar tiny">{reply.sender_name.slice(0, 1)}</div>
-              <div>
-                <div className="meta">
-                  <strong>{reply.sender_name}</strong>
-                  <time>{formatTime(reply.created_at)}</time>
+          {replies.map((reply) => {
+            const mentionedAgents = mentionedAgentsForBody(reply.body, agents);
+            return (
+              <article key={reply.id}>
+                <div className="avatar tiny">{reply.sender_name.slice(0, 1)}</div>
+                <div>
+                  <div className="meta">
+                    <strong>{reply.sender_name}</strong>
+                    <time>{formatTime(reply.created_at)}</time>
+                  </div>
+                  <p>{reply.body}</p>
+                  {mentionedAgents.length > 0 && (
+                    <div className="agent-mention-line">
+                      {mentionedAgents.map((agent) => (
+                        <span key={agent.id}>@{agent.handle}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <p>{reply.body}</p>
-              </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </section>
 
         <section className="reply-composer">
+          <div className="composer-label">
+            <button type="button" disabled={!activeRoot || agents.length === 0} onClick={openMentionPicker}>Add Agent</button>
+            <span>{agents.length === 0 ? "Add an agent before assigning work." : "Mention an agent to assign work in this thread."}</span>
+          </div>
+          {mentionState && mentionCandidates.length > 0 && (
+            <div className="mention-picker">
+              {mentionCandidates.map((agent, index) => (
+                <button
+                  key={agent.id}
+                  className={index === mentionIndex ? "active" : ""}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    chooseMention(agent);
+                  }}
+                >
+                  <span>@{agent.handle}</span>
+                  <small>{agent.display_name} · {agent.runtime} · {agent.status}</small>
+                </button>
+              ))}
+            </div>
+          )}
           <textarea
+            ref={textareaRef}
             value={replyDraft}
-            onChange={(event) => setReplyDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                if (activeRoot && replyDraft.trim()) sendReply();
-              }
+            onChange={(event) => {
+              setReplyDraft(event.target.value);
+              refreshMentionState(event.target.value, event.target.selectionStart);
             }}
+            onSelect={(event) => refreshMentionState(replyDraft, event.currentTarget.selectionStart)}
+            onKeyDown={handleReplyKeyDown}
             disabled={!activeRoot}
-            placeholder={activeRoot ? "Reply in thread — Enter to send" : "Select a thread to reply"}
+            placeholder={activeRoot ? "Reply in thread; type @ or Add Agent to assign work" : "Select a thread to reply"}
           />
           <button disabled={!activeRoot || !replyDraft.trim()} onClick={sendReply}>
             Reply <Reply size={15} />

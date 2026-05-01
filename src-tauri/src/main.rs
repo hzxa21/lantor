@@ -1244,6 +1244,7 @@ async fn queue_mentions_as_work_items(
     pool: &PgPool,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
+    message_id: Uuid,
     task_id: Option<Uuid>,
     body: &str,
 ) -> CommandResult<()> {
@@ -1274,9 +1275,15 @@ async fn queue_mentions_as_work_items(
             continue;
         };
 
-        let context = format!(
-            "Channel: #{channel_name}\n\nMentioned message:\n{body}\n\nReply with LOCAL_SLOCK_EVENT lines when useful."
-        );
+        let context = build_mention_work_context(
+            pool,
+            channel_id,
+            &channel_name,
+            thread_root_id,
+            message_id,
+            body,
+        )
+        .await?;
         let work_item_id: Uuid = sqlx::query_scalar(
             r#"
             insert into agent_work_items (
@@ -1312,6 +1319,69 @@ async fn queue_mentions_as_work_items(
     }
 
     Ok(())
+}
+
+async fn build_mention_work_context(
+    pool: &PgPool,
+    channel_id: Uuid,
+    channel_name: &str,
+    thread_root_id: Option<Uuid>,
+    message_id: Uuid,
+    body: &str,
+) -> CommandResult<String> {
+    let mut lines = vec![
+        format!("Channel: #{channel_name}"),
+        format!("Mentioned message id: {message_id}"),
+    ];
+    if let Some(thread_root_id) = thread_root_id {
+        lines.push(format!("Thread root id: {thread_root_id}"));
+    }
+    lines.push("Mentioned message from Dylan:".to_owned());
+    lines.push(body.trim().to_owned());
+
+    if let Some(thread_root_id) = thread_root_id {
+        let rows = sqlx::query(
+            r#"
+            select sender_name, sender_role, body, created_at
+            from messages
+            where id = $1 or thread_root_id = $1
+            order by created_at desc
+            limit 12
+            "#,
+        )
+        .bind(thread_root_id)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?;
+
+        if !rows.is_empty() {
+            lines.push("Recent thread context, oldest first:".to_owned());
+            for row in rows.into_iter().rev() {
+                let sender_name: String = row.get("sender_name");
+                let sender_role: String = row.get("sender_role");
+                let created_at: DateTime<Utc> = row.get("created_at");
+                let body: String = row.get("body");
+                lines.push(format!(
+                    "- {sender_name} ({sender_role}) at {}: {}",
+                    created_at.to_rfc3339(),
+                    body.replace('\n', "\n  ")
+                ));
+            }
+        }
+    }
+
+    if let Some(thread_root_id) = thread_root_id {
+        lines.push(format!(
+            "Reply in the same thread with: LOCAL_SLOCK_EVENT {{\"type\":\"message\",\"channel_id\":\"{channel_id}\",\"thread_root_id\":\"{thread_root_id}\",\"body\":\"...\"}}"
+        ));
+    } else {
+        lines.push(format!(
+            "Reply in the channel with: LOCAL_SLOCK_EVENT {{\"type\":\"message\",\"channel_id\":\"{channel_id}\",\"body\":\"...\"}}"
+        ));
+    }
+    lines.push("Use normal stdout for private logs; only LOCAL_SLOCK_EVENT creates visible chat messages.".to_owned());
+
+    Ok(lines.join("\n\n"))
 }
 
 #[tauri::command]
@@ -1463,6 +1533,7 @@ async fn send_message(
         &state.pool,
         channel_id,
         thread_root_id.or(Some(msg_id)),
+        msg_id,
         task_id,
         body.trim(),
     )

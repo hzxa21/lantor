@@ -7,8 +7,15 @@ import {
   Plus,
   Send,
 } from "lucide-react";
-import { useState, type KeyboardEvent } from "react";
-import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  filterMentionAgents,
+  getMentionState,
+  insertAgentMention,
+  mentionedAgentsForBody,
+  type MentionState,
+} from "../mentions";
+import { Agent, AgentWorkItem, Channel, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 
 type ConversationProps = {
@@ -18,6 +25,7 @@ type ConversationProps = {
   activeRoot: Message | null;
   rootMessages: Message[];
   visibleTasks: Task[];
+  workItems: AgentWorkItem[];
   draft: string;
   taskDraft: string;
   taskTitleDrafts: Record<string, string>;
@@ -45,6 +53,7 @@ export function Conversation({
   activeRoot,
   rootMessages,
   visibleTasks,
+  workItems,
   draft,
   taskDraft,
   taskTitleDrafts,
@@ -65,12 +74,74 @@ export function Conversation({
   sendRootMessage,
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
+  const [mentionState, setMentionState] = useState<MentionState | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const mentionCandidates = useMemo(() => {
+    return mentionState ? filterMentionAgents(agents, mentionState.query) : [];
+  }, [agents, mentionState]);
+
+  function refreshMentionState(text: string, cursor: number) {
+    setMentionState(getMentionState(text, cursor));
+    setMentionIndex(0);
+  }
+
+  function chooseMention(agent: Agent) {
+    if (!mentionState) return;
+    const { nextText, nextCursor } = insertAgentMention(draft, mentionState, agent.handle);
+    setDraft(nextText);
+    setMentionState(null);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+
+  function openMentionPicker() {
+    const textarea = textareaRef.current;
+    const cursor = textarea?.selectionStart ?? draft.length;
+    const prefix = draft.slice(0, cursor);
+    const suffix = draft.slice(cursor);
+    const separator = prefix.length > 0 && !/\s$/.test(prefix) ? " " : "";
+    const nextText = `${prefix}${separator}@${suffix}`;
+    const nextCursor = prefix.length + separator.length + 1;
+    setDraft(nextText);
+    setMentionState({ query: "", start: nextCursor - 1, end: nextCursor });
+    setMentionIndex(0);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (mentionState && mentionCandidates.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setMentionIndex((current) => (current + 1) % mentionCandidates.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setMentionIndex((current) => (current - 1 + mentionCandidates.length) % mentionCandidates.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        chooseMention(mentionCandidates[mentionIndex] ?? mentionCandidates[0]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMentionState(null);
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (channel && draft.trim()) {
         sendRootMessage(sendAsTask);
+        setMentionState(null);
       }
     }
   }
@@ -125,6 +196,8 @@ export function Conversation({
           )}
           {rootMessages.map((message) => {
             const linkedTask = taskForMessage(message.id);
+            const messageWorkItems = workItems.filter((item) => item.thread_root_id === message.id);
+            const mentionedAgents = mentionedAgentsForBody(message.body, agents);
             return (
               <article
                 key={message.id}
@@ -148,6 +221,16 @@ export function Conversation({
                     <div className="message-task-line">
                       <span>{linkedTask.assignee_name || "unassigned"}</span>
                       <span>updated {formatTime(linkedTask.updated_at)}</span>
+                    </div>
+                  )}
+                  {(mentionedAgents.length > 0 || messageWorkItems.length > 0) && (
+                    <div className="agent-mention-line">
+                      {mentionedAgents.map((agent) => (
+                        <span key={agent.id}>@{agent.handle}</span>
+                      ))}
+                      {messageWorkItems.map((item) => (
+                        <strong key={item.id}>@{item.agent_handle} {item.status}</strong>
+                      ))}
                     </div>
                   )}
                   <div className="message-actions">
@@ -233,12 +316,38 @@ export function Conversation({
       )}
 
       <footer className="composer">
+        <div className="composer-label">
+          <button type="button" disabled={agents.length === 0 || !channel} onClick={openMentionPicker}>Add Agent</button>
+          <span>{agents.length === 0 ? "Add an agent before assigning work." : "Use @ to assign work to an agent in this channel."}</span>
+        </div>
+        {mentionState && mentionCandidates.length > 0 && (
+          <div className="mention-picker">
+            {mentionCandidates.map((agent, index) => (
+              <button
+                key={agent.id}
+                className={index === mentionIndex ? "active" : ""}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  chooseMention(agent);
+                }}
+              >
+                <span>@{agent.handle}</span>
+                <small>{agent.display_name} · {agent.runtime} · {agent.status}</small>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
+          ref={textareaRef}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            refreshMentionState(event.target.value, event.target.selectionStart);
+          }}
+          onSelect={(event) => refreshMentionState(draft, event.currentTarget.selectionStart)}
           onKeyDown={handleComposerKeyDown}
           disabled={!channel}
-          placeholder={channel ? `Message #${channel.name} — Enter to send, Shift+Enter for new line` : "Create a channel before messaging"}
+          placeholder={channel ? `Message #${channel.name}; type @ or Add Agent to call an agent` : "Create a channel before messaging"}
         />
         <div className="composer-actions">
           <div className="send-mode" aria-label="Send mode">
