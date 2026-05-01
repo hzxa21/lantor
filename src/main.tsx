@@ -22,6 +22,22 @@ import {
 import { buildPresetCommand, firstLines, formatTime } from "./ui-utils";
 import "./styles.css";
 
+const ACTIVITY_PHASE_LABELS: Record<string, string> = {
+  thinking: "Thinking",
+  acting: "Acting",
+  tools: "Using tools",
+  error: "Error",
+  event: "Acting",
+  message: "Acting",
+  task: "Acting",
+  event_error: "Error",
+  run_error: "Error",
+};
+
+function phaseForActivity(kind: string) {
+  return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
+}
+
 function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
@@ -161,8 +177,26 @@ function App() {
     if (!data || !selectedAgent) return [];
     return data.agent_activities
       .filter((activity) => activity.agent_id === selectedAgent.id || activity.agent_handle === selectedAgent.handle)
-      .slice(0, 8);
+      .slice(0, 24);
   }, [data, selectedAgent]);
+
+  const selectedAgentLiveActivity = useMemo(() => {
+    return selectedAgentActivities.find((activity) => activity.run_id === selectedAgentRun?.id)
+      ?? selectedAgentActivities.find((activity) => activity.kind in ACTIVITY_PHASE_LABELS)
+      ?? null;
+  }, [selectedAgentActivities, selectedAgentRun]);
+
+  const selectedAgentPhase = selectedAgent ? (selectedAgentRun
+    ? {
+        kind: selectedAgentLiveActivity?.kind ?? "run",
+        label: selectedAgentLiveActivity ? phaseForActivity(selectedAgentLiveActivity.kind) : "Running",
+        detail: selectedAgentLiveActivity?.detail ?? "Waiting for observable output from the agent.",
+      }
+    : {
+        kind: selectedAgent.status,
+        label: selectedAgent.status,
+        detail: "No active run.",
+      }) : null;
 
   const selectedAgentWorkItems = useMemo(() => {
     if (!data || !selectedAgent) return [];
@@ -851,6 +885,12 @@ function App() {
               <div>
                 <h3>{selectedAgent.display_name}</h3>
                 <p>@{selectedAgent.handle} · {selectedAgent.runtime} · {selectedAgent.model}</p>
+                {selectedAgentPhase && (
+                  <div className="agent-phase-line">
+                    <span className={`phase-badge ${selectedAgentPhase.kind}`}>{selectedAgentPhase.label}</span>
+                    <small>{selectedAgentPhase.detail}</small>
+                  </div>
+                )}
               </div>
               <span className={`status-badge ${selectedAgent.status}`}>{selectedAgent.status}</span>
             </section>
@@ -873,11 +913,14 @@ function App() {
               </div>
             </section>
             <section className="detail-section">
-              <h4>Recent activity</h4>
+              <h4>Live activity</h4>
               {selectedAgentActivities.length === 0 && <p className="empty-mini">No activity yet.</p>}
               {selectedAgentActivities.map((activity) => (
-                <article key={activity.id} className="detail-activity">
-                  <strong>{activity.title}</strong>
+                <article key={activity.id} className={`detail-activity ${activity.kind}`}>
+                  <div className="detail-activity-head">
+                    <strong>{activity.title}</strong>
+                    <span className={`phase-badge ${activity.kind}`}>{phaseForActivity(activity.kind)}</span>
+                  </div>
                   <span>{formatTime(activity.created_at)} · {activity.kind}</span>
                   <p>{activity.detail}</p>
                 </article>

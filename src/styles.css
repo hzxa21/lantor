@@ -2131,6 +2131,61 @@ mark,
   color: var(--muted);
 }
 
+.agent-phase-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.agent-phase-line small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phase-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.phase-badge.thinking {
+  background: rgba(90, 200, 250, 0.16);
+  color: #0071a8;
+}
+
+.phase-badge.acting,
+.phase-badge.event,
+.phase-badge.message,
+.phase-badge.task {
+  background: rgba(52, 199, 89, 0.16);
+  color: #167d32;
+}
+
+.phase-badge.tools {
+  background: rgba(255, 159, 10, 0.18);
+  color: #9a5a00;
+}
+
+.phase-badge.error,
+.phase-badge.event_error,
+.phase-badge.run_error {
+  background: rgba(255, 69, 58, 0.15);
+  color: #c91810;
+}
+
 .status-badge {
   padding: 6px 10px;
   border-radius: 999px;
@@ -2191,6 +2246,35 @@ mark,
   border: 1px solid var(--line);
   border-radius: 13px;
   background: #fff;
+}
+
+.detail-activity.thinking {
+  border-color: rgba(90, 200, 250, 0.22);
+}
+
+.detail-activity.acting,
+.detail-activity.event,
+.detail-activity.message,
+.detail-activity.task {
+  border-color: rgba(52, 199, 89, 0.22);
+}
+
+.detail-activity.tools {
+  border-color: rgba(255, 159, 10, 0.26);
+}
+
+.detail-activity.error,
+.detail-activity.event_error,
+.detail-activity.run_error {
+  border-color: rgba(255, 69, 58, 0.28);
+  background: rgba(255, 242, 241, 0.72);
+}
+
+.detail-activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .detail-work {

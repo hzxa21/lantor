@@ -2127,6 +2127,83 @@ async fn append_run_log(pool: &PgPool, run_id: Uuid, line: String) -> CommandRes
     Ok(())
 }
 
+fn truncate_activity_detail(value: &str) -> String {
+    let trimmed = value.trim();
+    let mut chars = trimmed.chars();
+    let mut out: String = chars.by_ref().take(600).collect();
+    if chars.next().is_some() {
+        out.push_str("...");
+    }
+    out
+}
+
+fn classify_agent_output_activity(
+    label: &str,
+    line: &str,
+) -> Option<(&'static str, &'static str, String)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || extract_agent_event_json(trimmed).is_some() {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    let is_error = label == "stderr"
+        && [
+            "error",
+            "failed",
+            "panic",
+            "exception",
+            "traceback",
+            "permission denied",
+            "not found",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    if is_error {
+        return Some(("error", "Error output", truncate_activity_detail(trimmed)));
+    }
+
+    let is_tool = [
+        "tool",
+        "exec_command",
+        "apply_patch",
+        "running command",
+        "cargo ",
+        "npm ",
+        "git ",
+        "psql ",
+        "slock ",
+        "rg ",
+        "sed ",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+        || trimmed.starts_with("$ ");
+    if is_tool {
+        return Some(("tools", "Using tools", truncate_activity_detail(trimmed)));
+    }
+
+    let is_action = [
+        "message sent",
+        "created",
+        "updated",
+        "deleted",
+        "fixed",
+        "committed",
+        "commit ",
+        "done",
+        "completed",
+        "finished",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if is_action {
+        return Some(("acting", "Acting", truncate_activity_detail(trimmed)));
+    }
+
+    Some(("thinking", "Thinking", truncate_activity_detail(trimmed)))
+}
+
 async fn pipe_run_output<R>(
     pool: PgPool,
     agent_id: Uuid,
@@ -2142,6 +2219,17 @@ async fn pipe_run_output<R>(
         match lines.next_line().await {
             Ok(Some(line)) => {
                 let _ = append_run_log(&pool, run_id, format!("[{label}] {line}\n")).await;
+                if let Some((kind, title, detail)) = classify_agent_output_activity(label, &line) {
+                    let _ = record_agent_activity(
+                        &pool,
+                        Some(agent_id),
+                        Some(run_id),
+                        kind,
+                        title,
+                        detail,
+                    )
+                    .await;
+                }
                 if parse_agent_events {
                     match ingest_agent_event_line(&pool, agent_id, run_id, &line).await {
                         Ok(Some(note)) => {
