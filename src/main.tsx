@@ -11,11 +11,14 @@ import {
   LayoutList,
   MessageSquare,
   Plus,
+  Reply,
+  Save,
   Search,
   Send,
   Settings,
   Sparkles,
   Square,
+  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -59,6 +62,7 @@ type Task = {
   title: string;
   status: string;
   channel_name: string;
+  assignee_id: string | null;
   assignee_name: string | null;
 };
 
@@ -69,6 +73,24 @@ type Bootstrap = {
   messages: Message[];
   tasks: Task[];
 };
+
+type AgentForm = {
+  handle: string;
+  displayName: string;
+  runtime: string;
+  model: string;
+  description: string;
+};
+
+const EMPTY_AGENT_FORM: AgentForm = {
+  handle: "",
+  displayName: "",
+  runtime: "codex",
+  model: "gpt-5.5",
+  description: "",
+};
+
+const TASK_STATUSES = ["todo", "in_progress", "in_review", "done"] as const;
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -90,10 +112,13 @@ function App() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"chat" | "tasks">("chat");
   const [draft, setDraft] = useState("");
+  const [replyDraft, setReplyDraft] = useState("");
   const [newChannel, setNewChannel] = useState("");
-  const [newAgentHandle, setNewAgentHandle] = useState("");
-  const [newAgentModel, setNewAgentModel] = useState("gpt-5.5");
-  const [newAgentRuntime, setNewAgentRuntime] = useState("codex");
+  const [channelNameDraft, setChannelNameDraft] = useState("");
+  const [channelDescriptionDraft, setChannelDescriptionDraft] = useState("");
+  const [agentDraft, setAgentDraft] = useState<AgentForm>(EMPTY_AGENT_FORM);
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [agentEdit, setAgentEdit] = useState<AgentForm>(EMPTY_AGENT_FORM);
 
   async function refresh() {
     const next = await invoke<Bootstrap>("bootstrap");
@@ -103,57 +128,134 @@ function App() {
       return next.channels[0]?.id || "";
     });
     setActiveThreadId((prev) => {
-      if (next.messages.some((item) => item.id === prev)) return prev;
+      if (prev && next.messages.some((item) => item.id === prev)) return prev;
       return next.messages.find((m) => !m.thread_root_id)?.id || null;
     });
+  }
+
+  async function mutate(command: string, args: Record<string, unknown> = {}) {
+    await invoke(command, args);
+    await refresh();
   }
 
   useEffect(() => {
     refresh().catch((err) => console.error(err));
   }, []);
 
-  const channel = data?.channels.find((c) => c.id === activeChannelId) ?? data?.channels[0];
+  const channel = useMemo(() => {
+    return data?.channels.find((c) => c.id === activeChannelId) ?? data?.channels[0] ?? null;
+  }, [activeChannelId, data]);
+
   const rootMessages = useMemo(() => {
     if (!data || !channel) return [];
     return data.messages.filter((m) => m.channel_id === channel.id && !m.thread_root_id);
   }, [data, channel]);
-  const activeRoot = rootMessages.find((m) => m.id === activeThreadId) ?? rootMessages[0] ?? null;
+
+  const activeRoot = activeThreadId ? rootMessages.find((m) => m.id === activeThreadId) ?? null : null;
+
   const replies = useMemo(() => {
     if (!data || !activeRoot) return [];
     return data.messages.filter((m) => m.thread_root_id === activeRoot.id);
   }, [data, activeRoot]);
 
+  useEffect(() => {
+    setChannelNameDraft(channel?.name ?? "");
+    setChannelDescriptionDraft(channel?.description ?? "");
+  }, [channel?.id, channel?.name, channel?.description]);
+
   async function createChannel() {
     const name = newChannel.trim().replace(/^#/, "");
     if (!name) return;
-    await invoke("create_channel", { name });
+    await mutate("create_channel", { name });
     setNewChannel("");
-    await refresh();
+  }
+
+  async function saveChannel() {
+    if (!channel || !channelNameDraft.trim()) return;
+    await mutate("update_channel", {
+      channelId: channel.id,
+      name: channelNameDraft,
+      description: channelDescriptionDraft,
+    });
+  }
+
+  async function deleteChannel() {
+    if (!channel) return;
+    if (!window.confirm(`Delete #${channel.name} and its messages/tasks?`)) return;
+    await mutate("delete_channel", { channelId: channel.id });
   }
 
   async function createAgent() {
-    const handle = newAgentHandle.trim().replace(/^@/, "");
+    const handle = agentDraft.handle.trim().replace(/^@/, "");
     if (!handle) return;
-    await invoke("create_agent", {
+    await mutate("create_agent", {
       handle,
-      displayName: handle,
-      runtime: newAgentRuntime,
-      model: newAgentModel,
+      displayName: agentDraft.displayName || handle,
+      runtime: agentDraft.runtime,
+      model: agentDraft.model,
     });
-    setNewAgentHandle("");
-    await refresh();
+    setAgentDraft(EMPTY_AGENT_FORM);
   }
 
-  async function sendMessage(asTask = false) {
+  function startEditAgent(agent: Agent) {
+    setEditingAgentId(agent.id);
+    setAgentEdit({
+      handle: agent.handle,
+      displayName: agent.display_name,
+      runtime: agent.runtime,
+      model: agent.model,
+      description: agent.description,
+    });
+  }
+
+  async function saveAgent() {
+    if (!editingAgentId || !agentEdit.handle.trim()) return;
+    await mutate("update_agent", {
+      agentId: editingAgentId,
+      handle: agentEdit.handle,
+      displayName: agentEdit.displayName || agentEdit.handle,
+      runtime: agentEdit.runtime,
+      model: agentEdit.model,
+      description: agentEdit.description,
+    });
+    setEditingAgentId(null);
+    setAgentEdit(EMPTY_AGENT_FORM);
+  }
+
+  async function deleteAgent(agent: Agent) {
+    if (!window.confirm(`Delete @${agent.handle}? Existing messages will keep their sender name.`)) return;
+    await mutate("delete_agent", { agentId: agent.id });
+    if (editingAgentId === agent.id) setEditingAgentId(null);
+  }
+
+  async function sendRootMessage(asTask = false) {
     if (!channel || !draft.trim()) return;
-    await invoke("send_message", {
+    await mutate("send_message", {
       channelId: channel.id,
-      threadRootId: activeThreadId,
+      threadRootId: null,
       body: draft.trim(),
       asTask,
     });
     setDraft("");
-    await refresh();
+  }
+
+  async function sendReply() {
+    if (!channel || !activeRoot || !replyDraft.trim()) return;
+    await mutate("send_message", {
+      channelId: channel.id,
+      threadRootId: activeRoot.id,
+      body: replyDraft.trim(),
+      asTask: false,
+    });
+    setReplyDraft("");
+  }
+
+  async function updateTaskStatus(task: Task, status: string) {
+    await mutate("update_task_status", { taskId: task.id, status });
+  }
+
+  async function claimTask(task: Task, agentId: string) {
+    await mutate("claim_task", { taskId: task.id, agentId: agentId || null });
   }
 
   if (!data) {
@@ -165,7 +267,7 @@ function App() {
       <aside className="sidebar">
         <section className="workspace">
           <button className="workspace-switch">
-            King's Landing <ChevronDown size={16} />
+            LocalSlock <ChevronDown size={16} />
           </button>
         </section>
 
@@ -176,15 +278,15 @@ function App() {
 
         <section className="quick-actions">
           <button><Search size={18} /> Search <span>⌘K</span></button>
-          <button><MessageSquare size={18} /> Threads <strong>43</strong></button>
-          <button><LayoutList size={18} /> Tasks</button>
-          <button><Sparkles size={18} /> Saved</button>
+          <button><MessageSquare size={18} /> Threads <strong>{rootMessages.length}</strong></button>
+          <button><LayoutList size={18} /> Tasks <strong>{data.tasks.length}</strong></button>
+          <button><Sparkles size={18} /> Agents <strong>{data.agents.length}</strong></button>
         </section>
 
         <section className="channel-block">
           <div className="section-title">
             <span><ChevronDown size={14} /> Channels {data.channels.length}</span>
-            <button onClick={createChannel}><Plus size={18} /></button>
+            <button onClick={createChannel} title="Create channel"><Plus size={18} /></button>
           </div>
           <div className="new-channel">
             <input
@@ -213,41 +315,110 @@ function App() {
           {data.channels.length === 0 && (
             <div className="empty-mini">Create a channel to start chatting.</div>
           )}
+          {channel && (
+            <div className="management-card">
+              <h4>Channel Settings</h4>
+              <input
+                value={channelNameDraft}
+                onChange={(event) => setChannelNameDraft(event.target.value)}
+                placeholder="channel-name"
+              />
+              <textarea
+                value={channelDescriptionDraft}
+                onChange={(event) => setChannelDescriptionDraft(event.target.value)}
+                placeholder="Channel description"
+              />
+              <div className="inline-actions">
+                <button onClick={saveChannel}><Save size={15} /> Save</button>
+                <button className="danger" onClick={deleteChannel}><Trash2 size={15} /> Delete</button>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="agent-list">
           <div className="section-title"><span><ChevronDown size={14} /> Agents {data.agents.length}</span></div>
           <div className="agent-form">
             <input
-              value={newAgentHandle}
-              onChange={(event) => setNewAgentHandle(event.target.value)}
+              value={agentDraft.handle}
+              onChange={(event) => setAgentDraft({ ...agentDraft, handle: event.target.value })}
               onKeyDown={(event) => {
                 if (event.key === "Enter") createAgent();
               }}
               placeholder="@agent"
             />
-            <select value={newAgentRuntime} onChange={(event) => setNewAgentRuntime(event.target.value)}>
+            <input
+              value={agentDraft.displayName}
+              onChange={(event) => setAgentDraft({ ...agentDraft, displayName: event.target.value })}
+              placeholder="display name"
+            />
+            <select
+              value={agentDraft.runtime}
+              onChange={(event) => setAgentDraft({ ...agentDraft, runtime: event.target.value })}
+            >
               <option value="codex">Codex</option>
               <option value="claude">Claude</option>
               <option value="kimi">Kimi</option>
             </select>
             <input
-              value={newAgentModel}
-              onChange={(event) => setNewAgentModel(event.target.value)}
+              value={agentDraft.model}
+              onChange={(event) => setAgentDraft({ ...agentDraft, model: event.target.value })}
               placeholder="model"
             />
             <button onClick={createAgent}><Plus size={16} /> Add agent</button>
           </div>
           {data.agents.map((agent) => (
-            <div className="agent" key={agent.id}>
-              <div className="avatar">{agent.avatar || "A"}</div>
-              <div>
-                <strong>{agent.display_name}</strong>
-                <span>{agent.description || agent.runtime}</span>
-              </div>
-              <Circle className={`dot ${agent.status}`} size={10} />
+            <div className="agent-card" key={agent.id}>
+              <button className="agent" onClick={() => startEditAgent(agent)}>
+                <div className="avatar">{agent.avatar || "A"}</div>
+                <div>
+                  <strong>{agent.display_name}</strong>
+                  <span>@{agent.handle} · {agent.runtime}</span>
+                </div>
+                <Circle className={`dot ${agent.status}`} size={10} />
+              </button>
+              <button className="icon-danger" onClick={() => deleteAgent(agent)} title="Delete agent">
+                <Trash2 size={15} />
+              </button>
             </div>
           ))}
+          {editingAgentId && (
+            <div className="management-card">
+              <h4>Edit Agent</h4>
+              <input
+                value={agentEdit.handle}
+                onChange={(event) => setAgentEdit({ ...agentEdit, handle: event.target.value })}
+                placeholder="@agent"
+              />
+              <input
+                value={agentEdit.displayName}
+                onChange={(event) => setAgentEdit({ ...agentEdit, displayName: event.target.value })}
+                placeholder="display name"
+              />
+              <select
+                value={agentEdit.runtime}
+                onChange={(event) => setAgentEdit({ ...agentEdit, runtime: event.target.value })}
+              >
+                <option value="codex">Codex</option>
+                <option value="claude">Claude</option>
+                <option value="kimi">Kimi</option>
+              </select>
+              <input
+                value={agentEdit.model}
+                onChange={(event) => setAgentEdit({ ...agentEdit, model: event.target.value })}
+                placeholder="model"
+              />
+              <textarea
+                value={agentEdit.description}
+                onChange={(event) => setAgentEdit({ ...agentEdit, description: event.target.value })}
+                placeholder="Agent notes"
+              />
+              <div className="inline-actions">
+                <button onClick={saveAgent}><Save size={15} /> Save</button>
+                <button onClick={() => setEditingAgentId(null)}><X size={15} /> Cancel</button>
+              </div>
+            </div>
+          )}
           {data.agents.length === 0 && (
             <div className="empty-mini">Add a local agent profile first.</div>
           )}
@@ -292,7 +463,15 @@ function App() {
         {activeTab === "chat" ? (
           <div className="message-list">
             {channel ? (
-              <div className="beginning">Beginning of messages</div>
+              rootMessages.length > 0 ? (
+                <div className="beginning">Beginning of #{channel.name}</div>
+              ) : (
+                <div className="empty-state">
+                  <MessageSquare size={34} />
+                  <h2>No messages yet</h2>
+                  <p>Send a root message from the composer. Replies belong in the right thread pane.</p>
+                </div>
+              )
             ) : (
               <div className="empty-state">
                 <Hash size={34} />
@@ -334,7 +513,25 @@ function App() {
                 <span>#{task.number}</span>
                 <h3>{task.title}</h3>
                 <p>{task.channel_name} · {task.assignee_name || "unassigned"}</p>
-                <strong>{task.status}</strong>
+                <div className="task-controls">
+                  <select value={task.assignee_id ?? ""} onChange={(event) => claimTask(task, event.target.value)}>
+                    <option value="">Unassigned</option>
+                    {data.agents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>{agent.display_name}</option>
+                    ))}
+                  </select>
+                  <div className="status-row">
+                    {TASK_STATUSES.map((status) => (
+                      <button
+                        key={status}
+                        className={task.status === status ? "active" : ""}
+                        onClick={() => updateTaskStatus(task, status)}
+                      >
+                        {status.replace("_", " ")}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </article>
             ))}
           </div>
@@ -345,13 +542,14 @@ function App() {
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             disabled={!channel}
-            placeholder={channel ? `Message #${channel.name}` : "Create a channel before messaging"}
+            placeholder={channel ? `Root message in #${channel.name}` : "Create a channel before messaging"}
           />
           <div className="composer-actions">
             <button className="icon"><AtSign size={18} /></button>
-            <label><input type="checkbox" /> As Task</label>
-            <button className="send" disabled={!channel} onClick={() => sendMessage(false)}>Send <Send size={15} /></button>
-            <button className="task-send" disabled={!channel} onClick={() => sendMessage(true)}>Send Task</button>
+            <button className="send" disabled={!channel} onClick={() => sendRootMessage(false)}>
+              Send <Send size={15} />
+            </button>
+            <button className="task-send" disabled={!channel} onClick={() => sendRootMessage(true)}>Send Task</button>
           </div>
         </footer>
       </section>
@@ -362,15 +560,23 @@ function App() {
             <h2>Thread <span>{channel ? `- #${channel.name}` : "- no channel"}</span></h2>
             <p>{activeRoot ? `Root ${activeRoot.id.slice(0, 8)}` : "No thread selected"}</p>
           </div>
-          <button><X size={18} /></button>
+          <button onClick={() => setActiveThreadId(null)}><X size={18} /></button>
         </header>
 
-        <section className="theme-candidates">
-          <h3>Style Direction</h3>
-          <button className="active">
-            <span>Liquid Glass</span>
-            <small>Single macOS-style direction for the local desktop app.</small>
-          </button>
+        <section className="context-card">
+          <h3>Local Context</h3>
+          <div>
+            <span>Channels</span>
+            <strong>{data.channels.length}</strong>
+          </div>
+          <div>
+            <span>Agents</span>
+            <strong>{data.agents.length}</strong>
+          </div>
+          <div>
+            <span>Tasks</span>
+            <strong>{data.tasks.length}</strong>
+          </div>
         </section>
 
         {activeRoot && (
@@ -403,6 +609,18 @@ function App() {
               </div>
             </article>
           ))}
+        </section>
+
+        <section className="reply-composer">
+          <textarea
+            value={replyDraft}
+            onChange={(event) => setReplyDraft(event.target.value)}
+            disabled={!activeRoot}
+            placeholder={activeRoot ? "Reply in thread" : "Select a thread to reply"}
+          />
+          <button disabled={!activeRoot || !replyDraft.trim()} onClick={sendReply}>
+            Reply <Reply size={15} />
+          </button>
         </section>
 
         <section className="db-card">

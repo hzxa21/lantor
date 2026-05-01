@@ -58,6 +58,7 @@ struct Task {
     title: String,
     status: String,
     channel_name: String,
+    assignee_id: Option<Uuid>,
     assignee_name: Option<String>,
 }
 
@@ -173,11 +174,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
 
 #[tauri::command]
 async fn create_channel(name: String, state: State<'_, AppState>) -> CommandResult<()> {
-    let normalized = name
-        .trim()
-        .trim_start_matches('#')
-        .to_lowercase()
-        .replace(' ', "-");
+    let normalized = normalize_channel_name(&name);
     if normalized.is_empty() {
         return Err("channel name is empty".to_owned());
     }
@@ -193,6 +190,46 @@ async fn create_channel(name: String, state: State<'_, AppState>) -> CommandResu
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_channel(
+    channel_id: Uuid,
+    name: String,
+    description: String,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let normalized = normalize_channel_name(&name);
+    if normalized.is_empty() {
+        return Err("channel name is empty".to_owned());
+    }
+
+    sqlx::query(
+        r#"
+        update channels
+        set name = $2, description = $3
+        where id = $1
+        "#,
+    )
+    .bind(channel_id)
+    .bind(normalized)
+    .bind(description.trim())
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_channel(channel_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    sqlx::query("delete from channels where id = $1")
+        .bind(channel_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
 
     Ok(())
 }
@@ -244,6 +281,68 @@ async fn create_agent(
 }
 
 #[tauri::command]
+async fn update_agent(
+    agent_id: Uuid,
+    handle: String,
+    display_name: String,
+    runtime: String,
+    model: String,
+    description: String,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let normalized_handle = handle.trim().trim_start_matches('@');
+    if normalized_handle.is_empty() {
+        return Err("agent handle is empty".to_owned());
+    }
+    let display_name = if display_name.trim().is_empty() {
+        normalized_handle
+    } else {
+        display_name.trim()
+    };
+    let avatar = normalized_handle
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "A".to_owned());
+
+    sqlx::query(
+        r#"
+        update agents
+        set handle = $2,
+            display_name = $3,
+            runtime = $4,
+            model = $5,
+            avatar = $6,
+            description = $7
+        where id = $1
+        "#,
+    )
+    .bind(agent_id)
+    .bind(normalized_handle)
+    .bind(display_name)
+    .bind(runtime.trim())
+    .bind(model.trim())
+    .bind(avatar)
+    .bind(description.trim())
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    sqlx::query("delete from agents where id = $1")
+        .bind(agent_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn send_message(
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -283,6 +382,57 @@ async fn send_message(
     }
 
     tx.commit().await.map_err(to_string)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn claim_task(
+    task_id: Uuid,
+    agent_id: Option<Uuid>,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        update tasks
+        set assignee_agent_id = $2,
+            status = case when $2 is null then status else 'in_progress' end,
+            updated_at = now()
+        where id = $1
+        "#,
+    )
+    .bind(task_id)
+    .bind(agent_id)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_task_status(
+    task_id: Uuid,
+    status: String,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let status = status.trim();
+    if !matches!(status, "todo" | "in_progress" | "in_review" | "done") {
+        return Err(format!("unsupported task status: {status}"));
+    }
+
+    sqlx::query(
+        r#"
+        update tasks
+        set status = $2, updated_at = now()
+        where id = $1
+        "#,
+    )
+    .bind(task_id)
+    .bind(status)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+
     Ok(())
 }
 
@@ -386,6 +536,7 @@ async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
             t.title,
             t.status,
             c.name as channel_name,
+            t.assignee_agent_id as assignee_id,
             a.display_name as assignee_name
         from tasks t
         join channels c on c.id = t.channel_id
@@ -405,9 +556,17 @@ async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
             title: row.get("title"),
             status: row.get("status"),
             channel_name: row.get("channel_name"),
+            assignee_id: row.get("assignee_id"),
             assignee_name: row.get("assignee_name"),
         })
         .collect())
+}
+
+fn normalize_channel_name(name: &str) -> String {
+    name.trim()
+        .trim_start_matches('#')
+        .to_lowercase()
+        .replace(' ', "-")
 }
 
 fn to_string(error: impl std::fmt::Display) -> String {
@@ -441,7 +600,13 @@ pub fn run() {
             bootstrap,
             create_agent,
             create_channel,
-            send_message
+            claim_task,
+            delete_agent,
+            delete_channel,
+            send_message,
+            update_agent,
+            update_channel,
+            update_task_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running LocalSlock");
