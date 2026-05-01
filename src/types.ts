@@ -161,20 +161,29 @@ export const TASK_STATUSES = ["todo", "in_progress", "in_review", "done"] as con
 
 export const ACTIVE_RUN_STATUSES = new Set(["starting", "running", "stopping"]);
 
-export const RUNTIME_PRESETS: Record<string, { label: string; defaultModel: string; commandName: string }> = {
+export const RUNTIME_PRESETS: Record<string, { label: string; defaultModel: string; commandName: string; models: string[] }> = {
   codex: {
     label: "Codex",
     defaultModel: "gpt-5.5",
     commandName: "codex",
+    models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
   },
   claude: {
     label: "Claude",
     defaultModel: "sonnet",
     commandName: "claude",
+    models: ["sonnet", "opus", "haiku"],
   },
   kimi: {
     label: "Kimi",
     defaultModel: "kimi-k2",
     commandName: "kimi",
+    models: ["kimi-k2", "kimi-k2-turbo"],
   },
 };
+
+export function modelOptionsForRuntime(runtime: string, currentModel = "") {
+  const models = RUNTIME_PRESETS[runtime]?.models ?? [];
+  if (!currentModel || models.includes(currentModel)) return models;
+  return [currentModel, ...models];
+}

@@ -4,14 +4,12 @@ import {
   filterMentionAgents,
   getMentionState,
   insertAgentMention,
-  mentionedAgentsForBody,
   type MentionState,
 } from "../mentions";
-import { Agent, Bootstrap, Channel, Message, TASK_STATUSES, Task } from "../types";
+import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
 
 type ThreadPanelProps = {
-  data: Bootstrap;
   channel: Channel | null;
   agents: Agent[];
   activeRoot: Message | null;
@@ -30,7 +28,6 @@ type ThreadPanelProps = {
 };
 
 export function ThreadPanel({
-  data,
   channel,
   agents,
   activeRoot,
@@ -53,14 +50,6 @@ export function ThreadPanel({
   const mentionCandidates = useMemo(() => {
     return mentionState ? filterMentionAgents(agents, mentionState.query) : [];
   }, [agents, mentionState]);
-  const rootWorkItems = useMemo(() => {
-    if (!activeRoot) return [];
-    return data.agent_work_items.filter(
-      (item) =>
-        item.source_message_id === activeRoot.id ||
-        (!item.source_message_id && item.thread_root_id === activeRoot.id),
-    );
-  }, [data.agent_work_items, activeRoot]);
 
   function refreshMentionState(text: string, cursor: number) {
     setMentionState(getMentionState(text, cursor));
@@ -72,23 +61,6 @@ export function ThreadPanel({
     const { nextText, nextCursor } = insertAgentMention(replyDraft, mentionState, agent.handle);
     setReplyDraft(nextText);
     setMentionState(null);
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-    });
-  }
-
-  function openMentionPicker() {
-    const textarea = textareaRef.current;
-    const cursor = textarea?.selectionStart ?? replyDraft.length;
-    const prefix = replyDraft.slice(0, cursor);
-    const suffix = replyDraft.slice(cursor);
-    const separator = prefix.length > 0 && !/\s$/.test(prefix) ? " " : "";
-    const nextText = `${prefix}${separator}@${suffix}`;
-    const nextCursor = prefix.length + separator.length + 1;
-    setReplyDraft(nextText);
-    setMentionState({ query: "", start: nextCursor - 1, end: nextCursor });
-    setMentionIndex(0);
     window.requestAnimationFrame(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
@@ -150,13 +122,6 @@ export function ThreadPanel({
               <time>{formatTime(activeRoot.created_at)}</time>
             </div>
             <p>{activeRoot.body}</p>
-            {rootWorkItems.length > 0 && (
-              <div className="agent-mention-line">
-                {rootWorkItems.map((item) => (
-                  <strong key={item.id}>@{item.agent_handle} {item.status}</strong>
-                ))}
-              </div>
-            )}
           </article>
         )}
 
@@ -179,7 +144,7 @@ export function ThreadPanel({
               onChange={(event) => claimTask(activeTask, event.target.value)}
             >
               <option value="">Unassigned</option>
-              {data.agents.map((agent) => (
+              {agents.map((agent) => (
                 <option key={agent.id} value={agent.id}>{agent.display_name}</option>
               ))}
             </select>
@@ -206,8 +171,6 @@ export function ThreadPanel({
             </div>
           )}
           {replies.map((reply) => {
-            const mentionedAgents = mentionedAgentsForBody(reply.body, agents);
-            const replyWorkItems = data.agent_work_items.filter((item) => item.source_message_id === reply.id);
             return (
               <article key={reply.id}>
                 <div className="avatar tiny">{reply.sender_name.slice(0, 1)}</div>
@@ -217,16 +180,6 @@ export function ThreadPanel({
                     <time>{formatTime(reply.created_at)}</time>
                   </div>
                   <p>{reply.body}</p>
-                  {(mentionedAgents.length > 0 || replyWorkItems.length > 0) && (
-                    <div className="agent-mention-line">
-                      {mentionedAgents.map((agent) => (
-                        <span key={agent.id}>@{agent.handle}</span>
-                      ))}
-                      {replyWorkItems.map((item) => (
-                        <strong key={item.id}>@{item.agent_handle} {item.status}</strong>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </article>
             );
@@ -234,10 +187,6 @@ export function ThreadPanel({
         </section>
 
         <section className="reply-composer">
-          <div className="composer-label">
-            <button type="button" disabled={!activeRoot || agents.length === 0} onClick={openMentionPicker}>Add Agent</button>
-            <span>{agents.length === 0 ? "Add an agent before assigning work." : "Mention an agent to assign work in this thread."}</span>
-          </div>
           {mentionState && mentionCandidates.length > 0 && (
             <div className="mention-picker">
               {mentionCandidates.map((agent, index) => (
@@ -265,9 +214,9 @@ export function ThreadPanel({
             onSelect={(event) => refreshMentionState(replyDraft, event.currentTarget.selectionStart)}
             onKeyDown={handleReplyKeyDown}
             disabled={!activeRoot}
-            placeholder={activeRoot ? "Reply in thread; type @ or Add Agent to assign work" : "Select a thread to reply"}
+            placeholder={activeRoot ? "Reply in thread" : "Select a thread to reply"}
           />
-          <button disabled={!activeRoot || !replyDraft.trim()} onClick={sendReply}>
+          <button className="reply-send" disabled={!activeRoot || !replyDraft.trim()} onClick={sendReply}>
             Reply <Reply size={15} />
           </button>
         </section>

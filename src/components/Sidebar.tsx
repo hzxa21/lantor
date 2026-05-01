@@ -24,6 +24,7 @@ type SidebarProps = {
   channel: Channel | null;
   rootMessages: Message[];
   followedThreads: number;
+  activeThreadId: string | null;
   searchQuery: string;
   searchResults: SearchResult[];
   setSearchQuery: (value: string) => void;
@@ -31,6 +32,7 @@ type SidebarProps = {
   openCreateChannelModal: () => void;
   openChannelSettingsModal: () => void;
   selectChannel: (channelId: string) => void;
+  setActiveThreadId: (threadId: string | null) => void;
   openCreateAgentModal: () => void;
   openAgentDetail: (agent: Agent) => void;
   activeRunFor: (agentId: string) => AgentRun | null;
@@ -43,6 +45,7 @@ export function Sidebar({
   channel,
   rootMessages,
   followedThreads,
+  activeThreadId,
   searchQuery,
   searchResults,
   setSearchQuery,
@@ -50,6 +53,7 @@ export function Sidebar({
   openCreateChannelModal,
   openChannelSettingsModal,
   selectChannel,
+  setActiveThreadId,
   openCreateAgentModal,
   openAgentDetail,
   activeRunFor,
@@ -110,6 +114,25 @@ export function Sidebar({
         ))}
         {data.channels.length === 0 && (
           <div className="empty-mini">Create a channel to start chatting.</div>
+        )}
+      </section>
+
+      <section className="thread-list">
+        <div className="section-title">
+          <span><ChevronDown size={14} /> Threads {rootMessages.length}</span>
+        </div>
+        {rootMessages.map((message) => (
+          <button
+            key={message.id}
+            className={`thread-nav ${message.id === activeThreadId ? "selected" : ""}`}
+            onClick={() => setActiveThreadId(message.id)}
+          >
+            <MessageSquare size={15} />
+            <span>{message.body.split("\n")[0] || "Untitled thread"}</span>
+          </button>
+        ))}
+        {rootMessages.length === 0 && (
+          <div className="empty-mini">Threads appear after root messages.</div>
         )}
       </section>
 

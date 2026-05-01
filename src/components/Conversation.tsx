@@ -21,6 +21,7 @@ import { firstLines, formatTime } from "../ui-utils";
 type ConversationProps = {
   channel: Channel | null;
   agents: Agent[];
+  channelAgents: Agent[];
   activeTab: "chat" | "tasks";
   activeRoot: Message | null;
   rootMessages: Message[];
@@ -33,6 +34,7 @@ type ConversationProps = {
   setActiveTab: (tab: "chat" | "tasks") => void;
   setActiveThreadId: (threadId: string | null) => void;
   setShowThread: (value: boolean) => void;
+  openChannelAgentsModal: () => void;
   taskForMessage: (messageId: string) => Task | null;
   toggleThreadFollow: (message: Message) => void;
   setTaskTitleDraft: (task: Task, title: string) => void;
@@ -49,6 +51,7 @@ type ConversationProps = {
 export function Conversation({
   channel,
   agents,
+  channelAgents,
   activeTab,
   activeRoot,
   rootMessages,
@@ -61,6 +64,7 @@ export function Conversation({
   setActiveTab,
   setActiveThreadId,
   setShowThread,
+  openChannelAgentsModal,
   taskForMessage,
   toggleThreadFollow,
   setTaskTitleDraft,
@@ -91,23 +95,6 @@ export function Conversation({
     const { nextText, nextCursor } = insertAgentMention(draft, mentionState, agent.handle);
     setDraft(nextText);
     setMentionState(null);
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-    });
-  }
-
-  function openMentionPicker() {
-    const textarea = textareaRef.current;
-    const cursor = textarea?.selectionStart ?? draft.length;
-    const prefix = draft.slice(0, cursor);
-    const suffix = draft.slice(cursor);
-    const separator = prefix.length > 0 && !/\s$/.test(prefix) ? " " : "";
-    const nextText = `${prefix}${separator}@${suffix}`;
-    const nextCursor = prefix.length + separator.length + 1;
-    setDraft(nextText);
-    setMentionState({ query: "", start: nextCursor - 1, end: nextCursor });
-    setMentionIndex(0);
     window.requestAnimationFrame(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
@@ -153,6 +140,24 @@ export function Conversation({
           <div>
             <h1>{channel?.name || "No channel"}</h1>
             <p>{channel?.description || "Create a channel from the sidebar"}</p>
+            {channel && (
+              <div className="channel-agent-strip">
+                <span>Agents</span>
+                {channelAgents.length > 0 ? (
+                  channelAgents.slice(0, 5).map((agent) => (
+                    <button key={agent.id} type="button" onClick={openChannelAgentsModal}>
+                      <span className={`mini-dot ${agent.status}`} />
+                      @{agent.handle}
+                    </button>
+                  ))
+                ) : (
+                  <button type="button" className="empty" onClick={openChannelAgentsModal}>No agents</button>
+                )}
+                <button type="button" className="add-channel-agent" onClick={openChannelAgentsModal}>
+                  <Plus size={13} />
+                </button>
+              </div>
+            )}
           </div>
         </div>
         <div className="top-actions">
@@ -320,10 +325,6 @@ export function Conversation({
       )}
 
       <footer className="composer">
-        <div className="composer-label">
-          <button type="button" disabled={agents.length === 0 || !channel} onClick={openMentionPicker}>Add Agent</button>
-          <span>{agents.length === 0 ? "Add an agent before assigning work." : "Use @ to assign work to an agent in this channel."}</span>
-        </div>
         {mentionState && mentionCandidates.length > 0 && (
           <div className="mention-picker">
             {mentionCandidates.map((agent, index) => (
@@ -351,7 +352,7 @@ export function Conversation({
           onSelect={(event) => refreshMentionState(draft, event.currentTarget.selectionStart)}
           onKeyDown={handleComposerKeyDown}
           disabled={!channel}
-          placeholder={channel ? `Message #${channel.name}; type @ or Add Agent to call an agent` : "Create a channel before messaging"}
+          placeholder={channel ? `Message #${channel.name}` : "Create a channel before messaging"}
         />
         <div className="composer-actions">
           <div className="send-mode" aria-label="Send mode">

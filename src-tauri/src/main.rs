@@ -610,7 +610,7 @@ async fn create_agent(
     launch_command: String,
     working_directory: String,
     state: State<'_, AppState>,
-) -> CommandResult<()> {
+) -> CommandResult<String> {
     let normalized_handle = handle.trim().trim_start_matches('@');
     if normalized_handle.is_empty() {
         return Err("agent handle is empty".to_owned());
@@ -663,7 +663,7 @@ async fn create_agent(
     )
     .await?;
 
-    Ok(())
+    Ok(agent_id.to_string())
 }
 
 #[tauri::command]
@@ -1297,6 +1297,19 @@ async fn queue_mentions_as_work_items(
         let Some(agent_id) = agent_id else {
             continue;
         };
+
+        sqlx::query(
+            r#"
+            insert into channel_members (channel_id, agent_id)
+            values ($1, $2)
+            on conflict (channel_id, agent_id) do nothing
+            "#,
+        )
+        .bind(channel_id)
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
 
         let context = build_mention_work_context(
             pool,

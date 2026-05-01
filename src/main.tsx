@@ -17,6 +17,7 @@ import {
   RUNTIME_PRESETS,
   SearchResult,
   Task,
+  modelOptionsForRuntime,
 } from "./types";
 import { buildPresetCommand, firstLines, formatTime } from "./ui-utils";
 import "./styles.css";
@@ -42,6 +43,7 @@ function App() {
   const [showThread, setShowThread] = useState(true);
   const [showCreateChannelModal, setShowCreateChannelModal] = useState(false);
   const [showChannelSettingsModal, setShowChannelSettingsModal] = useState(false);
+  const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
@@ -99,6 +101,11 @@ function App() {
     if (!data || !channel) return new Set<string>();
     return new Set(data.channel_members.filter((member) => member.channel_id === channel.id).map((member) => member.agent_id));
   }, [data, channel]);
+
+  const channelAgents = useMemo(() => {
+    if (!data || !channel) return [];
+    return data.agents.filter((agent) => channelMemberIds.has(agent.id));
+  }, [data, channel, channelMemberIds]);
 
   const activeTask = useMemo(() => {
     if (!data || !activeRoot) return null;
@@ -287,14 +294,29 @@ function App() {
   async function createAgent() {
     const handle = agentDraft.handle.trim().replace(/^@/, "");
     if (!handle) return;
-    await mutate("create_agent", {
+    const nextForm = {
+      ...agentDraft,
       handle,
       displayName: agentDraft.displayName || handle,
-      runtime: agentDraft.runtime,
-      model: agentDraft.model,
-      launchCommand: agentDraft.launchCommand.trim() || buildPresetCommand(agentDraft),
-      workingDirectory: agentDraft.workingDirectory,
+      launchCommand: buildPresetCommand({ ...agentDraft, handle, displayName: agentDraft.displayName || handle }),
+      workingDirectory: "",
+    };
+    const agentId = await invoke<string>("create_agent", {
+      handle,
+      displayName: nextForm.displayName,
+      runtime: nextForm.runtime,
+      model: nextForm.model,
+      launchCommand: nextForm.launchCommand,
+      workingDirectory: nextForm.workingDirectory,
     });
+    if (channel) {
+      await invoke("set_channel_agent_membership", {
+        channelId: channel.id,
+        agentId,
+        member: true,
+      });
+    }
+    await refresh();
     setAgentDraft(EMPTY_AGENT_FORM);
     setShowCreateAgentModal(false);
   }
@@ -303,7 +325,9 @@ function App() {
     const preset = RUNTIME_PRESETS[runtime];
     const currentPreset = RUNTIME_PRESETS[agentDraft.runtime];
     const shouldReplaceModel =
-      !agentDraft.model.trim() || (currentPreset && agentDraft.model === currentPreset.defaultModel);
+      !agentDraft.model.trim() ||
+      !preset?.models.includes(agentDraft.model) ||
+      (currentPreset && agentDraft.model === currentPreset.defaultModel);
     setAgentDraft({
       ...agentDraft,
       runtime,
@@ -315,24 +339,14 @@ function App() {
     const preset = RUNTIME_PRESETS[runtime];
     const currentPreset = RUNTIME_PRESETS[agentEdit.runtime];
     const shouldReplaceModel =
-      !agentEdit.model.trim() || (currentPreset && agentEdit.model === currentPreset.defaultModel);
+      !agentEdit.model.trim() ||
+      !preset?.models.includes(agentEdit.model) ||
+      (currentPreset && agentEdit.model === currentPreset.defaultModel);
     setAgentEdit({
       ...agentEdit,
       runtime,
       model: preset && shouldReplaceModel ? preset.defaultModel : agentEdit.model,
     });
-  }
-
-  function applyDraftPreset() {
-    const command = buildPresetCommand(agentDraft);
-    if (!command) return;
-    setAgentDraft({ ...agentDraft, launchCommand: command });
-  }
-
-  function applyEditPreset() {
-    const command = buildPresetCommand(agentEdit);
-    if (!command) return;
-    setAgentEdit({ ...agentEdit, launchCommand: command });
   }
 
   function startEditAgent(agent: Agent) {
@@ -350,15 +364,23 @@ function App() {
 
   async function saveAgent() {
     if (!editingAgentId || !agentEdit.handle.trim()) return;
+    const handle = agentEdit.handle.trim().replace(/^@/, "");
+    const nextForm = {
+      ...agentEdit,
+      handle,
+      displayName: agentEdit.displayName || handle,
+      launchCommand: buildPresetCommand({ ...agentEdit, handle, displayName: agentEdit.displayName || handle }),
+      workingDirectory: "",
+    };
     await mutate("update_agent", {
       agentId: editingAgentId,
-      handle: agentEdit.handle,
-      displayName: agentEdit.displayName || agentEdit.handle,
-      runtime: agentEdit.runtime,
-      model: agentEdit.model,
-      description: agentEdit.description,
-      launchCommand: agentEdit.launchCommand,
-      workingDirectory: agentEdit.workingDirectory,
+      handle: nextForm.handle,
+      displayName: nextForm.displayName || nextForm.handle,
+      runtime: nextForm.runtime,
+      model: nextForm.model,
+      description: nextForm.description,
+      launchCommand: nextForm.launchCommand,
+      workingDirectory: nextForm.workingDirectory,
     });
     setEditingAgentId(null);
     setAgentEdit(EMPTY_AGENT_FORM);
@@ -495,9 +517,6 @@ function App() {
     await mutate("uninstall_supervisor_service");
   }
 
-  const draftPresetCommand = buildPresetCommand(agentDraft);
-  const editPresetCommand = buildPresetCommand(agentEdit);
-
   if (!data) {
     return <div className="boot">Opening LocalSlock...</div>;
   }
@@ -516,6 +535,8 @@ function App() {
         openCreateChannelModal={() => setShowCreateChannelModal(true)}
         openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
         selectChannel={selectChannel}
+        activeThreadId={activeThreadId}
+        setActiveThreadId={setActiveThreadId}
         openCreateAgentModal={() => setShowCreateAgentModal(true)}
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         activeRunFor={activeRunFor}
@@ -526,6 +547,7 @@ function App() {
       <Conversation
         channel={channel}
         agents={data.agents}
+        channelAgents={channelAgents}
         activeTab={activeTab}
         activeRoot={activeRoot}
         rootMessages={rootMessages}
@@ -538,6 +560,7 @@ function App() {
         setActiveTab={setActiveTab}
         setActiveThreadId={setActiveThreadId}
         setShowThread={setShowThread}
+        openChannelAgentsModal={() => setShowChannelAgentsModal(true)}
         taskForMessage={taskForMessage}
         toggleThreadFollow={toggleThreadFollow}
         setTaskTitleDraft={setTaskTitleDraft}
@@ -553,7 +576,6 @@ function App() {
 
       {showThread && (
         <ThreadPanel
-          data={data}
           channel={channel}
           agents={data.agents}
           activeRoot={activeRoot}
@@ -647,6 +669,43 @@ function App() {
       </Modal>
 
       <Modal
+        open={showChannelAgentsModal}
+        title={channel ? `Agents in #${channel.name}` : "Channel Agents"}
+        onClose={() => setShowChannelAgentsModal(false)}
+        width={560}
+      >
+        <div className="modal-form">
+          <div className="member-editor modal-member-editor channel-agent-picker">
+            {data.agents.length === 0 && <span>No agents yet. Create an agent first.</span>}
+            {data.agents.map((agent) => (
+              <label key={agent.id}>
+                <input
+                  type="checkbox"
+                  checked={channelMemberIds.has(agent.id)}
+                  onChange={(event) => setChannelMember(agent.id, event.target.checked)}
+                />
+                <span className="agent-pick-row">
+                  <strong>@{agent.handle}</strong>
+                  <small>{agent.display_name} · {agent.runtime} · {agent.status}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+          <div className="modal-actions split">
+            <button
+              onClick={() => {
+                setShowChannelAgentsModal(false);
+                setShowCreateAgentModal(true);
+              }}
+            >
+              Create new agent
+            </button>
+            <button className="primary" onClick={() => setShowChannelAgentsModal(false)}>Done</button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
         open={showCreateAgentModal}
         title="Add Agent"
         onClose={() => setShowCreateAgentModal(false)}
@@ -674,51 +733,25 @@ function App() {
           </div>
           <div className="two-col">
             <label>
-              <span>Runtime</span>
+              <span>Agent type</span>
               <select value={agentDraft.runtime} onChange={(event) => updateDraftRuntime(event.target.value)}>
                 <option value="codex">Codex</option>
                 <option value="claude">Claude</option>
                 <option value="kimi">Kimi</option>
-                <option value="custom">Custom</option>
               </select>
             </label>
             <label>
               <span>Model</span>
-              <input
+              <select
                 value={agentDraft.model}
                 onChange={(event) => setAgentDraft({ ...agentDraft, model: event.target.value })}
-                placeholder="model"
-              />
+              >
+                {modelOptionsForRuntime(agentDraft.runtime, agentDraft.model).map((model) => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
             </label>
           </div>
-          <div className="preset-panel">
-            <div>
-              <strong>{RUNTIME_PRESETS[agentDraft.runtime]?.label ?? "Custom"} preset</strong>
-              <span>
-                {draftPresetCommand
-                  ? "Generate an editable launch command with the LocalSlock event protocol."
-                  : "Custom runtime uses the command exactly as written."}
-              </span>
-            </div>
-            {draftPresetCommand && <pre>{firstLines(draftPresetCommand, 6)}</pre>}
-            <button disabled={!draftPresetCommand} onClick={applyDraftPreset}>Apply preset</button>
-          </div>
-          <label>
-            <span>Launch command</span>
-            <textarea
-              value={agentDraft.launchCommand}
-              onChange={(event) => setAgentDraft({ ...agentDraft, launchCommand: event.target.value })}
-              placeholder="launch command; empty uses a placeholder runtime"
-            />
-          </label>
-          <label>
-            <span>Working directory</span>
-            <input
-              value={agentDraft.workingDirectory}
-              onChange={(event) => setAgentDraft({ ...agentDraft, workingDirectory: event.target.value })}
-              placeholder="working directory"
-            />
-          </label>
           <div className="modal-actions">
             <button onClick={() => setShowCreateAgentModal(false)}>Cancel</button>
             <button className="primary" disabled={!agentDraft.handle.trim()} onClick={createAgent}>Add agent</button>
@@ -759,46 +792,20 @@ function App() {
                 <option value="codex">Codex</option>
                 <option value="claude">Claude</option>
                 <option value="kimi">Kimi</option>
-                <option value="custom">Custom</option>
               </select>
             </label>
             <label>
               <span>Model</span>
-              <input
+              <select
                 value={agentEdit.model}
                 onChange={(event) => setAgentEdit({ ...agentEdit, model: event.target.value })}
-                placeholder="model"
-              />
+              >
+                {modelOptionsForRuntime(agentEdit.runtime, agentEdit.model).map((model) => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
             </label>
           </div>
-          <div className="preset-panel">
-            <div>
-              <strong>{RUNTIME_PRESETS[agentEdit.runtime]?.label ?? "Custom"} preset</strong>
-              <span>
-                {editPresetCommand
-                  ? "Regenerate the command from current handle/model/runtime."
-                  : "Custom runtime uses the command exactly as written."}
-              </span>
-            </div>
-            {editPresetCommand && <pre>{firstLines(editPresetCommand, 6)}</pre>}
-            <button disabled={!editPresetCommand} onClick={applyEditPreset}>Apply preset</button>
-          </div>
-          <label>
-            <span>Launch command</span>
-            <textarea
-              value={agentEdit.launchCommand}
-              onChange={(event) => setAgentEdit({ ...agentEdit, launchCommand: event.target.value })}
-              placeholder="launch command; empty uses a placeholder runtime"
-            />
-          </label>
-          <label>
-            <span>Working directory</span>
-            <input
-              value={agentEdit.workingDirectory}
-              onChange={(event) => setAgentEdit({ ...agentEdit, workingDirectory: event.target.value })}
-              placeholder="working directory"
-            />
-          </label>
           <label>
             <span>Notes</span>
             <textarea
