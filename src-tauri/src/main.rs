@@ -8,7 +8,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use tauri::{Manager, State};
 use tokio::{
@@ -21,6 +21,7 @@ use uuid::Uuid;
 const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/localslock";
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
 const LAUNCH_AGENT_LABEL: &str = "local.localslock.supervisor";
+const AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
 
 #[derive(Clone)]
 struct AppState {
@@ -117,6 +118,26 @@ struct SupervisorCommand {
     command_type: String,
     agent_id: Option<Uuid>,
     run_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AgentEvent {
+    Message {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        thread_root_id: Option<Uuid>,
+        body: String,
+        as_task: Option<bool>,
+    },
+    TaskStatus {
+        task_number: i64,
+        status: String,
+    },
+    TaskClaim {
+        task_number: i64,
+        assignee_handle: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -1108,8 +1129,14 @@ async fn append_run_log(pool: &PgPool, run_id: Uuid, line: String) -> CommandRes
     Ok(())
 }
 
-async fn pipe_run_output<R>(pool: PgPool, run_id: Uuid, stream: R, label: &'static str)
-where
+async fn pipe_run_output<R>(
+    pool: PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+    stream: R,
+    label: &'static str,
+    parse_agent_events: bool,
+) where
     R: AsyncRead + Unpin,
 {
     let mut lines = BufReader::new(stream).lines();
@@ -1117,6 +1144,20 @@ where
         match lines.next_line().await {
             Ok(Some(line)) => {
                 let _ = append_run_log(&pool, run_id, format!("[{label}] {line}\n")).await;
+                if parse_agent_events {
+                    match ingest_agent_event_line(&pool, agent_id, &line).await {
+                        Ok(Some(note)) => {
+                            let _ =
+                                append_run_log(&pool, run_id, format!("[event] {note}\n")).await;
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            let _ =
+                                append_run_log(&pool, run_id, format!("[event] rejected: {err}\n"))
+                                    .await;
+                        }
+                    }
+                }
             }
             Ok(None) => break,
             Err(err) => {
@@ -1126,6 +1167,219 @@ where
             }
         }
     }
+}
+
+async fn ingest_agent_event_line(
+    pool: &PgPool,
+    agent_id: Uuid,
+    line: &str,
+) -> CommandResult<Option<String>> {
+    let Some(json) = line.trim().strip_prefix(AGENT_EVENT_PREFIX) else {
+        return Ok(None);
+    };
+    let event: AgentEvent = serde_json::from_str(json.trim()).map_err(to_string)?;
+    handle_agent_event(pool, agent_id, event).await.map(Some)
+}
+
+async fn handle_agent_event(
+    pool: &PgPool,
+    agent_id: Uuid,
+    event: AgentEvent,
+) -> CommandResult<String> {
+    match event {
+        AgentEvent::Message {
+            channel,
+            channel_id,
+            thread_root_id,
+            body,
+            as_task,
+        } => {
+            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
+            let msg_id = insert_agent_message(
+                pool,
+                agent_id,
+                channel_id,
+                thread_root_id,
+                body.trim(),
+                as_task.unwrap_or(false),
+            )
+            .await?;
+            Ok(format!("message accepted {msg_id}"))
+        }
+        AgentEvent::TaskStatus {
+            task_number,
+            status,
+        } => {
+            let status = status.trim();
+            if !matches!(status, "todo" | "in_progress" | "in_review" | "done") {
+                return Err(format!("unsupported task status: {status}"));
+            }
+            let affected = sqlx::query(
+                r#"
+                update tasks
+                set status = $2, updated_at = now()
+                where number = $1
+                "#,
+            )
+            .bind(task_number)
+            .bind(status)
+            .execute(pool)
+            .await
+            .map_err(to_string)?
+            .rows_affected();
+            if affected == 0 {
+                return Err(format!("task #{task_number} does not exist"));
+            }
+            Ok(format!("task #{task_number} status set to {status}"))
+        }
+        AgentEvent::TaskClaim {
+            task_number,
+            assignee_handle,
+        } => {
+            let assignee = match assignee_handle.as_deref().map(str::trim) {
+                Some("") | Some("null") | Some("unassigned") => None,
+                Some(handle) => Some(resolve_agent_by_handle(pool, handle).await?),
+                None => Some(agent_id),
+            };
+            let affected = sqlx::query(
+                r#"
+                update tasks
+                set assignee_agent_id = $2,
+                    status = case when $2 is null then status else 'in_progress' end,
+                    updated_at = now()
+                where number = $1
+                "#,
+            )
+            .bind(task_number)
+            .bind(assignee)
+            .execute(pool)
+            .await
+            .map_err(to_string)?
+            .rows_affected();
+            if affected == 0 {
+                return Err(format!("task #{task_number} does not exist"));
+            }
+            Ok(format!("task #{task_number} assignee updated"))
+        }
+    }
+}
+
+async fn resolve_event_channel(
+    pool: &PgPool,
+    channel_id: Option<Uuid>,
+    channel_name: Option<&str>,
+) -> CommandResult<Uuid> {
+    if let Some(channel_id) = channel_id {
+        let exists: Option<Uuid> = sqlx::query_scalar("select id from channels where id = $1")
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string)?;
+        return exists.ok_or_else(|| format!("channel {channel_id} does not exist"));
+    }
+
+    let Some(name) = channel_name else {
+        return Err("message event requires channel or channel_id".to_owned());
+    };
+    let normalized = normalize_channel_name(name);
+    if normalized.is_empty() {
+        return Err("message event channel is empty".to_owned());
+    }
+    sqlx::query_scalar("select id from channels where name = $1")
+        .bind(&normalized)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?
+        .ok_or_else(|| format!("channel #{normalized} does not exist"))
+}
+
+async fn resolve_agent_by_handle(pool: &PgPool, handle: &str) -> CommandResult<Uuid> {
+    let normalized = handle.trim().trim_start_matches('@');
+    if normalized.is_empty() {
+        return Err("assignee handle is empty".to_owned());
+    }
+    sqlx::query_scalar("select id from agents where handle = $1")
+        .bind(normalized)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?
+        .ok_or_else(|| format!("agent @{normalized} does not exist"))
+}
+
+async fn insert_agent_message(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    body: &str,
+    as_task: bool,
+) -> CommandResult<Uuid> {
+    if body.is_empty() {
+        return Err("message event body is empty".to_owned());
+    }
+    if as_task && thread_root_id.is_some() {
+        return Err("task message events must be root messages".to_owned());
+    }
+    if let Some(thread_root_id) = thread_root_id {
+        let root_channel: Option<Uuid> = sqlx::query_scalar(
+            "select channel_id from messages where id = $1 and thread_root_id is null",
+        )
+        .bind(thread_root_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+        if root_channel != Some(channel_id) {
+            return Err("thread_root_id does not belong to target channel".to_owned());
+        }
+    }
+
+    let sender = sqlx::query("select display_name, role from agents where id = $1")
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    let sender_name: String = sender.get("display_name");
+    let sender_role: String = sender.get("role");
+
+    let mut tx = pool.begin().await.map_err(to_string)?;
+    let msg_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into messages (
+            channel_id, thread_root_id, sender_agent_id, sender_name, sender_role, body, is_task
+        )
+        values ($1, $2, $3, $4, $5, $6, $7)
+        returning id
+        "#,
+    )
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(agent_id)
+    .bind(sender_name)
+    .bind(sender_role)
+    .bind(body)
+    .bind(as_task)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(to_string)?;
+
+    if as_task {
+        sqlx::query(
+            r#"
+            insert into tasks (message_id, channel_id, title, status, assignee_agent_id)
+            values ($1, $2, $3, 'todo', $4)
+            "#,
+        )
+        .bind(msg_id)
+        .bind(channel_id)
+        .bind(body.lines().next().unwrap_or("Untitled task"))
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_string)?;
+    }
+
+    tx.commit().await.map_err(to_string)?;
+    Ok(msg_id)
 }
 
 async fn wait_for_agent_run(
@@ -1363,12 +1617,11 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
     .await
     .map_err(to_string)?;
 
-    let command_text = effective_launch_command(
-        row.get("launch_command"),
-        row.get("runtime"),
-        row.get("model"),
-        row.get("handle"),
-    );
+    let handle: String = row.get("handle");
+    let runtime: String = row.get("runtime");
+    let model: String = row.get("model");
+    let launch_command: String = row.get("launch_command");
+    let command_text = effective_launch_command(launch_command, runtime, model, handle.clone());
     let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
 
     let run_id: Uuid = sqlx::query_scalar(
@@ -1388,6 +1641,9 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
 
     let mut command = Command::new("/bin/zsh");
     command.arg("-lc").arg(&command_text);
+    command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
+    command.env("LOCAL_SLOCK_AGENT_HANDLE", &handle);
+    command.env("LOCAL_SLOCK_RUN_ID", run_id.to_string());
     #[cfg(unix)]
     command.process_group(0);
     if !working_directory.is_empty() {
@@ -1434,10 +1690,24 @@ async fn supervisor_start_agent(pool: &PgPool, agent_id: Uuid) -> CommandResult<
         .map_err(to_string)?;
 
     if let Some(stdout) = child.stdout.take() {
-        tokio::spawn(pipe_run_output(pool.clone(), run_id, stdout, "stdout"));
+        tokio::spawn(pipe_run_output(
+            pool.clone(),
+            agent_id,
+            run_id,
+            stdout,
+            "stdout",
+            true,
+        ));
     }
     if let Some(stderr) = child.stderr.take() {
-        tokio::spawn(pipe_run_output(pool.clone(), run_id, stderr, "stderr"));
+        tokio::spawn(pipe_run_output(
+            pool.clone(),
+            agent_id,
+            run_id,
+            stderr,
+            "stderr",
+            false,
+        ));
     }
 
     tokio::spawn(wait_for_agent_run(pool.clone(), agent_id, run_id, child));

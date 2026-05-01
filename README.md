@@ -25,6 +25,27 @@ Current runtime boundary: each agent profile can store a shell `launch_command` 
 
 The Runtime panel can also install a user LaunchAgent at `~/Library/LaunchAgents/local.localslock.supervisor.plist`. That makes macOS keep the `--supervisor` process alive via `launchctl`; uninstall removes the plist and unloads the service.
 
+## Agent Stdout Event Protocol
+
+An agent process can write structured events back into LocalSlock by printing one line to stdout with the `LOCAL_SLOCK_EVENT ` prefix followed by JSON. Non-matching stdout/stderr is preserved only in the run log.
+
+Examples:
+
+```bash
+printf 'LOCAL_SLOCK_EVENT {"type":"message","channel":"local-slock","body":"hello from agent"}\n'
+printf 'LOCAL_SLOCK_EVENT {"type":"message","channel":"local-slock","body":"new task","as_task":true}\n'
+printf 'LOCAL_SLOCK_EVENT {"type":"task_status","task_number":1,"status":"in_review"}\n'
+printf 'LOCAL_SLOCK_EVENT {"type":"task_claim","task_number":1}\n'
+```
+
+Supported event types in this slice:
+
+- `message`: requires `channel` or `channel_id`, accepts optional `thread_root_id`, `body`, and `as_task`.
+- `task_status`: requires `task_number` and one of `todo`, `in_progress`, `in_review`, `done`.
+- `task_claim`: requires `task_number`; defaults to the current agent, or use `assignee_handle` / `unassigned`.
+
+The supervisor injects `LOCAL_SLOCK_AGENT_ID`, `LOCAL_SLOCK_AGENT_HANDLE`, and `LOCAL_SLOCK_RUN_ID` into each agent process.
+
 ## Run
 
 ```bash
