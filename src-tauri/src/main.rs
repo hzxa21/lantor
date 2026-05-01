@@ -127,6 +127,7 @@ struct AgentWorkItem {
     channel_id: Option<Uuid>,
     channel_name: Option<String>,
     thread_root_id: Option<Uuid>,
+    source_message_id: Option<Uuid>,
     task_id: Option<Uuid>,
     task_number: Option<i64>,
     title: String,
@@ -339,6 +340,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             agent_id uuid not null references agents(id) on delete cascade,
             channel_id uuid references channels(id) on delete set null,
             thread_root_id uuid references messages(id) on delete set null,
+            source_message_id uuid references messages(id) on delete set null,
             task_id uuid references tasks(id) on delete set null,
             title text not null,
             context text not null default '',
@@ -349,6 +351,12 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             completed_at timestamptz
         )
         "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "alter table agent_work_items add column if not exists source_message_id uuid references messages(id) on delete set null",
     )
     .execute(pool)
     .await?;
@@ -1060,7 +1068,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
 async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> CommandResult<Uuid> {
     let row = sqlx::query(
         r#"
-        select agent_id, channel_id, thread_root_id, task_id, title, context, status
+        select agent_id, channel_id, thread_root_id, source_message_id, task_id, title, context, status
         from agent_work_items
         where id = $1
         "#,
@@ -1080,15 +1088,16 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     let new_work_item_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_work_items (
-            agent_id, channel_id, thread_root_id, task_id, title, context, status
+            agent_id, channel_id, thread_root_id, source_message_id, task_id, title, context, status
         )
-        values ($1, $2, $3, $4, $5, $6, 'queued')
+        values ($1, $2, $3, $4, $5, $6, $7, 'queued')
         returning id
         "#,
     )
     .bind(agent_id)
     .bind(row.get::<Option<Uuid>, _>("channel_id"))
     .bind(row.get::<Option<Uuid>, _>("thread_root_id"))
+    .bind(row.get::<Option<Uuid>, _>("source_message_id"))
     .bind(row.get::<Option<Uuid>, _>("task_id"))
     .bind(&title)
     .bind(&context)
@@ -1287,15 +1296,16 @@ async fn queue_mentions_as_work_items(
         let work_item_id: Uuid = sqlx::query_scalar(
             r#"
             insert into agent_work_items (
-                agent_id, channel_id, thread_root_id, task_id, title, context, status
+                agent_id, channel_id, thread_root_id, source_message_id, task_id, title, context, status
             )
-            values ($1, $2, $3, $4, $5, $6, 'queued')
+            values ($1, $2, $3, $4, $5, $6, $7, 'queued')
             returning id
             "#,
         )
         .bind(agent_id)
         .bind(channel_id)
         .bind(thread_root_id)
+        .bind(message_id)
         .bind(task_id)
         .bind(&title)
         .bind(&context)
@@ -1532,7 +1542,7 @@ async fn send_message(
     queue_mentions_as_work_items(
         &state.pool,
         channel_id,
-        thread_root_id.or(Some(msg_id)),
+        thread_root_id,
         msg_id,
         task_id,
         body.trim(),
@@ -1912,6 +1922,7 @@ async fn load_agent_work_items(pool: &PgPool) -> CommandResult<Vec<AgentWorkItem
             w.channel_id,
             c.name as channel_name,
             w.thread_root_id,
+            w.source_message_id,
             w.task_id,
             t.number as task_number,
             w.title,
@@ -1942,6 +1953,7 @@ async fn load_agent_work_items(pool: &PgPool) -> CommandResult<Vec<AgentWorkItem
             channel_id: row.get("channel_id"),
             channel_name: row.get("channel_name"),
             thread_root_id: row.get("thread_root_id"),
+            source_message_id: row.get("source_message_id"),
             task_id: row.get("task_id"),
             task_number: row.get("task_number"),
             title: row.get("title"),
@@ -2150,11 +2162,22 @@ async fn ingest_agent_event_line(
     agent_id: Uuid,
     line: &str,
 ) -> CommandResult<Option<String>> {
-    let Some(json) = line.trim().strip_prefix(AGENT_EVENT_PREFIX) else {
+    let Some(json) = extract_agent_event_json(line) else {
         return Ok(None);
     };
-    let event: AgentEvent = serde_json::from_str(json.trim()).map_err(to_string)?;
+    let event: AgentEvent = serde_json::from_str(json).map_err(to_string)?;
     handle_agent_event(pool, agent_id, event).await.map(Some)
+}
+
+fn extract_agent_event_json(line: &str) -> Option<&str> {
+    let mut trimmed = line.trim();
+    for prefix in ["[stdout] ", "[stderr] "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            trimmed = rest.trim_start();
+            break;
+        }
+    }
+    trimmed.strip_prefix(AGENT_EVENT_PREFIX).map(str::trim)
 }
 
 async fn handle_agent_event(
@@ -3004,7 +3027,7 @@ async fn supervisor_start_agent(
             run_id,
             stderr,
             "stderr",
-            false,
+            true,
         )));
     }
 
@@ -3267,7 +3290,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_agent_mentions;
+    use super::{extract_agent_event_json, extract_agent_mentions};
 
     #[test]
     fn extracts_unique_agent_mentions() {
@@ -3279,5 +3302,31 @@ mod tests {
     fn ignores_empty_or_email_like_at_signs() {
         let mentions = extract_agent_mentions("email a@b.com and a lone @ sign");
         assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn extracts_plain_agent_event_lines() {
+        assert_eq!(
+            extract_agent_event_json(r#"LOCAL_SLOCK_EVENT {"type":"message","body":"ok"}"#),
+            Some(r#"{"type":"message","body":"ok"}"#)
+        );
+    }
+
+    #[test]
+    fn extracts_codex_wrapped_agent_event_lines() {
+        assert_eq!(
+            extract_agent_event_json(
+                r#"[stderr] LOCAL_SLOCK_EVENT {"type":"message","body":"from tool output"}"#
+            ),
+            Some(r#"{"type":"message","body":"from tool output"}"#)
+        );
+    }
+
+    #[test]
+    fn ignores_event_examples_embedded_in_instructions() {
+        assert!(extract_agent_event_json(
+            r#"[stderr] Reply with: LOCAL_SLOCK_EVENT {"type":"message","body":"..."}"#
+        )
+        .is_none());
     }
 }

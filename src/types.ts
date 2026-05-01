@@ -77,6 +77,7 @@ export type AgentWorkItem = {
   channel_id: string | null;
   channel_name: string | null;
   thread_root_id: string | null;
+  source_message_id: string | null;
   task_id: string | null;
   task_number: number | null;
   title: string;

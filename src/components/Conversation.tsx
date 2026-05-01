@@ -196,7 +196,11 @@ export function Conversation({
           )}
           {rootMessages.map((message) => {
             const linkedTask = taskForMessage(message.id);
-            const messageWorkItems = workItems.filter((item) => item.thread_root_id === message.id);
+            const messageWorkItems = workItems.filter(
+              (item) =>
+                item.source_message_id === message.id ||
+                (!item.source_message_id && item.thread_root_id === message.id),
+            );
             const mentionedAgents = mentionedAgentsForBody(message.body, agents);
             return (
               <article

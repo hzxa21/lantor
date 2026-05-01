@@ -2209,3 +2209,122 @@ mark,
   font-size: 12px;
   line-height: 1.45;
 }
+
+/* Slack-like conversation pass: keep the Liquid Class shell, make chat read as rows. */
+.conversation {
+  background: #fff;
+}
+
+.message-list {
+  padding: 10px 0 20px;
+}
+
+.beginning {
+  margin: 10px 24px 14px;
+  color: #8f8f95;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.message-card {
+  grid-template-columns: 38px 1fr;
+  gap: 10px;
+  margin: 0;
+  padding: 7px 22px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.message-card:hover,
+.message-card.focused {
+  transform: none;
+  border-color: transparent;
+  background: rgba(246, 247, 249, 0.92);
+  box-shadow: none;
+}
+
+.message-card.focused {
+  box-shadow: inset 3px 0 var(--accent);
+}
+
+.message-body p {
+  margin-top: 3px;
+}
+
+.message-actions {
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.message-card:hover .message-actions,
+.message-card.focused .message-actions {
+  opacity: 1;
+}
+
+.reply-pill,
+.follow-pill {
+  padding: 5px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.agent-mention-line {
+  margin-top: 6px;
+}
+
+.agent-mention-line span,
+.agent-mention-line strong {
+  padding: 3px 7px;
+  border-radius: 7px;
+  font-size: 11px;
+}
+
+.thread {
+  grid-template-rows: auto minmax(0, 1fr);
+  background: #fbfbfc;
+}
+
+.thread-focus {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.thread-root {
+  margin: 10px 14px 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.reply-list {
+  gap: 0;
+  padding: 6px 0 12px;
+}
+
+.reply-list article {
+  grid-template-columns: 30px 1fr;
+  gap: 9px;
+  padding: 7px 16px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+.reply-list article:hover {
+  transform: none;
+  border-color: transparent;
+  background: rgba(246, 247, 249, 0.92);
+}
+
+.reply-composer {
+  padding: 10px 14px 14px;
+  background: #fbfbfc;
+}
+
+.reply-composer textarea,
+.composer textarea {
+  border-color: rgba(20, 23, 31, 0.16);
+  background: #fff;
+}

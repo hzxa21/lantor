@@ -292,7 +292,7 @@ function App() {
       displayName: agentDraft.displayName || handle,
       runtime: agentDraft.runtime,
       model: agentDraft.model,
-      launchCommand: agentDraft.launchCommand,
+      launchCommand: agentDraft.launchCommand.trim() || buildPresetCommand(agentDraft),
       workingDirectory: agentDraft.workingDirectory,
     });
     setAgentDraft(EMPTY_AGENT_FORM);
@@ -559,19 +559,8 @@ function App() {
           activeRoot={activeRoot}
           activeTask={activeTask}
           replies={replies}
-          workAgentFilter={workAgentFilter}
-          workStatusFilter={workStatusFilter}
-          visibleWorkItems={visibleWorkItems}
-          queuedWorkItemCount={queuedWorkItemCount}
           taskTitleDrafts={taskTitleDrafts}
           replyDraft={replyDraft}
-          setWorkAgentFilter={setWorkAgentFilter}
-          setWorkStatusFilter={setWorkStatusFilter}
-          openWorkItem={openWorkItem}
-          cancelWorkItem={cancelWorkItem}
-          retryWorkItem={retryWorkItem}
-          installSupervisorService={installSupervisorService}
-          uninstallSupervisorService={uninstallSupervisorService}
           toggleThreadFollow={toggleThreadFollow}
           setActiveThreadId={setActiveThreadId}
           setTaskTitleDraft={setTaskTitleDraft}
