@@ -1,11 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::env;
+use std::{env, process::Stdio};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use tauri::{Manager, State};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    process::Command,
+};
 use uuid::Uuid;
 
 const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/localslock";
@@ -27,6 +31,8 @@ struct Agent {
     model: String,
     avatar: String,
     description: String,
+    launch_command: String,
+    working_directory: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,12 +69,28 @@ struct Task {
 }
 
 #[derive(Debug, Serialize)]
+struct AgentRun {
+    id: Uuid,
+    agent_id: Uuid,
+    agent_handle: String,
+    command: String,
+    working_directory: String,
+    status: String,
+    pid: Option<i32>,
+    exit_code: Option<i32>,
+    log: String,
+    started_at: DateTime<Utc>,
+    stopped_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
 struct Bootstrap {
     db_url: String,
     channels: Vec<Channel>,
     agents: Vec<Agent>,
     messages: Vec<Message>,
     tasks: Vec<Task>,
+    agent_runs: Vec<AgentRun>,
 }
 
 type CommandResult<T> = Result<T, String>;
@@ -99,6 +121,17 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             created_at timestamptz not null default now()
         )
         "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "alter table agents add column if not exists launch_command text not null default ''",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "alter table agents add column if not exists working_directory text not null default ''",
     )
     .execute(pool)
     .await?;
@@ -153,6 +186,40 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        create table if not exists agent_runs (
+            id uuid primary key default gen_random_uuid(),
+            agent_id uuid not null references agents(id) on delete cascade,
+            command text not null,
+            working_directory text not null default '',
+            status text not null default 'starting',
+            pid integer,
+            exit_code integer,
+            log text not null default '',
+            started_at timestamptz not null default now(),
+            stopped_at timestamptz
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // A desktop restart loses process handles. Keep historical logs, but do not
+    // pretend LocalSlock can still control those processes.
+    sqlx::query(
+        r#"
+        update agent_runs
+        set status = 'unknown', stopped_at = coalesce(stopped_at, now())
+        where stopped_at is null and status in ('starting', 'running', 'stopping')
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("update agents set status = 'idle' where status in ('running', 'stopping')")
+        .execute(pool)
+        .await?;
+
     Ok(())
 }
 
@@ -162,6 +229,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let agents = load_agents(&state.pool).await?;
     let messages = load_messages(&state.pool).await?;
     let tasks = load_tasks(&state.pool).await?;
+    let agent_runs = load_agent_runs(&state.pool).await?;
 
     Ok(Bootstrap {
         db_url: state.db_url.clone(),
@@ -169,6 +237,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         agents,
         messages,
         tasks,
+        agent_runs,
     })
 }
 
@@ -240,6 +309,8 @@ async fn create_agent(
     display_name: String,
     runtime: String,
     model: String,
+    launch_command: String,
+    working_directory: String,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     let normalized_handle = handle.trim().trim_start_matches('@');
@@ -259,13 +330,18 @@ async fn create_agent(
 
     sqlx::query(
         r#"
-        insert into agents (handle, display_name, role, status, runtime, model, avatar, description)
-        values ($1, $2, 'agent', 'idle', $3, $4, $5, 'Local agent')
+        insert into agents (
+            handle, display_name, role, status, runtime, model, avatar, description,
+            launch_command, working_directory
+        )
+        values ($1, $2, 'agent', 'idle', $3, $4, $5, 'Local agent', $6, $7)
         on conflict (handle) do update set
             display_name = excluded.display_name,
             runtime = excluded.runtime,
             model = excluded.model,
-            avatar = excluded.avatar
+            avatar = excluded.avatar,
+            launch_command = excluded.launch_command,
+            working_directory = excluded.working_directory
         "#,
     )
     .bind(normalized_handle)
@@ -273,6 +349,8 @@ async fn create_agent(
     .bind(runtime.trim())
     .bind(model.trim())
     .bind(avatar)
+    .bind(launch_command.trim())
+    .bind(working_directory.trim())
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
@@ -288,6 +366,8 @@ async fn update_agent(
     runtime: String,
     model: String,
     description: String,
+    launch_command: String,
+    working_directory: String,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     let normalized_handle = handle.trim().trim_start_matches('@');
@@ -313,7 +393,9 @@ async fn update_agent(
             runtime = $4,
             model = $5,
             avatar = $6,
-            description = $7
+            description = $7,
+            launch_command = $8,
+            working_directory = $9
         where id = $1
         "#,
     )
@@ -324,6 +406,8 @@ async fn update_agent(
     .bind(model.trim())
     .bind(avatar)
     .bind(description.trim())
+    .bind(launch_command.trim())
+    .bind(working_directory.trim())
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
@@ -333,12 +417,212 @@ async fn update_agent(
 
 #[tauri::command]
 async fn delete_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    let active_run: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from agent_runs
+        where agent_id = $1
+          and stopped_at is null
+          and status in ('starting', 'running', 'stopping')
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    if active_run.is_some() {
+        return Err("stop the agent before deleting it".to_owned());
+    }
+
     sqlx::query("delete from agents where id = $1")
         .bind(agent_id)
         .execute(&state.pool)
         .await
         .map_err(to_string)?;
 
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    let active_run: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from agent_runs
+        where agent_id = $1
+          and stopped_at is null
+          and status in ('starting', 'running', 'stopping')
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    if active_run.is_some() {
+        return Err("agent already has an active run".to_owned());
+    }
+
+    let row = sqlx::query(
+        r#"
+        select handle, runtime, model, launch_command, working_directory
+        from agents
+        where id = $1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    let command_text = effective_launch_command(
+        row.get("launch_command"),
+        row.get("runtime"),
+        row.get("model"),
+        row.get("handle"),
+    );
+    let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
+
+    let run_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_runs (agent_id, command, working_directory, status, log)
+        values ($1, $2, $3, 'starting', $4)
+        returning id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(&command_text)
+    .bind(&working_directory)
+    .bind(format!("$ {command_text}\n"))
+    .fetch_one(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    let mut command = Command::new("/bin/zsh");
+    command.arg("-lc").arg(&command_text);
+    #[cfg(unix)]
+    command.process_group(0);
+    if !working_directory.is_empty() {
+        command.current_dir(&working_directory);
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            let error_log = format!("failed to start process: {err}\n");
+            sqlx::query(
+                r#"
+                update agent_runs
+                set status = 'failed', log = right(log || $2, 20000), stopped_at = now()
+                where id = $1
+                "#,
+            )
+            .bind(run_id)
+            .bind(error_log)
+            .execute(&state.pool)
+            .await
+            .map_err(to_string)?;
+            sqlx::query("update agents set status = 'error' where id = $1")
+                .bind(agent_id)
+                .execute(&state.pool)
+                .await
+                .map_err(to_string)?;
+            return Err(err.to_string());
+        }
+    };
+
+    let pid = child.id().map(|id| id as i32);
+    sqlx::query("update agent_runs set status = 'running', pid = $2 where id = $1")
+        .bind(run_id)
+        .bind(pid)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+    sqlx::query("update agents set status = 'running' where id = $1")
+        .bind(agent_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+
+    if let Some(stdout) = child.stdout.take() {
+        tauri::async_runtime::spawn(pipe_run_output(
+            state.pool.clone(),
+            run_id,
+            stdout,
+            "stdout",
+        ));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        tauri::async_runtime::spawn(pipe_run_output(
+            state.pool.clone(),
+            run_id,
+            stderr,
+            "stderr",
+        ));
+    }
+
+    tauri::async_runtime::spawn(wait_for_agent_run(
+        state.pool.clone(),
+        agent_id,
+        run_id,
+        child,
+    ));
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    let row = sqlx::query(
+        r#"
+        select agent_id, pid
+        from agent_runs
+        where id = $1 and stopped_at is null
+        "#,
+    )
+    .bind(run_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    let agent_id: Uuid = row.get("agent_id");
+    let pid: Option<i32> = row.get("pid");
+    let Some(pid) = pid else {
+        return Err("agent run does not have a pid yet".to_owned());
+    };
+
+    sqlx::query("update agent_runs set status = 'stopping' where id = $1")
+        .bind(run_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+    sqlx::query("update agents set status = 'stopping' where id = $1")
+        .bind(agent_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+
+    let status = Command::new("kill")
+        .arg("-TERM")
+        .arg(format!("-{pid}"))
+        .status()
+        .await
+        .map_err(to_string)?;
+
+    if !status.success() {
+        return Err(format!("failed to terminate process group {pid}: {status}"));
+    }
+
+    append_run_log(
+        &state.pool,
+        run_id,
+        format!("sent SIGTERM to process group {pid}\n"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -462,7 +746,18 @@ async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
 async fn load_agents(pool: &PgPool) -> CommandResult<Vec<Agent>> {
     let rows = sqlx::query(
         r#"
-        select id, handle, display_name, role, status, runtime, model, avatar, description
+        select
+            id,
+            handle,
+            display_name,
+            role,
+            status,
+            runtime,
+            model,
+            avatar,
+            description,
+            launch_command,
+            working_directory
         from agents
         order by case when handle = 'Hancock' then 0 else 1 end, display_name
         "#,
@@ -483,6 +778,8 @@ async fn load_agents(pool: &PgPool) -> CommandResult<Vec<Agent>> {
             model: row.get("model"),
             avatar: row.get("avatar"),
             description: row.get("description"),
+            launch_command: row.get("launch_command"),
+            working_directory: row.get("working_directory"),
         })
         .collect())
 }
@@ -562,6 +859,146 @@ async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
         .collect())
 }
 
+async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            r.id,
+            r.agent_id,
+            a.handle as agent_handle,
+            r.command,
+            r.working_directory,
+            r.status,
+            r.pid,
+            r.exit_code,
+            r.log,
+            r.started_at,
+            r.stopped_at
+        from agent_runs r
+        join agents a on a.id = r.agent_id
+        order by r.started_at desc
+        limit 30
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| AgentRun {
+            id: row.get("id"),
+            agent_id: row.get("agent_id"),
+            agent_handle: row.get("agent_handle"),
+            command: row.get("command"),
+            working_directory: row.get("working_directory"),
+            status: row.get("status"),
+            pid: row.get("pid"),
+            exit_code: row.get("exit_code"),
+            log: row.get("log"),
+            started_at: row.get("started_at"),
+            stopped_at: row.get("stopped_at"),
+        })
+        .collect())
+}
+
+async fn append_run_log(pool: &PgPool, run_id: Uuid, line: String) -> CommandResult<()> {
+    sqlx::query("update agent_runs set log = right(log || $2, 20000) where id = $1")
+        .bind(run_id)
+        .bind(line)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+
+    Ok(())
+}
+
+async fn pipe_run_output<R>(pool: PgPool, run_id: Uuid, stream: R, label: &'static str)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(stream).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                let _ = append_run_log(&pool, run_id, format!("[{label}] {line}\n")).await;
+            }
+            Ok(None) => break,
+            Err(err) => {
+                let _ =
+                    append_run_log(&pool, run_id, format!("[{label}] read error: {err}\n")).await;
+                break;
+            }
+        }
+    }
+}
+
+async fn wait_for_agent_run(
+    pool: PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+    mut child: tokio::process::Child,
+) {
+    let result = child.wait().await;
+    let (run_status, agent_status, exit_code, log_line) = match result {
+        Ok(status) if status.success() => (
+            "exited",
+            "idle",
+            status.code(),
+            format!("process exited successfully: {status}\n"),
+        ),
+        Ok(status) => (
+            "stopped",
+            "idle",
+            status.code(),
+            format!("process stopped: {status}\n"),
+        ),
+        Err(err) => (
+            "failed",
+            "error",
+            None,
+            format!("failed while waiting for process: {err}\n"),
+        ),
+    };
+
+    let _ = sqlx::query(
+        r#"
+        update agent_runs
+        set status = $2,
+            exit_code = $3,
+            log = right(log || $4, 20000),
+            stopped_at = now()
+        where id = $1
+        "#,
+    )
+    .bind(run_id)
+    .bind(run_status)
+    .bind(exit_code)
+    .bind(log_line)
+    .execute(&pool)
+    .await;
+
+    let _ = sqlx::query("update agents set status = $2 where id = $1")
+        .bind(agent_id)
+        .bind(agent_status)
+        .execute(&pool)
+        .await;
+}
+
+fn effective_launch_command(
+    launch_command: String,
+    _runtime: String,
+    _model: String,
+    _handle: String,
+) -> String {
+    if !launch_command.trim().is_empty() {
+        return launch_command.trim().to_owned();
+    }
+
+    "printf 'LocalSlock placeholder runtime. Configure launch_command to run a real agent.\\n'; sleep 3600"
+        .to_owned()
+}
+
 fn normalize_channel_name(name: &str) -> String {
     name.trim()
         .trim_start_matches('#')
@@ -604,6 +1041,8 @@ pub fn run() {
             delete_agent,
             delete_channel,
             send_message,
+            start_agent,
+            stop_agent,
             update_agent,
             update_channel,
             update_task_status

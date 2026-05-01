@@ -34,6 +34,8 @@ type Agent = {
   model: string;
   avatar: string;
   description: string;
+  launch_command: string;
+  working_directory: string;
 };
 
 type Channel = {
@@ -66,12 +68,27 @@ type Task = {
   assignee_name: string | null;
 };
 
+type AgentRun = {
+  id: string;
+  agent_id: string;
+  agent_handle: string;
+  command: string;
+  working_directory: string;
+  status: string;
+  pid: number | null;
+  exit_code: number | null;
+  log: string;
+  started_at: string;
+  stopped_at: string | null;
+};
+
 type Bootstrap = {
   db_url: string;
   channels: Channel[];
   agents: Agent[];
   messages: Message[];
   tasks: Task[];
+  agent_runs: AgentRun[];
 };
 
 type AgentForm = {
@@ -80,6 +97,8 @@ type AgentForm = {
   runtime: string;
   model: string;
   description: string;
+  launchCommand: string;
+  workingDirectory: string;
 };
 
 const EMPTY_AGENT_FORM: AgentForm = {
@@ -88,9 +107,12 @@ const EMPTY_AGENT_FORM: AgentForm = {
   runtime: "codex",
   model: "gpt-5.5",
   description: "",
+  launchCommand: "",
+  workingDirectory: "",
 };
 
 const TASK_STATUSES = ["todo", "in_progress", "in_review", "done"] as const;
+const ACTIVE_RUN_STATUSES = new Set(["starting", "running", "stopping"]);
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -193,6 +215,8 @@ function App() {
       displayName: agentDraft.displayName || handle,
       runtime: agentDraft.runtime,
       model: agentDraft.model,
+      launchCommand: agentDraft.launchCommand,
+      workingDirectory: agentDraft.workingDirectory,
     });
     setAgentDraft(EMPTY_AGENT_FORM);
   }
@@ -205,6 +229,8 @@ function App() {
       runtime: agent.runtime,
       model: agent.model,
       description: agent.description,
+      launchCommand: agent.launch_command,
+      workingDirectory: agent.working_directory,
     });
   }
 
@@ -217,6 +243,8 @@ function App() {
       runtime: agentEdit.runtime,
       model: agentEdit.model,
       description: agentEdit.description,
+      launchCommand: agentEdit.launchCommand,
+      workingDirectory: agentEdit.workingDirectory,
     });
     setEditingAgentId(null);
     setAgentEdit(EMPTY_AGENT_FORM);
@@ -256,6 +284,18 @@ function App() {
 
   async function claimTask(task: Task, agentId: string) {
     await mutate("claim_task", { taskId: task.id, agentId: agentId || null });
+  }
+
+  function activeRunFor(agentId: string) {
+    return data?.agent_runs.find((run) => run.agent_id === agentId && ACTIVE_RUN_STATUSES.has(run.status)) ?? null;
+  }
+
+  async function startAgent(agent: Agent) {
+    await mutate("start_agent", { agentId: agent.id });
+  }
+
+  async function stopAgent(run: AgentRun) {
+    await mutate("stop_agent", { runId: run.id });
   }
 
   if (!data) {
@@ -365,23 +405,47 @@ function App() {
               onChange={(event) => setAgentDraft({ ...agentDraft, model: event.target.value })}
               placeholder="model"
             />
+            <textarea
+              value={agentDraft.launchCommand}
+              onChange={(event) => setAgentDraft({ ...agentDraft, launchCommand: event.target.value })}
+              placeholder="launch command; empty uses a placeholder runtime"
+            />
+            <input
+              value={agentDraft.workingDirectory}
+              onChange={(event) => setAgentDraft({ ...agentDraft, workingDirectory: event.target.value })}
+              placeholder="working directory"
+            />
             <button onClick={createAgent}><Plus size={16} /> Add agent</button>
           </div>
-          {data.agents.map((agent) => (
-            <div className="agent-card" key={agent.id}>
-              <button className="agent" onClick={() => startEditAgent(agent)}>
-                <div className="avatar">{agent.avatar || "A"}</div>
-                <div>
-                  <strong>{agent.display_name}</strong>
-                  <span>@{agent.handle} · {agent.runtime}</span>
+          {data.agents.map((agent) => {
+            const run = activeRunFor(agent.id);
+            return (
+              <div className="agent-card" key={agent.id}>
+                <button className="agent" onClick={() => startEditAgent(agent)}>
+                  <div className="avatar">{agent.avatar || "A"}</div>
+                  <div>
+                    <strong>{agent.display_name}</strong>
+                    <span>@{agent.handle} · {agent.runtime} · {agent.status}</span>
+                  </div>
+                  <Circle className={`dot ${agent.status}`} size={10} />
+                </button>
+                <div className="agent-runtime-actions">
+                  {run ? (
+                    <button className="runtime-stop" onClick={() => stopAgent(run)}>
+                      <Square size={14} /> Stop
+                    </button>
+                  ) : (
+                    <button className="runtime-start" onClick={() => startAgent(agent)}>
+                      <Sparkles size={14} /> Start
+                    </button>
+                  )}
+                  <button className="icon-danger" onClick={() => deleteAgent(agent)} title="Delete agent">
+                    <Trash2 size={15} />
+                  </button>
                 </div>
-                <Circle className={`dot ${agent.status}`} size={10} />
-              </button>
-              <button className="icon-danger" onClick={() => deleteAgent(agent)} title="Delete agent">
-                <Trash2 size={15} />
-              </button>
-            </div>
-          ))}
+              </div>
+            );
+          })}
           {editingAgentId && (
             <div className="management-card">
               <h4>Edit Agent</h4>
@@ -407,6 +471,16 @@ function App() {
                 value={agentEdit.model}
                 onChange={(event) => setAgentEdit({ ...agentEdit, model: event.target.value })}
                 placeholder="model"
+              />
+              <textarea
+                value={agentEdit.launchCommand}
+                onChange={(event) => setAgentEdit({ ...agentEdit, launchCommand: event.target.value })}
+                placeholder="launch command; empty uses a placeholder runtime"
+              />
+              <input
+                value={agentEdit.workingDirectory}
+                onChange={(event) => setAgentEdit({ ...agentEdit, workingDirectory: event.target.value })}
+                placeholder="working directory"
               />
               <textarea
                 value={agentEdit.description}
@@ -577,6 +651,28 @@ function App() {
             <span>Tasks</span>
             <strong>{data.tasks.length}</strong>
           </div>
+        </section>
+
+        <section className="runtime-panel">
+          <h3>Runtime Runs</h3>
+          {data.agent_runs.length === 0 && (
+            <p className="empty-mini">Start an agent to create the first local run log.</p>
+          )}
+          {data.agent_runs.slice(0, 5).map((run) => (
+            <article key={run.id} className={`run-card ${run.status}`}>
+              <div className="run-head">
+                <strong>@{run.agent_handle}</strong>
+                <span>{run.status}</span>
+              </div>
+              <code>{run.command}</code>
+              <small>
+                {formatTime(run.started_at)}
+                {run.pid ? ` · pid ${run.pid}` : ""}
+                {run.exit_code !== null ? ` · exit ${run.exit_code}` : ""}
+              </small>
+              {run.log && <pre>{run.log.trim().split("\n").slice(-8).join("\n")}</pre>}
+            </article>
+          ))}
         </section>
 
         {activeRoot && (
