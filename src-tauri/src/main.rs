@@ -838,44 +838,6 @@ async fn dispatch_agent_work(
         return Err("agent does not exist".to_owned());
     };
 
-    let active_run: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        select id
-        from agent_runs
-        where agent_id = $1
-          and stopped_at is null
-          and status in ('starting', 'running', 'stopping')
-        limit 1
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(to_string)?;
-    if active_run.is_some() {
-        return Err(
-            "agent already has an active run; stop it before dispatching run-once work".to_owned(),
-        );
-    }
-
-    let pending_start: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        select id
-        from supervisor_commands
-        where command_type = 'start_agent'
-          and agent_id = $1
-          and status in ('pending', 'running')
-        limit 1
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(to_string)?;
-    if pending_start.is_some() {
-        return Err("agent already has a pending start command".to_owned());
-    }
-
     let mut resolved_channel_id = channel_id;
     let mut resolved_thread_root_id = thread_root_id;
     let mut resolved_title = title.trim().to_owned();
@@ -968,28 +930,17 @@ async fn dispatch_agent_work(
         .map_err(to_string)?;
     }
 
-    sqlx::query(
-        r#"
-        insert into supervisor_commands (command_type, agent_id, work_item_id)
-        values ('start_agent', $1, $2)
-        "#,
-    )
-    .bind(agent_id)
-    .bind(work_item_id)
-    .execute(&state.pool)
-    .await
-    .map_err(to_string)?;
-    sqlx::query("update agents set status = 'queued' where id = $1")
-        .bind(agent_id)
-        .execute(&state.pool)
-        .await
-        .map_err(to_string)?;
+    let scheduled = enqueue_agent_work_if_available(&state.pool, agent_id, work_item_id).await?;
     record_agent_activity(
         &state.pool,
         Some(agent_id),
         None,
         "dispatch",
-        "Work item dispatched",
+        if scheduled {
+            "Work item dispatched"
+        } else {
+            "Work item queued"
+        },
         format!("#{work_item_id} to @{agent_handle}: {resolved_title}"),
     )
     .await?;
@@ -1124,42 +1075,6 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     }
 
     let agent_id: Uuid = row.get("agent_id");
-    let active_run: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        select id
-        from agent_runs
-        where agent_id = $1
-          and stopped_at is null
-          and status in ('starting', 'running', 'stopping')
-        limit 1
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(to_string)?;
-    if active_run.is_some() {
-        return Err("agent already has an active run".to_owned());
-    }
-
-    let pending_start: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        select id
-        from supervisor_commands
-        where command_type = 'start_agent'
-          and agent_id = $1
-          and status in ('pending', 'running')
-        limit 1
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(to_string)?;
-    if pending_start.is_some() {
-        return Err("agent already has a pending start command".to_owned());
-    }
-
     let title: String = row.get("title");
     let context: String = row.get("context");
     let new_work_item_id: Uuid = sqlx::query_scalar(
@@ -1181,6 +1096,99 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     .await
     .map_err(to_string)?;
 
+    let scheduled =
+        enqueue_agent_work_if_available(&state.pool, agent_id, new_work_item_id).await?;
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "dispatch",
+        if scheduled {
+            "Work item retried"
+        } else {
+            "Retried work item queued"
+        },
+        format!("{work_item_id} -> {new_work_item_id}: {title}"),
+    )
+    .await?;
+
+    Ok(new_work_item_id)
+}
+
+async fn agent_has_active_or_pending_start(pool: &PgPool, agent_id: Uuid) -> CommandResult<bool> {
+    let active_run: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from agent_runs
+        where agent_id = $1
+          and stopped_at is null
+          and status in ('starting', 'running', 'stopping')
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+    if active_run.is_some() {
+        return Ok(true);
+    }
+
+    let pending_start: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from supervisor_commands
+        where command_type = 'start_agent'
+          and agent_id = $1
+          and status in ('pending', 'running')
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(pending_start.is_some())
+}
+
+async fn enqueue_agent_work_if_available(
+    pool: &PgPool,
+    agent_id: Uuid,
+    work_item_id: Uuid,
+) -> CommandResult<bool> {
+    let status: Option<String> =
+        sqlx::query_scalar("select status from agent_work_items where id = $1 and agent_id = $2")
+            .bind(work_item_id)
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string)?;
+    if status.as_deref() != Some("queued") {
+        return Ok(false);
+    }
+    if agent_has_active_or_pending_start(pool, agent_id).await? {
+        return Ok(false);
+    }
+
+    let pending_for_work: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from supervisor_commands
+        where command_type = 'start_agent'
+          and work_item_id = $1
+          and status in ('pending', 'running')
+        limit 1
+        "#,
+    )
+    .bind(work_item_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+    if pending_for_work.is_some() {
+        return Ok(true);
+    }
+
     sqlx::query(
         r#"
         insert into supervisor_commands (command_type, agent_id, work_item_id)
@@ -1188,26 +1196,17 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
         "#,
     )
     .bind(agent_id)
-    .bind(new_work_item_id)
-    .execute(&state.pool)
+    .bind(work_item_id)
+    .execute(pool)
     .await
     .map_err(to_string)?;
     sqlx::query("update agents set status = 'queued' where id = $1")
         .bind(agent_id)
-        .execute(&state.pool)
+        .execute(pool)
         .await
         .map_err(to_string)?;
-    record_agent_activity(
-        &state.pool,
-        Some(agent_id),
-        None,
-        "dispatch",
-        "Work item retried",
-        format!("{work_item_id} -> {new_work_item_id}: {title}"),
-    )
-    .await?;
 
-    Ok(new_work_item_id)
+    Ok(true)
 }
 
 fn extract_agent_mentions(body: &str) -> Vec<String> {
@@ -1275,47 +1274,6 @@ async fn queue_mentions_as_work_items(
             continue;
         };
 
-        let active_run: Option<Uuid> = sqlx::query_scalar(
-            r#"
-            select id
-            from agent_runs
-            where agent_id = $1
-              and stopped_at is null
-              and status in ('starting', 'running', 'stopping')
-            limit 1
-            "#,
-        )
-        .bind(agent_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?;
-        let pending_start: Option<Uuid> = sqlx::query_scalar(
-            r#"
-            select id
-            from supervisor_commands
-            where command_type = 'start_agent'
-              and agent_id = $1
-              and status in ('pending', 'running')
-            limit 1
-            "#,
-        )
-        .bind(agent_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?;
-        if active_run.is_some() || pending_start.is_some() {
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                None,
-                "mention",
-                "Mention received while agent is busy",
-                format!("#{channel_name}: {title}"),
-            )
-            .await?;
-            continue;
-        }
-
         let context = format!(
             "Channel: #{channel_name}\n\nMentioned message:\n{body}\n\nReply with LOCAL_SLOCK_EVENT lines when useful."
         );
@@ -1337,28 +1295,17 @@ async fn queue_mentions_as_work_items(
         .fetch_one(pool)
         .await
         .map_err(to_string)?;
-        sqlx::query(
-            r#"
-            insert into supervisor_commands (command_type, agent_id, work_item_id)
-            values ('start_agent', $1, $2)
-            "#,
-        )
-        .bind(agent_id)
-        .bind(work_item_id)
-        .execute(pool)
-        .await
-        .map_err(to_string)?;
-        sqlx::query("update agents set status = 'queued' where id = $1")
-            .bind(agent_id)
-            .execute(pool)
-            .await
-            .map_err(to_string)?;
+        let scheduled = enqueue_agent_work_if_available(pool, agent_id, work_item_id).await?;
         record_agent_activity(
             pool,
             Some(agent_id),
             None,
             "mention",
-            "Mention dispatched",
+            if scheduled {
+                "Mention dispatched"
+            } else {
+                "Mention queued"
+            },
             format!("#{channel_name}: {title}"),
         )
         .await?;
@@ -2553,6 +2500,7 @@ async fn run_supervisor() -> CommandResult<()> {
 
     loop {
         write_supervisor_heartbeat(&pool).await?;
+        schedule_queued_work_items(&pool).await?;
         if let Some(command) = claim_next_supervisor_command(&pool).await? {
             let command_id = command.id;
             let result = process_supervisor_command(&pool, command).await;
@@ -2560,6 +2508,46 @@ async fn run_supervisor() -> CommandResult<()> {
         }
         sleep(Duration::from_millis(800)).await;
     }
+}
+
+async fn schedule_queued_work_items(pool: &PgPool) -> CommandResult<()> {
+    let rows = sqlx::query(
+        r#"
+        select w.id, w.agent_id
+        from agent_work_items w
+        where w.status = 'queued'
+          and not exists (
+              select 1
+              from supervisor_commands c
+              where c.command_type = 'start_agent'
+                and c.work_item_id = w.id
+                and c.status in ('pending', 'running')
+          )
+        order by w.created_at asc
+        limit 16
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    for row in rows {
+        let work_item_id: Uuid = row.get("id");
+        let agent_id: Uuid = row.get("agent_id");
+        if enqueue_agent_work_if_available(pool, agent_id, work_item_id).await? {
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "dispatch",
+                "Backlog work item scheduled",
+                work_item_id.to_string(),
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
 }
 
 async fn mark_orphaned_agent_runs(pool: &PgPool) -> CommandResult<()> {
