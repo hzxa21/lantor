@@ -2136,6 +2136,43 @@ mark,
   resize: vertical;
 }
 
+.runtime-preflight {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid rgba(142, 142, 147, 0.16);
+  border-radius: 13px;
+  background: rgba(142, 142, 147, 0.08);
+}
+
+.runtime-preflight strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-preflight span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.runtime-preflight.ok {
+  border-color: rgba(52, 199, 89, 0.24);
+  background: rgba(52, 199, 89, 0.09);
+}
+
+.runtime-preflight.missing {
+  border-color: rgba(255, 149, 0, 0.28);
+  background: rgba(255, 149, 0, 0.09);
+}
+
+.runtime-preflight.missing strong {
+  color: #9a5a00;
+}
+
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;

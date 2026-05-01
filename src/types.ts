@@ -113,6 +113,13 @@ export type LaunchAgentStatus = {
   loaded: boolean;
 };
 
+export type RuntimeCheck = {
+  runtime: string;
+  command: string;
+  available: boolean;
+  detail: string;
+};
+
 export type Bootstrap = {
   db_url: string;
   channels: Channel[];

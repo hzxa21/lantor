@@ -31,6 +31,14 @@ struct AppState {
 }
 
 #[derive(Debug, Serialize)]
+struct RuntimeCheck {
+    runtime: String,
+    command: String,
+    available: bool,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
 struct Agent {
     id: Uuid,
     handle: String,
@@ -470,6 +478,54 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         agent_activities,
         supervisor,
         launch_agent,
+    })
+}
+
+#[tauri::command]
+async fn check_runtime(runtime: String) -> CommandResult<RuntimeCheck> {
+    let runtime = runtime.trim().to_owned();
+    let command = match runtime.as_str() {
+        "codex" => "codex",
+        "claude" => "claude",
+        "kimi" => "kimi",
+        _ => {
+            return Ok(RuntimeCheck {
+                runtime,
+                command: String::new(),
+                available: false,
+                detail: "Unknown runtime".to_owned(),
+            });
+        }
+    };
+
+    let script = format!(
+        "if command -v {command} >/dev/null 2>&1; then {command} --version 2>&1 | head -n 1; else echo '{command} not found in PATH' >&2; exit 127; fi"
+    );
+    let output = StdCommand::new("/bin/zsh")
+        .arg("-lc")
+        .arg(script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(to_string)?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let detail = if !stdout.is_empty() {
+        stdout
+    } else if !stderr.is_empty() {
+        stderr
+    } else if output.status.success() {
+        format!("{command} found")
+    } else {
+        format!("{command} unavailable")
+    };
+
+    Ok(RuntimeCheck {
+        runtime,
+        command: command.to_owned(),
+        available: output.status.success(),
+        detail,
     })
 }
 
@@ -3475,6 +3531,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             cancel_agent_work,
+            check_runtime,
             create_agent,
             create_channel,
             claim_task,

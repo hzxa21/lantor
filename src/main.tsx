@@ -16,6 +16,7 @@ import {
   EMPTY_AGENT_FORM,
   Message,
   RUNTIME_PRESETS,
+  RuntimeCheck,
   SearchResult,
   Task,
   modelOptionsForRuntime,
@@ -45,6 +46,18 @@ function errorMessage(err: unknown, fallback: string) {
   return fallback;
 }
 
+function RuntimePreflight({ check }: { check: RuntimeCheck | undefined }) {
+  if (!check) {
+    return <div className="runtime-preflight pending">Checking local CLI...</div>;
+  }
+  return (
+    <div className={`runtime-preflight ${check.available ? "ok" : "missing"}`}>
+      <strong>{check.available ? "Runtime ready" : "Runtime unavailable"}</strong>
+      <span>{check.command || check.runtime}: {check.detail}</span>
+    </div>
+  );
+}
+
 function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
@@ -70,6 +83,17 @@ function App() {
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
+  const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
+
+  async function refreshRuntimeChecks() {
+    const entries = await Promise.all(
+      Object.keys(RUNTIME_PRESETS).map(async (runtime) => {
+        const check = await invoke<RuntimeCheck>("check_runtime", { runtime });
+        return [runtime, check] as const;
+      }),
+    );
+    setRuntimeChecks(Object.fromEntries(entries));
+  }
 
   async function refresh() {
     const next = await invoke<Bootstrap>("bootstrap");
@@ -100,6 +124,10 @@ function App() {
   useEffect(() => {
     refresh().catch((err) => {
       setAppError(errorMessage(err, "Failed to load LocalSlock state"));
+      console.error(err);
+    });
+    refreshRuntimeChecks().catch((err) => {
+      setAppError(errorMessage(err, "Failed to check local runtimes"));
       console.error(err);
     });
   }, []);
@@ -859,6 +887,7 @@ function App() {
               </select>
             </label>
           </div>
+          <RuntimePreflight check={runtimeChecks[agentDraft.runtime]} />
           <div className="modal-actions">
             <button onClick={() => setShowCreateAgentModal(false)}>Cancel</button>
             <button className="primary" disabled={!agentDraft.handle.trim()} onClick={createAgent}>Add agent</button>
@@ -913,6 +942,7 @@ function App() {
               </select>
             </label>
           </div>
+          <RuntimePreflight check={runtimeChecks[agentEdit.runtime]} />
           <label>
             <span>Notes</span>
             <textarea
