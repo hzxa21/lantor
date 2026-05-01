@@ -126,11 +126,15 @@ export function Conversation({
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      if (channel && draft.trim()) {
-        sendRootMessage(sendAsTask);
-        setMentionState(null);
-      }
+      submitComposer();
     }
+  }
+
+  function submitComposer() {
+    if (!channel || !draft.trim()) return;
+    sendRootMessage(sendAsTask);
+    setMentionState(null);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
   }
   return (
     <section className="conversation">
@@ -360,7 +364,7 @@ export function Conversation({
             <button className={sendAsTask ? "active" : ""} onClick={() => setSendAsTask(true)}>Task</button>
           </div>
           <span className="composer-hint">Enter to send · Shift+Enter for newline</span>
-          <button className="send" disabled={!channel || !draft.trim()} onClick={() => sendRootMessage(sendAsTask)}>
+          <button className="send" disabled={!channel || !draft.trim()} onClick={submitComposer}>
             Send <Send size={15} />
           </button>
         </div>

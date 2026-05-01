@@ -92,11 +92,15 @@ export function ThreadPanel({
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      if (activeRoot && replyDraft.trim()) {
-        sendReply();
-        setMentionState(null);
-      }
+      submitReply();
     }
+  }
+
+  function submitReply() {
+    if (!activeRoot || !replyDraft.trim()) return;
+    sendReply();
+    setMentionState(null);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
   return (
@@ -216,7 +220,7 @@ export function ThreadPanel({
             disabled={!activeRoot}
             placeholder={activeRoot ? "Reply in thread" : "Select a thread to reply"}
           />
-          <button className="reply-send" disabled={!activeRoot || !replyDraft.trim()} onClick={sendReply}>
+          <button className="reply-send" disabled={!activeRoot || !replyDraft.trim()} onClick={submitReply}>
             Reply <Reply size={15} />
           </button>
         </section>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
 import { Conversation } from "./components/Conversation";
 import { Modal } from "./components/Modal";
 import { Sidebar } from "./components/Sidebar";
@@ -36,12 +37,6 @@ const ACTIVITY_PHASE_LABELS: Record<string, string> = {
 
 function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
-}
-
-function formatActivityTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return formatTime(value);
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function errorMessage(err: unknown, fallback: string) {
@@ -607,7 +602,7 @@ function App() {
   }
 
   return (
-    <main className={`app theme-liquid ${showThread ? "" : "thread-hidden"}`}>
+    <main className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"}`}>
       <Sidebar
         data={data}
         channel={channel}
@@ -659,7 +654,27 @@ function App() {
         sendRootMessage={sendRootMessage}
       />
 
-      {showThread && (
+      {selectedAgent ? (
+        <AgentDetailDrawer
+          agent={selectedAgent}
+          activeRun={selectedAgentRun}
+          phase={selectedAgentPhase}
+          activities={selectedAgentActivities}
+          workItems={selectedAgentWorkItems}
+          onClose={() => setSelectedAgentId(null)}
+          onDelete={deleteAgent}
+          onStart={startAgent}
+          onStop={stopAgent}
+          onEdit={(agent) => {
+            startEditAgent(agent);
+            setSelectedAgentId(null);
+          }}
+          onOpenWorkItem={(item) => {
+            openWorkItem(item);
+            setSelectedAgentId(null);
+          }}
+        />
+      ) : showThread && (
         <ThreadPanel
           channel={channel}
           agents={data.agents}
@@ -913,105 +928,6 @@ function App() {
         </div>
       </Modal>
 
-      <Modal
-        open={Boolean(selectedAgent)}
-        title={selectedAgent ? `@${selectedAgent.handle}` : "Agent"}
-        onClose={() => setSelectedAgentId(null)}
-        width={720}
-      >
-        {selectedAgent && (
-          <div className="agent-detail">
-            <section className="agent-detail-hero">
-              <div className="avatar large">{selectedAgent.avatar || selectedAgent.handle.slice(0, 1).toUpperCase()}</div>
-              <div>
-                <h3>{selectedAgent.display_name}</h3>
-                <p>@{selectedAgent.handle} · {selectedAgent.runtime} · {selectedAgent.model}</p>
-                {selectedAgentPhase && (
-                  <div className="agent-phase-line">
-                    <span className={`phase-badge ${selectedAgentPhase.kind}`}>{selectedAgentPhase.label}</span>
-                    <small>{selectedAgentPhase.detail}</small>
-                  </div>
-                )}
-              </div>
-              <span className={`status-badge ${selectedAgent.status}`}>{selectedAgent.status}</span>
-            </section>
-            <section className="detail-grid">
-              <div>
-                <span>Workspace</span>
-                <code>{selectedAgent.working_directory || "Not configured"}</code>
-              </div>
-              <div>
-                <span>Active run</span>
-                <code>{selectedAgentRun ? `${selectedAgentRun.status}${selectedAgentRun.pid ? ` · pid ${selectedAgentRun.pid}` : ""}` : "No active run"}</code>
-              </div>
-              <div>
-                <span>Role</span>
-                <code>{selectedAgent.role || "agent"}</code>
-              </div>
-              <div>
-                <span>Description</span>
-                <code>{selectedAgent.description || "No notes"}</code>
-              </div>
-            </section>
-            <section className="detail-section live-activity-section">
-              <div className="detail-section-head">
-                <h4>Live activity</h4>
-                {selectedAgentActivities.length > 0 && <span>Latest {selectedAgentActivities.length}</span>}
-              </div>
-              {selectedAgentActivities.length === 0 && <p className="empty-mini">No activity yet.</p>}
-              {selectedAgentActivities.length > 0 && (
-                <div className="activity-timeline" role="log" aria-label={`${selectedAgent.handle} activity`}>
-                  {selectedAgentActivities.map((activity) => (
-                    <article key={activity.id} className={`activity-timeline-row ${activity.kind}`}>
-                      <time>{formatActivityTime(activity.created_at)}</time>
-                      <span className={`activity-dot ${activity.kind}`} aria-hidden="true" />
-                      <div className="activity-timeline-body">
-                        <div className="activity-timeline-title">
-                          <strong>{activity.title}</strong>
-                          <span>{phaseForActivity(activity.kind)}</span>
-                        </div>
-                        <p title={activity.detail}>{activity.detail}</p>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-            <section className="detail-section">
-              <h4>Work items</h4>
-              {selectedAgentWorkItems.length === 0 && <p className="empty-mini">No work assigned yet.</p>}
-              {selectedAgentWorkItems.map((item) => (
-                <article key={item.id} className="detail-work" onClick={() => {
-                  openWorkItem(item);
-                  setSelectedAgentId(null);
-                }}>
-                  <strong>{item.title}</strong>
-                  <span>{item.status}{item.task_number ? ` · task #${item.task_number}` : ""}</span>
-                </article>
-              ))}
-            </section>
-            <div className="modal-actions split">
-              <button className="danger" onClick={() => deleteAgent(selectedAgent)}>Delete Agent</button>
-              <div>
-                {selectedAgentRun ? (
-                  <button onClick={() => stopAgent(selectedAgentRun)}>Stop</button>
-                ) : (
-                  <button onClick={() => startAgent(selectedAgent)}>Start</button>
-                )}
-                <button
-                  className="primary"
-                  onClick={() => {
-                    startEditAgent(selectedAgent);
-                    setSelectedAgentId(null);
-                  }}
-                >
-                  Edit
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </Modal>
     </main>
   );
 }
