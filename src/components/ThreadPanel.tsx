@@ -8,17 +8,12 @@ type ThreadPanelProps = {
   activeRoot: Message | null;
   activeTask: Task | null;
   replies: Message[];
-  dispatchAgentId: string;
-  dispatchContext: string;
   workAgentFilter: string;
   workStatusFilter: string;
   visibleWorkItems: AgentWorkItem[];
   queuedWorkItemCount: number;
   taskTitleDrafts: Record<string, string>;
   replyDraft: string;
-  setDispatchAgentId: (value: string) => void;
-  setDispatchContext: (value: string) => void;
-  dispatchCurrentContext: () => void;
   setWorkAgentFilter: (value: string) => void;
   setWorkStatusFilter: (value: string) => void;
   openWorkItem: (item: AgentWorkItem) => void;
@@ -42,17 +37,12 @@ export function ThreadPanel({
   activeRoot,
   activeTask,
   replies,
-  dispatchAgentId,
-  dispatchContext,
   workAgentFilter,
   workStatusFilter,
   visibleWorkItems,
   queuedWorkItemCount,
   taskTitleDrafts,
   replyDraft,
-  setDispatchAgentId,
-  setDispatchContext,
-  dispatchCurrentContext,
   setWorkAgentFilter,
   setWorkStatusFilter,
   openWorkItem,
@@ -158,8 +148,14 @@ export function ThreadPanel({
           <textarea
             value={replyDraft}
             onChange={(event) => setReplyDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                if (activeRoot && replyDraft.trim()) sendReply();
+              }
+            }}
             disabled={!activeRoot}
-            placeholder={activeRoot ? "Reply in thread" : "Select a thread to reply"}
+            placeholder={activeRoot ? "Reply in thread — Enter to send" : "Select a thread to reply"}
           />
           <button disabled={!activeRoot || !replyDraft.trim()} onClick={sendReply}>
             Reply <Reply size={15} />
@@ -168,31 +164,12 @@ export function ThreadPanel({
       </section>
 
       <section className="agent-ops-stack">
-        <details className="ops-panel dispatch-panel" open>
+        <details className="ops-panel work-panel" open>
           <summary>
-            <span>Agent Dispatch</span>
+            <span>Agent Work</span>
             <strong>{queuedWorkItemCount} queued</strong>
           </summary>
-          <select
-            value={dispatchAgentId}
-            onChange={(event) => setDispatchAgentId(event.target.value)}
-            disabled={data.agents.length === 0}
-          >
-            {data.agents.length === 0 && <option value="">No agents</option>}
-            {data.agents.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                @{agent.handle} · {agent.status}
-              </option>
-            ))}
-          </select>
-          <textarea
-            value={dispatchContext}
-            onChange={(event) => setDispatchContext(event.target.value)}
-            placeholder={activeTask ? "Instruction for this task" : activeRoot ? "Instruction for this thread" : "Instruction for this channel"}
-          />
-          <button disabled={!channel || !dispatchAgentId} onClick={dispatchCurrentContext}>
-            <Sparkles size={14} /> Send to agent
-          </button>
+          <p className="ops-hint">Work is created from @mentions in normal messages. This panel only shows status.</p>
           <div className="work-filters">
             <select value={workAgentFilter} onChange={(event) => setWorkAgentFilter(event.target.value)}>
               <option value="">All agents</option>

@@ -1,16 +1,13 @@
 import {
-  AtSign,
   CheckCircle2,
   Hash,
   LayoutList,
   MessageSquare,
+  PanelRight,
   Plus,
   Send,
-  Settings,
-  Sparkles,
-  Square,
-  Users,
 } from "lucide-react";
+import { useState, type KeyboardEvent } from "react";
 import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 
@@ -24,8 +21,10 @@ type ConversationProps = {
   draft: string;
   taskDraft: string;
   taskTitleDrafts: Record<string, string>;
+  showThread: boolean;
   setActiveTab: (tab: "chat" | "tasks") => void;
   setActiveThreadId: (threadId: string | null) => void;
+  setShowThread: (value: boolean) => void;
   taskForMessage: (messageId: string) => Task | null;
   toggleThreadFollow: (message: Message) => void;
   setTaskTitleDraft: (task: Task, title: string) => void;
@@ -49,8 +48,10 @@ export function Conversation({
   draft,
   taskDraft,
   taskTitleDrafts,
+  showThread,
   setActiveTab,
   setActiveThreadId,
+  setShowThread,
   taskForMessage,
   toggleThreadFollow,
   setTaskTitleDraft,
@@ -63,6 +64,16 @@ export function Conversation({
   setDraft,
   sendRootMessage,
 }: ConversationProps) {
+  const [sendAsTask, setSendAsTask] = useState(false);
+
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (channel && draft.trim()) {
+        sendRootMessage(sendAsTask);
+      }
+    }
+  }
   return (
     <section className="conversation">
       <header className="topbar">
@@ -74,10 +85,13 @@ export function Conversation({
           </div>
         </div>
         <div className="top-actions">
-          <button className="style-pill"><Sparkles size={16} /> Liquid Class</button>
-          <button><Square size={16} /></button>
-          <button><Settings size={16} /></button>
-          <button><Users size={16} /> {agents.length + 1}</button>
+          <button
+            className={`thread-toggle ${showThread ? "active" : ""}`}
+            onClick={() => setShowThread(!showThread)}
+            title={showThread ? "Hide thread panel" : "Show thread panel"}
+          >
+            <PanelRight size={16} />
+          </button>
         </div>
       </header>
 
@@ -222,15 +236,19 @@ export function Conversation({
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={handleComposerKeyDown}
           disabled={!channel}
-          placeholder={channel ? `Root message in #${channel.name}` : "Create a channel before messaging"}
+          placeholder={channel ? `Message #${channel.name} — Enter to send, Shift+Enter for new line` : "Create a channel before messaging"}
         />
         <div className="composer-actions">
-          <button className="icon"><AtSign size={18} /></button>
-          <button className="send" disabled={!channel} onClick={() => sendRootMessage(false)}>
+          <div className="send-mode" aria-label="Send mode">
+            <button className={!sendAsTask ? "active" : ""} onClick={() => setSendAsTask(false)}>Message</button>
+            <button className={sendAsTask ? "active" : ""} onClick={() => setSendAsTask(true)}>Task</button>
+          </div>
+          <span className="composer-hint">Enter to send · Shift+Enter for newline</span>
+          <button className="send" disabled={!channel || !draft.trim()} onClick={() => sendRootMessage(sendAsTask)}>
             Send <Send size={15} />
           </button>
-          <button className="task-send" disabled={!channel} onClick={() => sendRootMessage(true)}>Send Task</button>
         </div>
       </footer>
     </section>
