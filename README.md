@@ -46,6 +46,19 @@ Supported event types in this slice:
 
 The supervisor injects `LOCAL_SLOCK_AGENT_ID`, `LOCAL_SLOCK_AGENT_HANDLE`, and `LOCAL_SLOCK_RUN_ID` into each agent process.
 
+## Agent Launch Presets
+
+The agent form includes editable launch presets for `Codex`, `Claude`, and `Kimi`, plus `Custom`.
+
+Presets are intentionally simple starting points:
+
+- They generate a shell command for the selected CLI and model.
+- They embed the LocalSlock stdout event protocol into the command prompt.
+- They show a command preview before applying, and the final command remains editable.
+- They assume the selected CLI binary is already installed and available on `PATH`.
+
+Use `Custom` when the agent is a local script, a wrapper, or a runtime with its own daemon protocol.
+
 ## Run
 
 ```bash

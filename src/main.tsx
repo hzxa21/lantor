@@ -144,6 +144,64 @@ const EMPTY_AGENT_FORM: AgentForm = {
 const TASK_STATUSES = ["todo", "in_progress", "in_review", "done"] as const;
 const ACTIVE_RUN_STATUSES = new Set(["starting", "running", "stopping"]);
 
+const RUNTIME_PRESETS: Record<string, { label: string; defaultModel: string; commandName: string }> = {
+  codex: {
+    label: "Codex",
+    defaultModel: "gpt-5.5",
+    commandName: "codex",
+  },
+  claude: {
+    label: "Claude",
+    defaultModel: "sonnet",
+    commandName: "claude",
+  },
+  kimi: {
+    label: "Kimi",
+    defaultModel: "kimi-k2",
+    commandName: "kimi",
+  },
+};
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function presetPrompt(form: AgentForm) {
+  const name = form.displayName || form.handle || "$LOCAL_SLOCK_AGENT_HANDLE";
+  return [
+    `You are ${name}, a local agent running inside LocalSlock.`,
+    "You collaborate with one local human through channels, threads, and tasks.",
+    "When you need to write back to LocalSlock, print exactly one stdout line beginning with LOCAL_SLOCK_EVENT followed by JSON.",
+    "Supported JSON events:",
+    '{"type":"message","channel":"local-slock","body":"..."}',
+    '{"type":"message","channel":"local-slock","thread_root_id":"uuid","body":"..."}',
+    '{"type":"message","channel":"local-slock","body":"...","as_task":true}',
+    '{"type":"task_status","task_number":1,"status":"in_review"}',
+    '{"type":"task_claim","task_number":1}',
+    "Do not wrap LOCAL_SLOCK_EVENT lines in markdown.",
+    "Use normal stdout for reasoning/logs only when you do not want to create LocalSlock state.",
+  ].join("\n");
+}
+
+function buildPresetCommand(form: AgentForm) {
+  const preset = RUNTIME_PRESETS[form.runtime];
+  if (!preset) return "";
+  const model = form.model.trim() || preset.defaultModel;
+  const prompt = shellQuote(presetPrompt(form));
+  const quotedModel = shellQuote(model);
+
+  if (form.runtime === "codex") {
+    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} exec --model ${quotedModel} "$LOCAL_SLOCK_PROMPT"`;
+  }
+  if (form.runtime === "claude") {
+    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} -p "$LOCAL_SLOCK_PROMPT" --model ${quotedModel}`;
+  }
+  if (form.runtime === "kimi") {
+    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} --prompt "$LOCAL_SLOCK_PROMPT" --model ${quotedModel}`;
+  }
+  return "";
+}
+
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en", {
     month: "2-digit",
@@ -340,6 +398,42 @@ function App() {
     setAgentDraft(EMPTY_AGENT_FORM);
   }
 
+  function updateDraftRuntime(runtime: string) {
+    const preset = RUNTIME_PRESETS[runtime];
+    const currentPreset = RUNTIME_PRESETS[agentDraft.runtime];
+    const shouldReplaceModel =
+      !agentDraft.model.trim() || (currentPreset && agentDraft.model === currentPreset.defaultModel);
+    setAgentDraft({
+      ...agentDraft,
+      runtime,
+      model: preset && shouldReplaceModel ? preset.defaultModel : agentDraft.model,
+    });
+  }
+
+  function updateEditRuntime(runtime: string) {
+    const preset = RUNTIME_PRESETS[runtime];
+    const currentPreset = RUNTIME_PRESETS[agentEdit.runtime];
+    const shouldReplaceModel =
+      !agentEdit.model.trim() || (currentPreset && agentEdit.model === currentPreset.defaultModel);
+    setAgentEdit({
+      ...agentEdit,
+      runtime,
+      model: preset && shouldReplaceModel ? preset.defaultModel : agentEdit.model,
+    });
+  }
+
+  function applyDraftPreset() {
+    const command = buildPresetCommand(agentDraft);
+    if (!command) return;
+    setAgentDraft({ ...agentDraft, launchCommand: command });
+  }
+
+  function applyEditPreset() {
+    const command = buildPresetCommand(agentEdit);
+    if (!command) return;
+    setAgentEdit({ ...agentEdit, launchCommand: command });
+  }
+
   function startEditAgent(agent: Agent) {
     setEditingAgentId(agent.id);
     setAgentEdit({
@@ -476,6 +570,9 @@ function App() {
     await mutate("uninstall_supervisor_service");
   }
 
+  const draftPresetCommand = buildPresetCommand(agentDraft);
+  const editPresetCommand = buildPresetCommand(agentEdit);
+
   if (!data) {
     return <div className="boot">Opening LocalSlock...</div>;
   }
@@ -591,17 +688,32 @@ function App() {
             />
             <select
               value={agentDraft.runtime}
-              onChange={(event) => setAgentDraft({ ...agentDraft, runtime: event.target.value })}
+              onChange={(event) => updateDraftRuntime(event.target.value)}
             >
               <option value="codex">Codex</option>
               <option value="claude">Claude</option>
               <option value="kimi">Kimi</option>
+              <option value="custom">Custom</option>
             </select>
             <input
               value={agentDraft.model}
               onChange={(event) => setAgentDraft({ ...agentDraft, model: event.target.value })}
               placeholder="model"
             />
+            <div className="preset-panel">
+              <div>
+                <strong>{RUNTIME_PRESETS[agentDraft.runtime]?.label ?? "Custom"} preset</strong>
+                <span>
+                  {draftPresetCommand
+                    ? "Generate an editable launch command with the LocalSlock event protocol."
+                    : "Custom runtime uses the command exactly as written."}
+                </span>
+              </div>
+              {draftPresetCommand && <pre>{firstLines(draftPresetCommand, 6)}</pre>}
+              <button disabled={!draftPresetCommand} onClick={applyDraftPreset}>
+                <Sparkles size={14} /> Apply preset
+              </button>
+            </div>
             <textarea
               value={agentDraft.launchCommand}
               onChange={(event) => setAgentDraft({ ...agentDraft, launchCommand: event.target.value })}
@@ -658,17 +770,32 @@ function App() {
               />
               <select
                 value={agentEdit.runtime}
-                onChange={(event) => setAgentEdit({ ...agentEdit, runtime: event.target.value })}
+                onChange={(event) => updateEditRuntime(event.target.value)}
               >
                 <option value="codex">Codex</option>
                 <option value="claude">Claude</option>
                 <option value="kimi">Kimi</option>
+                <option value="custom">Custom</option>
               </select>
               <input
                 value={agentEdit.model}
                 onChange={(event) => setAgentEdit({ ...agentEdit, model: event.target.value })}
                 placeholder="model"
               />
+              <div className="preset-panel">
+                <div>
+                  <strong>{RUNTIME_PRESETS[agentEdit.runtime]?.label ?? "Custom"} preset</strong>
+                  <span>
+                    {editPresetCommand
+                      ? "Regenerate the command from current handle/model/runtime."
+                      : "Custom runtime uses the command exactly as written."}
+                  </span>
+                </div>
+                {editPresetCommand && <pre>{firstLines(editPresetCommand, 6)}</pre>}
+                <button disabled={!editPresetCommand} onClick={applyEditPreset}>
+                  <Sparkles size={14} /> Apply preset
+                </button>
+              </div>
               <textarea
                 value={agentEdit.launchCommand}
                 onChange={(event) => setAgentEdit({ ...agentEdit, launchCommand: event.target.value })}
