@@ -267,6 +267,8 @@ function App() {
   const [agentEdit, setAgentEdit] = useState<AgentForm>(EMPTY_AGENT_FORM);
   const [dispatchAgentId, setDispatchAgentId] = useState("");
   const [dispatchContext, setDispatchContext] = useState("");
+  const [workAgentFilter, setWorkAgentFilter] = useState("");
+  const [workStatusFilter, setWorkStatusFilter] = useState("active");
 
   async function refresh() {
     const next = await invoke<Bootstrap>("bootstrap");
@@ -329,6 +331,21 @@ function App() {
     if (!data || !activeRoot) return null;
     return data.tasks.find((task) => task.message_id === activeRoot.id) ?? null;
   }, [data, activeRoot]);
+
+  const visibleWorkItems = useMemo(() => {
+    if (!data) return [];
+    return data.agent_work_items.filter((item) => {
+      if (workAgentFilter && item.agent_id !== workAgentFilter) return false;
+      if (workStatusFilter === "active") {
+        return ["queued", "running", "cancelling"].includes(item.status);
+      }
+      if (workStatusFilter === "finished") {
+        return ["done", "failed", "cancelled"].includes(item.status);
+      }
+      if (workStatusFilter !== "all") return item.status === workStatusFilter;
+      return true;
+    });
+  }, [data, workAgentFilter, workStatusFilter]);
 
   const followedThreads = useMemo(() => {
     return rootMessages.filter((message) => message.thread_followed).length;
@@ -597,6 +614,16 @@ function App() {
     setActiveTab("chat");
   }
 
+  function openWorkItem(item: AgentWorkItem) {
+    if (item.channel_id) setActiveChannelId(item.channel_id);
+    if (item.thread_root_id) {
+      setActiveThreadId(item.thread_root_id);
+      setActiveTab("chat");
+    }
+    const agent = data?.agents.find((candidate) => candidate.id === item.agent_id);
+    if (agent) startEditAgent(agent);
+  }
+
   function openSearchResult(result: SearchResult) {
     if (result.agentId) {
       const agent = data?.agents.find((item) => item.id === result.agentId);
@@ -664,6 +691,14 @@ function App() {
       context: buildDispatchContext(),
     });
     setDispatchContext("");
+  }
+
+  async function cancelWorkItem(item: AgentWorkItem) {
+    await mutate("cancel_agent_work", { workItemId: item.id });
+  }
+
+  async function retryWorkItem(item: AgentWorkItem) {
+    await mutate("retry_agent_work", { workItemId: item.id });
   }
 
   async function installSupervisorService() {
@@ -1162,17 +1197,57 @@ function App() {
           <button disabled={!channel || !dispatchAgentId} onClick={dispatchCurrentContext}>
             <Sparkles size={14} /> Send to agent
           </button>
+          <div className="work-filters">
+            <select value={workAgentFilter} onChange={(event) => setWorkAgentFilter(event.target.value)}>
+              <option value="">All agents</option>
+              {data.agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>@{agent.handle}</option>
+              ))}
+            </select>
+            <select value={workStatusFilter} onChange={(event) => setWorkStatusFilter(event.target.value)}>
+              <option value="active">Active</option>
+              <option value="finished">Finished</option>
+              <option value="all">All</option>
+              <option value="queued">Queued</option>
+              <option value="running">Running</option>
+              <option value="done">Done</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
           {data.agent_work_items.length === 0 ? (
             <p className="empty-mini">Dispatched work items will appear here.</p>
+          ) : visibleWorkItems.length === 0 ? (
+            <p className="empty-mini">No work items match the current filters.</p>
           ) : (
             <div className="work-list">
-              {data.agent_work_items.slice(0, 4).map((item) => (
-                <article key={item.id} className={`work-card ${item.status}`}>
-                  <strong>{item.title}</strong>
-                  <span>
-                    @{item.agent_handle} · {item.status}
-                    {item.task_number ? ` · task #${item.task_number}` : ""}
-                  </span>
+              {visibleWorkItems.slice(0, 6).map((item) => (
+                <article key={item.id} className={`work-card ${item.status}`} onClick={() => openWorkItem(item)}>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <span>
+                      @{item.agent_handle} · {item.status}
+                      {item.task_number ? ` · task #${item.task_number}` : ""}
+                    </span>
+                  </div>
+                  <div className="work-actions">
+                    {["queued", "running", "cancelling"].includes(item.status) && (
+                      <button onClick={(event) => {
+                        event.stopPropagation();
+                        cancelWorkItem(item);
+                      }}>
+                        Cancel
+                      </button>
+                    )}
+                    {["done", "failed", "cancelled"].includes(item.status) && (
+                      <button onClick={(event) => {
+                        event.stopPropagation();
+                        retryWorkItem(item);
+                      }}>
+                        Retry
+                      </button>
+                    )}
+                  </div>
                 </article>
               ))}
             </div>

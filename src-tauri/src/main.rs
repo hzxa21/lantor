@@ -907,6 +907,219 @@ async fn dispatch_agent_work(
 }
 
 #[tauri::command]
+async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    let row = sqlx::query(
+        r#"
+        select agent_id, run_id, status
+        from agent_work_items
+        where id = $1
+        "#,
+    )
+    .bind(work_item_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(to_string)?;
+    let agent_id: Uuid = row.get("agent_id");
+    let run_id: Option<Uuid> = row.get("run_id");
+    let status: String = row.get("status");
+
+    match status.as_str() {
+        "queued" => {
+            sqlx::query(
+                r#"
+                update agent_work_items
+                set status = 'cancelled',
+                    completed_at = now(),
+                    updated_at = now()
+                where id = $1
+                "#,
+            )
+            .bind(work_item_id)
+            .execute(&state.pool)
+            .await
+            .map_err(to_string)?;
+            sqlx::query(
+                r#"
+                update supervisor_commands
+                set status = 'done',
+                    error = 'cancelled',
+                    updated_at = now()
+                where work_item_id = $1 and status = 'pending'
+                "#,
+            )
+            .bind(work_item_id)
+            .execute(&state.pool)
+            .await
+            .map_err(to_string)?;
+        }
+        "running" => {
+            let Some(run_id) = run_id else {
+                return Err("running work item does not have a run id".to_owned());
+            };
+            sqlx::query(
+                r#"
+                update agent_work_items
+                set status = 'cancelling',
+                    updated_at = now()
+                where id = $1
+                "#,
+            )
+            .bind(work_item_id)
+            .execute(&state.pool)
+            .await
+            .map_err(to_string)?;
+            let pending_stop: Option<Uuid> = sqlx::query_scalar(
+                r#"
+                select id
+                from supervisor_commands
+                where command_type = 'stop_run'
+                  and run_id = $1
+                  and status in ('pending', 'running')
+                limit 1
+                "#,
+            )
+            .bind(run_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(to_string)?;
+            if pending_stop.is_none() {
+                sqlx::query(
+                    r#"
+                    insert into supervisor_commands (command_type, agent_id, run_id, work_item_id)
+                    values ('stop_run', $1, $2, $3)
+                    "#,
+                )
+                .bind(agent_id)
+                .bind(run_id)
+                .bind(work_item_id)
+                .execute(&state.pool)
+                .await
+                .map_err(to_string)?;
+            }
+        }
+        "cancelling" => return Ok(()),
+        other => return Err(format!("cannot cancel work item with status {other}")),
+    }
+
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        run_id,
+        "dispatch",
+        "Work item cancel requested",
+        work_item_id.to_string(),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> CommandResult<Uuid> {
+    let row = sqlx::query(
+        r#"
+        select agent_id, channel_id, thread_root_id, task_id, title, context, status
+        from agent_work_items
+        where id = $1
+        "#,
+    )
+    .bind(work_item_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(to_string)?;
+    let old_status: String = row.get("status");
+    if matches!(old_status.as_str(), "queued" | "running" | "cancelling") {
+        return Err(format!("cannot retry work item with status {old_status}"));
+    }
+
+    let agent_id: Uuid = row.get("agent_id");
+    let active_run: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from agent_runs
+        where agent_id = $1
+          and stopped_at is null
+          and status in ('starting', 'running', 'stopping')
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(to_string)?;
+    if active_run.is_some() {
+        return Err("agent already has an active run".to_owned());
+    }
+
+    let pending_start: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from supervisor_commands
+        where command_type = 'start_agent'
+          and agent_id = $1
+          and status in ('pending', 'running')
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(to_string)?;
+    if pending_start.is_some() {
+        return Err("agent already has a pending start command".to_owned());
+    }
+
+    let title: String = row.get("title");
+    let context: String = row.get("context");
+    let new_work_item_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_work_items (
+            agent_id, channel_id, thread_root_id, task_id, title, context, status
+        )
+        values ($1, $2, $3, $4, $5, $6, 'queued')
+        returning id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(row.get::<Option<Uuid>, _>("channel_id"))
+    .bind(row.get::<Option<Uuid>, _>("thread_root_id"))
+    .bind(row.get::<Option<Uuid>, _>("task_id"))
+    .bind(&title)
+    .bind(&context)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    sqlx::query(
+        r#"
+        insert into supervisor_commands (command_type, agent_id, work_item_id)
+        values ('start_agent', $1, $2)
+        "#,
+    )
+    .bind(agent_id)
+    .bind(new_work_item_id)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+    sqlx::query("update agents set status = 'queued' where id = $1")
+        .bind(agent_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "dispatch",
+        "Work item retried",
+        format!("{work_item_id} -> {new_work_item_id}: {title}"),
+    )
+    .await?;
+
+    Ok(new_work_item_id)
+}
+
+#[tauri::command]
 async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
     let row = sqlx::query(
         r#"
@@ -1930,7 +2143,16 @@ async fn wait_for_agent_run(
         .await;
 
     if let Some(work_item_id) = work_item_id {
-        let work_status = if run_status == "exited" {
+        let current_status: Option<String> =
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_optional(&pool)
+                .await
+                .ok()
+                .flatten();
+        let work_status = if current_status.as_deref() == Some("cancelling") {
+            "cancelled"
+        } else if run_status == "exited" {
             "done"
         } else {
             "failed"
@@ -2191,6 +2413,27 @@ async fn supervisor_start_agent(
     agent_id: Uuid,
     work_item_id: Option<Uuid>,
 ) -> CommandResult<()> {
+    if let Some(work_item_id) = work_item_id {
+        let status: Option<String> =
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?;
+        if status.as_deref() == Some("cancelled") {
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "dispatch",
+                "Cancelled work item skipped",
+                work_item_id.to_string(),
+            )
+            .await?;
+            return Ok(());
+        }
+    }
+
     let row = sqlx::query(
         r#"
         select handle, runtime, model, launch_command, working_directory
@@ -2637,6 +2880,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            cancel_agent_work,
             create_agent,
             create_channel,
             claim_task,
@@ -2645,6 +2889,7 @@ pub fn run() {
             dispatch_agent_work,
             install_supervisor_service,
             mark_channel_read,
+            retry_agent_work,
             send_message,
             start_agent,
             stop_agent,
