@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    collections::HashSet,
     env, fs,
     path::PathBuf,
     process::{Command as StdCommand, Stdio},
@@ -363,6 +364,19 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         "alter table agent_runs add column if not exists work_item_id uuid references agent_work_items(id) on delete set null",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        create table if not exists agent_event_receipts (
+            run_id uuid not null references agent_runs(id) on delete cascade,
+            event_json text not null,
+            created_at timestamptz not null default now(),
+            primary key (run_id, event_json)
+        )
+        "#,
     )
     .execute(pool)
     .await?;
@@ -2115,7 +2129,7 @@ async fn pipe_run_output<R>(
             Ok(Some(line)) => {
                 let _ = append_run_log(&pool, run_id, format!("[{label}] {line}\n")).await;
                 if parse_agent_events {
-                    match ingest_agent_event_line(&pool, agent_id, &line).await {
+                    match ingest_agent_event_line(&pool, agent_id, run_id, &line).await {
                         Ok(Some(note)) => {
                             let _ =
                                 append_run_log(&pool, run_id, format!("[event] {note}\n")).await;
@@ -2160,13 +2174,117 @@ async fn pipe_run_output<R>(
 async fn ingest_agent_event_line(
     pool: &PgPool,
     agent_id: Uuid,
+    run_id: Uuid,
     line: &str,
 ) -> CommandResult<Option<String>> {
     let Some(json) = extract_agent_event_json(line) else {
         return Ok(None);
     };
+    if !claim_agent_event(pool, run_id, json).await? {
+        return Ok(None);
+    }
     let event: AgentEvent = serde_json::from_str(json).map_err(to_string)?;
     handle_agent_event(pool, agent_id, event).await.map(Some)
+}
+
+async fn claim_agent_event(pool: &PgPool, run_id: Uuid, json: &str) -> CommandResult<bool> {
+    let inserted: Option<bool> = sqlx::query_scalar(
+        r#"
+        insert into agent_event_receipts (run_id, event_json)
+        values ($1, $2)
+        on conflict (run_id, event_json) do nothing
+        returning true
+        "#,
+    )
+    .bind(run_id)
+    .bind(json)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(inserted.unwrap_or(false))
+}
+
+async fn replay_agent_events_from_run_log_if_needed(
+    pool: &PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+) -> CommandResult<usize> {
+    let accepted_events: i64 = sqlx::query_scalar(
+        r#"
+        select count(*)
+        from agent_activities
+        where run_id = $1
+          and kind = 'event'
+          and title = 'Stdout event accepted'
+        "#,
+    )
+    .bind(run_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    if accepted_events > 0 {
+        return Ok(0);
+    }
+
+    let Some(log): Option<String> = sqlx::query_scalar("select log from agent_runs where id = $1")
+        .bind(run_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?
+    else {
+        return Ok(0);
+    };
+
+    let mut replayed = 0;
+    let mut seen = HashSet::new();
+    for line in log.lines() {
+        let Some(json) = extract_agent_event_json(line) else {
+            continue;
+        };
+        if !seen.insert(json.to_owned()) {
+            continue;
+        }
+        let result = match serde_json::from_str::<AgentEvent>(json).map_err(to_string) {
+            Ok(event) => {
+                if claim_agent_event(pool, run_id, json).await? {
+                    handle_agent_event(pool, agent_id, event).await
+                } else {
+                    continue;
+                }
+            }
+            Err(err) => Err(err),
+        };
+        match result {
+            Ok(note) => {
+                replayed += 1;
+                append_run_log(pool, run_id, format!("[event-replay] {note}\n")).await?;
+                record_agent_activity(
+                    pool,
+                    Some(agent_id),
+                    Some(run_id),
+                    "event",
+                    "Run log event replayed",
+                    note,
+                )
+                .await?;
+            }
+            Err(err) => {
+                append_run_log(pool, run_id, format!("[event-replay] rejected: {err}\n")).await?;
+                record_agent_activity(
+                    pool,
+                    Some(agent_id),
+                    Some(run_id),
+                    "event_error",
+                    "Run log event rejected",
+                    err,
+                )
+                .await?;
+            }
+        }
+    }
+
+    Ok(replayed)
 }
 
 fn extract_agent_event_json(line: &str) -> Option<&str> {
@@ -2430,6 +2548,7 @@ async fn wait_for_agent_run(
     for task in pipe_tasks {
         let _ = task.await;
     }
+    let _ = replay_agent_events_from_run_log_if_needed(&pool, agent_id, run_id).await;
     let (run_status, agent_status, exit_code, log_line) = match result {
         Ok(status) if status.success() => (
             "exited",
@@ -3319,6 +3438,16 @@ mod tests {
                 r#"[stderr] LOCAL_SLOCK_EVENT {"type":"message","body":"from tool output"}"#
             ),
             Some(r#"{"type":"message","body":"from tool output"}"#)
+        );
+    }
+
+    #[test]
+    fn extracts_stdout_wrapped_agent_event_lines() {
+        assert_eq!(
+            extract_agent_event_json(
+                r#"[stdout] LOCAL_SLOCK_EVENT {"type":"message","body":"from final output"}"#
+            ),
+            Some(r#"{"type":"message","body":"from final output"}"#)
         );
     }
 
