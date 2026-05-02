@@ -1,11 +1,6 @@
 import { MessageSquare, Reply, X } from "lucide-react";
-import { useMemo, useRef, useState, type KeyboardEvent } from "react";
-import {
-  filterMentionAgents,
-  getMentionState,
-  insertAgentMention,
-  type MentionState,
-} from "../mentions";
+import { useRef, type KeyboardEvent } from "react";
+import { useMentionPicker } from "../hooks/useMentionPicker";
 import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
 
@@ -44,52 +39,20 @@ export function ThreadPanel({
   setReplyDraft,
   sendReply,
 }: ThreadPanelProps) {
-  const [mentionState, setMentionState] = useState<MentionState | null>(null);
-  const [mentionIndex, setMentionIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const mentionCandidates = useMemo(() => {
-    return mentionState ? filterMentionAgents(agents, mentionState.query) : [];
-  }, [agents, mentionState]);
-
-  function refreshMentionState(text: string, cursor: number) {
-    setMentionState(getMentionState(text, cursor));
-    setMentionIndex(0);
-  }
-
-  function chooseMention(agent: Agent) {
-    if (!mentionState) return;
-    const { nextText, nextCursor } = insertAgentMention(replyDraft, mentionState, agent.handle);
-    setReplyDraft(nextText);
-    setMentionState(null);
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-    });
-  }
+  const {
+    mentionState,
+    mentionIndex,
+    mentionCandidates,
+    refreshMentionState,
+    chooseMention,
+    handleMentionKeyDown,
+    closeMentionPicker,
+    focusComposer,
+  } = useMentionPicker({ agents, value: replyDraft, setValue: setReplyDraft, textareaRef });
 
   function handleReplyKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (mentionState && mentionCandidates.length > 0) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setMentionIndex((current) => (current + 1) % mentionCandidates.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setMentionIndex((current) => (current - 1 + mentionCandidates.length) % mentionCandidates.length);
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        chooseMention(mentionCandidates[mentionIndex] ?? mentionCandidates[0]);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setMentionState(null);
-        return;
-      }
-    }
+    if (handleMentionKeyDown(event)) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submitReply();
@@ -99,8 +62,8 @@ export function ThreadPanel({
   function submitReply() {
     if (!activeRoot || !replyDraft.trim()) return;
     sendReply();
-    setMentionState(null);
-    window.requestAnimationFrame(() => textareaRef.current?.focus());
+    closeMentionPicker();
+    focusComposer();
   }
 
   return (

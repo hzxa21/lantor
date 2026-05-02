@@ -7,13 +7,10 @@ import {
   Plus,
   Send,
 } from "lucide-react";
-import { useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useRef, useState, type KeyboardEvent } from "react";
+import { useMentionPicker } from "../hooks/useMentionPicker";
 import {
-  filterMentionAgents,
-  getMentionState,
-  insertAgentMention,
   mentionedAgentsForBody,
-  type MentionState,
 } from "../mentions";
 import { Agent, AgentWorkItem, Channel, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
@@ -78,52 +75,20 @@ export function Conversation({
   sendRootMessage,
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
-  const [mentionState, setMentionState] = useState<MentionState | null>(null);
-  const [mentionIndex, setMentionIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const mentionCandidates = useMemo(() => {
-    return mentionState ? filterMentionAgents(agents, mentionState.query) : [];
-  }, [agents, mentionState]);
-
-  function refreshMentionState(text: string, cursor: number) {
-    setMentionState(getMentionState(text, cursor));
-    setMentionIndex(0);
-  }
-
-  function chooseMention(agent: Agent) {
-    if (!mentionState) return;
-    const { nextText, nextCursor } = insertAgentMention(draft, mentionState, agent.handle);
-    setDraft(nextText);
-    setMentionState(null);
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-    });
-  }
+  const {
+    mentionState,
+    mentionIndex,
+    mentionCandidates,
+    refreshMentionState,
+    chooseMention,
+    handleMentionKeyDown,
+    closeMentionPicker,
+    focusComposer,
+  } = useMentionPicker({ agents, value: draft, setValue: setDraft, textareaRef });
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (mentionState && mentionCandidates.length > 0) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setMentionIndex((current) => (current + 1) % mentionCandidates.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setMentionIndex((current) => (current - 1 + mentionCandidates.length) % mentionCandidates.length);
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        chooseMention(mentionCandidates[mentionIndex] ?? mentionCandidates[0]);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setMentionState(null);
-        return;
-      }
-    }
+    if (handleMentionKeyDown(event)) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submitComposer();
@@ -133,8 +98,8 @@ export function Conversation({
   function submitComposer() {
     if (!channel || !draft.trim()) return;
     sendRootMessage(sendAsTask);
-    setMentionState(null);
-    window.requestAnimationFrame(() => textareaRef.current?.focus());
+    closeMentionPicker();
+    focusComposer();
   }
   return (
     <section className="conversation">
