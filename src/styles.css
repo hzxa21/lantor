@@ -846,6 +846,11 @@ mark {
   color: #167d32;
 }
 
+.agent-mention-line.dm-work-line span:first-child {
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--muted);
+}
+
 .reply-pill {
   display: inline-flex;
   align-items: center;

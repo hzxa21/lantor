@@ -232,7 +232,8 @@ export function Conversation({
                     </div>
                   )}
                   {(mentionedAgents.length > 0 || messageWorkItems.length > 0) && (
-                    <div className="agent-mention-line">
+                    <div className={`agent-mention-line ${isDm ? "dm-work-line" : ""}`}>
+                      {isDm && messageWorkItems.length > 0 && <span>Agent work</span>}
                       {mentionedAgents.map((agent) => (
                         <span key={agent.id}>@{agent.handle}</span>
                       ))}

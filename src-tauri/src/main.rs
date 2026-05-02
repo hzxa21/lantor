@@ -695,7 +695,11 @@ async fn delete_channel(channel_id: Uuid, state: State<'_, AppState>) -> Command
 
 #[tauri::command]
 async fn open_dm_with_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<String> {
-    let mut tx = state.pool.begin().await.map_err(to_string)?;
+    open_dm_with_agent_in_pool(&state.pool, agent_id).await
+}
+
+async fn open_dm_with_agent_in_pool(pool: &PgPool, agent_id: Uuid) -> CommandResult<String> {
+    let mut tx = pool.begin().await.map_err(to_string)?;
     let agent_row = sqlx::query("select handle from agents where id = $1")
         .bind(agent_id)
         .fetch_optional(&mut *tx)
@@ -747,7 +751,7 @@ async fn open_dm_with_agent(agent_id: Uuid, state: State<'_, AppState>) -> Comma
 
     tx.commit().await.map_err(to_string)?;
     record_agent_activity(
-        &state.pool,
+        pool,
         Some(agent_id),
         None,
         "dm",
@@ -1732,7 +1736,17 @@ async fn send_message(
     as_task: bool,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
-    let mut tx = state.pool.begin().await.map_err(to_string)?;
+    send_owner_message_in_pool(&state.pool, channel_id, thread_root_id, &body, as_task).await
+}
+
+async fn send_owner_message_in_pool(
+    pool: &PgPool,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    body: &str,
+    as_task: bool,
+) -> CommandResult<()> {
+    let mut tx = pool.begin().await.map_err(to_string)?;
     let channel_kind: Option<String> =
         sqlx::query_scalar("select kind from channels where id = $1")
             .bind(channel_id)
@@ -1782,7 +1796,7 @@ async fn send_message(
 
     tx.commit().await.map_err(to_string)?;
     queue_mentions_as_work_items(
-        &state.pool,
+        pool,
         channel_id,
         thread_root_id,
         msg_id,
@@ -3802,7 +3816,12 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_agent_event_json, extract_agent_mentions};
+    use super::{
+        extract_agent_event_json, extract_agent_mentions, insert_agent_message, migrate,
+        open_dm_with_agent_in_pool, send_owner_message_in_pool, DEFAULT_DATABASE_URL,
+    };
+    use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+    use uuid::Uuid;
 
     #[test]
     fn extracts_unique_agent_mentions() {
@@ -3850,5 +3869,168 @@ mod tests {
             r#"[stderr] Reply with: LOCAL_SLOCK_EVENT {"type":"message","body":"..."}"#
         )
         .is_none());
+    }
+
+    async fn test_pool() -> Option<(PgPool, String)> {
+        let database_url = std::env::var("LOCAL_SLOCK_TEST_DATABASE_URL")
+            .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
+        let pool = match PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+        {
+            Ok(pool) => pool,
+            Err(err) => {
+                eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
+                return None;
+            }
+        };
+        let schema = format!("localslock_test_{}", Uuid::new_v4().simple());
+        if let Err(err) = sqlx::query(&format!(r#"create schema "{schema}""#))
+            .execute(&pool)
+            .await
+        {
+            eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
+            pool.close().await;
+            return None;
+        }
+        if let Err(err) = sqlx::query(&format!(r#"set search_path to "{schema}", public"#))
+            .execute(&pool)
+            .await
+        {
+            eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
+            let _ = sqlx::query(&format!(r#"drop schema if exists "{schema}" cascade"#))
+                .execute(&pool)
+                .await;
+            pool.close().await;
+            return None;
+        }
+        if let Err(err) = migrate(&pool).await {
+            eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
+            let _ = sqlx::query(&format!(r#"drop schema if exists "{schema}" cascade"#))
+                .execute(&pool)
+                .await;
+            pool.close().await;
+            return None;
+        }
+        Some((pool, schema))
+    }
+
+    async fn drop_test_schema(pool: PgPool, schema: String) {
+        let _ = sqlx::query(&format!(r#"drop schema if exists "{schema}" cascade"#))
+            .execute(&pool)
+            .await;
+        pool.close().await;
+    }
+
+    async fn insert_test_agent(pool: &PgPool, handle: &str) -> Result<Uuid, String> {
+        sqlx::query_scalar(
+            r#"
+            insert into agents (handle, display_name, role, status, runtime, model, avatar, description)
+            values ($1, $2, 'agent', 'idle', 'codex', 'gpt-5.5', 'D', 'test agent')
+            returning id
+            "#,
+        )
+        .bind(handle)
+        .bind(handle)
+        .fetch_one(pool)
+        .await
+        .map_err(|err| err.to_string())
+    }
+
+    #[tokio::test]
+    async fn dm_open_is_idempotent_and_cascades_with_agent() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "dm-idempotent").await?;
+            let dm1 = open_dm_with_agent_in_pool(&pool, agent_id).await?;
+            let dm2 = open_dm_with_agent_in_pool(&pool, agent_id).await?;
+            assert_eq!(dm1, dm2);
+
+            let dm_channel_id = Uuid::parse_str(&dm1).map_err(|err| err.to_string())?;
+            let row = sqlx::query(
+                r#"
+                select c.kind, c.dm_agent_id, count(m.agent_id)::bigint as members
+                from channels c
+                left join channel_members m on m.channel_id = c.id
+                where c.id = $1
+                group by c.kind, c.dm_agent_id
+                "#,
+            )
+            .bind(dm_channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let kind: String = row.get("kind");
+            let dm_agent_id: Uuid = row.get("dm_agent_id");
+            let members: i64 = row.get("members");
+            assert_eq!(kind, "dm");
+            assert_eq!(dm_agent_id, agent_id);
+            assert_eq!(members, 1);
+
+            sqlx::query("delete from agents where id = $1")
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            let remaining: i64 =
+                sqlx::query_scalar("select count(*)::bigint from channels where id = $1")
+                    .bind(dm_channel_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(remaining, 0);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn dm_rejects_tasks_and_auto_dispatches_owner_messages() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "dm-dispatch").await?;
+            let dm_channel_id =
+                Uuid::parse_str(&open_dm_with_agent_in_pool(&pool, agent_id).await?)
+                    .map_err(|err| err.to_string())?;
+
+            let owner_task_err =
+                send_owner_message_in_pool(&pool, dm_channel_id, None, "task body", true)
+                    .await
+                    .unwrap_err();
+            assert!(owner_task_err.contains("direct messages do not support tasks"));
+
+            let agent_task_err =
+                insert_agent_message(&pool, agent_id, dm_channel_id, None, "task body", true)
+                    .await
+                    .unwrap_err();
+            assert!(agent_task_err.contains("direct messages do not support tasks"));
+
+            send_owner_message_in_pool(&pool, dm_channel_id, None, "please inspect this", false)
+                .await?;
+            let work_items: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_work_items
+                where channel_id = $1 and agent_id = $2 and status = 'queued'
+                "#,
+            )
+            .bind(dm_channel_id)
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(work_items, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 }
