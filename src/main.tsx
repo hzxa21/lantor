@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
+import { AgentFormModal } from "./components/AgentFormModal";
 import { Conversation } from "./components/Conversation";
 import { Modal } from "./components/Modal";
 import { Sidebar } from "./components/Sidebar";
@@ -19,7 +20,6 @@ import {
   RuntimeCheck,
   SearchResult,
   Task,
-  modelOptionsForRuntime,
 } from "./types";
 import { buildPresetCommand, firstLines, formatTime } from "./ui-utils";
 import "./styles.css";
@@ -44,18 +44,6 @@ function errorMessage(err: unknown, fallback: string) {
   if (err instanceof Error && err.message) return err.message;
   if (typeof err === "string" && err.trim()) return err;
   return fallback;
-}
-
-function RuntimePreflight({ check }: { check: RuntimeCheck | undefined }) {
-  if (!check) {
-    return <div className="runtime-preflight pending">Checking local CLI...</div>;
-  }
-  return (
-    <div className={`runtime-preflight ${check.available ? "ok" : "missing"}`}>
-      <strong>{check.available ? "Runtime ready" : "Runtime unavailable"}</strong>
-      <span>{check.command || check.runtime}: {check.detail}</span>
-    </div>
-  );
 }
 
 function App() {
@@ -840,123 +828,30 @@ function App() {
         </div>
       </Modal>
 
-      <Modal
+      <AgentFormModal
         open={showCreateAgentModal}
         title="Add Agent"
-        onClose={() => setShowCreateAgentModal(false)}
-        width={680}
-      >
-        <div className="modal-form agent-modal-form">
-          <div className="two-col">
-            <label>
-              <span>Handle</span>
-              <input
-                autoFocus
-                value={agentDraft.handle}
-                onChange={(event) => setAgentDraft({ ...agentDraft, handle: event.target.value })}
-                placeholder="@agent"
-              />
-            </label>
-            <label>
-              <span>Display name</span>
-              <input
-                value={agentDraft.displayName}
-                onChange={(event) => setAgentDraft({ ...agentDraft, displayName: event.target.value })}
-                placeholder="display name"
-              />
-            </label>
-          </div>
-          <div className="two-col">
-            <label>
-              <span>Agent type</span>
-              <select value={agentDraft.runtime} onChange={(event) => updateDraftRuntime(event.target.value)}>
-                <option value="codex">Codex</option>
-                <option value="claude">Claude</option>
-                <option value="kimi">Kimi</option>
-              </select>
-            </label>
-            <label>
-              <span>Model</span>
-              <select
-                value={agentDraft.model}
-                onChange={(event) => setAgentDraft({ ...agentDraft, model: event.target.value })}
-              >
-                {modelOptionsForRuntime(agentDraft.runtime, agentDraft.model).map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <RuntimePreflight check={runtimeChecks[agentDraft.runtime]} />
-          <div className="modal-actions">
-            <button onClick={() => setShowCreateAgentModal(false)}>Cancel</button>
-            <button className="primary" disabled={!agentDraft.handle.trim()} onClick={createAgent}>Add agent</button>
-          </div>
-        </div>
-      </Modal>
+        form={agentDraft}
+        runtimeChecks={runtimeChecks}
+        submitLabel="Add agent"
+        onChange={setAgentDraft}
+        onRuntimeChange={updateDraftRuntime}
+        onCancel={() => setShowCreateAgentModal(false)}
+        onSubmit={createAgent}
+      />
 
-      <Modal
+      <AgentFormModal
         open={Boolean(editingAgentId)}
         title="Edit Agent"
-        onClose={cancelEditAgent}
-        width={700}
-      >
-        <div className="modal-form agent-modal-form">
-          <div className="two-col">
-            <label>
-              <span>Handle</span>
-              <input
-                autoFocus
-                value={agentEdit.handle}
-                onChange={(event) => setAgentEdit({ ...agentEdit, handle: event.target.value })}
-                placeholder="@agent"
-              />
-            </label>
-            <label>
-              <span>Display name</span>
-              <input
-                value={agentEdit.displayName}
-                onChange={(event) => setAgentEdit({ ...agentEdit, displayName: event.target.value })}
-                placeholder="display name"
-              />
-            </label>
-          </div>
-          <div className="two-col">
-            <label>
-              <span>Runtime</span>
-              <select value={agentEdit.runtime} onChange={(event) => updateEditRuntime(event.target.value)}>
-                <option value="codex">Codex</option>
-                <option value="claude">Claude</option>
-                <option value="kimi">Kimi</option>
-              </select>
-            </label>
-            <label>
-              <span>Model</span>
-              <select
-                value={agentEdit.model}
-                onChange={(event) => setAgentEdit({ ...agentEdit, model: event.target.value })}
-              >
-                {modelOptionsForRuntime(agentEdit.runtime, agentEdit.model).map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <RuntimePreflight check={runtimeChecks[agentEdit.runtime]} />
-          <label>
-            <span>Notes</span>
-            <textarea
-              value={agentEdit.description}
-              onChange={(event) => setAgentEdit({ ...agentEdit, description: event.target.value })}
-              placeholder="Agent notes"
-            />
-          </label>
-          <div className="modal-actions">
-            <button onClick={cancelEditAgent}>Cancel</button>
-            <button className="primary" disabled={!agentEdit.handle.trim()} onClick={saveAgent}>Save</button>
-          </div>
-        </div>
-      </Modal>
+        form={agentEdit}
+        runtimeChecks={runtimeChecks}
+        submitLabel="Save"
+        showNotes
+        onChange={setAgentEdit}
+        onRuntimeChange={updateEditRuntime}
+        onCancel={cancelEditAgent}
+        onSubmit={saveAgent}
+      />
 
     </main>
   );
