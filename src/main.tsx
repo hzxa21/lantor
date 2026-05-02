@@ -1,6 +1,7 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
 import { AgentFormModal } from "./components/AgentFormModal";
 import { ChannelAgentsModal } from "./components/ChannelAgentsModal";
@@ -48,6 +49,8 @@ const DEFAULT_SIDEBAR_WIDTH = 292;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 460;
 const MIN_CONVERSATION_WIDTH = 420;
+const UI_REFRESH_EVENT = "localslock://refresh";
+const UI_REFRESH_DEBOUNCE_MS = 80;
 
 function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
@@ -132,6 +135,9 @@ function App() {
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
   const [locallyUnfollowedThreadIds, setLocallyUnfollowedThreadIds] = useState<Set<string>>(() => new Set());
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
 
   async function refreshRuntimeChecks() {
     const entries = await Promise.all(
@@ -155,6 +161,34 @@ function App() {
       if (prev && rootIds.has(prev)) return prev;
       return null;
     });
+  }
+
+  function refreshWithError(fallback: string) {
+    if (refreshInFlightRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+    refreshInFlightRef.current = true;
+    refresh()
+      .catch((err) => {
+        setAppError(errorMessage(err, fallback));
+        console.error(err);
+      })
+      .finally(() => {
+        refreshInFlightRef.current = false;
+        if (refreshQueuedRef.current) {
+          refreshQueuedRef.current = false;
+          requestRefresh(fallback);
+        }
+      });
+  }
+
+  function requestRefresh(fallback = "Failed to refresh LocalSlock state") {
+    if (refreshTimerRef.current !== null) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      refreshWithError(fallback);
+    }, UI_REFRESH_DEBOUNCE_MS);
   }
 
   async function mutate(command: string, args: Record<string, unknown> = {}) {
@@ -181,12 +215,29 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      refresh().catch((err) => {
-        setAppError(errorMessage(err, "Failed to refresh LocalSlock state"));
+    let unlisten: UnlistenFn | null = null;
+    listen(UI_REFRESH_EVENT, () => {
+      requestRefresh("Failed to refresh LocalSlock state after backend update");
+    })
+      .then((handler) => {
+        unlisten = handler;
+      })
+      .catch((err) => {
+        setAppError(errorMessage(err, "Failed to subscribe to LocalSlock updates"));
         console.error(err);
       });
-    }, 1500);
+    return () => {
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      requestRefresh("Failed to refresh LocalSlock state");
+    }, 5000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -635,6 +686,37 @@ function App() {
     });
   }
 
+  function addOptimisticOwnerMessage(channelId: string, threadRootId: string | null, body: string, asTask: boolean) {
+    const id = `local-${crypto.randomUUID()}`;
+    const optimisticMessage: Message = {
+      id,
+      channel_id: channelId,
+      thread_root_id: threadRootId,
+      sender_name: "Dylan",
+      sender_role: "owner",
+      body,
+      is_task: asTask,
+      thread_followed: true,
+      task_number: null,
+      task_status: null,
+      created_at: new Date().toISOString(),
+    };
+    knownMessageIdsRef.current?.add(id);
+    setData((current) => current ? {
+      ...current,
+      messages: [...current.messages, optimisticMessage],
+    } : current);
+    return id;
+  }
+
+  function removeOptimisticMessage(messageId: string) {
+    knownMessageIdsRef.current?.delete(messageId);
+    setData((current) => current ? {
+      ...current,
+      messages: current.messages.filter((message) => message.id !== messageId),
+    } : current);
+  }
+
   async function setChannelMember(agentId: string, member: boolean) {
     if (!channel) return;
     if (channel.kind === "dm") {
@@ -759,13 +841,25 @@ function App() {
 
   async function sendRootMessage(asTask = false) {
     if (!channel || !draft.trim()) return;
-    await mutate("send_message", {
-      channelId: channel.id,
-      threadRootId: null,
-      body: draft.trim(),
-      asTask: channel.kind === "dm" ? false : asTask,
-    });
+    const body = draft.trim();
+    const sendAsTask = channel.kind === "dm" ? false : asTask;
+    const optimisticId = addOptimisticOwnerMessage(channel.id, null, body, sendAsTask);
     setDraft("");
+    try {
+      await invoke("send_message", {
+        channelId: channel.id,
+        threadRootId: null,
+        body,
+        asTask: sendAsTask,
+      });
+      await refresh();
+    } catch (err) {
+      removeOptimisticMessage(optimisticId);
+      setDraft(body);
+      const message = errorMessage(err, "Failed to send message");
+      setAppError(message);
+      console.error(err);
+    }
   }
 
   async function createTaskFromBoard() {
@@ -803,13 +897,24 @@ function App() {
 
   async function sendReply() {
     if (!channel || !activeRoot || !replyDraft.trim()) return;
-    await mutate("send_message", {
-      channelId: channel.id,
-      threadRootId: activeRoot.id,
-      body: replyDraft.trim(),
-      asTask: false,
-    });
+    const body = replyDraft.trim();
+    const optimisticId = addOptimisticOwnerMessage(channel.id, activeRoot.id, body, false);
     setReplyDraft("");
+    try {
+      await invoke("send_message", {
+        channelId: channel.id,
+        threadRootId: activeRoot.id,
+        body,
+        asTask: false,
+      });
+      await refresh();
+    } catch (err) {
+      removeOptimisticMessage(optimisticId);
+      setReplyDraft(body);
+      const message = errorMessage(err, "Failed to send reply");
+      setAppError(message);
+      console.error(err);
+    }
   }
 
   async function updateTaskStatus(task: Task, status: string) {

@@ -10,8 +10,11 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
-use tauri::{Manager, State};
+use sqlx::{
+    postgres::{PgListener, PgPoolOptions},
+    PgPool, Row,
+};
+use tauri::{Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::Command,
@@ -23,6 +26,9 @@ const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/local
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
 const LAUNCH_AGENT_LABEL: &str = "local.localslock.supervisor";
 const AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
+const UI_REFRESH_CHANNEL: &str = "localslock_ui_refresh";
+const SUPERVISOR_WAKE_CHANNEL: &str = "localslock_supervisor_wake";
+const UI_REFRESH_EVENT: &str = "localslock://refresh";
 
 #[derive(Clone)]
 struct AppState {
@@ -215,6 +221,55 @@ fn db_url() -> String {
     env::var("LOCAL_SLOCK_DATABASE_URL")
         .or_else(|_| env::var("DATABASE_URL"))
         .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned())
+}
+
+async fn notify_postgres(pool: &PgPool, channel: &str, payload: &str) -> CommandResult<()> {
+    sqlx::query("select pg_notify($1, $2)")
+        .bind(channel)
+        .bind(payload)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+
+    Ok(())
+}
+
+async fn notify_ui_refresh(pool: &PgPool, reason: &str) -> CommandResult<()> {
+    notify_postgres(pool, UI_REFRESH_CHANNEL, reason).await
+}
+
+async fn notify_supervisor_wake(pool: &PgPool) -> CommandResult<()> {
+    notify_postgres(pool, SUPERVISOR_WAKE_CHANNEL, "wake").await
+}
+
+fn spawn_ui_refresh_listener(app: tauri::AppHandle, database_url: String) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match PgListener::connect(&database_url).await {
+                Ok(mut listener) => {
+                    if let Err(err) = listener.listen(UI_REFRESH_CHANNEL).await {
+                        eprintln!("LocalSlock UI refresh listener failed to listen: {err}");
+                    } else {
+                        loop {
+                            match listener.recv().await {
+                                Ok(notification) => {
+                                    let _ = app.emit(UI_REFRESH_EVENT, notification.payload());
+                                }
+                                Err(err) => {
+                                    eprintln!("LocalSlock UI refresh listener disconnected: {err}");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("LocalSlock UI refresh listener failed to connect: {err}");
+                }
+            }
+            sleep(Duration::from_secs(2)).await;
+        }
+    });
 }
 
 async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
@@ -984,6 +1039,8 @@ async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResul
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
+    let _ = notify_supervisor_wake(&state.pool).await;
+    let _ = notify_ui_refresh(&state.pool, "supervisor_command").await;
     sqlx::query("update agents set status = 'queued' where id = $1")
         .bind(agent_id)
         .execute(&state.pool)
@@ -1221,6 +1278,8 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
                 .execute(&state.pool)
                 .await
                 .map_err(to_string)?;
+                let _ = notify_supervisor_wake(&state.pool).await;
+                let _ = notify_ui_refresh(&state.pool, "supervisor_command").await;
             }
         }
         "cancelling" => return Ok(()),
@@ -1385,6 +1444,8 @@ async fn enqueue_agent_work_if_available(
     .execute(pool)
     .await
     .map_err(to_string)?;
+    let _ = notify_supervisor_wake(pool).await;
+    let _ = notify_ui_refresh(pool, "supervisor_command").await;
     sqlx::query("update agents set status = 'queued' where id = $1")
         .bind(agent_id)
         .execute(pool)
@@ -1653,6 +1714,8 @@ async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<(
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
+    let _ = notify_supervisor_wake(&state.pool).await;
+    let _ = notify_ui_refresh(&state.pool, "supervisor_command").await;
     sqlx::query("update agent_runs set status = 'stopping' where id = $1")
         .bind(run_id)
         .execute(&state.pool)
@@ -1804,6 +1867,7 @@ async fn send_owner_message_in_pool(
         body.trim(),
     )
     .await?;
+    let _ = notify_ui_refresh(pool, "message").await;
     Ok(())
 }
 
@@ -2402,6 +2466,7 @@ async fn record_agent_activity(
     .execute(pool)
     .await
     .map_err(to_string)?;
+    let _ = notify_ui_refresh(pool, "activity").await;
 
     Ok(())
 }
@@ -2936,6 +3001,7 @@ async fn insert_agent_message(
     }
 
     tx.commit().await.map_err(to_string)?;
+    let _ = notify_ui_refresh(pool, "message").await;
     Ok(msg_id)
 }
 
@@ -3113,16 +3179,37 @@ async fn run_supervisor() -> CommandResult<()> {
     }
 
     mark_orphaned_agent_runs(&pool).await?;
+    let mut listener = PgListener::connect(&database_url)
+        .await
+        .map_err(to_string)?;
+    listener
+        .listen(SUPERVISOR_WAKE_CHANNEL)
+        .await
+        .map_err(to_string)?;
 
     loop {
         write_supervisor_heartbeat(&pool).await?;
         schedule_queued_work_items(&pool).await?;
-        if let Some(command) = claim_next_supervisor_command(&pool).await? {
+        let mut processed_command = false;
+        while let Some(command) = claim_next_supervisor_command(&pool).await? {
+            processed_command = true;
             let command_id = command.id;
             let result = process_supervisor_command(&pool, command).await;
             finish_supervisor_command(&pool, command_id, result.err()).await?;
         }
-        sleep(Duration::from_millis(800)).await;
+        if processed_command {
+            continue;
+        }
+        tokio::select! {
+            _ = sleep(Duration::from_secs(2)) => {}
+            notification = listener.recv() => {
+                if let Err(err) = notification {
+                    eprintln!("LocalSlock supervisor wake listener disconnected: {err}");
+                    listener = PgListener::connect(&database_url).await.map_err(to_string)?;
+                    listener.listen(SUPERVISOR_WAKE_CHANNEL).await.map_err(to_string)?;
+                }
+            }
+        }
     }
 }
 
@@ -3761,13 +3848,15 @@ pub fn run() {
 
     tauri::async_runtime::block_on(migrate(&pool)).expect("failed to initialize LocalSlock schema");
     spawn_supervisor_process(&database_url);
+    let state_db_url = database_url.clone();
 
     tauri::Builder::default()
         .manage(AppState {
             pool,
-            db_url: database_url,
+            db_url: state_db_url,
         })
-        .setup(|app| {
+        .setup(move |app| {
+            spawn_ui_refresh_listener(app.handle().clone(), database_url.clone());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("LocalSlock");
             }
