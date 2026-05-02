@@ -321,7 +321,7 @@ export function Conversation({
           onSelect={(event) => refreshMentionState(draft, event.currentTarget.selectionStart)}
           onKeyDown={handleComposerKeyDown}
           disabled={!channel}
-          placeholder={channel ? `Message #${channel.name}` : "Create a channel before messaging"}
+          placeholder={channel ? `Message #${channel.name} - type @ to send to an agent` : "Create a channel before messaging"}
         />
         <div className="composer-actions">
           <div className="send-mode" aria-label="Send mode">

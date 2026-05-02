@@ -22,7 +22,9 @@ import {
 type SidebarProps = {
   data: Bootstrap;
   channel: Channel | null;
-  rootMessages: Message[];
+  threadRootMessages: Message[];
+  allRootCount: number;
+  threadCount: number;
   followedThreads: number;
   activeThreadId: string | null;
   searchQuery: string;
@@ -43,7 +45,9 @@ type SidebarProps = {
 export function Sidebar({
   data,
   channel,
-  rootMessages,
+  threadRootMessages,
+  allRootCount,
+  threadCount,
   followedThreads,
   activeThreadId,
   searchQuery,
@@ -76,7 +80,8 @@ export function Sidebar({
           />
         </label>
         <div className="stat-row">
-          <span><MessageSquare size={14} /> {followedThreads}/{rootMessages.length} threads</span>
+          <span><MessageSquare size={14} /> {allRootCount} messages</span>
+          <span><MessageSquare size={14} /> {followedThreads}/{threadCount} threads</span>
           <span><LayoutList size={14} /> {data.tasks.length} tasks</span>
           <span><Sparkles size={14} /> {data.agents.length} agents</span>
         </div>
@@ -119,9 +124,9 @@ export function Sidebar({
 
       <section className="thread-list">
         <div className="section-title">
-          <span><ChevronDown size={14} /> Threads {rootMessages.length}</span>
+          <span><ChevronDown size={14} /> Threads {threadRootMessages.length}</span>
         </div>
-        {rootMessages.map((message) => (
+        {threadRootMessages.map((message) => (
           <button
             key={message.id}
             className={`thread-nav ${message.id === activeThreadId ? "selected" : ""}`}
@@ -131,7 +136,7 @@ export function Sidebar({
             <span>{message.body.split("\n")[0] || "Untitled thread"}</span>
           </button>
         ))}
-        {rootMessages.length === 0 && (
+        {threadRootMessages.length === 0 && (
           <div className="empty-mini">Threads appear after a message gets replies.</div>
         )}
       </section>

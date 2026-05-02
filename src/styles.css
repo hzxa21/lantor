@@ -872,11 +872,6 @@ mark {
   gap: 7px;
   padding: 10px 14px;
   border-radius: 14px;
-  background: var(--panel-strong);
-  color: var(--ink);
-}
-
-.send {
   background: var(--accent);
   color: #fff;
   font-weight: 850;

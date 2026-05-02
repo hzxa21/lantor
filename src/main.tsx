@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
@@ -205,6 +205,15 @@ function App() {
     return threadedRootMessages.filter((message) => message.thread_followed).length;
   }, [threadedRootMessages]);
 
+  const activeChannelMessageCount = useMemo(() => {
+    if (!data || !activeChannelId) return 0;
+    return data.messages.filter((message) => message.channel_id === activeChannelId).length;
+  }, [data?.messages, activeChannelId]);
+
+  const activeRunFor = useCallback((agentId: string) => {
+    return data?.agent_runs.find((run) => run.agent_id === agentId && ACTIVE_RUN_STATUSES.has(run.status)) ?? null;
+  }, [data?.agent_runs]);
+
   const selectedAgent = useMemo(() => {
     if (!data || !selectedAgentId) return null;
     return data.agents.find((agent) => agent.id === selectedAgentId) ?? null;
@@ -213,7 +222,7 @@ function App() {
   const selectedAgentRun = useMemo(() => {
     if (!selectedAgent) return null;
     return activeRunFor(selectedAgent.id);
-  }, [selectedAgent, data?.agent_runs]);
+  }, [selectedAgent, activeRunFor]);
 
   const selectedAgentActivities = useMemo(() => {
     if (!data || !selectedAgent) return [];
@@ -337,7 +346,7 @@ function App() {
   useEffect(() => {
     if (!activeChannelId) return;
     invoke("mark_channel_read", { channelId: activeChannelId }).catch((err) => console.error(err));
-  }, [activeChannelId, data?.messages.length]);
+  }, [activeChannelId, activeChannelMessageCount]);
 
   async function createChannel() {
     const name = newChannel.trim().replace(/^#/, "");
@@ -585,10 +594,6 @@ function App() {
     });
   }
 
-  function activeRunFor(agentId: string) {
-    return data?.agent_runs.find((run) => run.agent_id === agentId && ACTIVE_RUN_STATUSES.has(run.status)) ?? null;
-  }
-
   async function startAgent(agent: Agent) {
     await mutate("start_agent", { agentId: agent.id });
   }
@@ -622,7 +627,9 @@ function App() {
       <Sidebar
         data={data}
         channel={channel}
-        rootMessages={threadedRootMessages}
+        threadRootMessages={threadedRootMessages}
+        allRootCount={rootMessages.length}
+        threadCount={threadedRootMessages.length}
         followedThreads={followedThreads}
         searchQuery={searchQuery}
         searchResults={searchResults}
