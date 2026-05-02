@@ -14,6 +14,7 @@ import {
 } from "../mentions";
 import { Agent, AgentWorkItem, Channel, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
+import { MessageMarkdown } from "./MessageMarkdown";
 
 type ConversationProps = {
   channel: Channel | null;
@@ -194,7 +195,7 @@ export function Conversation({
                       </mark>
                     )}
                   </div>
-                  <p>{firstLines(message.body)}</p>
+                  <MessageMarkdown body={firstLines(message.body)} />
                   {linkedTask && (
                     <div className="message-task-line">
                       <span>{linkedTask.assignee_name || "unassigned"}</span>

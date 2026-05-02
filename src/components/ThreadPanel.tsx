@@ -3,6 +3,7 @@ import { useRef, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
+import { MessageMarkdown } from "./MessageMarkdown";
 
 type ThreadPanelProps = {
   channel: Channel | null;
@@ -88,7 +89,7 @@ export function ThreadPanel({
               <strong>{activeRoot.sender_name}</strong>
               <time>{formatTime(activeRoot.created_at)}</time>
             </div>
-            <p>{activeRoot.body}</p>
+            <MessageMarkdown body={activeRoot.body} />
           </article>
         )}
 
@@ -146,7 +147,7 @@ export function ThreadPanel({
                     <strong>{reply.sender_name}</strong>
                     <time>{formatTime(reply.created_at)}</time>
                   </div>
-                  <p>{reply.body}</p>
+                  <MessageMarkdown body={reply.body} />
                 </div>
               </article>
             );
