@@ -27,6 +27,8 @@ type SidebarProps = {
   allRootCount: number;
   threadCount: number;
   followedThreads: number;
+  channelAlertIds: Set<string>;
+  threadUnreadCounts: Record<string, number>;
   activeThreadId: string | null;
   searchQuery: string;
   searchResults: SearchResult[];
@@ -51,6 +53,8 @@ export function Sidebar({
   allRootCount,
   threadCount,
   followedThreads,
+  channelAlertIds,
+  threadUnreadCounts,
   activeThreadId,
   searchQuery,
   searchResults,
@@ -117,16 +121,19 @@ export function Sidebar({
             <button onClick={openCreateChannelModal} title="Create channel"><Plus size={18} /></button>
           </div>
         </div>
-        {normalChannels.map((item) => (
-          <button
-            key={item.id}
-            className={`channel ${item.id === channel?.id ? "selected" : ""}`}
-            onClick={() => selectChannel(item.id)}
-          >
-            <Hash size={17} /> {item.name}
-            {item.unread_count > 0 && <strong>{item.unread_count}</strong>}
-          </button>
-        ))}
+        {normalChannels.map((item) => {
+          const badge = item.unread_count > 0 ? String(item.unread_count) : channelAlertIds.has(item.id) ? "new" : "";
+          return (
+            <button
+              key={item.id}
+              className={`channel ${item.id === channel?.id ? "selected" : ""} ${badge ? "has-unread" : ""}`}
+              onClick={() => selectChannel(item.id)}
+            >
+              <Hash size={17} /> {item.name}
+              {badge && <strong>{badge}</strong>}
+            </button>
+          );
+        })}
         {normalChannels.length === 0 && (
           <div className="empty-mini">Create a channel to start chatting.</div>
         )}
@@ -136,16 +143,20 @@ export function Sidebar({
         <div className="section-title">
           <span><ChevronDown size={14} /> Threads {threadRootMessages.length}</span>
         </div>
-        {threadRootMessages.map((message) => (
-          <button
-            key={message.id}
-            className={`thread-nav ${message.id === activeThreadId ? "selected" : ""}`}
-            onClick={() => setActiveThreadId(message.id)}
-          >
-            <MessageSquare size={15} />
-            <span>{message.body.split("\n")[0] || "Untitled thread"}</span>
-          </button>
-        ))}
+        {threadRootMessages.map((message) => {
+          const unread = threadUnreadCounts[message.id] ?? 0;
+          return (
+            <button
+              key={message.id}
+              className={`thread-nav ${message.id === activeThreadId ? "selected" : ""} ${unread ? "has-unread" : ""}`}
+              onClick={() => setActiveThreadId(message.id)}
+            >
+              <MessageSquare size={15} />
+              <span>{message.body.split("\n")[0] || "Untitled thread"}</span>
+              {unread > 0 && <strong>{unread}</strong>}
+            </button>
+          );
+        })}
         {threadRootMessages.length === 0 && (
           <div className="empty-mini">Threads appear after a message gets replies.</div>
         )}
@@ -159,10 +170,11 @@ export function Sidebar({
           const agent = dmAgentFor(item);
           const title = agent ? agent.display_name : item.name.replace(/^dm:/, "@");
           const handle = agent ? `@${agent.handle}` : "agent removed";
+          const badge = item.unread_count > 0 ? String(item.unread_count) : channelAlertIds.has(item.id) ? "new" : "";
           return (
             <button
               key={item.id}
-              className={`dm ${item.id === channel?.id ? "selected" : ""}`}
+              className={`dm ${item.id === channel?.id ? "selected" : ""} ${badge ? "has-unread" : ""}`}
               onClick={() => selectChannel(item.id)}
             >
               <div className="avatar small">{agent?.avatar || "A"}</div>
@@ -170,7 +182,7 @@ export function Sidebar({
                 <strong>{title}</strong>
                 <span>{handle}{agent ? ` · ${agent.status}` : ""}</span>
               </div>
-              {item.unread_count > 0 && <strong>{item.unread_count}</strong>}
+              {badge && <strong>{badge}</strong>}
             </button>
           );
         })}

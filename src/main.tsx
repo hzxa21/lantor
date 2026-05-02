@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
@@ -38,6 +38,10 @@ const ACTIVITY_PHASE_LABELS: Record<string, string> = {
   event_error: "Error",
   run_error: "Error",
 };
+
+const DEFAULT_THREAD_PANEL_WIDTH = 420;
+const MIN_THREAD_PANEL_WIDTH = 320;
+const MAX_THREAD_PANEL_WIDTH = 760;
 
 function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
@@ -82,6 +86,16 @@ function App() {
   const [messageEditDraft, setMessageEditDraft] = useState("");
   const [appError, setAppError] = useState<string | null>(null);
   const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
+  const [threadPanelWidth, setThreadPanelWidth] = useState(() => {
+    const stored = window.localStorage.getItem("localslock.threadPanelWidth");
+    const value = stored ? Number(stored) : DEFAULT_THREAD_PANEL_WIDTH;
+    return Number.isFinite(value)
+      ? Math.min(MAX_THREAD_PANEL_WIDTH, Math.max(MIN_THREAD_PANEL_WIDTH, value))
+      : DEFAULT_THREAD_PANEL_WIDTH;
+  });
+  const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
+  const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
+  const knownMessageIdsRef = useRef<Set<string> | null>(null);
 
   async function refreshRuntimeChecks() {
     const entries = await Promise.all(
@@ -141,10 +155,67 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!data) return;
+    if (!knownMessageIdsRef.current) {
+      knownMessageIdsRef.current = new Set(data.messages.map((message) => message.id));
+      return;
+    }
+
+    const known = knownMessageIdsRef.current;
+    const newMessages = data.messages.filter((message) => !known.has(message.id));
+    if (newMessages.length === 0) return;
+    newMessages.forEach((message) => known.add(message.id));
+
+    setChannelAlertIds((current) => {
+      let next: Set<string> | null = null;
+      for (const message of newMessages) {
+        if (message.channel_id === activeChannelId) continue;
+        next ??= new Set(current);
+        next.add(message.channel_id);
+      }
+      return next ?? current;
+    });
+
+    setThreadUnreadCounts((current) => {
+      let next: Record<string, number> | null = null;
+      for (const message of newMessages) {
+        if (!message.thread_root_id || message.thread_root_id === activeThreadId) continue;
+        next ??= { ...current };
+        next[message.thread_root_id] = (next[message.thread_root_id] ?? 0) + 1;
+      }
+      return next ?? current;
+    });
+  }, [activeChannelId, activeThreadId, data]);
+
+  useEffect(() => {
     if (!appError) return;
     const timer = window.setTimeout(() => setAppError(null), 6500);
     return () => window.clearTimeout(timer);
   }, [appError]);
+
+  useEffect(() => {
+    if (!activeChannelId) return;
+    setChannelAlertIds((current) => {
+      if (!current.has(activeChannelId)) return current;
+      const next = new Set(current);
+      next.delete(activeChannelId);
+      return next;
+    });
+  }, [activeChannelId]);
+
+  useEffect(() => {
+    if (!activeThreadId) return;
+    setThreadUnreadCounts((current) => {
+      if (!current[activeThreadId]) return current;
+      const next = { ...current };
+      delete next[activeThreadId];
+      return next;
+    });
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    window.localStorage.setItem("localslock.threadPanelWidth", String(threadPanelWidth));
+  }, [threadPanelWidth]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -470,7 +541,18 @@ function App() {
         .map((message) => message.thread_root_id) ?? [],
     );
     const first = data?.messages.find((m) => m.channel_id === channelId && !m.thread_root_id && repliedRootIds.has(m.id));
-    setActiveThreadId(first?.id ?? null);
+    openThread(first?.id ?? null);
+  }
+
+  function openThread(threadId: string | null) {
+    setActiveThreadId(threadId);
+    if (!threadId) return;
+    setThreadUnreadCounts((current) => {
+      if (!current[threadId]) return current;
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
   }
 
   async function setChannelMember(agentId: string, member: boolean) {
@@ -705,14 +787,14 @@ function App() {
 
   function openTask(task: Task) {
     setActiveChannelId(task.channel_id);
-    setActiveThreadId(task.message_id);
+    openThread(task.message_id);
     setActiveTab("chat");
   }
 
   function openWorkItem(item: AgentWorkItem) {
     if (item.channel_id) setActiveChannelId(item.channel_id);
     if (item.thread_root_id) {
-      setActiveThreadId(item.thread_root_id);
+      openThread(item.thread_root_id);
       setActiveTab("chat");
     }
     const agent = data?.agents.find((candidate) => candidate.id === item.agent_id);
@@ -726,9 +808,35 @@ function App() {
     }
     if (result.channelId) selectChannel(result.channelId);
     if (result.threadId) {
-      setActiveThreadId(result.threadId);
+      openThread(result.threadId);
       setActiveTab("chat");
     }
+  }
+
+  function startThreadResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = threadPanelWidth;
+    const maxWidth = Math.max(
+      MIN_THREAD_PANEL_WIDTH,
+      Math.min(MAX_THREAD_PANEL_WIDTH, window.innerWidth - 292 - 520),
+    );
+
+    function onPointerMove(moveEvent: PointerEvent) {
+      const delta = startX - moveEvent.clientX;
+      const next = Math.min(maxWidth, Math.max(MIN_THREAD_PANEL_WIDTH, startWidth + delta));
+      setThreadPanelWidth(next);
+    }
+
+    function onPointerUp() {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      document.body.classList.remove("resizing-thread");
+    }
+
+    document.body.classList.add("resizing-thread");
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
   }
 
   async function toggleThreadFollow(message: Message) {
@@ -768,7 +876,10 @@ function App() {
   }
 
   return (
-    <main className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"}`}>
+    <main
+      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"}`}
+      style={{ "--thread-width": `${threadPanelWidth}px` } as CSSProperties}
+    >
       <Sidebar
         data={data}
         channel={channel}
@@ -776,6 +887,8 @@ function App() {
         allRootCount={rootMessages.length}
         threadCount={threadedRootMessages.length}
         followedThreads={followedThreads}
+        channelAlertIds={channelAlertIds}
+        threadUnreadCounts={threadUnreadCounts}
         searchQuery={searchQuery}
         searchResults={searchResults}
         setSearchQuery={setSearchQuery}
@@ -784,7 +897,7 @@ function App() {
         openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
         selectChannel={selectChannel}
         activeThreadId={activeThreadId}
-        setActiveThreadId={setActiveThreadId}
+        setActiveThreadId={openThread}
         openCreateAgentModal={() => setShowCreateAgentModal(true)}
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openDmWithAgent={openDmWithAgent}
@@ -807,7 +920,7 @@ function App() {
         taskTitleDrafts={taskTitleDrafts}
         showThread={showThread}
         setActiveTab={setActiveTab}
-        setActiveThreadId={setActiveThreadId}
+        setActiveThreadId={openThread}
         setShowThread={setShowThread}
         openChannelAgentsModal={() => setShowChannelAgentsModal(true)}
         taskForMessage={taskForMessage}
@@ -853,10 +966,11 @@ function App() {
           activeRoot={activeRoot}
           activeTask={activeTask}
           replies={replies}
+          unreadCount={activeThreadId ? threadUnreadCounts[activeThreadId] ?? 0 : 0}
           taskTitleDrafts={taskTitleDrafts}
           replyDraft={replyDraft}
           toggleThreadFollow={toggleThreadFollow}
-          setActiveThreadId={setActiveThreadId}
+          setActiveThreadId={openThread}
           setTaskTitleDraft={setTaskTitleDraft}
           saveTaskTitle={saveTaskTitle}
           claimTask={claimTask}
@@ -865,6 +979,7 @@ function App() {
           deleteMessage={deleteMessage}
           setReplyDraft={setReplyDraft}
           sendReply={sendReply}
+          onResizeStart={startThreadResize}
         />
       )}
 

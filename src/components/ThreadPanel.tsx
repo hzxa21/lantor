@@ -1,5 +1,5 @@
 import { MessageSquare, Pencil, Reply, Trash2, X } from "lucide-react";
-import { useRef, type KeyboardEvent } from "react";
+import { useRef, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
@@ -11,6 +11,7 @@ type ThreadPanelProps = {
   activeRoot: Message | null;
   activeTask: Task | null;
   replies: Message[];
+  unreadCount: number;
   taskTitleDrafts: Record<string, string>;
   replyDraft: string;
   toggleThreadFollow: (message: Message) => void;
@@ -23,6 +24,7 @@ type ThreadPanelProps = {
   deleteMessage: (message: Message) => void;
   setReplyDraft: (value: string) => void;
   sendReply: () => void;
+  onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
 export function ThreadPanel({
@@ -31,6 +33,7 @@ export function ThreadPanel({
   activeRoot,
   activeTask,
   replies,
+  unreadCount,
   taskTitleDrafts,
   replyDraft,
   toggleThreadFollow,
@@ -43,6 +46,7 @@ export function ThreadPanel({
   deleteMessage,
   setReplyDraft,
   sendReply,
+  onResizeStart,
 }: ThreadPanelProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const isDm = channel?.kind === "dm";
@@ -75,12 +79,20 @@ export function ThreadPanel({
 
   return (
     <aside className="thread">
+      <button
+        className="thread-resize-handle"
+        aria-label="Resize thread panel"
+        onPointerDown={onResizeStart}
+      />
       <header>
         <div>
           <h2>
             Thread <span>{channel ? isDm ? `- @${dmAgent?.handle || "agent"}` : `- #${channel.name}` : "- no channel"}</span>
           </h2>
-          <p>{activeRoot ? `Root ${activeRoot.id.slice(0, 8)}` : "No thread selected"}</p>
+          <p>
+            {activeRoot ? `Root ${activeRoot.id.slice(0, 8)}` : "No thread selected"}
+            {unreadCount > 0 ? ` · ${unreadCount} new` : ""}
+          </p>
         </div>
         {activeRoot && (
           <button onClick={() => toggleThreadFollow(activeRoot)}>
