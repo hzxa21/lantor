@@ -3,8 +3,10 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
 import { AgentFormModal } from "./components/AgentFormModal";
+import { ChannelAgentsModal } from "./components/ChannelAgentsModal";
+import { ChannelSettingsModal } from "./components/ChannelSettingsModal";
 import { Conversation } from "./components/Conversation";
-import { Modal } from "./components/Modal";
+import { CreateChannelModal } from "./components/CreateChannelModal";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadPanel } from "./components/ThreadPanel";
 import {
@@ -724,116 +726,41 @@ function App() {
         </div>
       )}
 
-      <Modal
+      <CreateChannelModal
         open={showCreateChannelModal}
-        title="Create Channel"
-        onClose={() => setShowCreateChannelModal(false)}
-      >
-        <div className="modal-form">
-          <label>
-            <span>Channel name</span>
-            <input
-              autoFocus
-              value={newChannel}
-              onChange={(event) => setNewChannel(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") createChannel();
-              }}
-              placeholder="local-slock"
-            />
-          </label>
-          <div className="modal-actions">
-            <button onClick={() => setShowCreateChannelModal(false)}>Cancel</button>
-            <button className="primary" disabled={!newChannel.trim()} onClick={createChannel}>Create</button>
-          </div>
-        </div>
-      </Modal>
+        channelName={newChannel}
+        onChange={setNewChannel}
+        onCancel={() => setShowCreateChannelModal(false)}
+        onSubmit={createChannel}
+      />
 
-      <Modal
+      <ChannelSettingsModal
         open={showChannelSettingsModal}
-        title={channel ? `#${channel.name} Settings` : "Channel Settings"}
-        onClose={() => setShowChannelSettingsModal(false)}
-        width={560}
-      >
-        {channel && (
-          <div className="modal-form">
-            <label>
-              <span>Channel name</span>
-              <input
-                value={channelNameDraft}
-                onChange={(event) => setChannelNameDraft(event.target.value)}
-                placeholder="channel-name"
-              />
-            </label>
-            <label>
-              <span>Description</span>
-              <textarea
-                value={channelDescriptionDraft}
-                onChange={(event) => setChannelDescriptionDraft(event.target.value)}
-                placeholder="Channel description"
-              />
-            </label>
-            <div className="member-editor modal-member-editor">
-              <strong>Agent members</strong>
-              {data.agents.length === 0 && <span>No agents yet.</span>}
-              {data.agents.map((agent) => (
-                <label key={agent.id}>
-                  <input
-                    type="checkbox"
-                    checked={channelMemberIds.has(agent.id)}
-                    onChange={(event) => setChannelMember(agent.id, event.target.checked)}
-                  />
-                  @{agent.handle}
-                </label>
-              ))}
-            </div>
-            <div className="modal-actions split">
-              <button className="danger" onClick={deleteChannel}>Delete Channel</button>
-              <div>
-                <button onClick={() => setShowChannelSettingsModal(false)}>Cancel</button>
-                <button className="primary" disabled={!channelNameDraft.trim()} onClick={saveChannel}>Save</button>
-              </div>
-            </div>
-          </div>
-        )}
-      </Modal>
+        channel={channel}
+        agents={data.agents}
+        channelMemberIds={channelMemberIds}
+        nameDraft={channelNameDraft}
+        descriptionDraft={channelDescriptionDraft}
+        onNameChange={setChannelNameDraft}
+        onDescriptionChange={setChannelDescriptionDraft}
+        onSetMember={setChannelMember}
+        onDelete={deleteChannel}
+        onCancel={() => setShowChannelSettingsModal(false)}
+        onSave={saveChannel}
+      />
 
-      <Modal
+      <ChannelAgentsModal
         open={showChannelAgentsModal}
-        title={channel ? `Agents in #${channel.name}` : "Channel Agents"}
+        channel={channel}
+        agents={data.agents}
+        channelMemberIds={channelMemberIds}
+        onSetMember={setChannelMember}
+        onCreateAgent={() => {
+          setShowChannelAgentsModal(false);
+          setShowCreateAgentModal(true);
+        }}
         onClose={() => setShowChannelAgentsModal(false)}
-        width={560}
-      >
-        <div className="modal-form">
-          <div className="member-editor modal-member-editor channel-agent-picker">
-            {data.agents.length === 0 && <span>No agents yet. Create an agent first.</span>}
-            {data.agents.map((agent) => (
-              <label key={agent.id}>
-                <input
-                  type="checkbox"
-                  checked={channelMemberIds.has(agent.id)}
-                  onChange={(event) => setChannelMember(agent.id, event.target.checked)}
-                />
-                <span className="agent-pick-row">
-                  <strong>@{agent.handle}</strong>
-                  <small>{agent.display_name} · {agent.runtime} · {agent.status}</small>
-                </span>
-              </label>
-            ))}
-          </div>
-          <div className="modal-actions split">
-            <button
-              onClick={() => {
-                setShowChannelAgentsModal(false);
-                setShowCreateAgentModal(true);
-              }}
-            >
-              Create new agent
-            </button>
-            <button className="primary" onClick={() => setShowChannelAgentsModal(false)}>Done</button>
-          </div>
-        </div>
-      </Modal>
+      />
 
       <AgentFormModal
         open={showCreateAgentModal}
