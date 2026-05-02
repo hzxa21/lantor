@@ -7,6 +7,7 @@ import { ChannelAgentsModal } from "./components/ChannelAgentsModal";
 import { ChannelSettingsModal } from "./components/ChannelSettingsModal";
 import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
+import { Modal } from "./components/Modal";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadPanel } from "./components/ThreadPanel";
 import {
@@ -77,6 +78,8 @@ function App() {
   const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [messageEditDraft, setMessageEditDraft] = useState("");
   const [appError, setAppError] = useState<string | null>(null);
   const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
 
@@ -168,6 +171,7 @@ function App() {
         showChannelSettingsModal ||
         showChannelAgentsModal ||
         showCreateAgentModal ||
+        Boolean(editingMessage) ||
         Boolean(editingAgentId);
       if (event.key === "Escape" && !modalOpen && !isTextInput(event.target)) {
         if (selectedAgentId) {
@@ -184,6 +188,7 @@ function App() {
     activeChannelId,
     data?.channels,
     editingAgentId,
+    editingMessage,
     selectedAgentId,
     showChannelAgentsModal,
     showChannelSettingsModal,
@@ -592,6 +597,36 @@ function App() {
     setReplyDraft("");
   }
 
+  function editMessage(message: Message) {
+    setEditingMessage(message);
+    setMessageEditDraft(message.body);
+  }
+
+  async function saveMessageEdit() {
+    if (!editingMessage) return;
+    const body = messageEditDraft.trim();
+    if (!body || body === editingMessage.body) {
+      setEditingMessage(null);
+      setMessageEditDraft("");
+      return;
+    }
+    await mutate("update_message", { messageId: editingMessage.id, body });
+    setEditingMessage(null);
+    setMessageEditDraft("");
+  }
+
+  async function deleteMessage(message: Message) {
+    const isThreadRoot = !message.thread_root_id;
+    const warning = isThreadRoot
+      ? "Delete this message and all thread replies/tasks attached to it?"
+      : "Delete this reply?";
+    if (!window.confirm(warning)) return;
+    await mutate("delete_message", { messageId: message.id });
+    if (isThreadRoot && activeThreadId === message.id) {
+      setActiveThreadId(null);
+    }
+  }
+
   async function updateTaskStatus(task: Task, status: string) {
     await mutate("update_task_status", { taskId: task.id, status });
   }
@@ -731,6 +766,8 @@ function App() {
         createTaskFromBoard={createTaskFromBoard}
         setDraft={setDraft}
         sendRootMessage={sendRootMessage}
+        editMessage={editMessage}
+        deleteMessage={deleteMessage}
       />
 
       {selectedAgent ? (
@@ -768,6 +805,8 @@ function App() {
           saveTaskTitle={saveTaskTitle}
           claimTask={claimTask}
           updateTaskStatus={updateTaskStatus}
+          editMessage={editMessage}
+          deleteMessage={deleteMessage}
           setReplyDraft={setReplyDraft}
           sendReply={sendReply}
         />
@@ -840,6 +879,41 @@ function App() {
         onCancel={cancelEditAgent}
         onSubmit={saveAgent}
       />
+
+      <Modal
+        open={Boolean(editingMessage)}
+        title="Edit Message"
+        onClose={() => {
+          setEditingMessage(null);
+          setMessageEditDraft("");
+        }}
+        width={640}
+      >
+        <div className="modal-form">
+          <label>
+            <span>Message body</span>
+            <textarea
+              autoFocus
+              value={messageEditDraft}
+              onChange={(event) => setMessageEditDraft(event.target.value)}
+              rows={7}
+            />
+          </label>
+          <div className="modal-actions">
+            <button
+              onClick={() => {
+                setEditingMessage(null);
+                setMessageEditDraft("");
+              }}
+            >
+              Cancel
+            </button>
+            <button className="primary" disabled={!messageEditDraft.trim()} onClick={saveMessageEdit}>
+              Save
+            </button>
+          </div>
+        </div>
+      </Modal>
 
     </main>
   );

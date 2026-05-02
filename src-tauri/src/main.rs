@@ -1636,6 +1636,58 @@ async fn send_message(
 }
 
 #[tauri::command]
+async fn update_message(
+    message_id: Uuid,
+    body: String,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("message body is empty".to_owned());
+    }
+
+    let mut tx = state.pool.begin().await.map_err(to_string)?;
+    let result = sqlx::query("update messages set body = $2 where id = $1")
+        .bind(message_id)
+        .bind(body)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_string)?;
+    if result.rows_affected() == 0 {
+        return Err("message does not exist".to_owned());
+    }
+
+    sqlx::query(
+        r#"
+        update tasks
+        set title = $2, updated_at = now()
+        where message_id = $1
+        "#,
+    )
+    .bind(message_id)
+    .bind(body.lines().next().unwrap_or("Untitled task"))
+    .execute(&mut *tx)
+    .await
+    .map_err(to_string)?;
+
+    tx.commit().await.map_err(to_string)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_message(message_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    let result = sqlx::query("delete from messages where id = $1")
+        .bind(message_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+    if result.rows_affected() == 0 {
+        return Err("message does not exist".to_owned());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn claim_task(
     task_id: Uuid,
     agent_id: Option<Uuid>,
@@ -3537,6 +3589,7 @@ pub fn run() {
             claim_task,
             delete_agent,
             delete_channel,
+            delete_message,
             dispatch_agent_work,
             install_supervisor_service,
             mark_channel_read,
@@ -3548,6 +3601,7 @@ pub fn run() {
             uninstall_supervisor_service,
             update_agent,
             update_channel,
+            update_message,
             update_thread_followed,
             update_task_title,
             update_task_status

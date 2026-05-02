@@ -4,8 +4,10 @@ import {
   LayoutList,
   MessageSquare,
   PanelRight,
+  Pencil,
   Plus,
   Send,
+  Trash2,
 } from "lucide-react";
 import { useRef, useState, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
@@ -44,6 +46,8 @@ type ConversationProps = {
   createTaskFromBoard: () => void;
   setDraft: (value: string) => void;
   sendRootMessage: (asTask?: boolean) => void;
+  editMessage: (message: Message) => void;
+  deleteMessage: (message: Message) => void;
 };
 
 export function Conversation({
@@ -74,6 +78,8 @@ export function Conversation({
   createTaskFromBoard,
   setDraft,
   sendRootMessage,
+  editMessage,
+  deleteMessage,
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -214,6 +220,24 @@ export function Conversation({
                   )}
                   <div className="message-actions">
                     <button className="reply-pill"><MessageSquare size={15} /> Open thread</button>
+                    <button
+                      className="reply-pill neutral"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        editMessage(message);
+                      }}
+                    >
+                      <Pencil size={14} /> Edit
+                    </button>
+                    <button
+                      className="reply-pill danger"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        deleteMessage(message);
+                      }}
+                    >
+                      <Trash2 size={14} /> Delete
+                    </button>
                     <button
                       className={`follow-pill ${message.thread_followed ? "active" : ""}`}
                       onClick={(event) => {
