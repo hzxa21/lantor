@@ -9,6 +9,7 @@ import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { SearchModal } from "./components/SearchModal";
 import { Sidebar } from "./components/Sidebar";
+import { ThreadBrowserModal } from "./components/ThreadBrowserModal";
 import { ThreadPanel } from "./components/ThreadPanel";
 import {
   ACTIVE_RUN_STATUSES,
@@ -109,6 +110,7 @@ function App() {
   const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showThreadBrowserModal, setShowThreadBrowserModal] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
   const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
@@ -280,6 +282,7 @@ function App() {
         showChannelAgentsModal ||
         showCreateAgentModal ||
         showSearchModal ||
+        showThreadBrowserModal ||
         Boolean(editingAgentId);
       if (event.key === "Escape" && !modalOpen && !isTextInput(event.target)) {
         if (selectedAgentId) {
@@ -302,6 +305,7 @@ function App() {
     showCreateAgentModal,
     showCreateChannelModal,
     showSearchModal,
+    showThreadBrowserModal,
     showThread,
   ]);
 
@@ -330,15 +334,18 @@ function App() {
     }, {});
   }, [data?.messages]);
 
-  const threadedRootMessages = useMemo(() => {
-    if (!data || !channel) return [];
-    const repliedRootIds = new Set(
-      data.messages
-        .filter((message) => message.channel_id === channel.id && message.thread_root_id)
-        .map((message) => message.thread_root_id),
-    );
-    return rootMessages.filter((message) => repliedRootIds.has(message.id));
-  }, [data, channel, rootMessages]);
+  const allThreadRootMessages = useMemo(() => {
+    if (!data) return [];
+    const latestByRoot = new Map<string, number>();
+    for (const message of data.messages) {
+      if (!message.thread_root_id) continue;
+      const timestamp = new Date(message.created_at).getTime();
+      latestByRoot.set(message.thread_root_id, Math.max(latestByRoot.get(message.thread_root_id) ?? 0, timestamp));
+    }
+    return data.messages
+      .filter((message) => !message.thread_root_id && latestByRoot.has(message.id))
+      .sort((left, right) => (latestByRoot.get(right.id) ?? 0) - (latestByRoot.get(left.id) ?? 0));
+  }, [data?.messages]);
 
   const visibleTasks = useMemo(() => {
     if (!data || !channel) return [];
@@ -852,6 +859,14 @@ function App() {
     setShowSearchModal(false);
   }
 
+  function openThreadFromBrowser(message: Message) {
+    selectChannel(message.channel_id);
+    openThread(message.id);
+    setActiveTab("chat");
+    setShowThread(true);
+    setShowThreadBrowserModal(false);
+  }
+
   function startSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault();
     const startX = event.clientX;
@@ -948,16 +963,13 @@ function App() {
       <Sidebar
         data={data}
         channel={channel}
-        threadRootMessages={threadedRootMessages}
         channelAlertIds={channelAlertIds}
         threadUnreadCounts={threadUnreadCounts}
         openSearch={() => setShowSearchModal(true)}
+        openThreadBrowser={() => setShowThreadBrowserModal(true)}
         openCreateChannelModal={() => setShowCreateChannelModal(true)}
         openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
         selectChannel={selectChannel}
-        activeThreadId={activeThreadId}
-        setActiveThreadId={openThread}
-        toggleThreadFollow={toggleThreadFollow}
         openCreateAgentModal={() => setShowCreateAgentModal(true)}
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openDmWithAgent={openDmWithAgent}
@@ -976,6 +988,18 @@ function App() {
         onOpenResult={openSearchResult}
         onClear={() => setSearchQuery("")}
         onClose={() => setShowSearchModal(false)}
+      />
+
+      <ThreadBrowserModal
+        open={showThreadBrowserModal}
+        channels={data.channels}
+        threads={allThreadRootMessages}
+        activeThreadId={activeThreadId}
+        replyCounts={threadReplyCounts}
+        unreadCounts={threadUnreadCounts}
+        onOpenThread={openThreadFromBrowser}
+        onToggleFollow={toggleThreadFollow}
+        onClose={() => setShowThreadBrowserModal(false)}
       />
 
       <Conversation
