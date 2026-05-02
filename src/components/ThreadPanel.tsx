@@ -1,4 +1,4 @@
-import { MessageSquare, Pencil, Reply, Trash2, X } from "lucide-react";
+import { MessageSquare, Reply, X } from "lucide-react";
 import { useRef, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
@@ -19,8 +19,6 @@ type ThreadPanelProps = {
   saveTaskTitle: (task: Task) => void;
   claimTask: (task: Task, agentId: string) => void;
   updateTaskStatus: (task: Task, status: string) => void;
-  editMessage: (message: Message) => void;
-  deleteMessage: (message: Message) => void;
   setReplyDraft: (value: string) => void;
   sendReply: () => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
@@ -40,8 +38,6 @@ export function ThreadPanel({
   saveTaskTitle,
   claimTask,
   updateTaskStatus,
-  editMessage,
-  deleteMessage,
   setReplyDraft,
   sendReply,
   onResizeStart,
@@ -103,14 +99,6 @@ export function ThreadPanel({
               <time>{formatTime(activeRoot.created_at)}</time>
             </div>
             <MessageMarkdown body={activeRoot.body} />
-            <div className="message-actions visible">
-              <button className="reply-pill neutral" onClick={() => editMessage(activeRoot)}>
-                <Pencil size={14} /> Edit
-              </button>
-              <button className="reply-pill danger" onClick={() => deleteMessage(activeRoot)}>
-                <Trash2 size={14} /> Delete
-              </button>
-            </div>
           </article>
         )}
 
@@ -169,14 +157,6 @@ export function ThreadPanel({
                     <time>{formatTime(reply.created_at)}</time>
                   </div>
                   <MessageMarkdown body={reply.body} />
-                  <div className="message-actions visible">
-                    <button className="reply-pill neutral" onClick={() => editMessage(reply)}>
-                      <Pencil size={14} /> Edit
-                    </button>
-                    <button className="reply-pill danger" onClick={() => deleteMessage(reply)}>
-                      <Trash2 size={14} /> Delete
-                    </button>
-                  </div>
                 </div>
               </article>
             );

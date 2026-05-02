@@ -739,98 +739,13 @@ mark {
   border: 1px solid var(--line);
 }
 
-.message-task-line {
+.thread-reply-count {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  width: fit-content;
+  margin-top: 8px;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 750;
-}
-
-.message-task-line span {
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.62);
-}
-
-.agent-mention-line {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  margin-top: 6px;
-}
-
-.agent-mention-line span,
-.agent-mention-line strong {
-  padding: 3px 7px;
-  border-radius: 7px;
-  background: rgba(10, 132, 255, 0.1);
-  color: var(--accent);
-  font-size: 11px;
   font-weight: 650;
-}
-
-.agent-mention-line strong {
-  background: rgba(52, 199, 89, 0.14);
-  color: #167d32;
-}
-
-.agent-mention-line.dm-work-line span:first-child {
-  background: rgba(142, 142, 147, 0.12);
-  color: var(--muted);
-}
-
-.reply-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 8px;
-  border-radius: 8px;
-  background: rgba(10, 132, 255, 0.12);
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.reply-pill.neutral {
-  background: rgba(142, 142, 147, 0.12);
-  color: var(--muted);
-}
-
-.reply-pill.danger {
-  background: rgba(255, 59, 48, 0.12);
-  color: #d70015;
-}
-
-.message-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 6px;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.message-card:hover .message-actions,
-.message-card.focused .message-actions,
-.message-actions.visible {
-  opacity: 1;
-}
-
-.follow-pill {
-  padding: 5px 8px;
-  border-radius: 8px;
-  background: rgba(142, 142, 147, 0.12);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.follow-pill.active {
-  background: rgba(52, 199, 89, 0.14);
-  color: #167d32;
 }
 
 .task-board {

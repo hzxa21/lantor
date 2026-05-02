@@ -4,17 +4,12 @@ import {
   LayoutList,
   MessageSquare,
   PanelRight,
-  Pencil,
   Plus,
   Send,
-  Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
-import {
-  mentionedAgentsForBody,
-} from "../mentions";
-import { Agent, AgentWorkItem, Channel, Message, TASK_STATUSES, Task } from "../types";
+import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 import { MessageMarkdown } from "./MessageMarkdown";
 
@@ -25,8 +20,8 @@ type ConversationProps = {
   activeTab: "chat" | "tasks";
   activeRoot: Message | null;
   rootMessages: Message[];
+  threadReplyCounts: Record<string, number>;
   visibleTasks: Task[];
-  workItems: AgentWorkItem[];
   draft: string;
   taskDraft: string;
   taskTitleDrafts: Record<string, string>;
@@ -36,7 +31,6 @@ type ConversationProps = {
   setShowThread: (value: boolean) => void;
   openChannelAgentsModal: () => void;
   taskForMessage: (messageId: string) => Task | null;
-  toggleThreadFollow: (message: Message) => void;
   setTaskTitleDraft: (task: Task, title: string) => void;
   saveTaskTitle: (task: Task) => void;
   claimTask: (task: Task, agentId: string) => void;
@@ -46,8 +40,6 @@ type ConversationProps = {
   createTaskFromBoard: () => void;
   setDraft: (value: string) => void;
   sendRootMessage: (asTask?: boolean) => void;
-  editMessage: (message: Message) => void;
-  deleteMessage: (message: Message) => void;
 };
 
 export function Conversation({
@@ -57,8 +49,8 @@ export function Conversation({
   activeTab,
   activeRoot,
   rootMessages,
+  threadReplyCounts,
   visibleTasks,
-  workItems,
   draft,
   taskDraft,
   taskTitleDrafts,
@@ -68,7 +60,6 @@ export function Conversation({
   setShowThread,
   openChannelAgentsModal,
   taskForMessage,
-  toggleThreadFollow,
   setTaskTitleDraft,
   saveTaskTitle,
   claimTask,
@@ -78,8 +69,6 @@ export function Conversation({
   createTaskFromBoard,
   setDraft,
   sendRootMessage,
-  editMessage,
-  deleteMessage,
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -200,12 +189,7 @@ export function Conversation({
           )}
           {rootMessages.map((message) => {
             const linkedTask = taskForMessage(message.id);
-            const messageWorkItems = workItems.filter(
-              (item) =>
-                item.source_message_id === message.id ||
-                (!item.source_message_id && item.thread_root_id === message.id),
-            );
-            const mentionedAgents = mentionedAgentsForBody(message.body, agents);
+            const replyCount = threadReplyCounts[message.id] ?? 0;
             return (
               <article
                 key={message.id}
@@ -225,53 +209,7 @@ export function Conversation({
                     )}
                   </div>
                   <MessageMarkdown body={firstLines(message.body)} />
-                  {linkedTask && (
-                    <div className="message-task-line">
-                      <span>{linkedTask.assignee_name || "unassigned"}</span>
-                      <span>updated {formatTime(linkedTask.updated_at)}</span>
-                    </div>
-                  )}
-                  {(mentionedAgents.length > 0 || messageWorkItems.length > 0) && (
-                    <div className={`agent-mention-line ${isDm ? "dm-work-line" : ""}`}>
-                      {isDm && messageWorkItems.length > 0 && <span>Agent work</span>}
-                      {mentionedAgents.map((agent) => (
-                        <span key={agent.id}>@{agent.handle}</span>
-                      ))}
-                      {messageWorkItems.map((item) => (
-                        <strong key={item.id}>@{item.agent_handle} {item.status}</strong>
-                      ))}
-                    </div>
-                  )}
-                  <div className="message-actions">
-                    <button className="reply-pill"><MessageSquare size={15} /> Open thread</button>
-                    <button
-                      className="reply-pill neutral"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        editMessage(message);
-                      }}
-                    >
-                      <Pencil size={14} /> Edit
-                    </button>
-                    <button
-                      className="reply-pill danger"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        deleteMessage(message);
-                      }}
-                    >
-                      <Trash2 size={14} /> Delete
-                    </button>
-                    <button
-                      className={`follow-pill ${message.thread_followed ? "active" : ""}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        toggleThreadFollow(message);
-                      }}
-                    >
-                      {message.thread_followed ? "Following" : "Muted"}
-                    </button>
-                  </div>
+                  {replyCount > 0 && <div className="thread-reply-count">{replyCount} {replyCount === 1 ? "reply" : "replies"}</div>}
                 </div>
               </article>
             );

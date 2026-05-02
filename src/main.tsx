@@ -7,7 +7,6 @@ import { ChannelAgentsModal } from "./components/ChannelAgentsModal";
 import { ChannelSettingsModal } from "./components/ChannelSettingsModal";
 import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
-import { Modal } from "./components/Modal";
 import { SearchModal } from "./components/SearchModal";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadPanel } from "./components/ThreadPanel";
@@ -111,8 +110,6 @@ function App() {
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
-  const [messageEditDraft, setMessageEditDraft] = useState("");
   const [appError, setAppError] = useState<string | null>(null);
   const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
   const [threadPanelWidth, setThreadPanelWidth] = useState(() => {
@@ -283,7 +280,6 @@ function App() {
         showChannelAgentsModal ||
         showCreateAgentModal ||
         showSearchModal ||
-        Boolean(editingMessage) ||
         Boolean(editingAgentId);
       if (event.key === "Escape" && !modalOpen && !isTextInput(event.target)) {
         if (selectedAgentId) {
@@ -300,7 +296,6 @@ function App() {
     activeChannelId,
     data?.channels,
     editingAgentId,
-    editingMessage,
     selectedAgentId,
     showChannelAgentsModal,
     showChannelSettingsModal,
@@ -325,6 +320,15 @@ function App() {
     if (!data || !activeRoot) return [];
     return data.messages.filter((m) => m.thread_root_id === activeRoot.id);
   }, [data, activeRoot]);
+
+  const threadReplyCounts = useMemo(() => {
+    if (!data) return {};
+    return data.messages.reduce<Record<string, number>>((counts, message) => {
+      if (!message.thread_root_id) return counts;
+      counts[message.thread_root_id] = (counts[message.thread_root_id] ?? 0) + 1;
+      return counts;
+    }, {});
+  }, [data?.messages]);
 
   const threadedRootMessages = useMemo(() => {
     if (!data || !channel) return [];
@@ -796,36 +800,6 @@ function App() {
     setReplyDraft("");
   }
 
-  function editMessage(message: Message) {
-    setEditingMessage(message);
-    setMessageEditDraft(message.body);
-  }
-
-  async function saveMessageEdit() {
-    if (!editingMessage) return;
-    const body = messageEditDraft.trim();
-    if (!body || body === editingMessage.body) {
-      setEditingMessage(null);
-      setMessageEditDraft("");
-      return;
-    }
-    await mutate("update_message", { messageId: editingMessage.id, body });
-    setEditingMessage(null);
-    setMessageEditDraft("");
-  }
-
-  async function deleteMessage(message: Message) {
-    const isThreadRoot = !message.thread_root_id;
-    const warning = isThreadRoot
-      ? "Delete this message and all thread replies/tasks attached to it?"
-      : "Delete this reply?";
-    if (!window.confirm(warning)) return;
-    await mutate("delete_message", { messageId: message.id });
-    if (isThreadRoot && activeThreadId === message.id) {
-      setActiveThreadId(null);
-    }
-  }
-
   async function updateTaskStatus(task: Task, status: string) {
     await mutate("update_task_status", { taskId: task.id, status });
   }
@@ -1011,8 +985,8 @@ function App() {
         activeTab={activeTab}
         activeRoot={activeRoot}
         rootMessages={rootMessages}
+        threadReplyCounts={threadReplyCounts}
         visibleTasks={visibleTasks}
-        workItems={data.agent_work_items}
         draft={draft}
         taskDraft={taskDraft}
         taskTitleDrafts={taskTitleDrafts}
@@ -1022,7 +996,6 @@ function App() {
         setShowThread={setShowThread}
         openChannelAgentsModal={() => setShowChannelAgentsModal(true)}
         taskForMessage={taskForMessage}
-        toggleThreadFollow={toggleThreadFollow}
         setTaskTitleDraft={setTaskTitleDraft}
         saveTaskTitle={saveTaskTitle}
         claimTask={claimTask}
@@ -1032,8 +1005,6 @@ function App() {
         createTaskFromBoard={createTaskFromBoard}
         setDraft={setDraft}
         sendRootMessage={sendRootMessage}
-        editMessage={editMessage}
-        deleteMessage={deleteMessage}
       />
 
       {selectedAgent ? (
@@ -1072,8 +1043,6 @@ function App() {
           saveTaskTitle={saveTaskTitle}
           claimTask={claimTask}
           updateTaskStatus={updateTaskStatus}
-          editMessage={editMessage}
-          deleteMessage={deleteMessage}
           setReplyDraft={setReplyDraft}
           sendReply={sendReply}
           onResizeStart={startThreadResize}
@@ -1147,41 +1116,6 @@ function App() {
         onCancel={cancelEditAgent}
         onSubmit={saveAgent}
       />
-
-      <Modal
-        open={Boolean(editingMessage)}
-        title="Edit Message"
-        onClose={() => {
-          setEditingMessage(null);
-          setMessageEditDraft("");
-        }}
-        width={640}
-      >
-        <div className="modal-form">
-          <label>
-            <span>Message body</span>
-            <textarea
-              autoFocus
-              value={messageEditDraft}
-              onChange={(event) => setMessageEditDraft(event.target.value)}
-              rows={7}
-            />
-          </label>
-          <div className="modal-actions">
-            <button
-              onClick={() => {
-                setEditingMessage(null);
-                setMessageEditDraft("");
-              }}
-            >
-              Cancel
-            </button>
-            <button className="primary" disabled={!messageEditDraft.trim()} onClick={saveMessageEdit}>
-              Save
-            </button>
-          </div>
-        </div>
-      </Modal>
 
     </main>
   );
