@@ -7,7 +7,7 @@ import {
   Search,
   Settings,
 } from "lucide-react";
-import { type PointerEvent as ReactPointerEvent } from "react";
+import { useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Agent,
   Bootstrap,
@@ -45,9 +45,13 @@ export function Sidebar({
   openDmWithAgent,
   onResizeStart,
 }: SidebarProps) {
+  const [collapsedSections, setCollapsedSections] = useState({ channels: false, dms: false });
   const normalChannels = data.channels.filter((item) => item.kind !== "dm");
   const dmChannels = data.channels.filter((item) => item.kind === "dm");
   const hasThreadUnread = Object.values(threadUnreadCounts).some((count) => count > 0);
+  const toggleSection = (section: "channels" | "dms") => {
+    setCollapsedSections((current) => ({ ...current, [section]: !current[section] }));
+  };
 
   return (
     <aside className="sidebar">
@@ -76,9 +80,19 @@ export function Sidebar({
         </button>
       </section>
 
-      <section className="channel-block">
+      <section className={`channel-block ${collapsedSections.channels ? "collapsed" : ""}`}>
         <div className="section-title">
-          <span><ChevronDown size={14} /> Channels</span>
+          <div className="section-label">
+            <button
+              className={`section-collapse ${collapsedSections.channels ? "collapsed" : ""}`}
+              onClick={() => toggleSection("channels")}
+              aria-expanded={!collapsedSections.channels}
+              title={collapsedSections.channels ? "Show channels" : "Hide channels"}
+            >
+              <ChevronDown size={14} />
+            </button>
+            <span>Channels</span>
+          </div>
           <div className="section-actions">
             {channel?.kind !== "dm" && channel && (
               <button onClick={openChannelSettingsModal} title="Channel settings"><Settings size={16} /></button>
@@ -86,7 +100,7 @@ export function Sidebar({
             <button onClick={openCreateChannelModal} title="Create channel"><Plus size={18} /></button>
           </div>
         </div>
-        {normalChannels.map((item) => {
+        {!collapsedSections.channels && normalChannels.map((item) => {
           const badge = item.unread_count > 0 ? String(item.unread_count) : channelAlertIds.has(item.id) ? "new" : "";
           return (
             <button
@@ -99,17 +113,27 @@ export function Sidebar({
             </button>
           );
         })}
-        {normalChannels.length === 0 && (
+        {!collapsedSections.channels && normalChannels.length === 0 && (
           <div className="empty-mini">Create a channel to start chatting.</div>
         )}
       </section>
 
-      <section className="dm-list">
+      <section className={`dm-list ${collapsedSections.dms ? "collapsed" : ""}`}>
         <div className="section-title">
-          <span><ChevronDown size={14} /> Direct Messages</span>
+          <div className="section-label">
+            <button
+              className={`section-collapse ${collapsedSections.dms ? "collapsed" : ""}`}
+              onClick={() => toggleSection("dms")}
+              aria-expanded={!collapsedSections.dms}
+              title={collapsedSections.dms ? "Show direct messages" : "Hide direct messages"}
+            >
+              <ChevronDown size={14} />
+            </button>
+            <span>Direct Messages</span>
+          </div>
           <button onClick={openCreateAgentModal} title="Add agent"><Plus size={18} /></button>
         </div>
-        {data.agents.map((agent) => {
+        {!collapsedSections.dms && data.agents.map((agent) => {
           const item = dmChannels.find((candidate) => candidate.dm_agent_id === agent.id) ?? null;
           const badge = item
             ? item.unread_count > 0
@@ -143,7 +167,7 @@ export function Sidebar({
             </button>
           );
         })}
-        {data.agents.length === 0 && (
+        {!collapsedSections.dms && data.agents.length === 0 && (
           <div className="empty-mini">Add an agent to start a direct message.</div>
         )}
       </section>
