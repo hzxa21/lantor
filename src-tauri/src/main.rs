@@ -2852,6 +2852,17 @@ async fn insert_agent_message(
     if as_task && thread_root_id.is_some() {
         return Err("task message events must be root messages".to_owned());
     }
+    if as_task {
+        let channel_kind: Option<String> =
+            sqlx::query_scalar("select kind from channels where id = $1")
+                .bind(channel_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?;
+        if channel_kind.as_deref() == Some("dm") {
+            return Err("direct messages do not support tasks".to_owned());
+        }
+    }
     if let Some(thread_root_id) = thread_root_id {
         let root_channel: Option<Uuid> = sqlx::query_scalar(
             "select channel_id from messages where id = $1 and thread_root_id is null",

@@ -414,6 +414,13 @@ function App() {
   }, [channel?.id, channel?.name, channel?.description]);
 
   useEffect(() => {
+    if (channel?.kind !== "dm") return;
+    setActiveTab("chat");
+    setShowChannelSettingsModal(false);
+    setShowChannelAgentsModal(false);
+  }, [channel?.id, channel?.kind]);
+
+  useEffect(() => {
     if (!activeChannelId) return;
     invoke("mark_channel_read", { channelId: activeChannelId }).catch((err) => console.error(err));
   }, [activeChannelId, activeChannelMessageCount]);
@@ -428,6 +435,11 @@ function App() {
 
   async function saveChannel() {
     if (!channel || !channelNameDraft.trim()) return;
+    if (channel.kind === "dm") {
+      setAppError("Direct message settings are managed by the agent profile");
+      setShowChannelSettingsModal(false);
+      return;
+    }
     await mutate("update_channel", {
       channelId: channel.id,
       name: channelNameDraft,
@@ -463,6 +475,10 @@ function App() {
 
   async function setChannelMember(agentId: string, member: boolean) {
     if (!channel) return;
+    if (channel.kind === "dm") {
+      setAppError("Direct message membership is fixed");
+      return;
+    }
     await mutate("set_channel_agent_membership", {
       channelId: channel.id,
       agentId,
