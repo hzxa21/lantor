@@ -194,6 +194,41 @@ button,
   text-align: left;
 }
 
+.search-trigger,
+.sidebar-nav-trigger {
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--muted);
+}
+
+.search-trigger span,
+.sidebar-nav-trigger span {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+  opacity: 1;
+}
+
+.sidebar-nav-trigger.active {
+  border-color: rgba(10, 132, 255, 0.24);
+  background: rgba(10, 132, 255, 0.12);
+  color: var(--accent);
+}
+
+.sidebar-nav-trigger.active span {
+  color: var(--accent);
+}
+
+.sidebar-nav-trigger strong {
+  justify-self: end;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--badge);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .quick-actions button:hover,
 .channel:hover,
 .dm:hover {
@@ -230,6 +265,10 @@ button,
 .thread-list {
   flex: 0.85 1 130px;
   border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.thread-list-panel {
+  flex: 1 1 auto;
 }
 
 .dm-list {
