@@ -130,6 +130,7 @@ function App() {
   });
   const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
+  const [locallyUnfollowedThreadIds, setLocallyUnfollowedThreadIds] = useState<Set<string>>(() => new Set());
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
 
   async function refreshRuntimeChecks() {
@@ -343,9 +344,13 @@ function App() {
       latestByRoot.set(message.thread_root_id, Math.max(latestByRoot.get(message.thread_root_id) ?? 0, timestamp));
     }
     return data.messages
-      .filter((message) => !message.thread_root_id && latestByRoot.has(message.id))
+      .filter((message) =>
+        !message.thread_root_id &&
+        latestByRoot.has(message.id) &&
+        (message.thread_followed || (threadUnreadCounts[message.id] ?? 0) > 0) &&
+        !locallyUnfollowedThreadIds.has(message.id))
       .sort((left, right) => (latestByRoot.get(right.id) ?? 0) - (latestByRoot.get(left.id) ?? 0));
-  }, [data?.messages]);
+  }, [data?.messages, locallyUnfollowedThreadIds, threadUnreadCounts]);
 
   const visibleTasks = useMemo(() => {
     if (!data || !channel) return [];
@@ -917,6 +922,16 @@ function App() {
   }
 
   async function toggleThreadFollow(message: Message) {
+    if (message.thread_followed) {
+      setLocallyUnfollowedThreadIds((current) => new Set(current).add(message.id));
+    } else {
+      setLocallyUnfollowedThreadIds((current) => {
+        if (!current.has(message.id)) return current;
+        const next = new Set(current);
+        next.delete(message.id);
+        return next;
+      });
+    }
     await mutate("update_thread_followed", {
       threadRootId: message.id,
       followed: !message.thread_followed,
