@@ -19,6 +19,7 @@ type AgentDetailDrawerProps = {
   onStart: (agent: Agent) => void;
   onStop: (run: AgentRun) => void;
   onEdit: (agent: Agent) => void;
+  onOpenDm: (agent: Agent) => void;
   onOpenWorkItem: (item: AgentWorkItem) => void;
 };
 
@@ -59,6 +60,7 @@ export function AgentDetailDrawer({
   onStart,
   onStop,
   onEdit,
+  onOpenDm,
   onOpenWorkItem,
 }: AgentDetailDrawerProps) {
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
@@ -150,6 +152,7 @@ export function AgentDetailDrawer({
       <footer className="agent-drawer-actions">
         <button className="danger" onClick={() => onDelete(agent)}>Delete</button>
         <div>
+          <button onClick={() => onOpenDm(agent)}>Open DM</button>
           {activeRun ? (
             <button onClick={() => onStop(activeRun)}>Stop</button>
           ) : (

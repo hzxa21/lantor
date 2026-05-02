@@ -225,6 +225,7 @@ function App() {
 
   const visibleTasks = useMemo(() => {
     if (!data || !channel) return [];
+    if (channel.kind === "dm") return [];
     return data.tasks.filter((task) => task.channel_id === channel.id);
   }, [data, channel]);
 
@@ -321,16 +322,24 @@ function App() {
     if (!query) return [];
 
     const channelHits = data.channels
-      .filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(query))
-      .map((item) => ({
-        id: item.id,
-        kind: "channel",
-        title: `#${item.name}`,
-        detail: item.description || "channel",
-        channelId: item.id,
-        threadId: null,
-        agentId: null,
-      }));
+      .filter((item) => {
+        const dmAgent = item.kind === "dm" ? data.agents.find((agent) => agent.id === item.dm_agent_id) : null;
+        return `${item.name} ${item.description} ${dmAgent?.handle ?? ""} ${dmAgent?.display_name ?? ""}`
+          .toLowerCase()
+          .includes(query);
+      })
+      .map((item) => {
+        const dmAgent = item.kind === "dm" ? data.agents.find((agent) => agent.id === item.dm_agent_id) : null;
+        return {
+          id: item.id,
+          kind: item.kind === "dm" ? "dm" : "channel",
+          title: item.kind === "dm" ? `@${dmAgent?.handle ?? "agent"}` : `#${item.name}`,
+          detail: item.kind === "dm" ? dmAgent?.display_name ?? "direct message" : item.description || "channel",
+          channelId: item.id,
+          threadId: null,
+          agentId: null,
+        };
+      });
 
     const taskHits = data.tasks
       .filter((item) => `${item.title} ${item.status} ${item.channel_name} ${item.assignee_name ?? ""}`.toLowerCase().includes(query))
@@ -435,10 +444,14 @@ function App() {
   }
 
   function selectChannel(channelId: string) {
+    const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
     setActiveChannelId(channelId);
     setDraft("");
     setReplyDraft("");
     setTaskDraft("");
+    if (nextChannel?.kind === "dm") {
+      setActiveTab("chat");
+    }
     const repliedRootIds = new Set(
       data?.messages
         .filter((message) => message.channel_id === channelId && message.thread_root_id)
@@ -476,11 +489,13 @@ function App() {
       workingDirectory: nextForm.workingDirectory,
     });
     if (channel) {
-      await invoke("set_channel_agent_membership", {
-        channelId: channel.id,
-        agentId,
-        member: true,
-      });
+      if (channel.kind !== "dm") {
+        await invoke("set_channel_agent_membership", {
+          channelId: channel.id,
+          agentId,
+          member: true,
+        });
+      }
     }
     await refresh();
     setAgentDraft(EMPTY_AGENT_FORM);
@@ -570,13 +585,17 @@ function App() {
       channelId: channel.id,
       threadRootId: null,
       body: draft.trim(),
-      asTask,
+      asTask: channel.kind === "dm" ? false : asTask,
     });
     setDraft("");
   }
 
   async function createTaskFromBoard() {
     if (!channel || !taskDraft.trim()) return;
+    if (channel.kind === "dm") {
+      setAppError("Direct messages do not support tasks");
+      return;
+    }
     await mutate("send_message", {
       channelId: channel.id,
       threadRootId: null,
@@ -584,6 +603,24 @@ function App() {
       asTask: true,
     });
     setTaskDraft("");
+  }
+
+  async function openDmWithAgent(agent: Agent) {
+    try {
+      const channelId = await invoke<string>("open_dm_with_agent", { agentId: agent.id });
+      await refresh();
+      setActiveChannelId(channelId);
+      setActiveThreadId(null);
+      setActiveTab("chat");
+      setDraft("");
+      setReplyDraft("");
+      setTaskDraft("");
+      setSelectedAgentId(null);
+    } catch (err) {
+      const message = errorMessage(err, "Failed to open direct message");
+      setAppError(message);
+      console.error(err);
+    }
   }
 
   async function sendReply() {
@@ -671,7 +708,7 @@ function App() {
       const agent = data?.agents.find((item) => item.id === result.agentId);
       if (agent) setSelectedAgentId(agent.id);
     }
-    if (result.channelId) setActiveChannelId(result.channelId);
+    if (result.channelId) selectChannel(result.channelId);
     if (result.threadId) {
       setActiveThreadId(result.threadId);
       setActiveTab("chat");
@@ -734,6 +771,7 @@ function App() {
         setActiveThreadId={setActiveThreadId}
         openCreateAgentModal={() => setShowCreateAgentModal(true)}
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
+        openDmWithAgent={openDmWithAgent}
         activeRunFor={activeRunFor}
         startAgent={startAgent}
         stopAgent={stopAgent}
@@ -786,6 +824,7 @@ function App() {
             startEditAgent(agent);
             setSelectedAgentId(null);
           }}
+          onOpenDm={openDmWithAgent}
           onOpenWorkItem={(item) => {
             openWorkItem(item);
             setSelectedAgentId(null);

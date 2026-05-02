@@ -139,6 +139,7 @@ button,
 
 .quick-actions button,
 .channel,
+.dm,
 .section-title button {
   color: inherit;
   background: transparent;
@@ -157,6 +158,7 @@ button,
 
 .quick-actions button:hover,
 .channel:hover,
+.dm:hover,
 .agent:hover {
   background: rgba(255, 255, 255, 0.36);
 }
@@ -167,7 +169,8 @@ button,
 }
 
 .quick-actions strong,
-.channel strong {
+.channel strong,
+.dm > strong {
   justify-self: end;
   padding: 3px 8px;
   border-radius: 999px;
@@ -230,6 +233,7 @@ button,
 
 .channel-block,
 .thread-list,
+.dm-list,
 .agent-list {
   min-height: 0;
   overflow: auto;
@@ -242,6 +246,11 @@ button,
 
 .thread-list {
   flex: 0.85 1 130px;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.dm-list {
+  flex: 0.8 1 126px;
   border-top: 1px solid rgba(0, 0, 0, 0.05);
 }
 
@@ -303,6 +312,47 @@ button,
 }
 
 .channel.selected strong {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.dm {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 14px;
+  text-align: left;
+}
+
+.dm.selected {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 10px 20px rgba(10, 132, 255, 0.18);
+}
+
+.dm strong,
+.dm span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm div strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dm div span {
+  color: currentColor;
+  font-size: 12px;
+  opacity: 0.62;
+}
+
+.dm.selected > strong {
   background: rgba(255, 255, 255, 0.2);
   color: #fff;
 }
@@ -389,6 +439,13 @@ button,
   font-size: 13px;
 }
 
+.avatar.small {
+  width: 30px;
+  height: 30px;
+  border-radius: 11px;
+  font-size: 13px;
+}
+
 .agent strong,
 .profile strong {
   display: block;
@@ -431,6 +488,7 @@ button,
   color: #ff3b30;
 }
 
+.runtime-dm,
 .runtime-start,
 .runtime-stop {
   display: inline-flex;
@@ -440,6 +498,11 @@ button,
   border-radius: 999px;
   font-size: 12px;
   font-weight: 850;
+}
+
+.runtime-dm {
+  background: rgba(10, 132, 255, 0.12);
+  color: #095cc7;
 }
 
 .runtime-start {
@@ -495,6 +558,18 @@ button,
   border-radius: 14px;
   background: var(--accent);
   color: #fff;
+}
+
+.hash-card.dm-card {
+  background: linear-gradient(135deg, #0a84ff, #64d2ff);
+  font-weight: 800;
+}
+
+.hash-card.dm-card > span {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
 }
 
 .channel-title h1 {

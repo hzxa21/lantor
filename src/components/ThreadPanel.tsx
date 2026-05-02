@@ -45,6 +45,8 @@ export function ThreadPanel({
   sendReply,
 }: ThreadPanelProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const isDm = channel?.kind === "dm";
+  const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
   const {
     mentionState,
     mentionIndex,
@@ -75,7 +77,9 @@ export function ThreadPanel({
     <aside className="thread">
       <header>
         <div>
-          <h2>Thread <span>{channel ? `- #${channel.name}` : "- no channel"}</span></h2>
+          <h2>
+            Thread <span>{channel ? isDm ? `- @${dmAgent?.handle || "agent"}` : `- #${channel.name}` : "- no channel"}</span>
+          </h2>
           <p>{activeRoot ? `Root ${activeRoot.id.slice(0, 8)}` : "No thread selected"}</p>
         </div>
         {activeRoot && (
@@ -202,7 +206,7 @@ export function ThreadPanel({
             onSelect={(event) => refreshMentionState(replyDraft, event.currentTarget.selectionStart)}
             onKeyDown={handleReplyKeyDown}
             disabled={!activeRoot}
-            placeholder={activeRoot ? "Reply in thread" : "Select a thread to reply"}
+            placeholder={activeRoot ? isDm ? `Reply to @${dmAgent?.handle || "agent"}` : "Reply in thread" : "Select a thread to reply"}
           />
           <button className="reply-send" disabled={!activeRoot || !replyDraft.trim()} onClick={submitReply}>
             Reply <Reply size={15} />

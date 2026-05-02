@@ -9,7 +9,7 @@ import {
   Send,
   Trash2,
 } from "lucide-react";
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import {
   mentionedAgentsForBody,
@@ -83,6 +83,8 @@ export function Conversation({
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const isDm = channel?.kind === "dm";
+  const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
   const {
     mentionState,
     mentionIndex,
@@ -104,19 +106,32 @@ export function Conversation({
 
   function submitComposer() {
     if (!channel || !draft.trim()) return;
-    sendRootMessage(sendAsTask);
+    sendRootMessage(isDm ? false : sendAsTask);
     closeMentionPicker();
     focusComposer();
   }
+
+  useEffect(() => {
+    if (!isDm) return;
+    setSendAsTask(false);
+    if (activeTab === "tasks") setActiveTab("chat");
+  }, [activeTab, isDm, setActiveTab]);
+
   return (
     <section className="conversation">
       <header className="topbar">
         <div className="channel-title">
-          <span className="hash-card"><Hash /></span>
+          <span className={`hash-card ${isDm ? "dm-card" : ""}`}>
+            {isDm ? <span>{dmAgent?.avatar || "A"}</span> : <Hash />}
+          </span>
           <div>
-            <h1>{channel?.name || "No channel"}</h1>
-            <p>{channel?.description || "Create a channel from the sidebar"}</p>
-            {channel && (
+            <h1>{isDm ? dmAgent?.display_name || "Direct Message" : channel?.name || "No channel"}</h1>
+            <p>
+              {isDm
+                ? dmAgent ? `@${dmAgent.handle} · ${dmAgent.runtime} · ${dmAgent.status}` : "Agent no longer exists"
+                : channel?.description || "Create a channel from the sidebar"}
+            </p>
+            {channel && !isDm && (
               <div className="channel-agent-strip">
                 <span>Agents</span>
                 {channelAgents.length > 0 ? (
@@ -151,21 +166,29 @@ export function Conversation({
         <button className={activeTab === "chat" ? "active" : ""} onClick={() => setActiveTab("chat")}>
           <MessageSquare size={16} /> Chat
         </button>
-        <button className={activeTab === "tasks" ? "active" : ""} onClick={() => setActiveTab("tasks")}>
-          <LayoutList size={16} /> Tasks
-        </button>
+        {!isDm && (
+          <button className={activeTab === "tasks" ? "active" : ""} onClick={() => setActiveTab("tasks")}>
+            <LayoutList size={16} /> Tasks
+          </button>
+        )}
       </div>
 
       {activeTab === "chat" ? (
         <div className="message-list">
           {channel ? (
             rootMessages.length > 0 ? (
-              <div className="beginning">Beginning of #{channel.name}</div>
+              <div className="beginning">
+                {isDm ? `Beginning of your DM with @${dmAgent?.handle || "agent"}` : `Beginning of #${channel.name}`}
+              </div>
             ) : (
               <div className="empty-state">
                 <MessageSquare size={34} />
-                <h2>No messages yet</h2>
-                <p>Send a root message from the composer. Replies belong in the right thread pane.</p>
+                <h2>{isDm ? "No DM messages yet" : "No messages yet"}</h2>
+                <p>
+                  {isDm
+                    ? "Send a message here to talk directly with this agent."
+                    : "Send a root message from the composer. Replies belong in the right thread pane."}
+                </p>
               </div>
             )
           ) : (
@@ -346,13 +369,21 @@ export function Conversation({
           onSelect={(event) => refreshMentionState(draft, event.currentTarget.selectionStart)}
           onKeyDown={handleComposerKeyDown}
           disabled={!channel}
-          placeholder={channel ? `Message #${channel.name} - type @ to send to an agent` : "Create a channel before messaging"}
+          placeholder={
+            channel
+              ? isDm
+                ? `Message @${dmAgent?.handle || "agent"}`
+                : `Message #${channel.name} - type @ to send to an agent`
+              : "Create a channel before messaging"
+          }
         />
         <div className="composer-actions">
-          <div className="send-mode" aria-label="Send mode">
-            <button className={!sendAsTask ? "active" : ""} onClick={() => setSendAsTask(false)}>Message</button>
-            <button className={sendAsTask ? "active" : ""} onClick={() => setSendAsTask(true)}>Task</button>
-          </div>
+          {!isDm && (
+            <div className="send-mode" aria-label="Send mode">
+              <button className={!sendAsTask ? "active" : ""} onClick={() => setSendAsTask(false)}>Message</button>
+              <button className={sendAsTask ? "active" : ""} onClick={() => setSendAsTask(true)}>Task</button>
+            </div>
+          )}
           <span className="composer-hint">Enter to send · Shift+Enter for newline</span>
           <button className="send" disabled={!channel || !draft.trim()} onClick={submitComposer}>
             Send <Send size={15} />

@@ -58,6 +58,8 @@ struct Channel {
     id: Uuid,
     name: String,
     description: String,
+    kind: String,
+    dm_agent_id: Option<Uuid>,
     unread_count: i32,
 }
 
@@ -259,6 +261,25 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             unread_count integer not null default 0,
             created_at timestamptz not null default now()
         )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "alter table channels add column if not exists kind text not null default 'channel'",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "alter table channels add column if not exists dm_agent_id uuid references agents(id) on delete cascade",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        create unique index if not exists channels_dm_unique
+        on channels(dm_agent_id)
+        where kind = 'dm' and dm_agent_id is not null
         "#,
     )
     .execute(pool)
@@ -538,8 +559,8 @@ async fn create_channel(name: String, state: State<'_, AppState>) -> CommandResu
 
     sqlx::query(
         r#"
-        insert into channels (name, description)
-        values ($1, 'Local channel')
+        insert into channels (name, description, kind)
+        values ($1, 'Local channel', 'channel')
         on conflict (name) do nothing
         "#,
     )
@@ -561,6 +582,17 @@ async fn update_channel(
     let normalized = normalize_channel_name(&name);
     if normalized.is_empty() {
         return Err("channel name is empty".to_owned());
+    }
+
+    let kind: Option<String> = sqlx::query_scalar("select kind from channels where id = $1")
+        .bind(channel_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(to_string)?;
+    match kind.as_deref() {
+        Some("dm") => return Err("direct messages cannot be renamed".to_owned()),
+        Some(_) => {}
+        None => return Err("channel does not exist".to_owned()),
     }
 
     sqlx::query(
@@ -587,15 +619,19 @@ async fn set_channel_agent_membership(
     member: bool,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
-    let channel_name: Option<String> =
-        sqlx::query_scalar("select name from channels where id = $1")
-            .bind(channel_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(to_string)?;
-    let Some(channel_name) = channel_name else {
+    let channel_row = sqlx::query("select name, kind from channels where id = $1")
+        .bind(channel_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(to_string)?;
+    let Some(channel_row) = channel_row else {
         return Err("channel does not exist".to_owned());
     };
+    let channel_name: String = channel_row.get("name");
+    let channel_kind: String = channel_row.get("kind");
+    if channel_kind == "dm" {
+        return Err("direct message membership is fixed".to_owned());
+    }
 
     let agent_handle: Option<String> =
         sqlx::query_scalar("select handle from agents where id = $1")
@@ -655,6 +691,72 @@ async fn delete_channel(channel_id: Uuid, state: State<'_, AppState>) -> Command
         .map_err(to_string)?;
 
     Ok(())
+}
+
+#[tauri::command]
+async fn open_dm_with_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<String> {
+    let mut tx = state.pool.begin().await.map_err(to_string)?;
+    let agent_row = sqlx::query("select handle from agents where id = $1")
+        .bind(agent_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_string)?;
+    let Some(agent_row) = agent_row else {
+        return Err("agent does not exist".to_owned());
+    };
+    let agent_handle: String = agent_row.get("handle");
+
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "select id from channels where kind = 'dm' and dm_agent_id = $1 limit 1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(to_string)?;
+    if let Some(channel_id) = existing {
+        tx.commit().await.map_err(to_string)?;
+        return Ok(channel_id.to_string());
+    }
+
+    let channel_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into channels (name, description, kind, dm_agent_id)
+        values ($1, $2, 'dm', $3)
+        returning id
+        "#,
+    )
+    .bind(format!("dm:{agent_id}"))
+    .bind(format!("Direct message with @{agent_handle}"))
+    .bind(agent_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(to_string)?;
+
+    sqlx::query(
+        r#"
+        insert into channel_members (channel_id, agent_id)
+        values ($1, $2)
+        on conflict (channel_id, agent_id) do nothing
+        "#,
+    )
+    .bind(channel_id)
+    .bind(agent_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(to_string)?;
+
+    tx.commit().await.map_err(to_string)?;
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "dm",
+        "Direct message opened",
+        format!("@{agent_handle}"),
+    )
+    .await?;
+
+    Ok(channel_id.to_string())
 }
 
 #[tauri::command]
@@ -1328,16 +1430,48 @@ async fn queue_mentions_as_work_items(
     body: &str,
 ) -> CommandResult<()> {
     let mentions = extract_agent_mentions(body);
-    if mentions.is_empty() {
-        return Ok(());
-    }
-    let reply_thread_root_id = thread_root_id.unwrap_or(message_id);
-
-    let channel_name: String = sqlx::query_scalar("select name from channels where id = $1")
+    let channel_row = sqlx::query("select name, kind, dm_agent_id from channels where id = $1")
         .bind(channel_id)
         .fetch_one(pool)
         .await
         .map_err(to_string)?;
+    let channel_name: String = channel_row.get("name");
+    let channel_kind: String = channel_row.get("kind");
+    let dm_agent_id: Option<Uuid> = channel_row.get("dm_agent_id");
+
+    let mut targets = Vec::new();
+    if channel_kind == "dm" {
+        if let Some(agent_id) = dm_agent_id {
+            let agent_handle: Option<String> =
+                sqlx::query_scalar("select handle from agents where id = $1")
+                    .bind(agent_id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(to_string)?;
+            if let Some(agent_handle) = agent_handle {
+                targets.push((agent_id, agent_handle));
+            }
+        }
+    } else {
+        for handle in mentions {
+            let agent_id: Option<Uuid> =
+                sqlx::query_scalar("select id from agents where handle = $1")
+                    .bind(&handle)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(to_string)?;
+            let Some(agent_id) = agent_id else {
+                continue;
+            };
+            targets.push((agent_id, handle));
+        }
+    }
+
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let reply_thread_root_id = thread_root_id.unwrap_or(message_id);
+
     let title = body
         .lines()
         .next()
@@ -1345,16 +1479,7 @@ async fn queue_mentions_as_work_items(
         .filter(|line| !line.trim().is_empty())
         .unwrap_or_else(|| format!("Mention in #{channel_name}"));
 
-    for handle in mentions {
-        let agent_id: Option<Uuid> = sqlx::query_scalar("select id from agents where handle = $1")
-            .bind(&handle)
-            .fetch_optional(pool)
-            .await
-            .map_err(to_string)?;
-        let Some(agent_id) = agent_id else {
-            continue;
-        };
-
+    for (agent_id, agent_handle) in targets {
         sqlx::query(
             r#"
             insert into channel_members (channel_id, agent_id)
@@ -1368,10 +1493,15 @@ async fn queue_mentions_as_work_items(
         .await
         .map_err(to_string)?;
 
+        let channel_label = if channel_kind == "dm" {
+            format!("DM with @{agent_handle}")
+        } else {
+            format!("#{channel_name}")
+        };
         let context = build_mention_work_context(
             pool,
             channel_id,
-            &channel_name,
+            &channel_label,
             Some(reply_thread_root_id),
             message_id,
             body,
@@ -1401,13 +1531,25 @@ async fn queue_mentions_as_work_items(
             pool,
             Some(agent_id),
             None,
-            "mention",
-            if scheduled {
-                "Mention dispatched"
+            if channel_kind == "dm" {
+                "dm"
             } else {
-                "Mention queued"
+                "mention"
             },
-            format!("#{channel_name}: {title}"),
+            if scheduled {
+                if channel_kind == "dm" {
+                    "DM dispatched"
+                } else {
+                    "Mention dispatched"
+                }
+            } else {
+                if channel_kind == "dm" {
+                    "DM queued"
+                } else {
+                    "Mention queued"
+                }
+            },
+            format!("#{channel_name} to @{agent_handle}: {title}"),
         )
         .await?;
     }
@@ -1418,13 +1560,13 @@ async fn queue_mentions_as_work_items(
 async fn build_mention_work_context(
     pool: &PgPool,
     channel_id: Uuid,
-    channel_name: &str,
+    channel_label: &str,
     thread_root_id: Option<Uuid>,
     message_id: Uuid,
     body: &str,
 ) -> CommandResult<String> {
     let mut lines = vec![
-        format!("Channel: #{channel_name}"),
+        format!("Surface: {channel_label}"),
         format!("Mentioned message id: {message_id}"),
     ];
     if let Some(thread_root_id) = thread_root_id {
@@ -1473,7 +1615,10 @@ async fn build_mention_work_context(
             "Reply in the channel with: LOCAL_SLOCK_EVENT {{\"type\":\"message\",\"channel_id\":\"{channel_id}\",\"body\":\"...\"}}"
         ));
     }
-    lines.push("Use normal stdout for private logs; only LOCAL_SLOCK_EVENT creates visible chat messages.".to_owned());
+    lines.push(
+        "Use normal stdout for private logs; only LOCAL_SLOCK_EVENT creates visible chat messages."
+            .to_owned(),
+    );
 
     Ok(lines.join("\n\n"))
 }
@@ -1588,6 +1733,19 @@ async fn send_message(
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     let mut tx = state.pool.begin().await.map_err(to_string)?;
+    let channel_kind: Option<String> =
+        sqlx::query_scalar("select kind from channels where id = $1")
+            .bind(channel_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(to_string)?;
+    let Some(channel_kind) = channel_kind else {
+        return Err("channel does not exist".to_owned());
+    };
+    if as_task && channel_kind == "dm" {
+        return Err("direct messages do not support tasks".to_owned());
+    }
+
     let msg_id: Uuid = sqlx::query_scalar(
         r#"
         insert into messages (channel_id, thread_root_id, sender_name, sender_role, body, is_task)
@@ -1821,14 +1979,22 @@ async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
             c.id,
             c.name,
             c.description,
+            c.kind,
+            c.dm_agent_id,
             count(m.id) filter (
                 where m.created_at > coalesce(r.last_read_at, '-infinity'::timestamptz)
             )::integer as unread_count
         from channels c
         left join channel_read_state r on r.channel_id = c.id
         left join messages m on m.channel_id = c.id
-        group by c.id, c.name, c.description
-        order by case when c.name = 'local-slock' then 0 else 1 end, c.name
+        group by c.id, c.name, c.description, c.kind, c.dm_agent_id
+        order by
+          case
+            when c.kind = 'channel' and c.name = 'local-slock' then 0
+            when c.kind = 'channel' then 1
+            else 2
+          end,
+          c.name
         "#,
     )
     .fetch_all(pool)
@@ -1841,6 +2007,8 @@ async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
             id: row.get("id"),
             name: row.get("name"),
             description: row.get("description"),
+            kind: row.get("kind"),
+            dm_agent_id: row.get("dm_agent_id"),
             unread_count: row.get("unread_count"),
         })
         .collect())
@@ -3593,6 +3761,7 @@ pub fn run() {
             dispatch_agent_work,
             install_supervisor_service,
             mark_channel_read,
+            open_dm_with_agent,
             retry_agent_work,
             send_message,
             set_channel_agent_membership,

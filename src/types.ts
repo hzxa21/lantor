@@ -16,6 +16,8 @@ export type Channel = {
   id: string;
   name: string;
   description: string;
+  kind: "channel" | "dm";
+  dm_agent_id: string | null;
   unread_count: number;
 };
 

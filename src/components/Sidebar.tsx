@@ -3,6 +3,7 @@ import {
   Circle,
   Hash,
   LayoutList,
+  MessageCircle,
   MessageSquare,
   Plus,
   Search,
@@ -37,6 +38,7 @@ type SidebarProps = {
   setActiveThreadId: (threadId: string | null) => void;
   openCreateAgentModal: () => void;
   openAgentDetail: (agent: Agent) => void;
+  openDmWithAgent: (agent: Agent) => void;
   activeRunFor: (agentId: string) => AgentRun | null;
   startAgent: (agent: Agent) => void;
   stopAgent: (run: AgentRun) => void;
@@ -60,10 +62,15 @@ export function Sidebar({
   setActiveThreadId,
   openCreateAgentModal,
   openAgentDetail,
+  openDmWithAgent,
   activeRunFor,
   startAgent,
   stopAgent,
 }: SidebarProps) {
+  const normalChannels = data.channels.filter((item) => item.kind !== "dm");
+  const dmChannels = data.channels.filter((item) => item.kind === "dm");
+  const dmAgentFor = (item: Channel) => data.agents.find((agent) => agent.id === item.dm_agent_id) ?? null;
+
   return (
     <aside className="sidebar">
       <section className="workspace">
@@ -102,13 +109,15 @@ export function Sidebar({
 
       <section className="channel-block">
         <div className="section-title">
-          <span><ChevronDown size={14} /> Channels {data.channels.length}</span>
+          <span><ChevronDown size={14} /> Channels {normalChannels.length}</span>
           <div className="section-actions">
-            {channel && <button onClick={openChannelSettingsModal} title="Channel settings"><Settings size={16} /></button>}
+            {channel?.kind !== "dm" && channel && (
+              <button onClick={openChannelSettingsModal} title="Channel settings"><Settings size={16} /></button>
+            )}
             <button onClick={openCreateChannelModal} title="Create channel"><Plus size={18} /></button>
           </div>
         </div>
-        {data.channels.map((item) => (
+        {normalChannels.map((item) => (
           <button
             key={item.id}
             className={`channel ${item.id === channel?.id ? "selected" : ""}`}
@@ -118,7 +127,7 @@ export function Sidebar({
             {item.unread_count > 0 && <strong>{item.unread_count}</strong>}
           </button>
         ))}
-        {data.channels.length === 0 && (
+        {normalChannels.length === 0 && (
           <div className="empty-mini">Create a channel to start chatting.</div>
         )}
       </section>
@@ -142,6 +151,34 @@ export function Sidebar({
         )}
       </section>
 
+      <section className="dm-list">
+        <div className="section-title">
+          <span><ChevronDown size={14} /> Direct Messages {dmChannels.length}</span>
+        </div>
+        {dmChannels.map((item) => {
+          const agent = dmAgentFor(item);
+          const title = agent ? agent.display_name : item.name.replace(/^dm:/, "@");
+          const handle = agent ? `@${agent.handle}` : "agent removed";
+          return (
+            <button
+              key={item.id}
+              className={`dm ${item.id === channel?.id ? "selected" : ""}`}
+              onClick={() => selectChannel(item.id)}
+            >
+              <div className="avatar small">{agent?.avatar || "A"}</div>
+              <div>
+                <strong>{title}</strong>
+                <span>{handle}{agent ? ` · ${agent.status}` : ""}</span>
+              </div>
+              {item.unread_count > 0 && <strong>{item.unread_count}</strong>}
+            </button>
+          );
+        })}
+        {dmChannels.length === 0 && (
+          <div className="empty-mini">Open a DM from any agent.</div>
+        )}
+      </section>
+
       <section className="agent-list">
         <div className="section-title">
           <span><ChevronDown size={14} /> Agents {data.agents.length}</span>
@@ -160,6 +197,9 @@ export function Sidebar({
                 <Circle className={`dot ${agent.status}`} size={10} />
               </button>
               <div className="agent-runtime-actions">
+                <button className="runtime-dm" onClick={() => openDmWithAgent(agent)}>
+                  <MessageCircle size={14} /> DM
+                </button>
                 {run ? (
                   <button className="runtime-stop" onClick={() => stopAgent(run)}>
                     <Square size={14} /> Stop
