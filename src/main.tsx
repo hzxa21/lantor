@@ -690,6 +690,7 @@ function App() {
   }
 
   async function stopAgent(run: AgentRun) {
+    if (!window.confirm(`Stop @${run.agent_handle}? Current work will be interrupted.`)) return;
     await mutate("stop_agent", { runId: run.id });
   }
 

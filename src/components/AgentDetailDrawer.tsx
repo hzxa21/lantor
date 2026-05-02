@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem } from "../types";
 import { formatTime } from "../ui-utils";
 
@@ -60,6 +61,8 @@ export function AgentDetailDrawer({
   onEdit,
   onOpenWorkItem,
 }: AgentDetailDrawerProps) {
+  const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
+
   return (
     <aside className="agent-drawer">
       <header className="agent-drawer-head">
@@ -112,7 +115,12 @@ export function AgentDetailDrawer({
             {activities.length > 0 && (
               <div className="activity-timeline" role="log" aria-label={`${agent.handle} activity`}>
                 {activities.map((activity) => (
-                  <article key={activity.id} className="activity-timeline-row" data-kind={activity.kind}>
+                  <article
+                    key={activity.id}
+                    className={`activity-timeline-row ${expandedActivityId === activity.id ? "expanded" : ""}`}
+                    data-kind={activity.kind}
+                    onClick={() => setExpandedActivityId((current) => current === activity.id ? null : activity.id)}
+                  >
                     <time>{formatActivityTime(activity.created_at)}</time>
                     <span className="activity-dot" data-kind={activity.kind} aria-hidden="true" />
                     <div className="activity-timeline-body">
@@ -120,7 +128,7 @@ export function AgentDetailDrawer({
                         <strong>{activity.title}</strong>
                         <span>{phaseForActivity(activity.kind)}</span>
                       </div>
-                      <p title={activity.detail}>{activity.detail}</p>
+                      <p title="Click to expand activity detail">{activity.detail}</p>
                     </div>
                   </article>
                 ))}

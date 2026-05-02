@@ -1760,6 +1760,13 @@ mark {
   gap: 9px;
   min-height: 50px;
   padding: 6px 8px 7px 0;
+  cursor: pointer;
+  border-radius: 10px;
+}
+
+.activity-timeline-row:hover,
+.activity-timeline-row.expanded {
+  background: rgba(255, 255, 255, 0.68);
 }
 
 .activity-timeline-row time {
@@ -1864,6 +1871,12 @@ mark {
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.activity-timeline-row.expanded .activity-timeline-body p {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
 }
 
 .activity-timeline-row[data-kind="error"] .activity-timeline-body p,
