@@ -14,7 +14,6 @@ type ThreadPanelProps = {
   unreadCount: number;
   taskTitleDrafts: Record<string, string>;
   replyDraft: string;
-  toggleThreadFollow: (message: Message) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setTaskTitleDraft: (task: Task, title: string) => void;
   saveTaskTitle: (task: Task) => void;
@@ -36,7 +35,6 @@ export function ThreadPanel({
   unreadCount,
   taskTitleDrafts,
   replyDraft,
-  toggleThreadFollow,
   setActiveThreadId,
   setTaskTitleDraft,
   saveTaskTitle,
@@ -90,15 +88,10 @@ export function ThreadPanel({
             Thread <span>{channel ? isDm ? `- @${dmAgent?.handle || "agent"}` : `- #${channel.name}` : "- no channel"}</span>
           </h2>
           <p>
-            {activeRoot ? `Root ${activeRoot.id.slice(0, 8)}` : "No thread selected"}
+            {activeRoot ? `${replies.length} ${replies.length === 1 ? "reply" : "replies"}` : "No thread selected"}
             {unreadCount > 0 ? ` · ${unreadCount} new` : ""}
           </p>
         </div>
-        {activeRoot && (
-          <button onClick={() => toggleThreadFollow(activeRoot)}>
-            {activeRoot.thread_followed ? "Following" : "Muted"}
-          </button>
-        )}
         <button onClick={() => setActiveThreadId(null)}><X size={18} /></button>
       </header>
 

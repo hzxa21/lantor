@@ -8,6 +8,7 @@ import { ChannelSettingsModal } from "./components/ChannelSettingsModal";
 import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { Modal } from "./components/Modal";
+import { SearchModal } from "./components/SearchModal";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadPanel } from "./components/ThreadPanel";
 import {
@@ -22,6 +23,8 @@ import {
   RUNTIME_PRESETS,
   RuntimeCheck,
   SearchResult,
+  SearchScope,
+  SearchTimeRange,
   Task,
 } from "./types";
 import { buildPresetCommand, firstLines, formatTime } from "./ui-utils";
@@ -41,7 +44,10 @@ const ACTIVITY_PHASE_LABELS: Record<string, string> = {
 
 const DEFAULT_THREAD_PANEL_WIDTH = 420;
 const MIN_THREAD_PANEL_WIDTH = 320;
-const MAX_THREAD_PANEL_WIDTH = 760;
+const DEFAULT_SIDEBAR_WIDTH = 292;
+const MIN_SIDEBAR_WIDTH = 240;
+const MAX_SIDEBAR_WIDTH = 460;
+const MIN_CONVERSATION_WIDTH = 420;
 
 function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
@@ -58,6 +64,28 @@ function errorMessage(err: unknown, fallback: string) {
   return fallback;
 }
 
+function maxThreadPanelWidth() {
+  return Math.max(MIN_THREAD_PANEL_WIDTH, Math.floor(window.innerWidth * 0.66));
+}
+
+function matchesSearchTime(value: string | null, range: SearchTimeRange) {
+  if (range === "any" || !value) return true;
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return true;
+  const now = Date.now();
+  if (range === "today") {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return timestamp >= start.getTime();
+  }
+  const days = range === "7d" ? 7 : 30;
+  return now - timestamp <= days * 24 * 60 * 60 * 1000;
+}
+
+function searchScopeAllows(scope: SearchScope, kind: SearchScope) {
+  return scope === "all" || scope === kind;
+}
+
 function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
@@ -68,19 +96,20 @@ function App() {
   const [taskDraft, setTaskDraft] = useState("");
   const [taskTitleDrafts, setTaskTitleDrafts] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchScope, setSearchScope] = useState<SearchScope>("all");
+  const [searchTimeRange, setSearchTimeRange] = useState<SearchTimeRange>("any");
   const [newChannel, setNewChannel] = useState("");
   const [channelNameDraft, setChannelNameDraft] = useState("");
   const [channelDescriptionDraft, setChannelDescriptionDraft] = useState("");
   const [agentDraft, setAgentDraft] = useState<AgentForm>(EMPTY_AGENT_FORM);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [agentEdit, setAgentEdit] = useState<AgentForm>(EMPTY_AGENT_FORM);
-  const [workAgentFilter, setWorkAgentFilter] = useState("");
-  const [workStatusFilter, setWorkStatusFilter] = useState("active");
   const [showThread, setShowThread] = useState(true);
   const [showCreateChannelModal, setShowCreateChannelModal] = useState(false);
   const [showChannelSettingsModal, setShowChannelSettingsModal] = useState(false);
   const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
+  const [showSearchModal, setShowSearchModal] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [messageEditDraft, setMessageEditDraft] = useState("");
@@ -90,8 +119,15 @@ function App() {
     const stored = window.localStorage.getItem("localslock.threadPanelWidth");
     const value = stored ? Number(stored) : DEFAULT_THREAD_PANEL_WIDTH;
     return Number.isFinite(value)
-      ? Math.min(MAX_THREAD_PANEL_WIDTH, Math.max(MIN_THREAD_PANEL_WIDTH, value))
+      ? Math.min(maxThreadPanelWidth(), Math.max(MIN_THREAD_PANEL_WIDTH, value))
       : DEFAULT_THREAD_PANEL_WIDTH;
+  });
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const stored = window.localStorage.getItem("localslock.sidebarWidth");
+    const value = stored ? Number(stored) : DEFAULT_SIDEBAR_WIDTH;
+    return Number.isFinite(value)
+      ? Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, value))
+      : DEFAULT_SIDEBAR_WIDTH;
   });
   const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
@@ -218,13 +254,17 @@ function App() {
   }, [threadPanelWidth]);
 
   useEffect(() => {
+    window.localStorage.setItem("localslock.sidebarWidth", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const modifier = event.metaKey || event.ctrlKey;
       const channels = data?.channels ?? [];
 
       if (modifier && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        document.getElementById("local-slock-search")?.focus();
+        setShowSearchModal(true);
         return;
       }
 
@@ -242,6 +282,7 @@ function App() {
         showChannelSettingsModal ||
         showChannelAgentsModal ||
         showCreateAgentModal ||
+        showSearchModal ||
         Boolean(editingMessage) ||
         Boolean(editingAgentId);
       if (event.key === "Escape" && !modalOpen && !isTextInput(event.target)) {
@@ -265,6 +306,7 @@ function App() {
     showChannelSettingsModal,
     showCreateAgentModal,
     showCreateChannelModal,
+    showSearchModal,
     showThread,
   ]);
 
@@ -314,29 +356,6 @@ function App() {
     if (!data || !activeRoot) return null;
     return data.tasks.find((task) => task.message_id === activeRoot.id) ?? null;
   }, [data, activeRoot]);
-
-  const visibleWorkItems = useMemo(() => {
-    if (!data) return [];
-    return data.agent_work_items.filter((item) => {
-      if (workAgentFilter && item.agent_id !== workAgentFilter) return false;
-      if (workStatusFilter === "active") {
-        return ["queued", "running", "cancelling"].includes(item.status);
-      }
-      if (workStatusFilter === "finished") {
-        return ["done", "failed", "cancelled"].includes(item.status);
-      }
-      if (workStatusFilter !== "all") return item.status === workStatusFilter;
-      return true;
-    });
-  }, [data, workAgentFilter, workStatusFilter]);
-
-  const queuedWorkItemCount = useMemo(() => {
-    return data?.agent_work_items.filter((item) => item.status === "queued").length ?? 0;
-  }, [data]);
-
-  const followedThreads = useMemo(() => {
-    return threadedRootMessages.filter((message) => message.thread_followed).length;
-  }, [threadedRootMessages]);
 
   const activeChannelMessageCount = useMemo(() => {
     if (!data || !activeChannelId) return 0;
@@ -391,89 +410,134 @@ function App() {
     if (!data) return [];
     const query = searchQuery.trim().toLowerCase();
     if (!query) return [];
+    const channelById = new Map(data.channels.map((item) => [item.id, item]));
+    const agentById = new Map(data.agents.map((item) => [item.id, item]));
+    const channelLabel = (channelId: string | null) => {
+      if (!channelId) return "No channel";
+      const target = channelById.get(channelId);
+      if (!target) return "Unknown channel";
+      if (target.kind === "dm") {
+        const agent = target.dm_agent_id ? agentById.get(target.dm_agent_id) : null;
+        return agent ? `DM with @${agent.handle}` : "Direct message";
+      }
+      return `#${target.name}`;
+    };
+    const includes = (value: string) => value.toLowerCase().includes(query);
+    const results: SearchResult[] = [];
 
-    const channelHits = data.channels
-      .filter((item) => {
+    if (searchScopeAllows(searchScope, "channels")) {
+      results.push(...data.channels
+        .filter((item) => {
         const dmAgent = item.kind === "dm" ? data.agents.find((agent) => agent.id === item.dm_agent_id) : null;
-        return `${item.name} ${item.description} ${dmAgent?.handle ?? ""} ${dmAgent?.display_name ?? ""}`
-          .toLowerCase()
-          .includes(query);
-      })
-      .map((item) => {
+          return includes(`${item.name} ${item.description} ${dmAgent?.handle ?? ""} ${dmAgent?.display_name ?? ""}`);
+        })
+        .map((item) => {
         const dmAgent = item.kind === "dm" ? data.agents.find((agent) => agent.id === item.dm_agent_id) : null;
         return {
           id: item.id,
           kind: item.kind === "dm" ? "dm" : "channel",
           title: item.kind === "dm" ? `@${dmAgent?.handle ?? "agent"}` : `#${item.name}`,
           detail: item.kind === "dm" ? dmAgent?.display_name ?? "direct message" : item.description || "channel",
+          excerpt: item.kind === "dm" ? dmAgent?.description ?? "" : item.description,
+          createdAt: null,
           channelId: item.id,
           threadId: null,
           agentId: null,
         };
-      });
+        }).slice(0, 10));
+    }
 
-    const taskHits = data.tasks
-      .filter((item) => `${item.title} ${item.status} ${item.channel_name} ${item.assignee_name ?? ""}`.toLowerCase().includes(query))
-      .map((item) => ({
+    if (searchScopeAllows(searchScope, "tasks")) {
+      results.push(...data.tasks
+        .filter((item) =>
+          matchesSearchTime(item.updated_at, searchTimeRange) &&
+          includes(`${item.title} ${item.status} ${item.channel_name} ${item.assignee_name ?? ""}`))
+        .map((item) => ({
         id: item.id,
         kind: "task",
         title: `#${item.number} ${item.title}`,
         detail: `${item.channel_name} · ${item.status.replace("_", " ")}`,
+        excerpt: item.assignee_name ? `Assigned to ${item.assignee_name}` : "Unassigned",
+        createdAt: item.updated_at,
         channelId: item.channel_id,
         threadId: item.message_id,
         agentId: null,
-      }));
+      })).slice(0, 12));
+    }
 
-    const messageHits = data.messages
-      .filter((item) => `${item.sender_name} ${item.body}`.toLowerCase().includes(query))
-      .map((item) => ({
+    if (searchScopeAllows(searchScope, "messages")) {
+      results.push(...data.messages
+        .filter((item) =>
+          matchesSearchTime(item.created_at, searchTimeRange) &&
+          includes(`${item.sender_name} ${item.body} ${channelLabel(item.channel_id)}`))
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .map((item) => ({
         id: item.id,
         kind: item.thread_root_id ? "reply" : "message",
-        title: firstLines(item.body, 1),
-        detail: `${item.sender_name} · ${formatTime(item.created_at)}`,
+        title: item.sender_name,
+        detail: `${channelLabel(item.channel_id)} · ${item.thread_root_id ? "thread reply" : "message"} · ${formatTime(item.created_at)}`,
+        excerpt: firstLines(item.body, 2),
+        createdAt: item.created_at,
         channelId: item.channel_id,
         threadId: item.thread_root_id ?? item.id,
         agentId: null,
-      }));
+      })).slice(0, 40));
+    }
 
-    const agentHits = data.agents
-      .filter((item) => `${item.handle} ${item.display_name} ${item.runtime} ${item.model} ${item.description}`.toLowerCase().includes(query))
-      .map((item) => ({
+    if (searchScopeAllows(searchScope, "agents")) {
+      results.push(...data.agents
+        .filter((item) => includes(`${item.handle} ${item.display_name} ${item.runtime} ${item.model} ${item.description}`))
+        .map((item) => ({
         id: item.id,
         kind: "agent",
         title: `@${item.handle}`,
-        detail: `${item.runtime} · ${item.model}`,
+        detail: `${item.display_name} · ${item.runtime} · ${item.status}`,
+        excerpt: item.description,
+        createdAt: null,
         channelId: null,
         threadId: null,
         agentId: item.id,
-      }));
+      })).slice(0, 10));
+    }
 
-    const activityHits = data.agent_activities
-      .filter((item) => `${item.agent_handle} ${item.kind} ${item.title} ${item.detail}`.toLowerCase().includes(query))
-      .map((item) => ({
+    if (searchScopeAllows(searchScope, "activity")) {
+      results.push(...data.agent_activities
+        .filter((item) =>
+          matchesSearchTime(item.created_at, searchTimeRange) &&
+          includes(`${item.agent_handle} ${item.kind} ${item.title} ${item.detail}`))
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .map((item) => ({
         id: item.id,
         kind: "activity",
         title: item.title,
         detail: `${item.agent_handle || "unknown"} · ${formatTime(item.created_at)}`,
+        excerpt: item.detail,
+        createdAt: item.created_at,
         channelId: null,
         threadId: null,
         agentId: item.agent_id,
-      }));
+      })).slice(0, 16));
 
-    const workItemHits = data.agent_work_items
-      .filter((item) => `${item.agent_handle} ${item.status} ${item.title} ${item.context}`.toLowerCase().includes(query))
-      .map((item) => ({
+      results.push(...data.agent_work_items
+        .filter((item) =>
+          matchesSearchTime(item.updated_at, searchTimeRange) &&
+          includes(`${item.agent_handle} ${item.status} ${item.title} ${item.context}`))
+        .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+        .map((item) => ({
         id: item.id,
         kind: "work",
         title: item.title,
-        detail: `${item.agent_handle} · ${item.status}`,
+        detail: `${item.agent_handle} · ${item.status} · ${channelLabel(item.channel_id)}`,
+        excerpt: firstLines(item.context, 2),
+        createdAt: item.updated_at,
         channelId: item.channel_id,
         threadId: item.thread_root_id,
         agentId: item.agent_id,
-      }));
+      })).slice(0, 16));
+    }
 
-    return [...channelHits, ...taskHits, ...messageHits, ...agentHits, ...workItemHits, ...activityHits].slice(0, 9);
-  }, [data, searchQuery]);
+    return results.slice(0, 80);
+  }, [data, searchQuery, searchScope, searchTimeRange]);
 
   function taskForMessage(messageId: string) {
     return data?.tasks.find((task) => task.message_id === messageId) ?? null;
@@ -811,19 +875,43 @@ function App() {
       openThread(result.threadId);
       setActiveTab("chat");
     }
+    setShowSearchModal(false);
+  }
+
+  function startSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+
+    function onPointerMove(moveEvent: PointerEvent) {
+      const delta = moveEvent.clientX - startX;
+      const maxWidth = Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - MIN_CONVERSATION_WIDTH - MIN_THREAD_PANEL_WIDTH);
+      const next = Math.min(maxWidth, Math.max(MIN_SIDEBAR_WIDTH, startWidth + delta));
+      setSidebarWidth(next);
+    }
+
+    function onPointerUp() {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      document.body.classList.remove("resizing-column");
+    }
+
+    document.body.classList.add("resizing-column");
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
   }
 
   function startThreadResize(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = threadPanelWidth;
-    const maxWidth = Math.max(
-      MIN_THREAD_PANEL_WIDTH,
-      Math.min(MAX_THREAD_PANEL_WIDTH, window.innerWidth - 292 - 520),
-    );
 
     function onPointerMove(moveEvent: PointerEvent) {
       const delta = startX - moveEvent.clientX;
+      const maxWidth = Math.max(
+        MIN_THREAD_PANEL_WIDTH,
+        Math.min(maxThreadPanelWidth(), window.innerWidth - sidebarWidth - MIN_CONVERSATION_WIDTH),
+      );
       const next = Math.min(maxWidth, Math.max(MIN_THREAD_PANEL_WIDTH, startWidth + delta));
       setThreadPanelWidth(next);
     }
@@ -831,10 +919,10 @@ function App() {
     function onPointerUp() {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
-      document.body.classList.remove("resizing-thread");
+      document.body.classList.remove("resizing-column");
     }
 
-    document.body.classList.add("resizing-thread");
+    document.body.classList.add("resizing-column");
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
   }
@@ -878,32 +966,42 @@ function App() {
   return (
     <main
       className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"}`}
-      style={{ "--thread-width": `${threadPanelWidth}px` } as CSSProperties}
+      style={{
+        "--sidebar-width": `${sidebarWidth}px`,
+        "--thread-width": `${threadPanelWidth}px`,
+      } as CSSProperties}
     >
       <Sidebar
         data={data}
         channel={channel}
         threadRootMessages={threadedRootMessages}
-        allRootCount={rootMessages.length}
-        threadCount={threadedRootMessages.length}
-        followedThreads={followedThreads}
         channelAlertIds={channelAlertIds}
         threadUnreadCounts={threadUnreadCounts}
-        searchQuery={searchQuery}
-        searchResults={searchResults}
-        setSearchQuery={setSearchQuery}
-        openSearchResult={openSearchResult}
+        openSearch={() => setShowSearchModal(true)}
         openCreateChannelModal={() => setShowCreateChannelModal(true)}
         openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
         selectChannel={selectChannel}
         activeThreadId={activeThreadId}
         setActiveThreadId={openThread}
+        toggleThreadFollow={toggleThreadFollow}
         openCreateAgentModal={() => setShowCreateAgentModal(true)}
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openDmWithAgent={openDmWithAgent}
-        activeRunFor={activeRunFor}
-        startAgent={startAgent}
-        stopAgent={stopAgent}
+        onResizeStart={startSidebarResize}
+      />
+
+      <SearchModal
+        open={showSearchModal}
+        query={searchQuery}
+        scope={searchScope}
+        timeRange={searchTimeRange}
+        results={searchResults}
+        onQueryChange={setSearchQuery}
+        onScopeChange={setSearchScope}
+        onTimeRangeChange={setSearchTimeRange}
+        onOpenResult={openSearchResult}
+        onClear={() => setSearchQuery("")}
+        onClose={() => setShowSearchModal(false)}
       />
 
       <Conversation
@@ -969,7 +1067,6 @@ function App() {
           unreadCount={activeThreadId ? threadUnreadCounts[activeThreadId] ?? 0 : 0}
           taskTitleDrafts={taskTitleDrafts}
           replyDraft={replyDraft}
-          toggleThreadFollow={toggleThreadFollow}
           setActiveThreadId={openThread}
           setTaskTitleDraft={setTaskTitleDraft}
           saveTaskTitle={saveTaskTitle}

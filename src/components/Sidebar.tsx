@@ -1,39 +1,30 @@
 import {
+  Check,
   ChevronDown,
   Circle,
   Hash,
-  LayoutList,
-  MessageCircle,
   MessageSquare,
   Plus,
   Search,
   Settings,
-  Sparkles,
-  Square,
 } from "lucide-react";
+import { type PointerEvent as ReactPointerEvent } from "react";
 import {
   Agent,
-  AgentRun,
   Bootstrap,
   Channel,
   Message,
-  SearchResult,
 } from "../types";
 
 type SidebarProps = {
   data: Bootstrap;
   channel: Channel | null;
   threadRootMessages: Message[];
-  allRootCount: number;
-  threadCount: number;
-  followedThreads: number;
   channelAlertIds: Set<string>;
   threadUnreadCounts: Record<string, number>;
   activeThreadId: string | null;
-  searchQuery: string;
-  searchResults: SearchResult[];
-  setSearchQuery: (value: string) => void;
-  openSearchResult: (result: SearchResult) => void;
+  openSearch: () => void;
+  toggleThreadFollow: (message: Message) => void | Promise<void>;
   openCreateChannelModal: () => void;
   openChannelSettingsModal: () => void;
   selectChannel: (channelId: string) => void;
@@ -41,25 +32,18 @@ type SidebarProps = {
   openCreateAgentModal: () => void;
   openAgentDetail: (agent: Agent) => void;
   openDmWithAgent: (agent: Agent) => void;
-  activeRunFor: (agentId: string) => AgentRun | null;
-  startAgent: (agent: Agent) => void;
-  stopAgent: (run: AgentRun) => void;
+  onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
 export function Sidebar({
   data,
   channel,
   threadRootMessages,
-  allRootCount,
-  threadCount,
-  followedThreads,
   channelAlertIds,
   threadUnreadCounts,
   activeThreadId,
-  searchQuery,
-  searchResults,
-  setSearchQuery,
-  openSearchResult,
+  openSearch,
+  toggleThreadFollow,
   openCreateChannelModal,
   openChannelSettingsModal,
   selectChannel,
@@ -67,9 +51,7 @@ export function Sidebar({
   openCreateAgentModal,
   openAgentDetail,
   openDmWithAgent,
-  activeRunFor,
-  startAgent,
-  stopAgent,
+  onResizeStart,
 }: SidebarProps) {
   const normalChannels = data.channels.filter((item) => item.kind !== "dm");
   const dmChannels = data.channels.filter((item) => item.kind === "dm");
@@ -77,43 +59,26 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
+      <button
+        className="sidebar-resize-handle"
+        aria-label="Resize sidebar"
+        onPointerDown={onResizeStart}
+      />
       <section className="workspace">
         <div className="workspace-switch">LocalSlock</div>
       </section>
 
       <section className="quick-actions">
-        <label className="search-box">
+        <button className="search-trigger" onClick={openSearch}>
           <Search size={18} />
-          <input
-            id="local-slock-search"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search messages, agents, tasks…"
-          />
-        </label>
-        <div className="stat-row">
-          <span><MessageSquare size={14} /> {allRootCount} messages</span>
-          <span><MessageSquare size={14} /> {followedThreads}/{threadCount} threads</span>
-          <span><LayoutList size={14} /> {data.tasks.length} tasks</span>
-          <span><Sparkles size={14} /> {data.agents.length} agents</span>
-        </div>
-        {searchQuery.trim() && (
-          <div className="search-results">
-            {searchResults.length === 0 && <span>No local results</span>}
-            {searchResults.map((result) => (
-              <button key={`${result.kind}-${result.id}`} onClick={() => openSearchResult(result)}>
-                <strong>{result.kind}</strong>
-                <span>{result.title}</span>
-                <small>{result.detail}</small>
-              </button>
-            ))}
-          </div>
-        )}
+          <span>Search</span>
+          <kbd>⌘K</kbd>
+        </button>
       </section>
 
       <section className="channel-block">
         <div className="section-title">
-          <span><ChevronDown size={14} /> Channels {normalChannels.length}</span>
+          <span><ChevronDown size={14} /> Channels</span>
           <div className="section-actions">
             {channel?.kind !== "dm" && channel && (
               <button onClick={openChannelSettingsModal} title="Channel settings"><Settings size={16} /></button>
@@ -141,7 +106,7 @@ export function Sidebar({
 
       <section className="thread-list">
         <div className="section-title">
-          <span><ChevronDown size={14} /> Threads {threadRootMessages.length}</span>
+          <span><ChevronDown size={14} /> Threads</span>
         </div>
         {threadRootMessages.map((message) => {
           const unread = threadUnreadCounts[message.id] ?? 0;
@@ -153,6 +118,18 @@ export function Sidebar({
             >
               <MessageSquare size={15} />
               <span>{message.body.split("\n")[0] || "Untitled thread"}</span>
+              {message.thread_followed && (
+                <button
+                  className="thread-follow-toggle"
+                  title="Stop following this thread"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    toggleThreadFollow(message);
+                  }}
+                >
+                  <Check size={13} />
+                </button>
+              )}
               {unread > 0 && <strong>{unread}</strong>}
             </button>
           );
@@ -164,69 +141,45 @@ export function Sidebar({
 
       <section className="dm-list">
         <div className="section-title">
-          <span><ChevronDown size={14} /> Direct Messages {dmChannels.length}</span>
+          <span><ChevronDown size={14} /> Direct Messages</span>
+          <button onClick={openCreateAgentModal} title="Add agent"><Plus size={18} /></button>
         </div>
-        {dmChannels.map((item) => {
-          const agent = dmAgentFor(item);
-          const title = agent ? agent.display_name : item.name.replace(/^dm:/, "@");
-          const handle = agent ? `@${agent.handle}` : "agent removed";
-          const badge = item.unread_count > 0 ? String(item.unread_count) : channelAlertIds.has(item.id) ? "new" : "";
+        {data.agents.map((agent) => {
+          const item = dmChannels.find((candidate) => candidate.dm_agent_id === agent.id) ?? null;
+          const badge = item
+            ? item.unread_count > 0
+              ? String(item.unread_count)
+              : channelAlertIds.has(item.id)
+                ? "new"
+                : ""
+            : "";
           return (
             <button
-              key={item.id}
-              className={`dm ${item.id === channel?.id ? "selected" : ""} ${badge ? "has-unread" : ""}`}
-              onClick={() => selectChannel(item.id)}
+              key={agent.id}
+              className={`dm ${item?.id === channel?.id ? "selected" : ""} ${badge ? "has-unread" : ""}`}
+              onClick={() => item ? selectChannel(item.id) : openDmWithAgent(agent)}
             >
-              <div className="avatar small">{agent?.avatar || "A"}</div>
-              <div>
-                <strong>{title}</strong>
-                <span>{handle}{agent ? ` · ${agent.status}` : ""}</span>
+              <div
+                className="avatar small dm-detail-trigger"
+                title={`View @${agent.handle} details`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openAgentDetail(agent);
+                }}
+              >
+                {agent.avatar || "A"}
               </div>
+              <div>
+                <strong>{agent.display_name}</strong>
+                <span>@{agent.handle} · {agent.status}</span>
+              </div>
+              <Circle className={`dot ${agent.status}`} size={10} />
               {badge && <strong>{badge}</strong>}
             </button>
           );
         })}
-        {dmChannels.length === 0 && (
-          <div className="empty-mini">Open a DM from any agent.</div>
-        )}
-      </section>
-
-      <section className="agent-list">
-        <div className="section-title">
-          <span><ChevronDown size={14} /> Agents {data.agents.length}</span>
-          <button onClick={openCreateAgentModal} title="Add agent"><Plus size={18} /></button>
-        </div>
-        {data.agents.map((agent) => {
-          const run = activeRunFor(agent.id);
-          return (
-            <div className="agent-card" key={agent.id}>
-              <button className="agent" onClick={() => openAgentDetail(agent)}>
-                <div className="avatar">{agent.avatar || "A"}</div>
-                <div>
-                  <strong>{agent.display_name}</strong>
-                  <span>@{agent.handle} · {agent.runtime} · {agent.status}</span>
-                </div>
-                <Circle className={`dot ${agent.status}`} size={10} />
-              </button>
-              <div className="agent-runtime-actions">
-                <button className="runtime-dm" onClick={() => openDmWithAgent(agent)}>
-                  <MessageCircle size={14} /> DM
-                </button>
-                {run ? (
-                  <button className="runtime-stop" onClick={() => stopAgent(run)}>
-                    <Square size={14} /> Stop
-                  </button>
-                ) : (
-                  <button className="runtime-start" onClick={() => startAgent(agent)}>
-                    <Sparkles size={14} /> Start
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
         {data.agents.length === 0 && (
-          <div className="empty-mini">Add a local agent profile from the plus button.</div>
+          <div className="empty-mini">Add an agent to start a direct message.</div>
         )}
       </section>
 

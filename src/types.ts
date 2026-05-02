@@ -136,11 +136,17 @@ export type Bootstrap = {
   launch_agent: LaunchAgentStatus;
 };
 
+export type SearchScope = "all" | "messages" | "channels" | "tasks" | "agents" | "activity";
+
+export type SearchTimeRange = "any" | "today" | "7d" | "30d";
+
 export type SearchResult = {
   id: string;
   kind: string;
   title: string;
   detail: string;
+  excerpt: string;
+  createdAt: string | null;
   channelId: string | null;
   threadId: string | null;
   agentId: string | null;
