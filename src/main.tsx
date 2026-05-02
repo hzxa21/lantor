@@ -42,6 +42,11 @@ function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
 }
 
+function isTextInput(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
+}
+
 function errorMessage(err: unknown, fallback: string) {
   if (err instanceof Error && err.message) return err.message;
   if (typeof err === "string" && err.trim()) return err;
@@ -137,6 +142,55 @@ function App() {
     const timer = window.setTimeout(() => setAppError(null), 6500);
     return () => window.clearTimeout(timer);
   }, [appError]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const modifier = event.metaKey || event.ctrlKey;
+      const channels = data?.channels ?? [];
+
+      if (modifier && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        document.getElementById("local-slock-search")?.focus();
+        return;
+      }
+
+      if (modifier && (event.key === "[" || event.key === "]") && channels.length > 0) {
+        event.preventDefault();
+        const currentIndex = Math.max(0, channels.findIndex((item) => item.id === activeChannelId));
+        const offset = event.key === "]" ? 1 : -1;
+        const nextIndex = (currentIndex + offset + channels.length) % channels.length;
+        selectChannel(channels[nextIndex].id);
+        return;
+      }
+
+      const modalOpen =
+        showCreateChannelModal ||
+        showChannelSettingsModal ||
+        showChannelAgentsModal ||
+        showCreateAgentModal ||
+        Boolean(editingAgentId);
+      if (event.key === "Escape" && !modalOpen && !isTextInput(event.target)) {
+        if (selectedAgentId) {
+          setSelectedAgentId(null);
+        } else if (showThread) {
+          setShowThread(false);
+        }
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    activeChannelId,
+    data?.channels,
+    editingAgentId,
+    selectedAgentId,
+    showChannelAgentsModal,
+    showChannelSettingsModal,
+    showCreateAgentModal,
+    showCreateChannelModal,
+    showThread,
+  ]);
 
   const channel = useMemo(() => {
     return data?.channels.find((c) => c.id === activeChannelId) ?? data?.channels[0] ?? null;

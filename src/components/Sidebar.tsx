@@ -74,6 +74,7 @@ export function Sidebar({
         <label className="search-box">
           <Search size={18} />
           <input
+            id="local-slock-search"
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="Search messages, agents, tasks…"
