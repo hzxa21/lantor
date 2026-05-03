@@ -4268,13 +4268,18 @@ fn claude_result_error(value: &Value) -> Option<String> {
         .get("is_error")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if !is_error && value.get("api_error_status").is_none() {
+    let api_error_status = value
+        .get("api_error_status")
+        .and_then(Value::as_str)
+        .filter(|status| !status.trim().is_empty());
+    if !is_error && api_error_status.is_none() {
         return None;
     }
     value
-        .get("result")
+        .get("error")
         .and_then(Value::as_str)
-        .or_else(|| value.get("error").and_then(Value::as_str))
+        .or(api_error_status)
+        .or_else(|| value.get("result").and_then(Value::as_str))
         .map(str::to_owned)
         .or_else(|| Some("Claude stream-json result reported an error".to_owned()))
 }
@@ -4298,11 +4303,22 @@ fn claude_stream_event_activity(value: &Value) -> Option<(&'static str, &'static
                 .and_then(Value::as_str)
                 .map(|status| ("activity", "Claude status", status.to_owned())),
         },
-        "rate_limit_event" => Some((
-            "run_error",
-            "Claude rate limited",
-            truncate_activity_detail(&value.to_string()),
-        )),
+        "rate_limit_event" => {
+            let status = value
+                .pointer("/rate_limit_info/status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let kind = if status.eq_ignore_ascii_case("allowed") {
+                "run"
+            } else {
+                "run_error"
+            };
+            Some((
+                kind,
+                "Claude rate limit status",
+                truncate_activity_detail(&value.to_string()),
+            ))
+        }
         "stream_event" => {
             let event_type = value.pointer("/event/type").and_then(Value::as_str)?;
             match event_type {
@@ -7686,6 +7702,18 @@ mod tests {
                 &json!({"type": "result", "is_error": true, "result": "rate limited"})
             ),
             Some("rate limited".to_owned())
+        );
+        assert_eq!(
+            claude_result_error(
+                &json!({"type": "result", "is_error": false, "api_error_status": null, "result": "ok"})
+            ),
+            None
+        );
+        assert_eq!(
+            claude_result_error(
+                &json!({"type": "result", "is_error": false, "api_error_status": "rate_limited", "result": "busy"})
+            ),
+            Some("rate_limited".to_owned())
         );
     }
 
