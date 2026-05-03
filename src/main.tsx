@@ -59,6 +59,7 @@ const UI_REFRESH_DEBOUNCE_MS = 80;
 type UiBackendEvent =
   | { type: "refresh"; reason?: string }
   | { type: "message_upsert"; reason?: string; message: Message }
+  | { type: "message_delta"; reason?: string; message_id: string; append: string; delivery_state: Message["delivery_state"] }
   | { type: "activity_upsert"; reason?: string; activity: AgentActivity }
   | { type: "agent_run_upsert"; reason?: string; run: Omit<AgentRun, "log"> & { log?: string } }
   | { type: "work_item_upsert"; reason?: string; work_item: Omit<AgentWorkItem, "context"> & { context?: string } };
@@ -217,6 +218,24 @@ function App() {
     });
   }
 
+  function applyMessageDelta(messageId: string, append: string, deliveryState: Message["delivery_state"]) {
+    setData((current) => {
+      if (!current) {
+        requestRefresh("Failed to refresh LocalSlock state after message delta");
+        return current;
+      }
+      const existingIndex = current.messages.findIndex((item) => item.id === messageId);
+      if (existingIndex < 0) {
+        requestRefresh("Failed to refresh LocalSlock state after message delta");
+        return current;
+      }
+      const messages = current.messages.map((item) => item.id === messageId
+        ? { ...item, body: `${item.body}${append}`, delivery_state: deliveryState }
+        : item);
+      return { ...current, messages };
+    });
+  }
+
   function applyActivityUpsert(activity: AgentActivity) {
     setData((current) => {
       if (!current) {
@@ -284,6 +303,10 @@ function App() {
     }
     if (parsed.type === "message_upsert") {
       applyMessageUpsert(parsed.message);
+      return;
+    }
+    if (parsed.type === "message_delta") {
+      applyMessageDelta(parsed.message_id, parsed.append, parsed.delivery_state);
       return;
     }
     if (parsed.type === "activity_upsert") {

@@ -370,6 +370,28 @@ async fn notify_ui_message_upsert(
     .await
 }
 
+async fn notify_ui_message_delta(
+    pool: &PgPool,
+    message_id: Uuid,
+    append: &str,
+    delivery_state: &str,
+    reason: &str,
+) -> CommandResult<()> {
+    notify_postgres(
+        pool,
+        UI_REFRESH_CHANNEL,
+        &json!({
+            "type": "message_delta",
+            "reason": reason,
+            "message_id": message_id,
+            "append": append,
+            "delivery_state": delivery_state
+        })
+        .to_string(),
+    )
+    .await
+}
+
 async fn notify_ui_activity_upsert(
     pool: &PgPool,
     activity: &AgentActivity,
@@ -3742,16 +3764,15 @@ async fn append_streaming_agent_message(
         }
         sqlx::query("update messages set body = body || $2, delivery_state = $3 where id = $1")
             .bind(message_id)
-            .bind(append_delta)
+            .bind(&append_delta)
             .bind(if truncated { "complete" } else { "streaming" })
             .execute(pool)
             .await
             .map_err(to_string)?;
-        if let Ok(message) = load_message(pool, message_id).await {
-            let _ = notify_ui_message_upsert(pool, &message, "stream_delta").await;
-        } else {
-            let _ = notify_ui_refresh(pool, "stream_delta").await;
-        }
+        let delivery_state = if truncated { "complete" } else { "streaming" };
+        let _ =
+            notify_ui_message_delta(pool, message_id, &append_delta, delivery_state, "stream_delta")
+                .await;
         return Ok(message_id);
     }
 
