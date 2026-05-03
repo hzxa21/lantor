@@ -65,10 +65,18 @@ struct WarmCodexState {
 struct CodexActiveTurn {
     run_id: Uuid,
     turn_request_id: i64,
+    turn_id: Option<String>,
     work_item_id: Option<Uuid>,
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
     stream_keys: HashSet<String>,
+    steer_requests: HashMap<i64, CodexSteerRequest>,
+    steer_disabled: bool,
+}
+
+struct CodexSteerRequest {
+    work_item_id: Uuid,
+    run_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
@@ -1432,7 +1440,15 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     Ok(new_work_item_id)
 }
 
-async fn agent_has_active_or_pending_start(pool: &PgPool, agent_id: Uuid) -> CommandResult<bool> {
+async fn agent_runtime(pool: &PgPool, agent_id: Uuid) -> CommandResult<Option<String>> {
+    sqlx::query_scalar("select runtime from agents where id = $1")
+        .bind(agent_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)
+}
+
+async fn agent_has_active_run(pool: &PgPool, agent_id: Uuid) -> CommandResult<bool> {
     let active_run: Option<Uuid> = sqlx::query_scalar(
         r#"
         select id
@@ -1447,7 +1463,12 @@ async fn agent_has_active_or_pending_start(pool: &PgPool, agent_id: Uuid) -> Com
     .fetch_optional(pool)
     .await
     .map_err(to_string)?;
-    if active_run.is_some() {
+
+    Ok(active_run.is_some())
+}
+
+async fn agent_has_active_or_pending_start(pool: &PgPool, agent_id: Uuid) -> CommandResult<bool> {
+    if agent_has_active_run(pool, agent_id).await? {
         return Ok(true);
     }
 
@@ -1484,7 +1505,12 @@ async fn enqueue_agent_work_if_available(
     if status.as_deref() != Some("queued") {
         return Ok(false);
     }
-    if agent_has_active_or_pending_start(pool, agent_id).await? {
+    let runtime = agent_runtime(pool, agent_id).await?;
+    let is_codex = runtime
+        .as_deref()
+        .is_some_and(|runtime| runtime.eq_ignore_ascii_case("codex"));
+    let has_active_run = agent_has_active_run(pool, agent_id).await?;
+    if !is_codex && agent_has_active_or_pending_start(pool, agent_id).await? {
         return Ok(false);
     }
 
@@ -1524,6 +1550,13 @@ async fn enqueue_agent_work_if_available(
         .execute(pool)
         .await
         .map_err(to_string)?;
+    if is_codex && has_active_run {
+        sqlx::query("update agents set status = 'running' where id = $1")
+            .bind(agent_id)
+            .execute(pool)
+            .await
+            .map_err(to_string)?;
+    }
 
     Ok(true)
 }
@@ -3511,6 +3544,15 @@ fn codex_thread_id_from_response(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn codex_turn_id_from_value(value: &Value) -> Option<String> {
+    value
+        .pointer("/result/turn/id")
+        .or_else(|| value.pointer("/params/turn/id"))
+        .or_else(|| value.pointer("/params/turnId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
 fn codex_item_type(value: &Value) -> Option<&str> {
     value.pointer("/params/item/type").and_then(Value::as_str)
 }
@@ -3900,7 +3942,7 @@ async fn run_supervisor() -> CommandResult<()> {
 
     loop {
         write_supervisor_heartbeat(&pool).await?;
-        schedule_queued_work_items(&pool).await?;
+        schedule_queued_work_items(&pool, &codex_registry).await?;
         let mut processed_command = false;
         while let Some(command) = claim_next_supervisor_command(&pool).await? {
             processed_command = true;
@@ -3924,10 +3966,87 @@ async fn run_supervisor() -> CommandResult<()> {
     }
 }
 
-async fn schedule_queued_work_items(pool: &PgPool) -> CommandResult<()> {
+async fn active_codex_turn_surface(
+    registry: &WarmCodexRegistry,
+    agent_id: Uuid,
+) -> Option<(Option<Uuid>, Option<Uuid>, bool)> {
+    let runtime = {
+        let runtimes = registry.runtimes.lock().await;
+        runtimes.get(&agent_id).cloned()
+    }?;
+    let state = runtime.state.lock().await;
+    let active = state.active.as_ref()?;
+    Some((
+        active.channel_id,
+        active.thread_root_id,
+        active.turn_id.is_some() && !active.steer_disabled,
+    ))
+}
+
+async fn same_codex_surface(
+    pool: &PgPool,
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+    active_channel_id: Option<Uuid>,
+    active_thread_root_id: Option<Uuid>,
+) -> CommandResult<bool> {
+    if channel_id.is_none() || channel_id != active_channel_id {
+        return Ok(false);
+    }
+    let Some(channel_id) = channel_id else {
+        return Ok(false);
+    };
+    let kind: Option<String> = sqlx::query_scalar("select kind from channels where id = $1")
+        .bind(channel_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+    if kind.as_deref() == Some("dm") {
+        return Ok(true);
+    }
+    Ok(thread_root_id == active_thread_root_id)
+}
+
+async fn should_schedule_queued_work_item(
+    pool: &PgPool,
+    registry: &WarmCodexRegistry,
+    agent_id: Uuid,
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+) -> CommandResult<bool> {
+    let runtime = agent_runtime(pool, agent_id).await?;
+    if !runtime
+        .as_deref()
+        .is_some_and(|runtime| runtime.eq_ignore_ascii_case("codex"))
+    {
+        return Ok(!agent_has_active_or_pending_start(pool, agent_id).await?);
+    }
+
+    let Some((active_channel_id, active_thread_root_id, has_turn_id)) =
+        active_codex_turn_surface(registry, agent_id).await
+    else {
+        return Ok(true);
+    };
+    if !has_turn_id {
+        return Ok(false);
+    }
+    same_codex_surface(
+        pool,
+        channel_id,
+        thread_root_id,
+        active_channel_id,
+        active_thread_root_id,
+    )
+    .await
+}
+
+async fn schedule_queued_work_items(
+    pool: &PgPool,
+    registry: &WarmCodexRegistry,
+) -> CommandResult<()> {
     let rows = sqlx::query(
         r#"
-        select w.id, w.agent_id
+        select w.id, w.agent_id, w.channel_id, w.thread_root_id
         from agent_work_items w
         where w.status = 'queued'
           and not exists (
@@ -3948,6 +4067,13 @@ async fn schedule_queued_work_items(pool: &PgPool) -> CommandResult<()> {
     for row in rows {
         let work_item_id: Uuid = row.get("id");
         let agent_id: Uuid = row.get("agent_id");
+        let channel_id: Option<Uuid> = row.get("channel_id");
+        let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+        if !should_schedule_queued_work_item(pool, registry, agent_id, channel_id, thread_root_id)
+            .await?
+        {
+            continue;
+        }
         if enqueue_agent_work_if_available(pool, agent_id, work_item_id).await? {
             record_agent_activity(
                 pool,
@@ -4102,6 +4228,173 @@ async fn process_supervisor_command(
     }
 }
 
+async fn steer_warm_codex_turn_if_same_surface(
+    pool: &PgPool,
+    agent_id: Uuid,
+    runtime: &Arc<WarmCodexRuntime>,
+    work_item_id: Uuid,
+    codex_prompt: &str,
+) -> CommandResult<bool> {
+    let row = sqlx::query(
+        r#"
+        select channel_id, thread_root_id
+        from agent_work_items
+        where id = $1 and agent_id = $2 and status = 'queued'
+        "#,
+    )
+    .bind(work_item_id)
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let channel_id: Option<Uuid> = row.get("channel_id");
+    let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+
+    let (active_run_id, active_channel_id, active_thread_root_id, active_turn_id) = {
+        let state = runtime.state.lock().await;
+        let Some(active) = state.active.as_ref() else {
+            return Ok(false);
+        };
+        if active.steer_disabled {
+            return Ok(false);
+        }
+        (
+            active.run_id,
+            active.channel_id,
+            active.thread_root_id,
+            active.turn_id.clone(),
+        )
+    };
+    if !same_codex_surface(
+        pool,
+        channel_id,
+        thread_root_id,
+        active_channel_id,
+        active_thread_root_id,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
+    let Some(turn_id) = active_turn_id else {
+        return Ok(false);
+    };
+
+    let request_id = {
+        let mut state = runtime.state.lock().await;
+        let Some(active) = state.active.as_mut() else {
+            return Ok(false);
+        };
+        if active.steer_disabled {
+            return Ok(false);
+        }
+        if active.run_id != active_run_id || active.turn_id.as_deref() != Some(turn_id.as_str()) {
+            return Ok(false);
+        }
+        if active.channel_id != active_channel_id || active.thread_root_id != active_thread_root_id
+        {
+            return Ok(false);
+        }
+        let run_id = active.run_id;
+        let request_id = state.next_request_id;
+        state.next_request_id += 1;
+        state.last_activity = Instant::now();
+        state
+            .active
+            .as_mut()
+            .expect("active turn checked")
+            .steer_requests
+            .insert(
+                request_id,
+                CodexSteerRequest {
+                    work_item_id,
+                    run_id,
+                },
+            );
+        request_id
+    };
+
+    sqlx::query(
+        r#"
+        update agent_work_items
+        set status = 'running',
+            run_id = $2,
+            updated_at = now()
+        where id = $1
+        "#,
+    )
+    .bind(work_item_id)
+    .bind(active_run_id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    let write_result = {
+        let mut stdin = runtime.stdin.lock().await;
+        codex_write_json(
+            &mut stdin,
+            json!({
+                "method": "turn/steer",
+                "id": request_id,
+                "params": {
+                    "threadId": runtime.thread_id.clone(),
+                    "expectedTurnId": turn_id,
+                    "input": [{
+                        "type": "text",
+                        "text": codex_prompt,
+                        "text_elements": []
+                    }]
+                }
+            }),
+        )
+        .await
+    };
+
+    if let Err(err) = write_result {
+        {
+            let mut state = runtime.state.lock().await;
+            if let Some(active) = state.active.as_mut() {
+                active.steer_requests.remove(&request_id);
+            }
+        }
+        sqlx::query(
+            r#"
+            update agent_work_items
+            set status = 'queued',
+                run_id = null,
+                updated_at = now()
+            where id = $1
+            "#,
+        )
+        .bind(work_item_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+        return Err(err);
+    }
+
+    append_run_log(
+        pool,
+        active_run_id,
+        format!("[codex] turn/steer work_item={work_item_id}\n"),
+    )
+    .await?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(active_run_id),
+        "dispatch",
+        "Follow-up steered into active turn",
+        work_item_id.to_string(),
+    )
+    .await?;
+    let _ = notify_ui_refresh(pool, "codex_turn_steer").await;
+    Ok(true)
+}
+
 async fn supervisor_start_codex_streaming_agent(
     pool: &PgPool,
     codex_registry: &WarmCodexRegistry,
@@ -4130,7 +4423,21 @@ async fn supervisor_start_codex_streaming_agent(
             return Err("codex warm runtime is not alive".to_owned());
         }
         if state.active.is_some() {
-            record_agent_activity(
+            drop(state);
+            if let Some(work_item_id) = work_item_id {
+                if steer_warm_codex_turn_if_same_surface(
+                    pool,
+                    agent_id,
+                    &runtime,
+                    work_item_id,
+                    &codex_prompt,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+            }
+            record_agent_activity_throttled(
                 pool,
                 Some(agent_id),
                 None,
@@ -4251,10 +4558,13 @@ async fn supervisor_start_codex_streaming_agent(
         state.active = Some(CodexActiveTurn {
             run_id,
             turn_request_id: request_id,
+            turn_id: None,
             work_item_id,
             channel_id,
             thread_root_id,
             stream_keys: HashSet::new(),
+            steer_requests: HashMap::new(),
+            steer_disabled: false,
         });
         request_id
     };
@@ -4624,6 +4934,52 @@ async fn codex_warm_stdout_reader(
     remove_warm_codex_runtime_if_same(&registry, agent_id, &runtime).await;
 }
 
+async fn finish_codex_steer_request(
+    pool: &PgPool,
+    agent_id: Uuid,
+    steer: CodexSteerRequest,
+    success: bool,
+    error: Option<String>,
+) -> CommandResult<()> {
+    let (status, completed_at, run_id) = if success {
+        ("done", "now()", Some(steer.run_id))
+    } else {
+        ("queued", "null", None)
+    };
+    sqlx::query(&format!(
+        r#"
+        update agent_work_items
+        set status = $2,
+            run_id = $3,
+            completed_at = {completed_at},
+            updated_at = now()
+        where id = $1
+        "#
+    ))
+    .bind(steer.work_item_id)
+    .bind(status)
+    .bind(run_id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(steer.run_id),
+        if success { "dispatch" } else { "run_error" },
+        if success {
+            "Follow-up steer accepted"
+        } else {
+            "Follow-up steer rejected; queued"
+        },
+        error.unwrap_or_else(|| steer.work_item_id.to_string()),
+    )
+    .await?;
+    let _ = notify_ui_refresh(pool, "codex_turn_steer_result").await;
+    Ok(())
+}
+
 async fn handle_codex_warm_stdout_line(
     pool: &PgPool,
     agent_id: Uuid,
@@ -4644,25 +5000,62 @@ async fn handle_codex_warm_stdout_line(
         append_run_log(pool, run_id, format!("[codex] {line}\n")).await?;
     }
 
-    let active_turn_request_id = {
-        runtime
-            .state
-            .lock()
-            .await
-            .active
-            .as_ref()
-            .map(|active| active.turn_request_id)
-    };
-    if let Some(request_id) = active_turn_request_id {
-        if value.get("id").and_then(Value::as_i64) == Some(request_id) {
-            if let Some(error) = codex_request_error(&value) {
-                finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(error)).await?;
+    if let Some(response_id) = value.get("id").and_then(Value::as_i64) {
+        let matched = {
+            let mut state = runtime.state.lock().await;
+            let Some(active) = state.active.as_mut() else {
+                return Ok(());
+            };
+            if active.turn_request_id == response_id {
+                if let Some(turn_id) = codex_turn_id_from_value(&value) {
+                    active.turn_id = Some(turn_id);
+                    state.last_activity = Instant::now();
+                }
+                Some((true, None))
+            } else if let Some(steer) = active.steer_requests.remove(&response_id) {
+                if codex_request_error(&value).is_some() {
+                    active.steer_disabled = true;
+                }
+                state.last_activity = Instant::now();
+                Some((false, Some(steer)))
+            } else {
+                None
             }
-            return Ok(());
+        };
+        if let Some((is_turn_start, steer)) = matched {
+            if is_turn_start {
+                if let Some(error) = codex_request_error(&value) {
+                    finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(error))
+                        .await?;
+                }
+                return Ok(());
+            }
+            if let Some(steer) = steer {
+                if let Some(error) = codex_request_error(&value) {
+                    finish_codex_steer_request(pool, agent_id, steer, false, Some(error)).await?;
+                } else {
+                    finish_codex_steer_request(pool, agent_id, steer, true, None).await?;
+                }
+                return Ok(());
+            }
         }
     }
 
     match value.get("method").and_then(Value::as_str) {
+        Some("turn/started") => {
+            if value.pointer("/params/threadId").and_then(Value::as_str)
+                != Some(runtime.thread_id.as_str())
+            {
+                return Ok(());
+            }
+            if let Some(turn_id) = codex_turn_id_from_value(&value) {
+                let mut state = runtime.state.lock().await;
+                if let Some(active) = state.active.as_mut() {
+                    active.turn_id = Some(turn_id);
+                    state.last_activity = Instant::now();
+                }
+            }
+        }
         Some("item/agentMessage/delta") => {
             let item_id = value
                 .pointer("/params/itemId")
@@ -4993,6 +5386,10 @@ async fn finish_warm_codex_active_turn(
             if success { "complete" } else { "error" },
         )
         .await?;
+    }
+
+    for steer in active.steer_requests.into_values() {
+        finish_codex_steer_request(pool, agent_id, steer, success, error.clone()).await?;
     }
 
     let run_status = if success { "exited" } else { "failed" };
@@ -5350,12 +5747,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_streaming_agent_message, capped_stream_delta, extract_agent_event_json,
-        extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
-        load_messages, load_runtime_thread_id, migrate, open_dm_with_agent_in_pool,
-        send_owner_message_in_pool, upsert_runtime_thread_id, DEFAULT_DATABASE_URL,
-        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        append_streaming_agent_message, capped_stream_delta, codex_turn_id_from_value,
+        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
+        insert_agent_message, load_messages, load_runtime_thread_id, migrate,
+        open_dm_with_agent_in_pool, send_owner_message_in_pool, upsert_runtime_thread_id,
+        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
+    use serde_json::json;
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
     use uuid::Uuid;
 
@@ -5415,6 +5813,22 @@ mod tests {
         assert!(truncated);
         assert!(capped.ends_with(STREAMING_TRUNCATION_MARKER));
         assert_eq!(capped.chars().count() + 4, STREAMING_MESSAGE_BODY_LIMIT);
+    }
+
+    #[test]
+    fn extracts_codex_turn_ids_from_response_and_notification() {
+        assert_eq!(
+            codex_turn_id_from_value(&json!({"result": {"turn": {"id": "turn-1"}}})),
+            Some("turn-1".to_owned())
+        );
+        assert_eq!(
+            codex_turn_id_from_value(&json!({"params": {"turn": {"id": "turn-2"}}})),
+            Some("turn-2".to_owned())
+        );
+        assert_eq!(
+            codex_turn_id_from_value(&json!({"params": {"turnId": "turn-3"}})),
+            Some("turn-3".to_owned())
+        );
     }
 
     async fn test_pool() -> Option<(PgPool, String)> {

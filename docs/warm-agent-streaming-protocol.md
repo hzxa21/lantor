@@ -18,7 +18,8 @@ Current implementation status:
 - Codex thread ids are persisted in `runtime_sessions` and resumed on the next work item.
 - The supervisor keeps one resident Codex app-server process per active agent and reuses it for queued work through `turn/start`.
 - Resident Codex processes are reaped after 10 idle minutes, streaming message bodies are capped, and completed tool calls are surfaced as activity details.
-- Busy-turn `turn/steer` and Claude stream-json are still follow-up slices.
+- Codex in-flight follow-ups on the same DM or thread surface are injected through `turn/steer`.
+- Claude stream-json is still a follow-up slice.
 
 ## Non-Goals
 
@@ -137,7 +138,7 @@ Pass the same safety config currently implied by LocalSlock:
 4. If `runtime_sessions.provider_thread_id` exists, send `thread/resume`; otherwise send `thread/start`.
 5. Store returned thread id as `runtime_sessions.provider_thread_id`.
 6. For a new work item, send `turn/start`.
-7. If a work item arrives while a turn is active, use `turn/steer` only for Codex.
+7. If a work item arrives while a turn is active on the same DM/thread surface, use `turn/steer` only for Codex. Cross-surface work stays queued until the active turn ends.
 
 ### Input Methods
 
@@ -232,7 +233,7 @@ Warm behavior:
 
 1. If the target runtime supports warm sessions and no process is running, start the runtime process.
 2. If the process is idle, deliver the work item via `turn/start`.
-3. If the process is busy and supports safe steering, deliver via `turn/steer`.
+3. If the process is busy and supports safe steering, deliver same-surface follow-ups via `turn/steer`.
 4. If the process is busy and does not support steering, keep the work item queued.
 5. On `TurnEnd`, immediately schedule the next queued item for that agent.
 
@@ -273,7 +274,7 @@ Required behavior:
 
 ### Slice 4: Busy Steering for Codex
 
-- Add `turn/steer` for user messages arriving during an active turn.
+- Add Claude stream-json support with safe-boundary delivery.
 - If rejected, requeue behind current turn.
 - Show inline activity: "Message delivered to running turn" vs "Queued for next turn".
 
