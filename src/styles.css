@@ -772,6 +772,21 @@ mark {
   margin-top: 3px;
 }
 
+.local-entity-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: rgba(10, 132, 255, 0.08);
+  color: var(--accent);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.local-entity-link:hover {
+  background: rgba(10, 132, 255, 0.14);
+}
+
 .message-attachments {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 260px));
