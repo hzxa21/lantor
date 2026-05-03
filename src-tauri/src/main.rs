@@ -66,6 +66,8 @@ struct CodexActiveTurn {
     run_id: Uuid,
     turn_request_id: i64,
     turn_id: Option<String>,
+    started_at: Instant,
+    first_delta_at: Option<Instant>,
     work_item_id: Option<Uuid>,
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
@@ -280,7 +282,38 @@ async fn notify_postgres(pool: &PgPool, channel: &str, payload: &str) -> Command
 }
 
 async fn notify_ui_refresh(pool: &PgPool, reason: &str) -> CommandResult<()> {
-    notify_postgres(pool, UI_REFRESH_CHANNEL, reason).await
+    notify_postgres(
+        pool,
+        UI_REFRESH_CHANNEL,
+        &json!({ "type": "refresh", "reason": reason }).to_string(),
+    )
+    .await
+}
+
+async fn notify_ui_message_upsert(
+    pool: &PgPool,
+    message: &Message,
+    reason: &str,
+) -> CommandResult<()> {
+    notify_postgres(
+        pool,
+        UI_REFRESH_CHANNEL,
+        &json!({ "type": "message_upsert", "reason": reason, "message": message }).to_string(),
+    )
+    .await
+}
+
+async fn notify_ui_activity_upsert(
+    pool: &PgPool,
+    activity: &AgentActivity,
+    reason: &str,
+) -> CommandResult<()> {
+    notify_postgres(
+        pool,
+        UI_REFRESH_CHANNEL,
+        &json!({ "type": "activity_upsert", "reason": reason, "activity": activity }).to_string(),
+    )
+    .await
 }
 
 async fn notify_supervisor_wake(pool: &PgPool) -> CommandResult<()> {
@@ -2316,6 +2349,50 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
         .collect())
 }
 
+async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message> {
+    let row = sqlx::query(
+        r#"
+        select
+            m.id,
+            m.channel_id,
+            m.thread_root_id,
+            m.sender_name,
+            m.sender_role,
+            m.body,
+            m.is_task,
+            m.thread_followed,
+            m.delivery_state,
+            m.stream_key,
+            t.number as task_number,
+            t.status as task_status,
+            m.created_at
+        from messages m
+        left join tasks t on t.message_id = m.id
+        where m.id = $1
+        "#,
+    )
+    .bind(message_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(Message {
+        id: row.get("id"),
+        channel_id: row.get("channel_id"),
+        thread_root_id: row.get("thread_root_id"),
+        sender_name: row.get("sender_name"),
+        sender_role: row.get("sender_role"),
+        body: row.get("body"),
+        is_task: row.get("is_task"),
+        thread_followed: row.get("thread_followed"),
+        delivery_state: row.get("delivery_state"),
+        stream_key: row.get("stream_key"),
+        task_number: row.get("task_number"),
+        task_status: row.get("task_status"),
+        created_at: row.get("created_at"),
+    })
+}
+
 async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
     let rows = sqlx::query(
         r#"
@@ -2487,6 +2564,31 @@ async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity
         .collect())
 }
 
+async fn load_agent_activity(pool: &PgPool, activity_id: Uuid) -> CommandResult<AgentActivity> {
+    let row = sqlx::query(
+        r#"
+        select id, agent_id, agent_handle, run_id, kind, title, detail, created_at
+        from agent_activities
+        where id = $1
+        "#,
+    )
+    .bind(activity_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(AgentActivity {
+        id: row.get("id"),
+        agent_id: row.get("agent_id"),
+        agent_handle: row.get("agent_handle"),
+        run_id: row.get("run_id"),
+        kind: row.get("kind"),
+        title: row.get("title"),
+        detail: row.get("detail"),
+        created_at: row.get("created_at"),
+    })
+}
+
 async fn load_supervisor_status(pool: &PgPool) -> CommandResult<SupervisorStatus> {
     let row = sqlx::query(
         r#"
@@ -2561,10 +2663,11 @@ async fn record_agent_activity(
         None => String::new(),
     };
 
-    sqlx::query(
+    let activity_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_activities (agent_id, agent_handle, run_id, kind, title, detail)
         values ($1, $2, $3, $4, $5, $6)
+        returning id
         "#,
     )
     .bind(agent_id)
@@ -2573,10 +2676,14 @@ async fn record_agent_activity(
     .bind(kind)
     .bind(title.as_ref())
     .bind(detail.as_ref())
-    .execute(pool)
+    .fetch_one(pool)
     .await
     .map_err(to_string)?;
-    let _ = notify_ui_refresh(pool, "activity").await;
+    if let Ok(activity) = load_agent_activity(pool, activity_id).await {
+        let _ = notify_ui_activity_upsert(pool, &activity, "activity").await;
+    } else {
+        let _ = notify_ui_refresh(pool, "activity").await;
+    }
 
     Ok(())
 }
@@ -3345,7 +3452,11 @@ async fn append_streaming_agent_message(
             .execute(pool)
             .await
             .map_err(to_string)?;
-        let _ = notify_ui_refresh(pool, "stream_delta").await;
+        if let Ok(message) = load_message(pool, message_id).await {
+            let _ = notify_ui_message_upsert(pool, &message, "stream_delta").await;
+        } else {
+            let _ = notify_ui_refresh(pool, "stream_delta").await;
+        }
         return Ok(message_id);
     }
 
@@ -3387,7 +3498,11 @@ async fn append_streaming_agent_message(
     .await
     .map_err(to_string)?;
 
-    let _ = notify_ui_refresh(pool, "stream_start").await;
+    if let Ok(message) = load_message(pool, message_id).await {
+        let _ = notify_ui_message_upsert(pool, &message, "stream_start").await;
+    } else {
+        let _ = notify_ui_refresh(pool, "stream_start").await;
+    }
     Ok(message_id)
 }
 
@@ -3396,7 +3511,7 @@ async fn finish_streaming_agent_message(
     stream_key: &str,
     delivery_state: &str,
 ) -> CommandResult<()> {
-    sqlx::query(
+    let affected = sqlx::query(
         r#"
         update messages
         set delivery_state = $2
@@ -3408,8 +3523,23 @@ async fn finish_streaming_agent_message(
     .bind(delivery_state)
     .execute(pool)
     .await
-    .map_err(to_string)?;
-    let _ = notify_ui_refresh(pool, "stream_finish").await;
+    .map_err(to_string)?
+    .rows_affected();
+    if affected > 0 {
+        let message_id: Option<Uuid> =
+            sqlx::query_scalar("select id from messages where stream_key = $1")
+                .bind(stream_key)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?;
+        if let Some(message_id) = message_id {
+            if let Ok(message) = load_message(pool, message_id).await {
+                let _ = notify_ui_message_upsert(pool, &message, "stream_finish").await;
+            } else {
+                let _ = notify_ui_refresh(pool, "stream_finish").await;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -4873,6 +5003,8 @@ async fn supervisor_start_codex_streaming_agent(
             run_id,
             turn_request_id: request_id,
             turn_id: None,
+            started_at: Instant::now(),
+            first_delta_at: None,
             work_item_id,
             channel_id,
             thread_root_id,
@@ -5618,6 +5750,16 @@ async fn handle_codex_warm_stdout_line(
                 if let Some(error) = codex_request_error(&value) {
                     finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(error))
                         .await?;
+                } else if let Some(run_id) = active_run_id {
+                    record_agent_activity(
+                        pool,
+                        Some(agent_id),
+                        Some(run_id),
+                        "run",
+                        "Codex turn accepted",
+                        response_id.to_string(),
+                    )
+                    .await?;
                 }
                 return Ok(());
             }
@@ -5659,20 +5801,39 @@ async fn handle_codex_warm_stdout_line(
             if delta.is_empty() {
                 return Ok(());
             }
-            let active = {
+            let (active, first_delta_elapsed) = {
                 let mut state = runtime.state.lock().await;
                 let Some(active) = state.active.as_mut() else {
                     return Ok(());
                 };
+                let first_delta_elapsed = if active.first_delta_at.is_none() {
+                    let elapsed = active.started_at.elapsed();
+                    active.first_delta_at = Some(Instant::now());
+                    Some(elapsed)
+                } else {
+                    None
+                };
                 let stream_key = codex_stream_key(active.run_id, item_id);
                 active.stream_keys.insert(stream_key.clone());
-                (
+                let active = (
                     active.run_id,
                     active.channel_id,
                     active.thread_root_id,
                     stream_key,
-                )
+                );
+                (active, first_delta_elapsed)
             };
+            if let Some(elapsed) = first_delta_elapsed {
+                record_agent_activity(
+                    pool,
+                    Some(agent_id),
+                    Some(active.0),
+                    "acting",
+                    "Codex first token",
+                    format!("{} ms after turn/start", elapsed.as_millis()),
+                )
+                .await?;
+            }
             if let Some(channel_id) = active.1 {
                 append_streaming_agent_message(
                     pool, agent_id, channel_id, active.2, &active.3, delta,
@@ -5969,6 +6130,7 @@ async fn finish_warm_codex_active_turn(
     let Some(active) = active else {
         return Ok(());
     };
+    let elapsed_ms = active.started_at.elapsed().as_millis();
 
     for stream_key in active.stream_keys {
         finish_streaming_agent_message(
@@ -5988,7 +6150,7 @@ async fn finish_warm_codex_active_turn(
     let log_line = error
         .as_ref()
         .map(|error| format!("codex warm turn failed: {error}\n"))
-        .unwrap_or_else(|| "codex warm turn completed\n".to_owned());
+        .unwrap_or_else(|| format!("codex warm turn completed in {elapsed_ms} ms\n"));
     sqlx::query(
         r#"
         update agent_runs
@@ -6070,7 +6232,11 @@ async fn finish_warm_codex_active_turn(
         } else {
             "Codex warm turn failed"
         },
-        log_line.trim(),
+        if success {
+            format!("duration={elapsed_ms} ms")
+        } else {
+            log_line.trim().to_owned()
+        },
     )
     .await?;
     let _ = notify_supervisor_wake(pool).await;

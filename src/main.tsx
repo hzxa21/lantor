@@ -15,6 +15,7 @@ import { ThreadPanel } from "./components/ThreadPanel";
 import {
   ACTIVE_RUN_STATUSES,
   Agent,
+  AgentActivity,
   AgentForm,
   AgentRun,
   AgentWorkItem,
@@ -51,6 +52,11 @@ const MAX_SIDEBAR_WIDTH = 460;
 const MIN_CONVERSATION_WIDTH = 420;
 const UI_REFRESH_EVENT = "localslock://refresh";
 const UI_REFRESH_DEBOUNCE_MS = 80;
+
+type UiBackendEvent =
+  | { type: "refresh"; reason?: string }
+  | { type: "message_upsert"; reason?: string; message: Message }
+  | { type: "activity_upsert"; reason?: string; activity: AgentActivity };
 
 function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
@@ -191,6 +197,59 @@ function App() {
     }, UI_REFRESH_DEBOUNCE_MS);
   }
 
+  function applyMessageUpsert(message: Message) {
+    setData((current) => {
+      if (!current) {
+        requestRefresh("Failed to refresh LocalSlock state after message update");
+        return current;
+      }
+      const existingIndex = current.messages.findIndex((item) => item.id === message.id);
+      const messages = existingIndex >= 0
+        ? current.messages.map((item) => item.id === message.id ? message : item)
+        : [...current.messages, message];
+      messages.sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
+      return { ...current, messages };
+    });
+  }
+
+  function applyActivityUpsert(activity: AgentActivity) {
+    setData((current) => {
+      if (!current) {
+        requestRefresh("Failed to refresh LocalSlock state after activity update");
+        return current;
+      }
+      const existingIndex = current.agent_activities.findIndex((item) => item.id === activity.id);
+      const agent_activities = existingIndex >= 0
+        ? current.agent_activities.map((item) => item.id === activity.id ? activity : item)
+        : [activity, ...current.agent_activities];
+      agent_activities.sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
+      return { ...current, agent_activities: agent_activities.slice(0, 80) };
+    });
+  }
+
+  function handleBackendEvent(payload: unknown) {
+    if (typeof payload !== "string") {
+      requestRefresh("Failed to refresh LocalSlock state after backend update");
+      return;
+    }
+    let parsed: UiBackendEvent | null = null;
+    try {
+      parsed = JSON.parse(payload) as UiBackendEvent;
+    } catch {
+      requestRefresh("Failed to refresh LocalSlock state after backend update");
+      return;
+    }
+    if (parsed.type === "message_upsert") {
+      applyMessageUpsert(parsed.message);
+      return;
+    }
+    if (parsed.type === "activity_upsert") {
+      applyActivityUpsert(parsed.activity);
+      return;
+    }
+    requestRefresh("Failed to refresh LocalSlock state after backend update");
+  }
+
   async function mutate(command: string, args: Record<string, unknown> = {}) {
     try {
       await invoke(command, args);
@@ -216,8 +275,8 @@ function App() {
 
   useEffect(() => {
     let unlisten: UnlistenFn | null = null;
-    listen(UI_REFRESH_EVENT, () => {
-      requestRefresh("Failed to refresh LocalSlock state after backend update");
+    listen<string>(UI_REFRESH_EVENT, (event) => {
+      handleBackendEvent(event.payload);
     })
       .then((handler) => {
         unlisten = handler;
