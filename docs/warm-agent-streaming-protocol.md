@@ -17,7 +17,8 @@ Current implementation status:
 - LocalSlock streams `item/agentMessage/delta` into visible `messages` rows with `delivery_state = 'streaming'`.
 - Codex thread ids are persisted in `runtime_sessions` and resumed on the next work item.
 - The supervisor keeps one resident Codex app-server process per active agent and reuses it for queued work through `turn/start`.
-- Busy-turn `turn/steer`, idle timeout, and Claude stream-json are still follow-up slices.
+- Resident Codex processes are reaped after 10 idle minutes, streaming message bodies are capped, and completed tool calls are surfaced as activity details.
+- Busy-turn `turn/steer` and Claude stream-json are still follow-up slices.
 
 ## Non-Goals
 
@@ -286,6 +287,6 @@ Required behavior:
 ## Open Questions
 
 - Whether explicit `LOCAL_SLOCK_EVENT message` should replace the streaming draft or appear as a second final message. Recommended: replace/finalize the draft when it belongs to the same run.
-- Whether warm sessions should be always-on or only retained for N idle minutes. Recommended first default: keep warm until user stops agent or app exits.
+- Whether warm sessions should be always-on or only retained for N idle minutes. Current default: retain resident Codex processes for 10 idle minutes, then terminate the process while preserving `runtime_sessions.provider_thread_id`.
 - Whether DM messages should always steer active turns. Recommended: yes for Codex, gated for Claude, queued for one-shot.
 - Whether stream updates should push full bootstrap or patch messages. Recommended first: full bootstrap with debounce; later: event payload patches.

@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     process::{Command as StdCommand, Stdio},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Utc};
@@ -32,6 +32,10 @@ const AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
 const UI_REFRESH_CHANNEL: &str = "localslock_ui_refresh";
 const SUPERVISOR_WAKE_CHANNEL: &str = "localslock_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "localslock://refresh";
+const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
+const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by LocalSlock]";
+const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 struct AppState {
@@ -55,6 +59,7 @@ struct WarmCodexState {
     alive: bool,
     active: Option<CodexActiveTurn>,
     next_request_id: i64,
+    last_activity: Instant,
 }
 
 struct CodexActiveTurn {
@@ -1760,7 +1765,7 @@ async fn build_mention_work_context(
 async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
     let row = sqlx::query(
         r#"
-        select agent_id, pid
+        select agent_id, pid, work_item_id
         from agent_runs
         where id = $1 and stopped_at is null
         "#,
@@ -2543,6 +2548,46 @@ async fn record_agent_activity(
     Ok(())
 }
 
+async fn record_agent_activity_throttled(
+    pool: &PgPool,
+    agent_id: Option<Uuid>,
+    run_id: Option<Uuid>,
+    kind: &str,
+    title: impl AsRef<str>,
+    detail: impl AsRef<str>,
+) -> CommandResult<()> {
+    let title = title.as_ref();
+    let detail = detail.as_ref();
+    let recently_recorded: bool = sqlx::query_scalar(
+        r#"
+        select exists (
+            select 1
+            from agent_activities
+            where agent_id is not distinct from $1
+              and run_id is not distinct from $2
+              and kind = $3
+              and title = $4
+              and detail = $5
+              and created_at > now() - interval '1 second'
+        )
+        "#,
+    )
+    .bind(agent_id)
+    .bind(run_id)
+    .bind(kind)
+    .bind(title)
+    .bind(detail)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    if recently_recorded {
+        return Ok(());
+    }
+
+    record_agent_activity(pool, agent_id, run_id, kind, title, detail).await
+}
+
 async fn append_run_log(pool: &PgPool, run_id: Uuid, line: String) -> CommandResult<()> {
     sqlx::query("update agent_runs set log = right(log || $2, 20000) where id = $1")
         .bind(run_id)
@@ -3077,6 +3122,25 @@ async fn insert_agent_message(
     Ok(msg_id)
 }
 
+fn capped_stream_delta(delta: &str, current_len: usize) -> (String, bool) {
+    if current_len >= STREAMING_MESSAGE_BODY_LIMIT {
+        return (String::new(), true);
+    }
+    let remaining = STREAMING_MESSAGE_BODY_LIMIT - current_len;
+    let delta_len = delta.chars().count();
+    if delta_len <= remaining {
+        return (delta.to_owned(), false);
+    }
+
+    let marker_len = STREAMING_TRUNCATION_MARKER.chars().count();
+    let keep = remaining.saturating_sub(marker_len);
+    let mut capped: String = delta.chars().take(keep).collect();
+    if remaining >= marker_len {
+        capped.push_str(STREAMING_TRUNCATION_MARKER);
+    }
+    (capped, true)
+}
+
 async fn append_streaming_agent_message(
     pool: &PgPool,
     agent_id: Uuid,
@@ -3098,21 +3162,32 @@ async fn append_streaming_agent_message(
         return existing.ok_or_else(|| "streaming message does not exist".to_owned());
     }
 
-    if let Some(message_id) = sqlx::query_scalar::<_, Uuid>(
-        r#"
-        update messages
-        set body = body || $2,
-            delivery_state = 'streaming'
-        where stream_key = $1
-        returning id
-        "#,
+    if let Some(row) = sqlx::query(
+        "select id, delivery_state, char_length(body) as body_len from messages where stream_key = $1",
     )
     .bind(stream_key)
-    .bind(delta)
     .fetch_optional(pool)
     .await
     .map_err(to_string)?
     {
+        let message_id: Uuid = row.get("id");
+        let delivery_state: String = row.get("delivery_state");
+        if delivery_state != "streaming" {
+            return Ok(message_id);
+        }
+        let body_len: i32 = row.get("body_len");
+        let (append_delta, truncated) = capped_stream_delta(delta, body_len.max(0) as usize);
+        if append_delta.is_empty() && truncated {
+            finish_streaming_agent_message(pool, stream_key, "complete").await?;
+            return Ok(message_id);
+        }
+        sqlx::query("update messages set body = body || $2, delivery_state = $3 where id = $1")
+            .bind(message_id)
+            .bind(append_delta)
+            .bind(if truncated { "complete" } else { "streaming" })
+            .execute(pool)
+            .await
+            .map_err(to_string)?;
         let _ = notify_ui_refresh(pool, "stream_delta").await;
         return Ok(message_id);
     }
@@ -3124,6 +3199,7 @@ async fn append_streaming_agent_message(
         .map_err(to_string)?;
     let sender_name: String = sender.get("display_name");
     let sender_role: String = sender.get("role");
+    let (initial_body, truncated) = capped_stream_delta(delta, 0);
 
     let message_id: Uuid = sqlx::query_scalar(
         r#"
@@ -3138,7 +3214,7 @@ async fn append_streaming_agent_message(
             delivery_state,
             stream_key
         )
-        values ($1, $2, $3, $4, $5, $6, false, 'streaming', $7)
+        values ($1, $2, $3, $4, $5, $6, false, $7, $8)
         returning id
         "#,
     )
@@ -3147,7 +3223,8 @@ async fn append_streaming_agent_message(
     .bind(agent_id)
     .bind(sender_name)
     .bind(sender_role)
-    .bind(delta)
+    .bind(initial_body)
+    .bind(if truncated { "complete" } else { "streaming" })
     .bind(stream_key)
     .fetch_one(pool)
     .await
@@ -3171,28 +3248,6 @@ async fn finish_streaming_agent_message(
         "#,
     )
     .bind(stream_key)
-    .bind(delivery_state)
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-    let _ = notify_ui_refresh(pool, "stream_finish").await;
-    Ok(())
-}
-
-async fn finish_streaming_agent_messages_for_run(
-    pool: &PgPool,
-    run_id: Uuid,
-    delivery_state: &str,
-) -> CommandResult<()> {
-    sqlx::query(
-        r#"
-        update messages
-        set delivery_state = $2
-        where stream_key like $1
-          and delivery_state = 'streaming'
-        "#,
-    )
-    .bind(format!("{run_id}:%"))
     .bind(delivery_state)
     .execute(pool)
     .await
@@ -3499,6 +3554,40 @@ fn codex_item_summary(value: &Value) -> String {
     }
 }
 
+fn first_nonempty_item_string<'a>(item: &'a Value, fields: &[&str]) -> Option<&'a str> {
+    fields
+        .iter()
+        .find_map(|field| item.get(*field).and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn codex_tool_completion_summary(value: &Value) -> Option<String> {
+    let item = value.pointer("/params/item")?;
+    let item_type = item.get("type").and_then(Value::as_str).unwrap_or("item");
+    if !matches!(
+        item_type,
+        "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "webSearch" | "fileChange"
+    ) {
+        return None;
+    }
+
+    let mut detail = codex_item_summary(value);
+    if let Some(exit_code) = item.get("exitCode").and_then(Value::as_i64) {
+        detail.push_str(&format!(" · exit {exit_code}"));
+    }
+    if let Some(status) = first_nonempty_item_string(item, &["status", "state"]) {
+        detail.push_str(&format!(" · {status}"));
+    }
+    if let Some(output) =
+        first_nonempty_item_string(item, &["output", "stdout", "stderr", "result", "error"])
+    {
+        detail.push_str("\n");
+        detail.push_str(output);
+    }
+
+    Some(truncate_activity_detail(&detail))
+}
+
 fn effective_codex_cwd(working_directory: &str) -> CommandResult<String> {
     if working_directory.trim().is_empty() {
         Ok(env::current_dir()
@@ -3743,6 +3832,7 @@ async fn spawn_warm_codex_runtime(
             alive: true,
             active: None,
             next_request_id,
+            last_activity: Instant::now(),
         }),
         thread_id,
         pid,
@@ -3769,6 +3859,11 @@ async fn spawn_warm_codex_runtime(
         agent_id,
         runtime.clone(),
         child,
+    ));
+    tokio::spawn(codex_warm_idle_reaper(
+        pool.clone(),
+        agent_id,
+        runtime.clone(),
     ));
 
     Ok(runtime)
@@ -4152,6 +4247,7 @@ async fn supervisor_start_codex_streaming_agent(
         }
         let request_id = state.next_request_id;
         state.next_request_id += 1;
+        state.last_activity = Instant::now();
         state.active = Some(CodexActiveTurn {
             run_id,
             turn_request_id: request_id,
@@ -4640,6 +4736,22 @@ async fn handle_codex_warm_stdout_line(
                 finish_streaming_agent_message(pool, &active.3, "complete").await?;
             }
         }
+        Some("item/completed") => {
+            let Some(run_id) = active_run_id else {
+                return Ok(());
+            };
+            if let Some(detail) = codex_tool_completion_summary(&value) {
+                record_agent_activity(
+                    pool,
+                    Some(agent_id),
+                    Some(run_id),
+                    "tools",
+                    "Tool completed",
+                    detail,
+                )
+                .await?;
+            }
+        }
         Some("item/started") => {
             let Some(run_id) = active_run_id else {
                 return Ok(());
@@ -4652,7 +4764,7 @@ async fn handle_codex_warm_stdout_line(
                 "agentMessage" => ("acting", "Writing response"),
                 _ => ("activity", "Codex activity"),
             };
-            record_agent_activity(
+            record_agent_activity_throttled(
                 pool,
                 Some(agent_id),
                 Some(run_id),
@@ -4715,9 +4827,15 @@ async fn codex_warm_stderr_reader<R>(
         if let Some(run_id) = active_run_id {
             let _ = append_run_log(&pool, run_id, format!("[stderr] {line}\n")).await;
             if let Some((kind, title, detail)) = classify_agent_output_activity("stderr", &line) {
-                let _ =
-                    record_agent_activity(&pool, Some(agent_id), Some(run_id), kind, title, detail)
-                        .await;
+                let _ = record_agent_activity_throttled(
+                    &pool,
+                    Some(agent_id),
+                    Some(run_id),
+                    kind,
+                    title,
+                    detail,
+                )
+                .await;
             }
         }
     }
@@ -4775,6 +4893,83 @@ async fn remove_warm_codex_runtime_if_same(
     }
 }
 
+async fn terminate_process_group(pid: i32) -> CommandResult<()> {
+    let status = Command::new("kill")
+        .arg("-TERM")
+        .arg(format!("-{pid}"))
+        .status()
+        .await
+        .map_err(to_string)?;
+
+    if !status.success() {
+        return Err(format!("failed to terminate process group {pid}: {status}"));
+    }
+
+    Ok(())
+}
+
+async fn codex_warm_idle_reaper(pool: PgPool, agent_id: Uuid, runtime: Arc<WarmCodexRuntime>) {
+    loop {
+        sleep(CODEX_IDLE_REAPER_INTERVAL).await;
+        let should_stop = {
+            let mut state = runtime.state.lock().await;
+            let should_stop = state.alive
+                && state.active.is_none()
+                && state.last_activity.elapsed() >= CODEX_IDLE_TIMEOUT;
+            if should_stop {
+                state.alive = false;
+            }
+            should_stop
+        };
+        if !should_stop {
+            if !runtime.state.lock().await.alive {
+                return;
+            }
+            continue;
+        }
+
+        let Some(pid) = runtime.pid else {
+            return;
+        };
+        match terminate_process_group(pid).await {
+            Ok(()) => {
+                let _ = sqlx::query(
+                    "update runtime_sessions set status = 'stopping', updated_at = now() where agent_id = $1 and runtime = 'codex'",
+                )
+                .bind(agent_id)
+                .execute(&pool)
+                .await;
+                let _ = record_agent_activity(
+                    &pool,
+                    Some(agent_id),
+                    None,
+                    "run",
+                    "Codex warm app-server idle timeout",
+                    format!("sent SIGTERM to process_group={pid}"),
+                )
+                .await;
+            }
+            Err(err) => {
+                {
+                    let mut state = runtime.state.lock().await;
+                    state.alive = true;
+                    state.last_activity = Instant::now();
+                }
+                let _ = record_agent_activity(
+                    &pool,
+                    Some(agent_id),
+                    None,
+                    "run_error",
+                    "Codex warm app-server idle stop failed",
+                    err,
+                )
+                .await;
+            }
+        }
+        return;
+    }
+}
+
 async fn finish_warm_codex_active_turn(
     pool: &PgPool,
     agent_id: Uuid,
@@ -4784,6 +4979,7 @@ async fn finish_warm_codex_active_turn(
 ) -> CommandResult<()> {
     let active = {
         let mut state = runtime.state.lock().await;
+        state.last_activity = Instant::now();
         state.active.take()
     };
     let Some(active) = active else {
@@ -4894,472 +5090,10 @@ async fn finish_warm_codex_active_turn(
     Ok(())
 }
 
-#[allow(dead_code)]
-async fn wait_for_codex_streaming_run(
-    pool: PgPool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    work_item_id: Option<Uuid>,
-    handle: String,
-    model: String,
-    working_directory: String,
-    prompt: String,
-    channel_id: Option<Uuid>,
-    thread_root_id: Option<Uuid>,
-    stdin: tokio::process::ChildStdin,
-    stdout: tokio::process::ChildStdout,
-    stderr_task: Option<tokio::task::JoinHandle<()>>,
-    mut child: tokio::process::Child,
-) {
-    let result = run_codex_streaming_turn(
-        &pool,
-        agent_id,
-        run_id,
-        &handle,
-        &model,
-        &working_directory,
-        &prompt,
-        channel_id,
-        thread_root_id,
-        stdin,
-        stdout,
-    )
-    .await;
-
-    let success = result.is_ok();
-    if let Err(err) = &result {
-        let _ = append_run_log(&pool, run_id, format!("[codex] failed: {err}\n")).await;
-        let _ = record_agent_activity(
-            &pool,
-            Some(agent_id),
-            Some(run_id),
-            "run_error",
-            "Codex streaming run failed",
-            err,
-        )
-        .await;
-        let _ = finish_streaming_agent_messages_for_run(&pool, run_id, "error").await;
-        let _ = sqlx::query(
-            "update runtime_sessions set status = 'failed', updated_at = now() where agent_id = $1 and runtime = 'codex'",
-        )
-        .bind(agent_id)
-        .execute(&pool)
-        .await;
-    } else {
-        let _ = finish_streaming_agent_messages_for_run(&pool, run_id, "complete").await;
-    }
-
-    let _ = child.start_kill();
-    let wait_result = child.wait().await;
-    if let Some(stderr_task) = stderr_task {
-        let _ = stderr_task.await;
-    }
-
-    let (run_status, agent_status, exit_code, log_line) = if success {
-        (
-            "exited",
-            "idle",
-            Some(0),
-            "codex streaming turn completed\n".to_owned(),
-        )
-    } else {
-        (
-            "failed",
-            "error",
-            wait_result.ok().and_then(|status| status.code()),
-            "codex streaming turn failed\n".to_owned(),
-        )
-    };
-
-    let _ = sqlx::query(
-        r#"
-        update agent_runs
-        set status = $2,
-            exit_code = $3,
-            log = right(log || $4, 20000),
-            stopped_at = now()
-        where id = $1
-        "#,
-    )
-    .bind(run_id)
-    .bind(run_status)
-    .bind(exit_code)
-    .bind(&log_line)
-    .execute(&pool)
-    .await;
-
-    let _ = sqlx::query("update agents set status = $2 where id = $1")
-        .bind(agent_id)
-        .bind(agent_status)
-        .execute(&pool)
-        .await;
-
-    if let Some(work_item_id) = work_item_id {
-        let current_status: Option<String> =
-            sqlx::query_scalar("select status from agent_work_items where id = $1")
-                .bind(work_item_id)
-                .fetch_optional(&pool)
-                .await
-                .ok()
-                .flatten();
-        let work_status = if current_status.as_deref() == Some("cancelling") {
-            "cancelled"
-        } else if success {
-            "done"
-        } else {
-            "failed"
-        };
-        let _ = sqlx::query(
-            r#"
-            update agent_work_items
-            set status = $2,
-                completed_at = now(),
-                updated_at = now()
-            where id = $1
-            "#,
-        )
-        .bind(work_item_id)
-        .bind(work_status)
-        .execute(&pool)
-        .await;
-        let _ = record_agent_activity(
-            &pool,
-            Some(agent_id),
-            Some(run_id),
-            "dispatch",
-            format!("Work item {work_status}"),
-            work_item_id.to_string(),
-        )
-        .await;
-    }
-
-    let _ = record_agent_activity(
-        &pool,
-        Some(agent_id),
-        Some(run_id),
-        "run",
-        format!("Run {run_status}"),
-        log_line.trim(),
-    )
-    .await;
-    let _ = notify_supervisor_wake(&pool).await;
-    let _ = notify_ui_refresh(&pool, "run_finished").await;
-}
-
-#[allow(dead_code)]
-async fn run_codex_streaming_turn(
-    pool: &PgPool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    handle: &str,
-    model: &str,
-    working_directory: &str,
-    prompt: &str,
-    channel_id: Option<Uuid>,
-    thread_root_id: Option<Uuid>,
-    mut stdin: tokio::process::ChildStdin,
-    stdout: tokio::process::ChildStdout,
-) -> CommandResult<()> {
-    let cwd = if working_directory.trim().is_empty() {
-        env::current_dir()
-            .map_err(to_string)?
-            .to_string_lossy()
-            .to_string()
-    } else {
-        working_directory.trim().to_owned()
-    };
-    let developer_instructions = codex_developer_instructions(handle);
-    let model_value = if model.trim().is_empty() {
-        Value::Null
-    } else {
-        json!(model.trim())
-    };
-    let mut next_request_id = 1_i64;
-    let initialize_id = next_request_id;
-    next_request_id += 1;
-
-    codex_write_json(
-        &mut stdin,
-        json!({
-            "method": "initialize",
-            "id": initialize_id,
-            "params": {
-                "clientInfo": {
-                    "name": "localslock",
-                    "title": "LocalSlock",
-                    "version": env!("CARGO_PKG_VERSION")
-                },
-                "capabilities": {
-                    "experimentalApi": true
-                }
-            }
-        }),
-    )
-    .await?;
-    codex_write_json(&mut stdin, json!({ "method": "initialized" })).await?;
-
-    let mut thread_request_id = next_request_id;
-    next_request_id += 1;
-    let existing_thread_id = load_runtime_thread_id(pool, agent_id, "codex").await?;
-    let mut attempted_resume = existing_thread_id.is_some();
-    if let Some(thread_id) = existing_thread_id {
-        codex_write_json(
-            &mut stdin,
-            json!({
-                "method": "thread/resume",
-                "id": thread_request_id,
-                "params": {
-                    "threadId": thread_id.clone(),
-                    "model": model_value.clone(),
-                    "cwd": cwd.clone(),
-                    "approvalPolicy": "never",
-                    "sandbox": "danger-full-access",
-                    "developerInstructions": developer_instructions.clone(),
-                    "persistExtendedHistory": true
-                }
-            }),
-        )
-        .await?;
-        record_agent_activity(
-            pool,
-            Some(agent_id),
-            Some(run_id),
-            "run",
-            "Resuming Codex thread",
-            thread_id,
-        )
-        .await?;
-    } else {
-        codex_write_json(
-            &mut stdin,
-            json!({
-                "method": "thread/start",
-                "id": thread_request_id,
-                "params": {
-                    "model": model_value.clone(),
-                    "cwd": cwd.clone(),
-                    "approvalPolicy": "never",
-                    "sandbox": "danger-full-access",
-                    "developerInstructions": developer_instructions.clone(),
-                    "experimentalRawEvents": false,
-                    "persistExtendedHistory": true
-                }
-            }),
-        )
-        .await?;
-    }
-
-    let mut lines = BufReader::new(stdout).lines();
-    let mut thread_id: Option<String> = None;
-    let mut turn_request_id: Option<i64> = None;
-    let mut active_stream_items = HashSet::new();
-
-    while let Some(line) = lines.next_line().await.map_err(to_string)? {
-        append_run_log(pool, run_id, format!("[codex] {line}\n")).await?;
-        let value: Value = serde_json::from_str(&line).map_err(to_string)?;
-
-        if value.get("id").and_then(Value::as_i64) == Some(thread_request_id) {
-            if let Some(error) = codex_request_error(&value) {
-                if attempted_resume {
-                    append_run_log(
-                        pool,
-                        run_id,
-                        format!("[codex] resume failed, starting new thread: {error}\n"),
-                    )
-                    .await?;
-                    attempted_resume = false;
-                    thread_request_id = next_request_id;
-                    next_request_id += 1;
-                    codex_write_json(
-                        &mut stdin,
-                        json!({
-                            "method": "thread/start",
-                            "id": thread_request_id,
-                            "params": {
-                                "model": model_value.clone(),
-                                "cwd": cwd.clone(),
-                                "approvalPolicy": "never",
-                                "sandbox": "danger-full-access",
-                                "developerInstructions": developer_instructions.clone(),
-                                "experimentalRawEvents": false,
-                                "persistExtendedHistory": true
-                            }
-                        }),
-                    )
-                    .await?;
-                    continue;
-                }
-                return Err(format!("codex thread request failed: {error}"));
-            }
-
-            let Some(started_thread_id) = codex_thread_id_from_response(&value) else {
-                return Err("codex thread response missing thread id".to_owned());
-            };
-            upsert_runtime_thread_id(pool, agent_id, "codex", &started_thread_id, "running")
-                .await?;
-            thread_id = Some(started_thread_id.clone());
-            let request_id = next_request_id;
-            next_request_id += 1;
-            turn_request_id = Some(request_id);
-            codex_write_json(
-                &mut stdin,
-                json!({
-                    "method": "turn/start",
-                    "id": request_id,
-                    "params": {
-                        "threadId": started_thread_id,
-                        "input": [{
-                            "type": "text",
-                            "text": prompt,
-                            "text_elements": []
-                        }],
-                        "cwd": cwd.clone(),
-                        "approvalPolicy": "never",
-                        "model": model_value.clone()
-                    }
-                }),
-            )
-            .await?;
-            continue;
-        }
-
-        if let Some(request_id) = turn_request_id {
-            if value.get("id").and_then(Value::as_i64) == Some(request_id) {
-                if let Some(error) = codex_request_error(&value) {
-                    return Err(format!("codex turn request failed: {error}"));
-                }
-                continue;
-            }
-        }
-
-        let method = value.get("method").and_then(Value::as_str);
-        match method {
-            Some("item/agentMessage/delta") => {
-                let Some(channel_id) = channel_id else {
-                    continue;
-                };
-                let item_id = value
-                    .pointer("/params/itemId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("agent-message");
-                let delta = value
-                    .pointer("/params/delta")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if delta.is_empty() {
-                    continue;
-                }
-                let stream_key = codex_stream_key(run_id, item_id);
-                active_stream_items.insert(stream_key.clone());
-                append_streaming_agent_message(
-                    pool,
-                    agent_id,
-                    channel_id,
-                    thread_root_id,
-                    &stream_key,
-                    delta,
-                )
-                .await?;
-            }
-            Some("item/completed") if codex_item_type(&value) == Some("agentMessage") => {
-                let Some(channel_id) = channel_id else {
-                    continue;
-                };
-                let Some(item_id) = codex_item_id(&value) else {
-                    continue;
-                };
-                let stream_key = codex_stream_key(run_id, item_id);
-                let existing: Option<Uuid> =
-                    sqlx::query_scalar("select id from messages where stream_key = $1")
-                        .bind(&stream_key)
-                        .fetch_optional(pool)
-                        .await
-                        .map_err(to_string)?;
-                if existing.is_none() {
-                    if let Some(text) = value
-                        .pointer("/params/item/text")
-                        .and_then(Value::as_str)
-                        .filter(|text| !text.is_empty())
-                    {
-                        append_streaming_agent_message(
-                            pool,
-                            agent_id,
-                            channel_id,
-                            thread_root_id,
-                            &stream_key,
-                            text,
-                        )
-                        .await?;
-                    }
-                }
-                finish_streaming_agent_message(pool, &stream_key, "complete").await?;
-                active_stream_items.remove(&stream_key);
-            }
-            Some("item/started") => {
-                let item_type = codex_item_type(&value).unwrap_or("item");
-                let (kind, title) = match item_type {
-                    "reasoning" => ("thinking", "Thinking"),
-                    "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "webSearch"
-                    | "fileChange" => ("tools", "Using tools"),
-                    "agentMessage" => ("acting", "Writing response"),
-                    _ => ("activity", "Codex activity"),
-                };
-                record_agent_activity(
-                    pool,
-                    Some(agent_id),
-                    Some(run_id),
-                    kind,
-                    title,
-                    codex_item_summary(&value),
-                )
-                .await?;
-            }
-            Some("item/reasoning/textDelta") | Some("item/reasoning/summaryTextDelta") => {
-                if let Some(delta) = value.pointer("/params/delta").and_then(Value::as_str) {
-                    if !delta.trim().is_empty() {
-                        append_run_log(pool, run_id, format!("[thinking] {delta}\n")).await?;
-                    }
-                }
-            }
-            Some("turn/completed") => {
-                let completed_thread_id = value.pointer("/params/threadId").and_then(Value::as_str);
-                if thread_id
-                    .as_deref()
-                    .is_some_and(|id| Some(id) != completed_thread_id)
-                {
-                    continue;
-                }
-                for stream_key in active_stream_items {
-                    finish_streaming_agent_message(pool, &stream_key, "complete").await?;
-                }
-                upsert_runtime_thread_id(
-                    pool,
-                    agent_id,
-                    "codex",
-                    thread_id.as_deref().unwrap_or_default(),
-                    "idle",
-                )
-                .await?;
-                return Ok(());
-            }
-            Some("error") => {
-                let detail = value
-                    .pointer("/params/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("codex emitted error notification");
-                return Err(detail.to_owned());
-            }
-            _ => {}
-        }
-    }
-
-    Err("codex app-server closed before turn completed".to_owned())
-}
-
 async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
     let row = sqlx::query(
         r#"
-        select agent_id, pid
+        select agent_id, pid, work_item_id
         from agent_runs
         where id = $1 and stopped_at is null
         "#,
@@ -5371,6 +5105,7 @@ async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
 
     let agent_id: Uuid = row.get("agent_id");
     let pid: Option<i32> = row.get("pid");
+    let work_item_id: Option<Uuid> = row.get("work_item_id");
     let Some(pid) = pid else {
         return Err("agent run does not have a pid yet".to_owned());
     };
@@ -5385,17 +5120,22 @@ async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
         .execute(pool)
         .await
         .map_err(to_string)?;
-
-    let status = Command::new("kill")
-        .arg("-TERM")
-        .arg(format!("-{pid}"))
-        .status()
+    if let Some(work_item_id) = work_item_id {
+        sqlx::query(
+            r#"
+            update agent_work_items
+            set status = 'cancelling',
+                updated_at = now()
+            where id = $1 and status in ('queued', 'running')
+            "#,
+        )
+        .bind(work_item_id)
+        .execute(pool)
         .await
         .map_err(to_string)?;
-
-    if !status.success() {
-        return Err(format!("failed to terminate process group {pid}: {status}"));
     }
+
+    terminate_process_group(pid).await?;
 
     append_run_log(
         pool,
@@ -5610,10 +5350,11 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_streaming_agent_message, extract_agent_event_json, extract_agent_mentions,
-        finish_streaming_agent_message, insert_agent_message, load_messages,
-        load_runtime_thread_id, migrate, open_dm_with_agent_in_pool, send_owner_message_in_pool,
-        upsert_runtime_thread_id, DEFAULT_DATABASE_URL,
+        append_streaming_agent_message, capped_stream_delta, extract_agent_event_json,
+        extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
+        load_messages, load_runtime_thread_id, migrate, open_dm_with_agent_in_pool,
+        send_owner_message_in_pool, upsert_runtime_thread_id, DEFAULT_DATABASE_URL,
+        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
     use uuid::Uuid;
@@ -5664,6 +5405,16 @@ mod tests {
             r#"[stderr] Reply with: LOCAL_SLOCK_EVENT {"type":"message","body":"..."}"#
         )
         .is_none());
+    }
+
+    #[test]
+    fn caps_streaming_deltas_with_marker() {
+        let remaining = STREAMING_MESSAGE_BODY_LIMIT - 4;
+        let delta = "x".repeat(remaining + 16);
+        let (capped, truncated) = capped_stream_delta(&delta, 4);
+        assert!(truncated);
+        assert!(capped.ends_with(STREAMING_TRUNCATION_MARKER));
+        assert_eq!(capped.chars().count() + 4, STREAMING_MESSAGE_BODY_LIMIT);
     }
 
     async fn test_pool() -> Option<(PgPool, String)> {
