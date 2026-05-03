@@ -200,6 +200,16 @@ export function Conversation({
           {rootMessages.map((message) => {
             const linkedTask = taskForMessage(message.id);
             const replyCount = threadReplyCounts[message.id] ?? 0;
+            if (message.sender_role === "system") {
+              return (
+                <article key={message.id} className="system-message">
+                  <div className="system-message-line">
+                    <MessageMarkdown body={message.body} />
+                    <time>{formatTime(message.created_at)}</time>
+                  </div>
+                </article>
+              );
+            }
             return (
               <article
                 key={message.id}

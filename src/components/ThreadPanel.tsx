@@ -101,18 +101,27 @@ export function ThreadPanel({
 
       <section className="thread-focus">
         {activeRoot && (
-          <article className="thread-root">
-            <div className="meta">
-              <strong>{activeRoot.sender_name}</strong>
-              <time>{formatTime(activeRoot.created_at)}</time>
-            </div>
-            <MessageMarkdown body={activeRoot.body} />
-            <MessageAttachments attachments={activeRoot.attachments} />
-            {activeRoot.delivery_state === "streaming" && (
-              <div className="message-stream-state">Streaming response...</div>
-            )}
-            {activeRoot.delivery_state === "error" && (
-              <div className="message-stream-state error">Response interrupted</div>
+          <article className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""}`}>
+            {activeRoot.sender_role === "system" ? (
+              <div className="system-message-line">
+                <MessageMarkdown body={activeRoot.body} />
+                <time>{formatTime(activeRoot.created_at)}</time>
+              </div>
+            ) : (
+              <>
+                <div className="meta">
+                  <strong>{activeRoot.sender_name}</strong>
+                  <time>{formatTime(activeRoot.created_at)}</time>
+                </div>
+                <MessageMarkdown body={activeRoot.body} />
+                <MessageAttachments attachments={activeRoot.attachments} />
+                {activeRoot.delivery_state === "streaming" && (
+                  <div className="message-stream-state">Streaming response...</div>
+                )}
+                {activeRoot.delivery_state === "error" && (
+                  <div className="message-stream-state error">Response interrupted</div>
+                )}
+              </>
             )}
           </article>
         )}
@@ -163,6 +172,16 @@ export function ThreadPanel({
             </div>
           )}
           {replies.map((reply) => {
+            if (reply.sender_role === "system") {
+              return (
+                <article key={reply.id} className="system-message">
+                  <div className="system-message-line">
+                    <MessageMarkdown body={reply.body} />
+                    <time>{formatTime(reply.created_at)}</time>
+                  </div>
+                </article>
+              );
+            }
             return (
               <article key={reply.id}>
                 <div className="avatar tiny">{reply.sender_name.slice(0, 1)}</div>

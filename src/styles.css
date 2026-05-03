@@ -698,6 +698,41 @@ button,
   box-shadow: inset 3px 0 var(--accent);
 }
 
+.system-message {
+  margin: 2px 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.system-message-line {
+  display: inline-flex;
+  max-width: min(760px, 100%);
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(142, 142, 147, 0.12);
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.08);
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.system-message-line p {
+  margin: 0;
+  overflow: hidden;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-message-line time {
+  flex: 0 0 auto;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
 .meta {
   display: flex;
   flex-wrap: wrap;
@@ -1259,6 +1294,13 @@ body.resizing-column * {
   background: #fff;
 }
 
+.thread-root.system-message {
+  margin: 8px 12px 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .thread-task-card {
   display: grid;
   gap: 10px;
@@ -1296,6 +1338,15 @@ body.resizing-column * {
   transform: none;
   border-color: transparent;
   background: rgba(246, 247, 249, 0.92);
+}
+
+.reply-list article.system-message {
+  display: block;
+  padding: 4px 16px;
+}
+
+.reply-list article.system-message:hover {
+  background: transparent;
 }
 
 .reply-composer {
