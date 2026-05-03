@@ -16,7 +16,8 @@ Current implementation status:
 - Codex uses `codex app-server --listen stdio://` for real-time JSON output parsing.
 - LocalSlock streams `item/agentMessage/delta` into visible `messages` rows with `delivery_state = 'streaming'`.
 - Codex thread ids are persisted in `runtime_sessions` and resumed on the next work item.
-- The process is still per-work-item in this slice. The next warm-runtime slice should keep the app-server process resident and deliver queued work through `turn/start` / `turn/steer`.
+- The supervisor keeps one resident Codex app-server process per active agent and reuses it for queued work through `turn/start`.
+- Busy-turn `turn/steer`, idle timeout, and Claude stream-json are still follow-up slices.
 
 ## Non-Goals
 

@@ -1,10 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env, fs,
     path::PathBuf,
     process::{Command as StdCommand, Stdio},
+    sync::Arc,
     time::Duration,
 };
 
@@ -19,6 +20,7 @@ use tauri::{Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     process::Command,
+    sync::Mutex as AsyncMutex,
     time::sleep,
 };
 use uuid::Uuid;
@@ -35,6 +37,33 @@ const UI_REFRESH_EVENT: &str = "localslock://refresh";
 struct AppState {
     pool: PgPool,
     db_url: String,
+}
+
+#[derive(Clone, Default)]
+struct WarmCodexRegistry {
+    runtimes: Arc<AsyncMutex<HashMap<Uuid, Arc<WarmCodexRuntime>>>>,
+}
+
+struct WarmCodexRuntime {
+    stdin: AsyncMutex<tokio::process::ChildStdin>,
+    state: AsyncMutex<WarmCodexState>,
+    thread_id: String,
+    pid: Option<i32>,
+}
+
+struct WarmCodexState {
+    alive: bool,
+    active: Option<CodexActiveTurn>,
+    next_request_id: i64,
+}
+
+struct CodexActiveTurn {
+    run_id: Uuid,
+    turn_request_id: i64,
+    work_item_id: Option<Uuid>,
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+    stream_keys: HashSet<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3470,6 +3499,281 @@ fn codex_item_summary(value: &Value) -> String {
     }
 }
 
+fn effective_codex_cwd(working_directory: &str) -> CommandResult<String> {
+    if working_directory.trim().is_empty() {
+        Ok(env::current_dir()
+            .map_err(to_string)?
+            .to_string_lossy()
+            .to_string())
+    } else {
+        Ok(working_directory.trim().to_owned())
+    }
+}
+
+fn codex_model_value(model: &str) -> Value {
+    if model.trim().is_empty() {
+        Value::Null
+    } else {
+        json!(model.trim())
+    }
+}
+
+async fn get_or_spawn_warm_codex_runtime(
+    pool: &PgPool,
+    registry: &WarmCodexRegistry,
+    agent_id: Uuid,
+    handle: &str,
+    model: &str,
+    working_directory: &str,
+) -> CommandResult<Arc<WarmCodexRuntime>> {
+    if let Some(runtime) = {
+        let runtimes = registry.runtimes.lock().await;
+        runtimes.get(&agent_id).cloned()
+    } {
+        if runtime.state.lock().await.alive {
+            return Ok(runtime);
+        }
+        registry.runtimes.lock().await.remove(&agent_id);
+    }
+
+    let runtime = spawn_warm_codex_runtime(
+        pool,
+        registry.clone(),
+        agent_id,
+        handle,
+        model,
+        working_directory,
+    )
+    .await?;
+    registry
+        .runtimes
+        .lock()
+        .await
+        .insert(agent_id, runtime.clone());
+    Ok(runtime)
+}
+
+async fn spawn_warm_codex_runtime(
+    pool: &PgPool,
+    registry: WarmCodexRegistry,
+    agent_id: Uuid,
+    handle: &str,
+    model: &str,
+    working_directory: &str,
+) -> CommandResult<Arc<WarmCodexRuntime>> {
+    let cwd = effective_codex_cwd(working_directory)?;
+    let mut command = Command::new("/bin/zsh");
+    command
+        .arg("-lc")
+        .arg("exec codex app-server --listen stdio://");
+    command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
+    command.env("LOCAL_SLOCK_AGENT_HANDLE", handle);
+    #[cfg(unix)]
+    command.process_group(0);
+    command.current_dir(&cwd);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            sqlx::query("update agents set status = 'error' where id = $1")
+                .bind(agent_id)
+                .execute(pool)
+                .await
+                .map_err(to_string)?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "run_error",
+                "Codex warm app-server failed to start",
+                err.to_string(),
+            )
+            .await?;
+            return Err(err.to_string());
+        }
+    };
+
+    let pid = child.id().map(|id| id as i32);
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err("codex app-server stdin unavailable".to_owned());
+    };
+    let Some(stdout) = child.stdout.take() else {
+        return Err("codex app-server stdout unavailable".to_owned());
+    };
+    let stderr = child.stderr.take();
+    let mut reader = BufReader::new(stdout);
+    let developer_instructions = codex_developer_instructions(handle);
+    let model_value = codex_model_value(model);
+    let mut next_request_id = 1_i64;
+    let initialize_id = next_request_id;
+    next_request_id += 1;
+    let mut thread_request_id = next_request_id;
+    next_request_id += 1;
+
+    codex_write_json(
+        &mut stdin,
+        json!({
+            "method": "initialize",
+            "id": initialize_id,
+            "params": {
+                "clientInfo": {
+                    "name": "localslock",
+                    "title": "LocalSlock",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "capabilities": {
+                    "experimentalApi": true
+                }
+            }
+        }),
+    )
+    .await?;
+    codex_write_json(&mut stdin, json!({ "method": "initialized" })).await?;
+
+    let existing_thread_id = load_runtime_thread_id(pool, agent_id, "codex").await?;
+    let mut attempted_resume = existing_thread_id.is_some();
+    if let Some(thread_id) = existing_thread_id {
+        codex_write_json(
+            &mut stdin,
+            json!({
+                "method": "thread/resume",
+                "id": thread_request_id,
+                "params": {
+                    "threadId": thread_id.clone(),
+                    "model": model_value.clone(),
+                    "cwd": cwd.clone(),
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                    "developerInstructions": developer_instructions.clone(),
+                    "persistExtendedHistory": true
+                }
+            }),
+        )
+        .await?;
+    } else {
+        codex_write_json(
+            &mut stdin,
+            json!({
+                "method": "thread/start",
+                "id": thread_request_id,
+                "params": {
+                    "model": model_value.clone(),
+                    "cwd": cwd.clone(),
+                    "approvalPolicy": "never",
+                    "sandbox": "danger-full-access",
+                    "developerInstructions": developer_instructions.clone(),
+                    "experimentalRawEvents": false,
+                    "persistExtendedHistory": true
+                }
+            }),
+        )
+        .await?;
+    }
+
+    let thread_id = loop {
+        let mut line = String::new();
+        let bytes = reader.read_line(&mut line).await.map_err(to_string)?;
+        if bytes == 0 {
+            return Err("codex app-server closed during warm initialization".to_owned());
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        let value: Value = serde_json::from_str(line).map_err(to_string)?;
+        if value.get("id").and_then(Value::as_i64) == Some(thread_request_id) {
+            if let Some(error) = codex_request_error(&value) {
+                if attempted_resume {
+                    attempted_resume = false;
+                    thread_request_id = next_request_id;
+                    next_request_id += 1;
+                    codex_write_json(
+                        &mut stdin,
+                        json!({
+                            "method": "thread/start",
+                            "id": thread_request_id,
+                            "params": {
+                                "model": model_value.clone(),
+                                "cwd": cwd.clone(),
+                                "approvalPolicy": "never",
+                                "sandbox": "danger-full-access",
+                                "developerInstructions": developer_instructions.clone(),
+                                "experimentalRawEvents": false,
+                                "persistExtendedHistory": true
+                            }
+                        }),
+                    )
+                    .await?;
+                    record_agent_activity(
+                        pool,
+                        Some(agent_id),
+                        None,
+                        "run",
+                        "Codex thread resume failed; starting new thread",
+                        error,
+                    )
+                    .await?;
+                    continue;
+                }
+                return Err(format!("codex thread request failed: {error}"));
+            }
+            let Some(thread_id) = codex_thread_id_from_response(&value) else {
+                return Err("codex thread response missing thread id".to_owned());
+            };
+            break thread_id;
+        }
+    };
+
+    upsert_runtime_thread_id(pool, agent_id, "codex", &thread_id, "idle").await?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        None,
+        "run",
+        "Codex warm app-server ready",
+        pid.map(|pid| format!("pid={pid}, thread_id={thread_id}"))
+            .unwrap_or_else(|| format!("thread_id={thread_id}")),
+    )
+    .await?;
+
+    let runtime = Arc::new(WarmCodexRuntime {
+        stdin: AsyncMutex::new(stdin),
+        state: AsyncMutex::new(WarmCodexState {
+            alive: true,
+            active: None,
+            next_request_id,
+        }),
+        thread_id,
+        pid,
+    });
+
+    tokio::spawn(codex_warm_stdout_reader(
+        pool.clone(),
+        registry.clone(),
+        agent_id,
+        runtime.clone(),
+        reader,
+    ));
+    if let Some(stderr) = stderr {
+        tokio::spawn(codex_warm_stderr_reader(
+            pool.clone(),
+            agent_id,
+            runtime.clone(),
+            stderr,
+        ));
+    }
+    tokio::spawn(wait_for_warm_codex_process(
+        pool.clone(),
+        registry,
+        agent_id,
+        runtime.clone(),
+        child,
+    ));
+
+    Ok(runtime)
+}
+
 async fn run_supervisor() -> CommandResult<()> {
     let database_url = db_url();
     let pool = PgPoolOptions::new()
@@ -3490,6 +3794,7 @@ async fn run_supervisor() -> CommandResult<()> {
     }
 
     mark_orphaned_agent_runs(&pool).await?;
+    let codex_registry = WarmCodexRegistry::default();
     let mut listener = PgListener::connect(&database_url)
         .await
         .map_err(to_string)?;
@@ -3505,7 +3810,7 @@ async fn run_supervisor() -> CommandResult<()> {
         while let Some(command) = claim_next_supervisor_command(&pool).await? {
             processed_command = true;
             let command_id = command.id;
-            let result = process_supervisor_command(&pool, command).await;
+            let result = process_supervisor_command(&pool, &codex_registry, command).await;
             finish_supervisor_command(&pool, command_id, result.err()).await?;
         }
         if processed_command {
@@ -3682,6 +3987,7 @@ async fn finish_supervisor_command(
 
 async fn process_supervisor_command(
     pool: &PgPool,
+    codex_registry: &WarmCodexRegistry,
     command: SupervisorCommand,
 ) -> CommandResult<()> {
     match command.command_type.as_str() {
@@ -3689,7 +3995,7 @@ async fn process_supervisor_command(
             let Some(agent_id) = command.agent_id else {
                 return Err("start_agent command missing agent_id".to_owned());
             };
-            supervisor_start_agent(pool, agent_id, command.work_item_id).await
+            supervisor_start_agent(pool, codex_registry, agent_id, command.work_item_id).await
         }
         "stop_run" => {
             let Some(run_id) = command.run_id else {
@@ -3703,6 +4009,7 @@ async fn process_supervisor_command(
 
 async fn supervisor_start_codex_streaming_agent(
     pool: &PgPool,
+    codex_registry: &WarmCodexRegistry,
     agent_id: Uuid,
     work_item_id: Option<Uuid>,
     handle: String,
@@ -3712,10 +4019,43 @@ async fn supervisor_start_codex_streaming_agent(
 ) -> CommandResult<()> {
     let command_text = "codex app-server --listen stdio://".to_owned();
     let codex_prompt = build_codex_streaming_prompt(&work_item_prompt);
+    let runtime = get_or_spawn_warm_codex_runtime(
+        pool,
+        codex_registry,
+        agent_id,
+        &handle,
+        &model,
+        &working_directory,
+    )
+    .await?;
+
+    {
+        let state = runtime.state.lock().await;
+        if !state.alive {
+            return Err("codex warm runtime is not alive".to_owned());
+        }
+        if state.active.is_some() {
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "dispatch",
+                "Codex runtime busy",
+                work_item_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "no work item".to_owned()),
+            )
+            .await?;
+            return Ok(());
+        }
+    }
+
     let initial_log = if codex_prompt.is_empty() {
-        format!("$ {command_text}\n")
+        format!("$ {command_text}\n[warm process reused]\n")
     } else {
-        format!("$ {command_text}\n\n[streaming work item]\n{codex_prompt}\n")
+        format!(
+            "$ {command_text}\n[warm process reused]\n\n[streaming work item]\n{codex_prompt}\n"
+        )
     };
 
     let run_id: Uuid = sqlx::query_scalar(
@@ -3734,7 +4074,7 @@ async fn supervisor_start_codex_streaming_agent(
     .await
     .map_err(to_string)?;
 
-    let target = if let Some(work_item_id) = work_item_id {
+    let (channel_id, thread_root_id) = if let Some(work_item_id) = work_item_id {
         let row = sqlx::query(
             r#"
             select channel_id, thread_root_id
@@ -3778,92 +4118,9 @@ async fn supervisor_start_codex_streaming_agent(
         (None, None)
     };
 
-    record_agent_activity(
-        pool,
-        Some(agent_id),
-        Some(run_id),
-        "run",
-        "Codex JSON stream run created",
-        "Supervisor is preparing codex app-server",
-    )
-    .await?;
-
-    let mut command = Command::new("/bin/zsh");
-    command
-        .arg("-lc")
-        .arg("exec codex app-server --listen stdio://");
-    command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
-    command.env("LOCAL_SLOCK_AGENT_HANDLE", &handle);
-    command.env("LOCAL_SLOCK_RUN_ID", run_id.to_string());
-    command.env(
-        "LOCAL_SLOCK_WORK_ITEM_ID",
-        work_item_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(String::new),
-    );
-    #[cfg(unix)]
-    command.process_group(0);
-    if !working_directory.is_empty() {
-        command.current_dir(&working_directory);
-    }
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            let error_log = format!("failed to start codex app-server: {err}\n");
-            sqlx::query(
-                r#"
-                update agent_runs
-                set status = 'failed', log = right(log || $2, 20000), stopped_at = now()
-                where id = $1
-                "#,
-            )
-            .bind(run_id)
-            .bind(error_log)
-            .execute(pool)
-            .await
-            .map_err(to_string)?;
-            sqlx::query("update agents set status = 'error' where id = $1")
-                .bind(agent_id)
-                .execute(pool)
-                .await
-                .map_err(to_string)?;
-            if let Some(work_item_id) = work_item_id {
-                sqlx::query(
-                    r#"
-                    update agent_work_items
-                    set status = 'failed',
-                        completed_at = now(),
-                        updated_at = now()
-                    where id = $1
-                    "#,
-                )
-                .bind(work_item_id)
-                .execute(pool)
-                .await
-                .map_err(to_string)?;
-            }
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "run_error",
-                "Codex app-server failed to start",
-                err.to_string(),
-            )
-            .await?;
-            return Err(err.to_string());
-        }
-    };
-
-    let pid = child.id().map(|id| id as i32);
     sqlx::query("update agent_runs set status = 'running', pid = $2 where id = $1")
         .bind(run_id)
-        .bind(pid)
+        .bind(runtime.pid)
         .execute(pool)
         .await
         .map_err(to_string)?;
@@ -3877,51 +4134,71 @@ async fn supervisor_start_codex_streaming_agent(
         Some(agent_id),
         Some(run_id),
         "run",
-        "Codex app-server started",
-        pid.map(|pid| format!("pid={pid}"))
-            .unwrap_or_else(|| "pid unavailable".to_owned()),
+        "Codex warm turn started",
+        runtime
+            .pid
+            .map(|pid| format!("pid={pid}, thread_id={}", runtime.thread_id))
+            .unwrap_or_else(|| format!("thread_id={}", runtime.thread_id)),
     )
     .await?;
 
-    let Some(stdin) = child.stdin.take() else {
-        return Err("codex app-server stdin unavailable".to_owned());
-    };
-    let Some(stdout) = child.stdout.take() else {
-        return Err("codex app-server stdout unavailable".to_owned());
-    };
-    let stderr_task = child.stderr.take().map(|stderr| {
-        tokio::spawn(pipe_run_output(
-            pool.clone(),
-            agent_id,
+    let request_id = {
+        let mut state = runtime.state.lock().await;
+        if !state.alive {
+            return Err("codex warm runtime exited before turn start".to_owned());
+        }
+        if state.active.is_some() {
+            return Err("codex warm runtime became busy before turn start".to_owned());
+        }
+        let request_id = state.next_request_id;
+        state.next_request_id += 1;
+        state.active = Some(CodexActiveTurn {
             run_id,
-            stderr,
-            "stderr",
-            false,
-        ))
-    });
+            turn_request_id: request_id,
+            work_item_id,
+            channel_id,
+            thread_root_id,
+            stream_keys: HashSet::new(),
+        });
+        request_id
+    };
 
-    tokio::spawn(wait_for_codex_streaming_run(
-        pool.clone(),
-        agent_id,
-        run_id,
-        work_item_id,
-        handle,
-        model,
-        working_directory,
-        codex_prompt,
-        target.0,
-        target.1,
-        stdin,
-        stdout,
-        stderr_task,
-        child,
-    ));
+    let cwd = effective_codex_cwd(&working_directory)?;
+    let model_value = codex_model_value(&model);
+    let write_result = {
+        let mut stdin = runtime.stdin.lock().await;
+        codex_write_json(
+            &mut stdin,
+            json!({
+                "method": "turn/start",
+                "id": request_id,
+                "params": {
+                    "threadId": runtime.thread_id.clone(),
+                    "input": [{
+                        "type": "text",
+                        "text": codex_prompt,
+                        "text_elements": []
+                    }],
+                    "cwd": cwd,
+                    "approvalPolicy": "never",
+                    "model": model_value
+                }
+            }),
+        )
+        .await
+    };
+
+    if let Err(err) = write_result {
+        finish_warm_codex_active_turn(pool, agent_id, &runtime, false, Some(err.clone())).await?;
+        return Err(err);
+    }
 
     Ok(())
 }
 
 async fn supervisor_start_agent(
     pool: &PgPool,
+    codex_registry: &WarmCodexRegistry,
     agent_id: Uuid,
     work_item_id: Option<Uuid>,
 ) -> CommandResult<()> {
@@ -4003,6 +4280,7 @@ async fn supervisor_start_agent(
     if runtime.eq_ignore_ascii_case("codex") {
         return supervisor_start_codex_streaming_agent(
             pool,
+            codex_registry,
             agent_id,
             work_item_id,
             handle,
@@ -4194,6 +4472,429 @@ async fn supervisor_start_agent(
     Ok(())
 }
 
+async fn codex_warm_stdout_reader(
+    pool: PgPool,
+    registry: WarmCodexRegistry,
+    agent_id: Uuid,
+    runtime: Arc<WarmCodexRuntime>,
+    reader: BufReader<tokio::process::ChildStdout>,
+) {
+    let mut lines = reader.lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                if let Err(err) =
+                    handle_codex_warm_stdout_line(&pool, agent_id, &runtime, &line).await
+                {
+                    let _ = record_agent_activity(
+                        &pool,
+                        Some(agent_id),
+                        None,
+                        "run_error",
+                        "Codex stream event failed",
+                        err,
+                    )
+                    .await;
+                }
+            }
+            Ok(None) => break,
+            Err(err) => {
+                let _ = record_agent_activity(
+                    &pool,
+                    Some(agent_id),
+                    None,
+                    "run_error",
+                    "Codex stdout read failed",
+                    err.to_string(),
+                )
+                .await;
+                break;
+            }
+        }
+    }
+
+    {
+        let mut state = runtime.state.lock().await;
+        state.alive = false;
+    }
+    let _ = finish_warm_codex_active_turn(
+        &pool,
+        agent_id,
+        &runtime,
+        false,
+        Some("stdout closed".into()),
+    )
+    .await;
+    remove_warm_codex_runtime_if_same(&registry, agent_id, &runtime).await;
+}
+
+async fn handle_codex_warm_stdout_line(
+    pool: &PgPool,
+    agent_id: Uuid,
+    runtime: &Arc<WarmCodexRuntime>,
+    line: &str,
+) -> CommandResult<()> {
+    let value: Value = serde_json::from_str(line).map_err(to_string)?;
+    let active_run_id = {
+        runtime
+            .state
+            .lock()
+            .await
+            .active
+            .as_ref()
+            .map(|active| active.run_id)
+    };
+    if let Some(run_id) = active_run_id {
+        append_run_log(pool, run_id, format!("[codex] {line}\n")).await?;
+    }
+
+    let active_turn_request_id = {
+        runtime
+            .state
+            .lock()
+            .await
+            .active
+            .as_ref()
+            .map(|active| active.turn_request_id)
+    };
+    if let Some(request_id) = active_turn_request_id {
+        if value.get("id").and_then(Value::as_i64) == Some(request_id) {
+            if let Some(error) = codex_request_error(&value) {
+                finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(error)).await?;
+            }
+            return Ok(());
+        }
+    }
+
+    match value.get("method").and_then(Value::as_str) {
+        Some("item/agentMessage/delta") => {
+            let item_id = value
+                .pointer("/params/itemId")
+                .and_then(Value::as_str)
+                .unwrap_or("agent-message");
+            let delta = value
+                .pointer("/params/delta")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if delta.is_empty() {
+                return Ok(());
+            }
+            let active = {
+                let mut state = runtime.state.lock().await;
+                let Some(active) = state.active.as_mut() else {
+                    return Ok(());
+                };
+                let stream_key = codex_stream_key(active.run_id, item_id);
+                active.stream_keys.insert(stream_key.clone());
+                (
+                    active.run_id,
+                    active.channel_id,
+                    active.thread_root_id,
+                    stream_key,
+                )
+            };
+            if let Some(channel_id) = active.1 {
+                append_streaming_agent_message(
+                    pool, agent_id, channel_id, active.2, &active.3, delta,
+                )
+                .await?;
+            }
+        }
+        Some("item/completed") if codex_item_type(&value) == Some("agentMessage") => {
+            let Some(item_id) = codex_item_id(&value) else {
+                return Ok(());
+            };
+            let active = {
+                let mut state = runtime.state.lock().await;
+                let Some(active) = state.active.as_mut() else {
+                    return Ok(());
+                };
+                let stream_key = codex_stream_key(active.run_id, item_id);
+                active.stream_keys.remove(&stream_key);
+                (
+                    active.run_id,
+                    active.channel_id,
+                    active.thread_root_id,
+                    stream_key,
+                )
+            };
+            if let Some(channel_id) = active.1 {
+                let existing: Option<Uuid> =
+                    sqlx::query_scalar("select id from messages where stream_key = $1")
+                        .bind(&active.3)
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(to_string)?;
+                if existing.is_none() {
+                    if let Some(text) = value
+                        .pointer("/params/item/text")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                    {
+                        append_streaming_agent_message(
+                            pool, agent_id, channel_id, active.2, &active.3, text,
+                        )
+                        .await?;
+                    }
+                }
+                finish_streaming_agent_message(pool, &active.3, "complete").await?;
+            }
+        }
+        Some("item/started") => {
+            let Some(run_id) = active_run_id else {
+                return Ok(());
+            };
+            let item_type = codex_item_type(&value).unwrap_or("item");
+            let (kind, title) = match item_type {
+                "reasoning" => ("thinking", "Thinking"),
+                "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "webSearch"
+                | "fileChange" => ("tools", "Using tools"),
+                "agentMessage" => ("acting", "Writing response"),
+                _ => ("activity", "Codex activity"),
+            };
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                kind,
+                title,
+                codex_item_summary(&value),
+            )
+            .await?;
+        }
+        Some("item/reasoning/textDelta") | Some("item/reasoning/summaryTextDelta") => {
+            let Some(run_id) = active_run_id else {
+                return Ok(());
+            };
+            if let Some(delta) = value.pointer("/params/delta").and_then(Value::as_str) {
+                if !delta.trim().is_empty() {
+                    append_run_log(pool, run_id, format!("[thinking] {delta}\n")).await?;
+                }
+            }
+        }
+        Some("turn/completed") => {
+            if value.pointer("/params/threadId").and_then(Value::as_str)
+                == Some(runtime.thread_id.as_str())
+            {
+                finish_warm_codex_active_turn(pool, agent_id, runtime, true, None).await?;
+            }
+        }
+        Some("error") => {
+            let detail = value
+                .pointer("/params/message")
+                .and_then(Value::as_str)
+                .unwrap_or("codex emitted error notification")
+                .to_owned();
+            finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(detail)).await?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+async fn codex_warm_stderr_reader<R>(
+    pool: PgPool,
+    agent_id: Uuid,
+    runtime: Arc<WarmCodexRuntime>,
+    stream: R,
+) where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(stream).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let active_run_id = {
+            runtime
+                .state
+                .lock()
+                .await
+                .active
+                .as_ref()
+                .map(|active| active.run_id)
+        };
+        if let Some(run_id) = active_run_id {
+            let _ = append_run_log(&pool, run_id, format!("[stderr] {line}\n")).await;
+            if let Some((kind, title, detail)) = classify_agent_output_activity("stderr", &line) {
+                let _ =
+                    record_agent_activity(&pool, Some(agent_id), Some(run_id), kind, title, detail)
+                        .await;
+            }
+        }
+    }
+}
+
+async fn wait_for_warm_codex_process(
+    pool: PgPool,
+    registry: WarmCodexRegistry,
+    agent_id: Uuid,
+    runtime: Arc<WarmCodexRuntime>,
+    mut child: tokio::process::Child,
+) {
+    let wait_result = child.wait().await;
+    {
+        let mut state = runtime.state.lock().await;
+        state.alive = false;
+    }
+    let detail = match wait_result {
+        Ok(status) => format!("codex app-server exited: {status}"),
+        Err(err) => format!("codex app-server wait failed: {err}"),
+    };
+    let _ =
+        finish_warm_codex_active_turn(&pool, agent_id, &runtime, false, Some(detail.clone())).await;
+    let _ = sqlx::query(
+        "update runtime_sessions set status = 'stopped', updated_at = now() where agent_id = $1 and runtime = 'codex'",
+    )
+    .bind(agent_id)
+    .execute(&pool)
+    .await;
+    let _ = record_agent_activity(
+        &pool,
+        Some(agent_id),
+        None,
+        "run",
+        "Codex warm app-server exited",
+        detail,
+    )
+    .await;
+    remove_warm_codex_runtime_if_same(&registry, agent_id, &runtime).await;
+    let _ = notify_supervisor_wake(&pool).await;
+}
+
+async fn remove_warm_codex_runtime_if_same(
+    registry: &WarmCodexRegistry,
+    agent_id: Uuid,
+    runtime: &Arc<WarmCodexRuntime>,
+) {
+    let mut runtimes = registry.runtimes.lock().await;
+    if runtimes
+        .get(&agent_id)
+        .map(|current| Arc::ptr_eq(current, runtime))
+        .unwrap_or(false)
+    {
+        runtimes.remove(&agent_id);
+    }
+}
+
+async fn finish_warm_codex_active_turn(
+    pool: &PgPool,
+    agent_id: Uuid,
+    runtime: &Arc<WarmCodexRuntime>,
+    success: bool,
+    error: Option<String>,
+) -> CommandResult<()> {
+    let active = {
+        let mut state = runtime.state.lock().await;
+        state.active.take()
+    };
+    let Some(active) = active else {
+        return Ok(());
+    };
+
+    for stream_key in active.stream_keys {
+        finish_streaming_agent_message(
+            pool,
+            &stream_key,
+            if success { "complete" } else { "error" },
+        )
+        .await?;
+    }
+
+    let run_status = if success { "exited" } else { "failed" };
+    let agent_status = if success { "idle" } else { "error" };
+    let log_line = error
+        .as_ref()
+        .map(|error| format!("codex warm turn failed: {error}\n"))
+        .unwrap_or_else(|| "codex warm turn completed\n".to_owned());
+    sqlx::query(
+        r#"
+        update agent_runs
+        set status = $2,
+            exit_code = null,
+            log = right(log || $3, 20000),
+            stopped_at = now()
+        where id = $1
+        "#,
+    )
+    .bind(active.run_id)
+    .bind(run_status)
+    .bind(&log_line)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    sqlx::query("update agents set status = $2 where id = $1")
+        .bind(agent_id)
+        .bind(agent_status)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+
+    if let Some(work_item_id) = active.work_item_id {
+        let current_status: Option<String> =
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?;
+        let work_status = if current_status.as_deref() == Some("cancelling") {
+            "cancelled"
+        } else if success {
+            "done"
+        } else {
+            "failed"
+        };
+        sqlx::query(
+            r#"
+            update agent_work_items
+            set status = $2,
+                completed_at = now(),
+                updated_at = now()
+            where id = $1
+            "#,
+        )
+        .bind(work_item_id)
+        .bind(work_status)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            Some(active.run_id),
+            "dispatch",
+            format!("Work item {work_status}"),
+            work_item_id.to_string(),
+        )
+        .await?;
+    }
+
+    upsert_runtime_thread_id(
+        pool,
+        agent_id,
+        "codex",
+        &runtime.thread_id,
+        if success { "idle" } else { "failed" },
+    )
+    .await?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(active.run_id),
+        if success { "run" } else { "run_error" },
+        if success {
+            "Codex warm turn completed"
+        } else {
+            "Codex warm turn failed"
+        },
+        log_line.trim(),
+    )
+    .await?;
+    let _ = notify_supervisor_wake(pool).await;
+    let _ = notify_ui_refresh(pool, "codex_turn_finished").await;
+    Ok(())
+}
+
+#[allow(dead_code)]
 async fn wait_for_codex_streaming_run(
     pool: PgPool,
     agent_id: Uuid,
@@ -4345,6 +5046,7 @@ async fn wait_for_codex_streaming_run(
     let _ = notify_ui_refresh(&pool, "run_finished").await;
 }
 
+#[allow(dead_code)]
 async fn run_codex_streaming_turn(
     pool: &PgPool,
     agent_id: Uuid,
