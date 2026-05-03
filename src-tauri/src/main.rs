@@ -172,6 +172,21 @@ struct AgentRun {
 }
 
 #[derive(Debug, Serialize)]
+struct AgentRunPatch {
+    id: Uuid,
+    agent_id: Uuid,
+    agent_handle: String,
+    work_item_id: Option<Uuid>,
+    command: String,
+    working_directory: String,
+    status: String,
+    pid: Option<i32>,
+    exit_code: Option<i32>,
+    started_at: DateTime<Utc>,
+    stopped_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
 struct AgentActivity {
     id: Uuid,
     agent_id: Option<Uuid>,
@@ -196,6 +211,25 @@ struct AgentWorkItem {
     task_number: Option<i64>,
     title: String,
     context: String,
+    status: String,
+    run_id: Option<Uuid>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentWorkItemPatch {
+    id: Uuid,
+    agent_id: Uuid,
+    agent_handle: String,
+    channel_id: Option<Uuid>,
+    channel_name: Option<String>,
+    thread_root_id: Option<Uuid>,
+    source_message_id: Option<Uuid>,
+    task_id: Option<Uuid>,
+    task_number: Option<i64>,
+    title: String,
     status: String,
     run_id: Option<Uuid>,
     created_at: DateTime<Utc>,
@@ -314,6 +348,49 @@ async fn notify_ui_activity_upsert(
         &json!({ "type": "activity_upsert", "reason": reason, "activity": activity }).to_string(),
     )
     .await
+}
+
+async fn notify_ui_agent_run_upsert(
+    pool: &PgPool,
+    run: &AgentRunPatch,
+    reason: &str,
+) -> CommandResult<()> {
+    notify_postgres(
+        pool,
+        UI_REFRESH_CHANNEL,
+        &json!({ "type": "agent_run_upsert", "reason": reason, "run": run }).to_string(),
+    )
+    .await
+}
+
+async fn notify_ui_work_item_upsert(
+    pool: &PgPool,
+    work_item: &AgentWorkItemPatch,
+    reason: &str,
+) -> CommandResult<()> {
+    notify_postgres(
+        pool,
+        UI_REFRESH_CHANNEL,
+        &json!({ "type": "work_item_upsert", "reason": reason, "work_item": work_item })
+            .to_string(),
+    )
+    .await
+}
+
+async fn notify_ui_agent_run_changed(pool: &PgPool, run_id: Uuid, reason: &str) {
+    if let Ok(run) = load_agent_run_patch(pool, run_id).await {
+        let _ = notify_ui_agent_run_upsert(pool, &run, reason).await;
+    } else {
+        let _ = notify_ui_refresh(pool, reason).await;
+    }
+}
+
+async fn notify_ui_work_item_changed(pool: &PgPool, work_item_id: Uuid, reason: &str) {
+    if let Ok(work_item) = load_agent_work_item_patch(pool, work_item_id).await {
+        let _ = notify_ui_work_item_upsert(pool, &work_item, reason).await;
+    } else {
+        let _ = notify_ui_refresh(pool, reason).await;
+    }
 }
 
 async fn notify_supervisor_wake(pool: &PgPool) -> CommandResult<()> {
@@ -1267,6 +1344,7 @@ async fn dispatch_agent_work(
     .fetch_one(&state.pool)
     .await
     .map_err(to_string)?;
+    notify_ui_work_item_changed(&state.pool, work_item_id, "work_item_created").await;
 
     if let Some(task_id) = task_id {
         sqlx::query(
@@ -1335,6 +1413,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
             .execute(&state.pool)
             .await
             .map_err(to_string)?;
+            notify_ui_work_item_changed(&state.pool, work_item_id, "work_item_cancelled").await;
             sqlx::query(
                 r#"
                 update supervisor_commands
@@ -1365,6 +1444,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
             .execute(&state.pool)
             .await
             .map_err(to_string)?;
+            notify_ui_work_item_changed(&state.pool, work_item_id, "work_item_cancelling").await;
             let pending_stop: Option<Uuid> = sqlx::query_scalar(
                 r#"
                 select id
@@ -1453,6 +1533,7 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     .fetch_one(&state.pool)
     .await
     .map_err(to_string)?;
+    notify_ui_work_item_changed(&state.pool, new_work_item_id, "work_item_created").await;
 
     let scheduled =
         enqueue_agent_work_if_available(&state.pool, agent_id, new_work_item_id).await?;
@@ -1730,6 +1811,7 @@ async fn queue_mentions_as_work_items(
         .fetch_one(pool)
         .await
         .map_err(to_string)?;
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_created").await;
         let scheduled = enqueue_agent_work_if_available(pool, agent_id, work_item_id).await?;
         record_agent_activity(
             pool,
@@ -1860,6 +1942,7 @@ async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<(
         .execute(&state.pool)
         .await
         .map_err(to_string)?;
+    notify_ui_agent_run_changed(&state.pool, run_id, "run_stopping").await;
     sqlx::query("update agents set status = 'stopping' where id = $1")
         .bind(agent_id)
         .execute(&state.pool)
@@ -2481,6 +2564,46 @@ async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
         .collect())
 }
 
+async fn load_agent_run_patch(pool: &PgPool, run_id: Uuid) -> CommandResult<AgentRunPatch> {
+    let row = sqlx::query(
+        r#"
+        select
+            r.id,
+            r.agent_id,
+            a.handle as agent_handle,
+            r.work_item_id,
+            r.command,
+            r.working_directory,
+            r.status,
+            r.pid,
+            r.exit_code,
+            r.started_at,
+            r.stopped_at
+        from agent_runs r
+        join agents a on a.id = r.agent_id
+        where r.id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(AgentRunPatch {
+        id: row.get("id"),
+        agent_id: row.get("agent_id"),
+        agent_handle: row.get("agent_handle"),
+        work_item_id: row.get("work_item_id"),
+        command: row.get("command"),
+        working_directory: row.get("working_directory"),
+        status: row.get("status"),
+        pid: row.get("pid"),
+        exit_code: row.get("exit_code"),
+        started_at: row.get("started_at"),
+        stopped_at: row.get("stopped_at"),
+    })
+}
+
 async fn load_agent_work_items(pool: &PgPool) -> CommandResult<Vec<AgentWorkItem>> {
     let rows = sqlx::query(
         r#"
@@ -2534,6 +2657,59 @@ async fn load_agent_work_items(pool: &PgPool) -> CommandResult<Vec<AgentWorkItem
             completed_at: row.get("completed_at"),
         })
         .collect())
+}
+
+async fn load_agent_work_item_patch(
+    pool: &PgPool,
+    work_item_id: Uuid,
+) -> CommandResult<AgentWorkItemPatch> {
+    let row = sqlx::query(
+        r#"
+        select
+            w.id,
+            w.agent_id,
+            a.handle as agent_handle,
+            w.channel_id,
+            c.name as channel_name,
+            w.thread_root_id,
+            w.source_message_id,
+            w.task_id,
+            t.number as task_number,
+            w.title,
+            w.status,
+            w.run_id,
+            w.created_at,
+            w.updated_at,
+            w.completed_at
+        from agent_work_items w
+        join agents a on a.id = w.agent_id
+        left join channels c on c.id = w.channel_id
+        left join tasks t on t.id = w.task_id
+        where w.id = $1
+        "#,
+    )
+    .bind(work_item_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(AgentWorkItemPatch {
+        id: row.get("id"),
+        agent_id: row.get("agent_id"),
+        agent_handle: row.get("agent_handle"),
+        channel_id: row.get("channel_id"),
+        channel_name: row.get("channel_name"),
+        thread_root_id: row.get("thread_root_id"),
+        source_message_id: row.get("source_message_id"),
+        task_id: row.get("task_id"),
+        task_number: row.get("task_number"),
+        title: row.get("title"),
+        status: row.get("status"),
+        run_id: row.get("run_id"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+        completed_at: row.get("completed_at"),
+    })
 }
 
 async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity>> {
@@ -3654,6 +3830,7 @@ async fn wait_for_agent_run(
     .bind(&log_line)
     .execute(&pool)
     .await;
+    notify_ui_agent_run_changed(&pool, run_id, "run_finished").await;
 
     let _ = sqlx::query("update agents set status = $2 where id = $1")
         .bind(agent_id)
@@ -3689,6 +3866,7 @@ async fn wait_for_agent_run(
         .bind(work_status)
         .execute(&pool)
         .await;
+        notify_ui_work_item_changed(&pool, work_item_id, "work_item_finished").await;
         let _ = record_agent_activity(
             &pool,
             Some(agent_id),
@@ -4082,6 +4260,7 @@ async fn mark_claude_streaming_error(
     .execute(pool)
     .await
     .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, run_id, "run_failed").await;
     record_agent_activity(
         pool,
         Some(agent_id),
@@ -4775,6 +4954,7 @@ async fn steer_warm_codex_turn_if_same_surface(
     .execute(pool)
     .await
     .map_err(to_string)?;
+    notify_ui_work_item_changed(pool, work_item_id, "work_item_running").await;
 
     let write_result = {
         let mut stdin = runtime.stdin.lock().await;
@@ -4817,6 +4997,7 @@ async fn steer_warm_codex_turn_if_same_surface(
         .execute(pool)
         .await
         .map_err(to_string)?;
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_queued").await;
         return Err(err);
     }
 
@@ -4835,7 +5016,6 @@ async fn steer_warm_codex_turn_if_same_surface(
         work_item_id.to_string(),
     )
     .await?;
-    let _ = notify_ui_refresh(pool, "codex_turn_steer").await;
     Ok(true)
 }
 
@@ -4919,6 +5099,7 @@ async fn supervisor_start_codex_streaming_agent(
     .fetch_one(pool)
     .await
     .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, run_id, "run_created").await;
 
     let (channel_id, thread_root_id) = if let Some(work_item_id) = work_item_id {
         let row = sqlx::query(
@@ -4947,6 +5128,7 @@ async fn supervisor_start_codex_streaming_agent(
         .execute(pool)
         .await
         .map_err(to_string)?;
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_running").await;
         record_agent_activity(
             pool,
             Some(agent_id),
@@ -4970,6 +5152,7 @@ async fn supervisor_start_codex_streaming_agent(
         .execute(pool)
         .await
         .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, run_id, "run_running").await;
     sqlx::query("update agents set status = 'running' where id = $1")
         .bind(agent_id)
         .execute(pool)
@@ -5087,6 +5270,7 @@ async fn supervisor_start_claude_streaming_agent(
     .fetch_one(pool)
     .await
     .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, run_id, "run_created").await;
 
     let (channel_id, thread_root_id) = if let Some(work_item_id) = work_item_id {
         let row = sqlx::query(
@@ -5115,6 +5299,7 @@ async fn supervisor_start_claude_streaming_agent(
         .execute(pool)
         .await
         .map_err(to_string)?;
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_running").await;
         record_agent_activity(
             pool,
             Some(agent_id),
@@ -5190,6 +5375,7 @@ async fn supervisor_start_claude_streaming_agent(
             .execute(pool)
             .await
             .map_err(to_string)?;
+            notify_ui_agent_run_changed(pool, run_id, "run_failed").await;
             sqlx::query("update agents set status = 'error' where id = $1")
                 .bind(agent_id)
                 .execute(pool)
@@ -5209,6 +5395,7 @@ async fn supervisor_start_claude_streaming_agent(
                 .execute(pool)
                 .await
                 .map_err(to_string)?;
+                notify_ui_work_item_changed(pool, work_item_id, "work_item_failed").await;
             }
             record_agent_activity(
                 pool,
@@ -5230,6 +5417,7 @@ async fn supervisor_start_claude_streaming_agent(
         .execute(pool)
         .await
         .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, run_id, "run_running").await;
     sqlx::query("update agents set status = 'running' where id = $1")
         .bind(agent_id)
         .execute(pool)
@@ -5441,6 +5629,7 @@ async fn supervisor_start_agent(
     .fetch_one(pool)
     .await
     .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, run_id, "run_created").await;
     if let Some(work_item_id) = work_item_id {
         sqlx::query(
             r#"
@@ -5456,6 +5645,7 @@ async fn supervisor_start_agent(
         .execute(pool)
         .await
         .map_err(to_string)?;
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_running").await;
         record_agent_activity(
             pool,
             Some(agent_id),
@@ -5511,6 +5701,7 @@ async fn supervisor_start_agent(
             .execute(pool)
             .await
             .map_err(to_string)?;
+            notify_ui_agent_run_changed(pool, run_id, "run_failed").await;
             sqlx::query("update agents set status = 'error' where id = $1")
                 .bind(agent_id)
                 .execute(pool)
@@ -5530,6 +5721,7 @@ async fn supervisor_start_agent(
                 .execute(pool)
                 .await
                 .map_err(to_string)?;
+                notify_ui_work_item_changed(pool, work_item_id, "work_item_failed").await;
             }
             record_agent_activity(
                 pool,
@@ -5551,6 +5743,7 @@ async fn supervisor_start_agent(
         .execute(pool)
         .await
         .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, run_id, "run_running").await;
     sqlx::query("update agents set status = 'running' where id = $1")
         .bind(agent_id)
         .execute(pool)
@@ -5685,6 +5878,7 @@ async fn finish_codex_steer_request(
     .execute(pool)
     .await
     .map_err(to_string)?;
+    notify_ui_work_item_changed(pool, steer.work_item_id, "codex_turn_steer_result").await;
 
     record_agent_activity(
         pool,
@@ -5699,7 +5893,6 @@ async fn finish_codex_steer_request(
         error.unwrap_or_else(|| steer.work_item_id.to_string()),
     )
     .await?;
-    let _ = notify_ui_refresh(pool, "codex_turn_steer_result").await;
     Ok(())
 }
 
@@ -6167,6 +6360,7 @@ async fn finish_warm_codex_active_turn(
     .execute(pool)
     .await
     .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, active.run_id, "codex_turn_finished").await;
 
     sqlx::query("update agents set status = $2 where id = $1")
         .bind(agent_id)
@@ -6203,6 +6397,7 @@ async fn finish_warm_codex_active_turn(
         .execute(pool)
         .await
         .map_err(to_string)?;
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_finished").await;
         record_agent_activity(
             pool,
             Some(agent_id),
@@ -6240,7 +6435,6 @@ async fn finish_warm_codex_active_turn(
     )
     .await?;
     let _ = notify_supervisor_wake(pool).await;
-    let _ = notify_ui_refresh(pool, "codex_turn_finished").await;
     Ok(())
 }
 
@@ -6269,6 +6463,7 @@ async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
         .execute(pool)
         .await
         .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, run_id, "run_stopping").await;
     sqlx::query("update agents set status = 'stopping' where id = $1")
         .bind(agent_id)
         .execute(pool)
@@ -6287,6 +6482,7 @@ async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
         .execute(pool)
         .await
         .map_err(to_string)?;
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_cancelling").await;
     }
 
     terminate_process_group(pid).await?;

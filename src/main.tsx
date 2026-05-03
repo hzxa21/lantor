@@ -56,7 +56,9 @@ const UI_REFRESH_DEBOUNCE_MS = 80;
 type UiBackendEvent =
   | { type: "refresh"; reason?: string }
   | { type: "message_upsert"; reason?: string; message: Message }
-  | { type: "activity_upsert"; reason?: string; activity: AgentActivity };
+  | { type: "activity_upsert"; reason?: string; activity: AgentActivity }
+  | { type: "agent_run_upsert"; reason?: string; run: Omit<AgentRun, "log"> & { log?: string } }
+  | { type: "work_item_upsert"; reason?: string; work_item: Omit<AgentWorkItem, "context"> & { context?: string } };
 
 function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
@@ -227,6 +229,44 @@ function App() {
     });
   }
 
+  function applyAgentRunUpsert(patch: Omit<AgentRun, "log"> & { log?: string }) {
+    setData((current) => {
+      if (!current) {
+        requestRefresh("Failed to refresh LocalSlock state after run update");
+        return current;
+      }
+      const existing = current.agent_runs.find((item) => item.id === patch.id);
+      const run: AgentRun = {
+        ...patch,
+        log: patch.log ?? existing?.log ?? "",
+      };
+      const agent_runs = existing
+        ? current.agent_runs.map((item) => item.id === patch.id ? { ...item, ...run } : item)
+        : [run, ...current.agent_runs];
+      agent_runs.sort((left, right) => new Date(right.started_at).getTime() - new Date(left.started_at).getTime());
+      return { ...current, agent_runs: agent_runs.slice(0, 30) };
+    });
+  }
+
+  function applyWorkItemUpsert(patch: Omit<AgentWorkItem, "context"> & { context?: string }) {
+    setData((current) => {
+      if (!current) {
+        requestRefresh("Failed to refresh LocalSlock state after work item update");
+        return current;
+      }
+      const existing = current.agent_work_items.find((item) => item.id === patch.id);
+      const workItem: AgentWorkItem = {
+        ...patch,
+        context: patch.context ?? existing?.context ?? "",
+      };
+      const agent_work_items = existing
+        ? current.agent_work_items.map((item) => item.id === patch.id ? { ...item, ...workItem } : item)
+        : [workItem, ...current.agent_work_items];
+      agent_work_items.sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
+      return { ...current, agent_work_items: agent_work_items.slice(0, 80) };
+    });
+  }
+
   function handleBackendEvent(payload: unknown) {
     if (typeof payload !== "string") {
       requestRefresh("Failed to refresh LocalSlock state after backend update");
@@ -245,6 +285,14 @@ function App() {
     }
     if (parsed.type === "activity_upsert") {
       applyActivityUpsert(parsed.activity);
+      return;
+    }
+    if (parsed.type === "agent_run_upsert") {
+      applyAgentRunUpsert(parsed.run);
+      return;
+    }
+    if (parsed.type === "work_item_upsert") {
+      applyWorkItemUpsert(parsed.work_item);
       return;
     }
     requestRefresh("Failed to refresh LocalSlock state after backend update");
