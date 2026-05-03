@@ -1786,20 +1786,19 @@ body.resizing-column * {
   max-height: min(43vh, 520px);
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 4px 6px 0;
+  padding: 2px 4px 6px 0;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 
 .activity-timeline-row {
   display: grid;
-  grid-template-columns: 112px 16px minmax(0, 1fr);
-  align-items: start;
-  gap: 9px;
-  min-height: 50px;
-  padding: 6px 8px 7px 0;
-  cursor: pointer;
+  grid-template-columns: 82px 14px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+  padding: 7px 8px 8px 0;
   border-radius: 10px;
+  cursor: pointer;
 }
 
 .activity-timeline-row:hover,
@@ -1808,10 +1807,10 @@ body.resizing-column * {
 }
 
 .activity-timeline-row time {
-  padding-top: 1px;
+  padding-top: 3px;
   color: #8e8e93;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.01em;
   text-align: right;
   white-space: nowrap;
@@ -1820,12 +1819,13 @@ body.resizing-column * {
 .activity-dot {
   position: relative;
   display: inline-grid;
+  align-self: start;
   box-sizing: border-box;
-  width: 11px;
-  height: 11px;
-  margin-top: 4px;
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
   justify-self: center;
-  border: 2px solid #20242c;
+  border: 2px solid #1f2937;
   border-radius: 999px;
   background: #ffd43b;
   box-shadow: 0 0 0 2px rgba(255, 212, 59, 0.18);
@@ -1833,10 +1833,10 @@ body.resizing-column * {
 
 .activity-dot::after {
   position: absolute;
-  top: 9px;
+  top: 10px;
   left: 50%;
   width: 1px;
-  height: 45px;
+  height: calc(100% + 30px);
   background: rgba(142, 142, 147, 0.24);
   content: "";
   transform: translateX(-50%);
@@ -1890,11 +1890,12 @@ body.resizing-column * {
   display: grid;
   min-width: 0;
   gap: 4px;
+  overflow: hidden;
 }
 
 .activity-timeline-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }
@@ -1902,9 +1903,11 @@ body.resizing-column * {
 .activity-timeline-title strong {
   min-width: 0;
   color: #0f172a;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .activity-timeline-title span {
@@ -1952,26 +1955,36 @@ body.resizing-column * {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
   color: #8e8e93;
   font-size: 11px;
   font-weight: 650;
+  overflow: hidden;
+  max-height: 20px;
 }
 
 .activity-structure-line span {
+  max-width: 130px;
+  overflow: hidden;
   padding: 2px 6px;
   border-radius: 999px;
   background: rgba(118, 118, 128, 0.08);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .activity-metadata {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, max-content));
   gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  max-height: 23px;
 }
 
 .activity-metadata span {
   display: inline-flex;
-  max-width: 100%;
+  max-width: min(100%, 180px);
   gap: 5px;
   padding: 3px 7px;
   border: 1px solid rgba(118, 118, 128, 0.12);
@@ -1980,10 +1993,13 @@ body.resizing-column * {
   color: #4b5563;
   font-size: 11px;
   line-height: 1.35;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .activity-metadata b {
+  flex: 0 0 auto;
   color: #8e8e93;
   font-weight: 700;
 }
@@ -1993,18 +2009,39 @@ body.resizing-column * {
   overflow: hidden;
   margin: 0;
   color: #7b7b81;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: break-word;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
 }
 
 .activity-timeline-row.expanded .activity-timeline-body p {
   display: block;
   overflow: visible;
   -webkit-line-clamp: unset;
+}
+
+.activity-timeline-row.expanded .activity-metadata,
+.activity-timeline-row.expanded .activity-structure-line {
+  max-height: none;
+}
+
+.activity-raw {
+  max-height: 180px;
+  overflow: auto;
+  margin: 2px 0 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(118, 118, 128, 0.14);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.04);
+  color: #4b5563;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .activity-timeline-row[data-kind="error"] .activity-timeline-body p,

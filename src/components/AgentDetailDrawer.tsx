@@ -68,11 +68,34 @@ function stringifyMetadata(value: unknown) {
   return JSON.stringify(value);
 }
 
+function compactValue(value: string, maxLength = 54) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
 function metadataEntries(activity: AgentActivity) {
   return Object.entries(activity.metadata ?? {})
     .filter(([key]) => key !== "detail")
     .map(([key, value]) => [key, stringifyMetadata(value)] as const)
     .filter(([, value]) => value.length > 0);
+}
+
+function visibleMetadataEntries(activity: AgentActivity) {
+  const priority = ["command", "tool", "duration_ms", "exit_code", "status", "type", "reason"];
+  const entries = metadataEntries(activity)
+    .filter(([key]) => !["rate_limit_info", "uuid", "pid", "session_id", "run_id"].includes(key));
+
+  return entries
+    .sort(([left], [right]) => {
+      const leftIndex = priority.indexOf(left);
+      const rightIndex = priority.indexOf(right);
+      if (leftIndex === -1 && rightIndex === -1) return 0;
+      if (leftIndex === -1) return 1;
+      if (rightIndex === -1) return -1;
+      return leftIndex - rightIndex;
+    })
+    .slice(0, 3);
 }
 
 function formatActivityTime(value: string) {
@@ -179,18 +202,21 @@ export function AgentDetailDrawer({
                         <span>{activity.kind}</span>
                         {activity.run_id && <span>run {activity.run_id.slice(0, 8)}</span>}
                       </div>
-                      {metadataEntries(activity).length > 0 && (
+                      {visibleMetadataEntries(activity).length > 0 && (
                         <div className="activity-metadata">
-                          {metadataEntries(activity).map(([key, value]) => (
-                            <span key={key}>
+                          {visibleMetadataEntries(activity).map(([key, value]) => (
+                            <span key={key} title={`${key}: ${value}`}>
                               <b>{key}</b>
-                              {value}
+                              {compactValue(value)}
                             </span>
                           ))}
                         </div>
                       )}
                       {activity.detail && (
-                        <p title="Click to expand activity detail">{activity.detail}</p>
+                        <p title="Click to expand activity detail">{compactValue(activity.detail, 120)}</p>
+                      )}
+                      {expandedActivityId === activity.id && metadataEntries(activity).length > 0 && (
+                        <pre className="activity-raw">{JSON.stringify(activity.metadata, null, 2)}</pre>
                       )}
                     </div>
                   </article>
