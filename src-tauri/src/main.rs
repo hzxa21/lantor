@@ -79,6 +79,7 @@ struct CodexActiveTurn {
     stream_keys: HashSet<String>,
     steer_requests: HashMap<i64, CodexSteerRequest>,
     steer_disabled: bool,
+    interrupt_request_id: Option<i64>,
 }
 
 struct CodexSteerRequest {
@@ -5121,10 +5122,75 @@ async fn process_supervisor_command(
             let Some(run_id) = command.run_id else {
                 return Err("stop_run command missing run_id".to_owned());
             };
-            supervisor_stop_run(pool, run_id).await
+            supervisor_stop_run(pool, codex_registry, run_id).await
         }
         other => Err(format!("unknown supervisor command: {other}")),
     }
+}
+
+async fn interrupt_warm_codex_turn(
+    pool: &PgPool,
+    agent_id: Uuid,
+    runtime: &Arc<WarmCodexRuntime>,
+    run_id: Uuid,
+) -> CommandResult<bool> {
+    let (request_id, turn_id) = {
+        let mut state = runtime.state.lock().await;
+        let Some(active) = state.active.as_ref() else {
+            return Ok(false);
+        };
+        if active.run_id != run_id {
+            return Ok(false);
+        }
+        let Some(turn_id) = active.turn_id.clone() else {
+            return Ok(false);
+        };
+        if active.interrupt_request_id.is_some() {
+            return Ok(true);
+        }
+        let request_id = state.next_request_id;
+        state.next_request_id += 1;
+        state
+            .active
+            .as_mut()
+            .expect("active turn checked")
+            .interrupt_request_id = Some(request_id);
+        state.last_activity = Instant::now();
+        (request_id, turn_id)
+    };
+
+    {
+        let mut stdin = runtime.stdin.lock().await;
+        codex_write_json(
+            &mut stdin,
+            json!({
+                "method": "turn/interrupt",
+                "id": request_id,
+                "params": {
+                    "threadId": runtime.thread_id.clone(),
+                    "turnId": turn_id
+                }
+            }),
+        )
+        .await?;
+    }
+
+    append_run_log(
+        pool,
+        run_id,
+        format!("[codex] turn/interrupt requested id={request_id}\n"),
+    )
+    .await?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(run_id),
+        "run",
+        "Codex turn interrupt requested",
+        turn_id,
+    )
+    .await?;
+    Ok(true)
 }
 
 async fn steer_warm_codex_turn_if_same_surface(
@@ -5470,6 +5536,7 @@ async fn supervisor_start_codex_streaming_agent(
             stream_keys: HashSet::new(),
             steer_requests: HashMap::new(),
             steer_disabled: false,
+            interrupt_request_id: None,
         });
         request_id
     };
@@ -6356,18 +6423,22 @@ async fn handle_codex_warm_stdout_line(
                     active.turn_id = Some(turn_id);
                     state.last_activity = Instant::now();
                 }
-                Some((true, None))
+                Some((true, None, false))
             } else if let Some(steer) = active.steer_requests.remove(&response_id) {
                 if codex_request_error(&value).is_some() {
                     active.steer_disabled = true;
                 }
                 state.last_activity = Instant::now();
-                Some((false, Some(steer)))
+                Some((false, Some(steer), false))
+            } else if active.interrupt_request_id == Some(response_id) {
+                active.interrupt_request_id = None;
+                state.last_activity = Instant::now();
+                Some((false, None, true))
             } else {
                 None
             }
         };
-        if let Some((is_turn_start, steer)) = matched {
+        if let Some((is_turn_start, steer, is_interrupt)) = matched {
             if is_turn_start {
                 if let Some(error) = codex_request_error(&value) {
                     finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(error))
@@ -6379,6 +6450,23 @@ async fn handle_codex_warm_stdout_line(
                         Some(run_id),
                         "run",
                         "Codex turn accepted",
+                        response_id.to_string(),
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
+            if is_interrupt {
+                if let Some(error) = codex_request_error(&value) {
+                    finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(error))
+                        .await?;
+                } else if let Some(run_id) = active_run_id {
+                    record_agent_activity(
+                        pool,
+                        Some(agent_id),
+                        Some(run_id),
+                        "run",
+                        "Codex turn interrupt accepted",
                         response_id.to_string(),
                     )
                     .await?;
@@ -6869,20 +6957,49 @@ async fn finish_warm_claude_active_turn(
         return Ok(());
     };
     let elapsed_ms = active.started_at.elapsed().as_millis();
+    let current_work_status: Option<String> = match active.work_item_id {
+        Some(work_item_id) => {
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?
+        }
+        None => None,
+    };
+    let was_cancelled = current_work_status.as_deref() == Some("cancelling");
 
     finish_streaming_agent_message(
         pool,
         &active.stream_key,
-        if success { "complete" } else { "error" },
+        if success && !was_cancelled {
+            "complete"
+        } else {
+            "error"
+        },
     )
     .await?;
 
-    let run_status = if success { "exited" } else { "failed" };
-    let agent_status = if success { "idle" } else { "error" };
-    let log_line = error
-        .as_ref()
-        .map(|error| format!("claude warm turn failed: {error}\n"))
-        .unwrap_or_else(|| format!("claude warm turn completed in {elapsed_ms} ms\n"));
+    let run_status = if was_cancelled {
+        "cancelled"
+    } else if success {
+        "exited"
+    } else {
+        "failed"
+    };
+    let agent_status = if success || was_cancelled {
+        "idle"
+    } else {
+        "error"
+    };
+    let log_line = if was_cancelled {
+        "claude warm turn cancelled\n".to_owned()
+    } else {
+        error
+            .as_ref()
+            .map(|error| format!("claude warm turn failed: {error}\n"))
+            .unwrap_or_else(|| format!("claude warm turn completed in {elapsed_ms} ms\n"))
+    };
     sqlx::query(
         r#"
         update agent_runs
@@ -6909,13 +7026,7 @@ async fn finish_warm_claude_active_turn(
         .map_err(to_string)?;
 
     if let Some(work_item_id) = active.work_item_id {
-        let current_status: Option<String> =
-            sqlx::query_scalar("select status from agent_work_items where id = $1")
-                .bind(work_item_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(to_string)?;
-        let work_status = if current_status.as_deref() == Some("cancelling") {
+        let work_status = if was_cancelled {
             "cancelled"
         } else if success {
             "done"
@@ -6959,20 +7070,30 @@ async fn finish_warm_claude_active_turn(
         agent_id,
         "claude",
         &provider_thread_id,
-        if success { "idle" } else { "failed" },
+        if success || was_cancelled {
+            "idle"
+        } else {
+            "failed"
+        },
     )
     .await?;
     record_agent_activity(
         pool,
         Some(agent_id),
         Some(active.run_id),
-        if success { "run" } else { "run_error" },
-        if success {
+        if success || was_cancelled {
+            "run"
+        } else {
+            "run_error"
+        },
+        if was_cancelled {
+            "Claude warm turn cancelled"
+        } else if success {
             "Claude warm turn completed"
         } else {
             "Claude warm turn failed"
         },
-        if success {
+        if success || was_cancelled {
             format!("duration={elapsed_ms} ms")
         } else {
             log_line.trim().to_owned()
@@ -6999,26 +7120,66 @@ async fn finish_warm_codex_active_turn(
         return Ok(());
     };
     let elapsed_ms = active.started_at.elapsed().as_millis();
+    let current_work_status: Option<String> = match active.work_item_id {
+        Some(work_item_id) => {
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?
+        }
+        None => None,
+    };
+    let was_cancelled = current_work_status.as_deref() == Some("cancelling");
 
     for stream_key in active.stream_keys {
         finish_streaming_agent_message(
             pool,
             &stream_key,
-            if success { "complete" } else { "error" },
+            if success && !was_cancelled {
+                "complete"
+            } else {
+                "error"
+            },
         )
         .await?;
     }
 
     for steer in active.steer_requests.into_values() {
-        finish_codex_steer_request(pool, agent_id, steer, success, error.clone()).await?;
+        finish_codex_steer_request(
+            pool,
+            agent_id,
+            steer,
+            success && !was_cancelled,
+            if was_cancelled {
+                Some("cancelled".to_owned())
+            } else {
+                error.clone()
+            },
+        )
+        .await?;
     }
 
-    let run_status = if success { "exited" } else { "failed" };
-    let agent_status = if success { "idle" } else { "error" };
-    let log_line = error
-        .as_ref()
-        .map(|error| format!("codex warm turn failed: {error}\n"))
-        .unwrap_or_else(|| format!("codex warm turn completed in {elapsed_ms} ms\n"));
+    let run_status = if was_cancelled {
+        "cancelled"
+    } else if success {
+        "exited"
+    } else {
+        "failed"
+    };
+    let agent_status = if success || was_cancelled {
+        "idle"
+    } else {
+        "error"
+    };
+    let log_line = if was_cancelled {
+        "codex warm turn cancelled\n".to_owned()
+    } else {
+        error
+            .as_ref()
+            .map(|error| format!("codex warm turn failed: {error}\n"))
+            .unwrap_or_else(|| format!("codex warm turn completed in {elapsed_ms} ms\n"))
+    };
     sqlx::query(
         r#"
         update agent_runs
@@ -7045,13 +7206,7 @@ async fn finish_warm_codex_active_turn(
         .map_err(to_string)?;
 
     if let Some(work_item_id) = active.work_item_id {
-        let current_status: Option<String> =
-            sqlx::query_scalar("select status from agent_work_items where id = $1")
-                .bind(work_item_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(to_string)?;
-        let work_status = if current_status.as_deref() == Some("cancelling") {
+        let work_status = if was_cancelled {
             "cancelled"
         } else if success {
             "done"
@@ -7089,20 +7244,30 @@ async fn finish_warm_codex_active_turn(
         agent_id,
         "codex",
         &runtime.thread_id,
-        if success { "idle" } else { "failed" },
+        if success || was_cancelled {
+            "idle"
+        } else {
+            "failed"
+        },
     )
     .await?;
     record_agent_activity(
         pool,
         Some(agent_id),
         Some(active.run_id),
-        if success { "run" } else { "run_error" },
-        if success {
+        if success || was_cancelled {
+            "run"
+        } else {
+            "run_error"
+        },
+        if was_cancelled {
+            "Codex warm turn cancelled"
+        } else if success {
             "Codex warm turn completed"
         } else {
             "Codex warm turn failed"
         },
-        if success {
+        if success || was_cancelled {
             format!("duration={elapsed_ms} ms")
         } else {
             log_line.trim().to_owned()
@@ -7113,12 +7278,17 @@ async fn finish_warm_codex_active_turn(
     Ok(())
 }
 
-async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
+async fn supervisor_stop_run(
+    pool: &PgPool,
+    codex_registry: &WarmCodexRegistry,
+    run_id: Uuid,
+) -> CommandResult<()> {
     let row = sqlx::query(
         r#"
-        select agent_id, pid, work_item_id
-        from agent_runs
-        where id = $1 and stopped_at is null
+        select r.agent_id, r.pid, r.work_item_id, a.runtime
+        from agent_runs r
+        join agents a on a.id = r.agent_id
+        where r.id = $1 and r.stopped_at is null
         "#,
     )
     .bind(run_id)
@@ -7129,6 +7299,7 @@ async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
     let agent_id: Uuid = row.get("agent_id");
     let pid: Option<i32> = row.get("pid");
     let work_item_id: Option<Uuid> = row.get("work_item_id");
+    let runtime: String = row.get("runtime");
     let Some(pid) = pid else {
         return Err("agent run does not have a pid yet".to_owned());
     };
@@ -7158,6 +7329,27 @@ async fn supervisor_stop_run(pool: &PgPool, run_id: Uuid) -> CommandResult<()> {
         .await
         .map_err(to_string)?;
         notify_ui_work_item_changed(pool, work_item_id, "work_item_cancelling").await;
+    }
+
+    if runtime.eq_ignore_ascii_case("codex") {
+        let warm_runtime = {
+            let runtimes = codex_registry.runtimes.lock().await;
+            runtimes.get(&agent_id).cloned()
+        };
+        if let Some(runtime) = warm_runtime {
+            if interrupt_warm_codex_turn(pool, agent_id, &runtime, run_id).await? {
+                record_agent_activity(
+                    pool,
+                    Some(agent_id),
+                    Some(run_id),
+                    "run",
+                    "Stop signal sent",
+                    "Codex turn/interrupt sent to warm runtime",
+                )
+                .await?;
+                return Ok(());
+            }
+        }
     }
 
     terminate_process_group(pid).await?;

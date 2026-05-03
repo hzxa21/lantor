@@ -1283,6 +1283,8 @@ function App() {
             openWorkItem(item);
             setSelectedAgentId(null);
           }}
+          onCancelWorkItem={cancelWorkItem}
+          onRetryWorkItem={retryWorkItem}
         />
       ) : showThread && (
         <ThreadPanel

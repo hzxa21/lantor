@@ -2014,8 +2014,10 @@ body.resizing-column * {
 }
 
 .detail-work {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: 13px;
@@ -2023,9 +2025,46 @@ body.resizing-column * {
   cursor: pointer;
 }
 
+.detail-work > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.detail-work strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .detail-work span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.detail-work-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.detail-work-actions button {
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.detail-work-actions button.danger {
+  background: rgba(255, 59, 48, 0.11);
+  color: #c91810;
+}
+
+.detail-work-actions button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .channel.has-unread,

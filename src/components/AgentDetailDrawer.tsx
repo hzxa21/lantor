@@ -21,6 +21,8 @@ type AgentDetailDrawerProps = {
   onEdit: (agent: Agent) => void;
   onOpenDm: (agent: Agent) => void;
   onOpenWorkItem: (item: AgentWorkItem) => void;
+  onCancelWorkItem: (item: AgentWorkItem) => void;
+  onRetryWorkItem: (item: AgentWorkItem) => void;
 };
 
 const ACTIVITY_PHASE_LABELS: Record<string, string> = {
@@ -92,6 +94,8 @@ export function AgentDetailDrawer({
   onEdit,
   onOpenDm,
   onOpenWorkItem,
+  onCancelWorkItem,
+  onRetryWorkItem,
 }: AgentDetailDrawerProps) {
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
 
@@ -199,8 +203,34 @@ export function AgentDetailDrawer({
             {workItems.length === 0 && <p className="empty-mini">No work assigned yet.</p>}
             {workItems.map((item) => (
               <article key={item.id} className="detail-work" onClick={() => onOpenWorkItem(item)}>
-                <strong>{item.title}</strong>
-                <span>{item.status}{item.task_number ? ` · task #${item.task_number}` : ""}</span>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.status}{item.task_number ? ` · task #${item.task_number}` : ""}</span>
+                </div>
+                <div className="detail-work-actions">
+                  {["queued", "running", "cancelling"].includes(item.status) && (
+                    <button
+                      className="danger"
+                      disabled={item.status === "cancelling"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onCancelWorkItem(item);
+                      }}
+                    >
+                      {item.status === "cancelling" ? "Cancelling" : "Cancel"}
+                    </button>
+                  )}
+                  {["failed", "cancelled"].includes(item.status) && (
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onRetryWorkItem(item);
+                      }}
+                    >
+                      Retry
+                    </button>
+                  )}
+                </div>
               </article>
             ))}
           </section>
