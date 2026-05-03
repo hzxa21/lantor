@@ -2778,6 +2778,130 @@ async fn pipe_run_output<R>(
     }
 }
 
+async fn pipe_claude_stream_output<R>(
+    pool: PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+    stream: R,
+) where
+    R: AsyncRead + Unpin,
+{
+    let stream_key = claude_stream_key(run_id);
+    let mut lines = BufReader::new(stream).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                let _ = append_run_log(&pool, run_id, format!("[claude] {line}\n")).await;
+                let value: Value = match serde_json::from_str(&line) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        let _ = append_run_log(
+                            &pool,
+                            run_id,
+                            format!("[claude] invalid json: {err}\n"),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+
+                if let Some(session_id) = claude_session_id(&value) {
+                    let _ =
+                        upsert_runtime_thread_id(&pool, agent_id, "claude", session_id, "running")
+                            .await;
+                }
+
+                if let Some((kind, title, detail)) = claude_stream_event_activity(&value) {
+                    let _ = record_agent_activity_throttled(
+                        &pool,
+                        Some(agent_id),
+                        Some(run_id),
+                        kind,
+                        title,
+                        detail,
+                    )
+                    .await;
+                }
+
+                if let Some(delta) = claude_text_delta(&value) {
+                    if let Some(channel_id) = channel_id {
+                        let _ = append_streaming_agent_message(
+                            &pool,
+                            agent_id,
+                            channel_id,
+                            thread_root_id,
+                            &stream_key,
+                            delta,
+                        )
+                        .await;
+                    }
+                    continue;
+                }
+
+                if let Some(text) = claude_message_text(&value) {
+                    if let Some(channel_id) = channel_id {
+                        match streaming_message_exists(&pool, &stream_key).await {
+                            Ok(false) => {
+                                let _ = append_streaming_agent_message(
+                                    &pool,
+                                    agent_id,
+                                    channel_id,
+                                    thread_root_id,
+                                    &stream_key,
+                                    &text,
+                                )
+                                .await;
+                            }
+                            Ok(true) | Err(_) => {}
+                        }
+                    }
+                    continue;
+                }
+
+                if let Some(result_text) = claude_result_text(&value) {
+                    if let Some(channel_id) = channel_id {
+                        match streaming_message_exists(&pool, &stream_key).await {
+                            Ok(false) => {
+                                let _ = append_streaming_agent_message(
+                                    &pool,
+                                    agent_id,
+                                    channel_id,
+                                    thread_root_id,
+                                    &stream_key,
+                                    &result_text,
+                                )
+                                .await;
+                            }
+                            Ok(true) | Err(_) => {}
+                        }
+                    }
+                }
+
+                if let Some(error) = claude_result_error(&value) {
+                    let _ =
+                        mark_claude_streaming_error(&pool, agent_id, run_id, &stream_key, error)
+                            .await;
+                } else if value.get("type").and_then(Value::as_str) == Some("result") {
+                    let _ = finish_streaming_agent_message(&pool, &stream_key, "complete").await;
+                    if let Some(session_id) = claude_session_id(&value) {
+                        let _ =
+                            upsert_runtime_thread_id(&pool, agent_id, "claude", session_id, "idle")
+                                .await;
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(err) => {
+                let _ =
+                    append_run_log(&pool, run_id, format!("[claude] read error: {err}\n")).await;
+                break;
+            }
+        }
+    }
+}
+
 async fn ingest_agent_event_line(
     pool: &PgPool,
     agent_id: Uuid,
@@ -3350,7 +3474,20 @@ async fn wait_for_agent_run(
         let _ = task.await;
     }
     let _ = replay_agent_events_from_run_log_if_needed(&pool, agent_id, run_id).await;
+    let current_run_status: Option<String> =
+        sqlx::query_scalar("select status from agent_runs where id = $1")
+            .bind(run_id)
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
     let (run_status, agent_status, exit_code, log_line) = match result {
+        _ if current_run_status.as_deref() == Some("failed") => (
+            "failed",
+            "error",
+            None,
+            "process exited after runtime error\n".to_owned(),
+        ),
         Ok(status) if status.success() => (
             "exited",
             "idle",
@@ -3647,6 +3784,184 @@ fn codex_model_value(model: &str) -> Value {
     } else {
         json!(model.trim())
     }
+}
+
+fn build_claude_streaming_prompt(legacy_prompt: &str) -> String {
+    if legacy_prompt.trim().is_empty() {
+        return "No current LocalSlock work item is assigned. Reply with a short ready status."
+            .to_owned();
+    }
+    legacy_prompt.replace(
+        "When you finish, write results back with LOCAL_SLOCK_EVENT lines and update task status if applicable.",
+        "Reply normally. LocalSlock will stream your assistant text into the correct channel/thread automatically. Do not emit LOCAL_SLOCK_EVENT lines in this Claude stream-json mode.",
+    )
+}
+
+fn claude_stream_key(run_id: Uuid) -> String {
+    format!("{run_id}:claude-assistant")
+}
+
+fn claude_text_delta(value: &Value) -> Option<&str> {
+    if value.get("type").and_then(Value::as_str) != Some("stream_event") {
+        return None;
+    }
+    if value.pointer("/event/delta/type").and_then(Value::as_str) != Some("text_delta") {
+        return None;
+    }
+    value.pointer("/event/delta/text").and_then(Value::as_str)
+}
+
+fn claude_session_id(value: &Value) -> Option<&str> {
+    value.get("session_id").and_then(Value::as_str)
+}
+
+fn claude_message_text(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let content = value.pointer("/message/content")?.as_array()?;
+    let text = content
+        .iter()
+        .filter_map(|block| {
+            if block.get("type").and_then(Value::as_str) == Some("text") {
+                block.get("text").and_then(Value::as_str)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn claude_result_text(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("result") {
+        return None;
+    }
+    value
+        .get("result")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn claude_result_error(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("result") {
+        return None;
+    }
+    let is_error = value
+        .get("is_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !is_error && value.get("api_error_status").is_none() {
+        return None;
+    }
+    value
+        .get("result")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("error").and_then(Value::as_str))
+        .map(str::to_owned)
+        .or_else(|| Some("Claude stream-json result reported an error".to_owned()))
+}
+
+fn claude_stream_event_activity(value: &Value) -> Option<(&'static str, &'static str, String)> {
+    match value.get("type").and_then(Value::as_str)? {
+        "system" => match value.get("subtype").and_then(Value::as_str) {
+            Some("init") => Some((
+                "run",
+                "Claude stream initialized",
+                "session ready".to_owned(),
+            )),
+            Some("api_retry") => Some((
+                "run_error",
+                "Claude API retry",
+                truncate_activity_detail(&value.to_string()),
+            )),
+            Some(subtype) => Some(("activity", "Claude system event", subtype.to_owned())),
+            None => value
+                .get("status")
+                .and_then(Value::as_str)
+                .map(|status| ("activity", "Claude status", status.to_owned())),
+        },
+        "rate_limit_event" => Some((
+            "run_error",
+            "Claude rate limited",
+            truncate_activity_detail(&value.to_string()),
+        )),
+        "stream_event" => {
+            let event_type = value.pointer("/event/type").and_then(Value::as_str)?;
+            match event_type {
+                "content_block_start" => {
+                    let block_type = value
+                        .pointer("/event/content_block/type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("content");
+                    if block_type == "tool_use" {
+                        let name = value
+                            .pointer("/event/content_block/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool");
+                        Some(("tools", "Using tools", name.to_owned()))
+                    } else if block_type == "thinking" {
+                        Some(("thinking", "Thinking", "Claude is thinking".to_owned()))
+                    } else {
+                        None
+                    }
+                }
+                "content_block_stop" => Some((
+                    "acting",
+                    "Claude content block finished",
+                    event_type.to_owned(),
+                )),
+                "message_stop" => Some(("run", "Claude message finished", event_type.to_owned())),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+async fn streaming_message_exists(pool: &PgPool, stream_key: &str) -> CommandResult<bool> {
+    let exists: bool =
+        sqlx::query_scalar("select exists(select 1 from messages where stream_key = $1)")
+            .bind(stream_key)
+            .fetch_one(pool)
+            .await
+            .map_err(to_string)?;
+    Ok(exists)
+}
+
+async fn mark_claude_streaming_error(
+    pool: &PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+    stream_key: &str,
+    error: String,
+) -> CommandResult<()> {
+    finish_streaming_agent_message(pool, stream_key, "error").await?;
+    sqlx::query(
+        r#"
+        update agent_runs
+        set status = 'failed',
+            log = right(log || $2, 20000)
+        where id = $1
+        "#,
+    )
+    .bind(run_id)
+    .bind(format!("claude stream-json error: {error}\n"))
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(run_id),
+        "run_error",
+        "Claude stream-json error",
+        error,
+    )
+    .await?;
+    Ok(())
 }
 
 async fn get_or_spawn_warm_codex_runtime(
@@ -4601,6 +4916,271 @@ async fn supervisor_start_codex_streaming_agent(
     Ok(())
 }
 
+async fn supervisor_start_claude_streaming_agent(
+    pool: &PgPool,
+    agent_id: Uuid,
+    work_item_id: Option<Uuid>,
+    handle: String,
+    model: String,
+    working_directory: String,
+    work_item_prompt: String,
+) -> CommandResult<()> {
+    let claude_prompt = build_claude_streaming_prompt(&work_item_prompt);
+    let model = if model.trim().is_empty() {
+        "sonnet".to_owned()
+    } else {
+        model.trim().to_owned()
+    };
+    let command_text = format!(
+        "claude -p --model {model} --output-format stream-json --input-format stream-json --include-partial-messages --verbose --permission-mode bypassPermissions"
+    );
+    let initial_log = if claude_prompt.is_empty() {
+        format!("$ {command_text}\n")
+    } else {
+        format!("$ {command_text}\n\n[streaming work item]\n{claude_prompt}\n")
+    };
+
+    let run_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_runs (agent_id, work_item_id, command, working_directory, status, log)
+        values ($1, $2, $3, $4, 'starting', $5)
+        returning id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(work_item_id)
+    .bind(&command_text)
+    .bind(&working_directory)
+    .bind(initial_log)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    let (channel_id, thread_root_id) = if let Some(work_item_id) = work_item_id {
+        let row = sqlx::query(
+            r#"
+            select channel_id, thread_root_id
+            from agent_work_items
+            where id = $1 and agent_id = $2
+            "#,
+        )
+        .bind(work_item_id)
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+        sqlx::query(
+            r#"
+            update agent_work_items
+            set status = 'running',
+                run_id = $2,
+                updated_at = now()
+            where id = $1
+            "#,
+        )
+        .bind(work_item_id)
+        .bind(run_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            Some(run_id),
+            "dispatch",
+            "Work item running",
+            work_item_id.to_string(),
+        )
+        .await?;
+        (
+            row.get::<Option<Uuid>, _>("channel_id"),
+            row.get::<Option<Uuid>, _>("thread_root_id"),
+        )
+    } else {
+        (None, None)
+    };
+
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(run_id),
+        "run",
+        "Claude stream-json run created",
+        "Supervisor is preparing the launch command",
+    )
+    .await?;
+
+    let mut command = Command::new("claude");
+    command
+        .arg("-p")
+        .arg("--model")
+        .arg(&model)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--input-format")
+        .arg("stream-json")
+        .arg("--include-partial-messages")
+        .arg("--verbose")
+        .arg("--permission-mode")
+        .arg("bypassPermissions");
+    command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
+    command.env("LOCAL_SLOCK_AGENT_HANDLE", &handle);
+    command.env("LOCAL_SLOCK_RUN_ID", run_id.to_string());
+    command.env(
+        "LOCAL_SLOCK_WORK_ITEM_ID",
+        work_item_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(String::new),
+    );
+    #[cfg(unix)]
+    command.process_group(0);
+    if !working_directory.is_empty() {
+        command.current_dir(&working_directory);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            let error_log = format!("failed to start Claude stream-json process: {err}\n");
+            sqlx::query(
+                r#"
+                update agent_runs
+                set status = 'failed', log = right(log || $2, 20000), stopped_at = now()
+                where id = $1
+                "#,
+            )
+            .bind(run_id)
+            .bind(error_log)
+            .execute(pool)
+            .await
+            .map_err(to_string)?;
+            sqlx::query("update agents set status = 'error' where id = $1")
+                .bind(agent_id)
+                .execute(pool)
+                .await
+                .map_err(to_string)?;
+            if let Some(work_item_id) = work_item_id {
+                sqlx::query(
+                    r#"
+                    update agent_work_items
+                    set status = 'failed',
+                        completed_at = now(),
+                        updated_at = now()
+                    where id = $1
+                    "#,
+                )
+                .bind(work_item_id)
+                .execute(pool)
+                .await
+                .map_err(to_string)?;
+            }
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "run_error",
+                "Claude stream-json failed to start",
+                err.to_string(),
+            )
+            .await?;
+            return Err(err.to_string());
+        }
+    };
+
+    let pid = child.id().map(|id| id as i32);
+    sqlx::query("update agent_runs set status = 'running', pid = $2 where id = $1")
+        .bind(run_id)
+        .bind(pid)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+    sqlx::query("update agents set status = 'running' where id = $1")
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(run_id),
+        "run",
+        "Claude stream-json run started",
+        pid.map(|pid| format!("pid={pid}"))
+            .unwrap_or_else(|| "pid unavailable".to_owned()),
+    )
+    .await?;
+
+    let input = json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": claude_prompt
+            }]
+        }
+    });
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Claude stream-json stdin unavailable".to_owned())?;
+    let mut input_line = serde_json::to_vec(&input).map_err(to_string)?;
+    input_line.push(b'\n');
+    if let Err(err) = stdin.write_all(&input_line).await {
+        let error = format!("failed to write Claude stream-json input: {err}");
+        mark_claude_streaming_error(
+            pool,
+            agent_id,
+            run_id,
+            &claude_stream_key(run_id),
+            error.clone(),
+        )
+        .await?;
+        if let Some(pid) = pid {
+            let _ = terminate_process_group(pid).await;
+        }
+        return Err(error);
+    }
+    drop(stdin);
+
+    let mut pipe_tasks = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        pipe_tasks.push(tokio::spawn(pipe_claude_stream_output(
+            pool.clone(),
+            agent_id,
+            run_id,
+            channel_id,
+            thread_root_id,
+            stdout,
+        )));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        pipe_tasks.push(tokio::spawn(pipe_run_output(
+            pool.clone(),
+            agent_id,
+            run_id,
+            stderr,
+            "stderr",
+            false,
+        )));
+    }
+
+    tokio::spawn(wait_for_agent_run(
+        pool.clone(),
+        agent_id,
+        run_id,
+        work_item_id,
+        pipe_tasks,
+        child,
+    ));
+
+    Ok(())
+}
+
 async fn supervisor_start_agent(
     pool: &PgPool,
     codex_registry: &WarmCodexRegistry,
@@ -4686,6 +5266,18 @@ async fn supervisor_start_agent(
         return supervisor_start_codex_streaming_agent(
             pool,
             codex_registry,
+            agent_id,
+            work_item_id,
+            handle,
+            model,
+            working_directory,
+            work_item_prompt,
+        )
+        .await;
+    }
+    if runtime.eq_ignore_ascii_case("claude") {
+        return supervisor_start_claude_streaming_agent(
+            pool,
             agent_id,
             work_item_id,
             handle,
@@ -5746,10 +6338,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_streaming_agent_message, capped_stream_delta, codex_turn_id_from_value,
-        claim_next_supervisor_command, extract_agent_event_json, extract_agent_mentions,
-        finish_streaming_agent_message, insert_agent_message, load_messages, load_runtime_thread_id,
-        migrate,
+        append_streaming_agent_message, capped_stream_delta, claim_next_supervisor_command,
+        claude_message_text, claude_result_error, claude_text_delta, codex_turn_id_from_value,
+        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
+        insert_agent_message, load_messages, load_runtime_thread_id, migrate,
         open_dm_with_agent_in_pool, send_owner_message_in_pool, upsert_runtime_thread_id,
         DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
@@ -5828,6 +6420,34 @@ mod tests {
         assert_eq!(
             codex_turn_id_from_value(&json!({"params": {"turnId": "turn-3"}})),
             Some("turn-3".to_owned())
+        );
+    }
+
+    #[test]
+    fn parses_claude_stream_json_events() {
+        assert_eq!(
+            claude_text_delta(
+                &json!({"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": "hi"}}})
+            ),
+            Some("hi")
+        );
+        assert_eq!(
+            claude_message_text(&json!({
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                        {"type": "tool_use", "name": "Read"}
+                    ]
+                }
+            })),
+            Some("hello".to_owned())
+        );
+        assert_eq!(
+            claude_result_error(
+                &json!({"type": "result", "is_error": true, "result": "rate limited"})
+            ),
+            Some("rate limited".to_owned())
         );
     }
 

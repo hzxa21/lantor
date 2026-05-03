@@ -19,7 +19,7 @@ Current implementation status:
 - The supervisor keeps one resident Codex app-server process per active agent and reuses it for queued work through `turn/start`.
 - Resident Codex processes are reaped after 10 idle minutes, streaming message bodies are capped, and completed tool calls are surfaced as activity details.
 - Codex in-flight follow-ups on the same DM or thread surface are injected through `turn/steer`.
-- Claude stream-json is still a follow-up slice.
+- Claude uses `claude -p --output-format stream-json --input-format stream-json --include-partial-messages --verbose` for one-shot real-time output parsing. It reuses the same streaming message contract, but it is not resident/warm yet.
 
 ## Non-Goals
 
@@ -284,6 +284,8 @@ Required behavior:
 - Parse thinking/text/tool/result events.
 - Implement gated delivery, not direct busy stdin.
 - Reuse streaming draft message path.
+
+Current status: the one-shot Claude stream-json path is implemented first. Resident Claude and safe-boundary busy delivery remain follow-up work.
 
 ## Open Questions
 
