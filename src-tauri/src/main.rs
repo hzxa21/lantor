@@ -2978,12 +2978,24 @@ fn activity_status(kind: &str, title: &str) -> &'static str {
         || lowered.contains("started")
         || lowered.contains("queued")
         || lowered.contains("dispatched")
+        || lowered.contains("responding")
         || lowered.contains("thinking")
         || lowered.contains("using")
     {
         "active"
     } else {
         "info"
+    }
+}
+
+fn work_status_title(status: &str) -> &'static str {
+    match status {
+        "running" => "Request started",
+        "done" => "Request completed",
+        "cancelled" => "Request cancelled",
+        "failed" => "Request failed",
+        "queued" => "Request queued",
+        _ => "Request updated",
     }
 }
 
@@ -3979,7 +3991,7 @@ async fn wait_for_agent_run(
             Some(agent_id),
             Some(run_id),
             "dispatch",
-            format!("Work item {work_status}"),
+            work_status_title(work_status),
             work_item_id.to_string(),
         )
         .await;
@@ -4287,37 +4299,29 @@ fn claude_result_error(value: &Value) -> Option<String> {
 fn claude_stream_event_activity(value: &Value) -> Option<(&'static str, &'static str, String)> {
     match value.get("type").and_then(Value::as_str)? {
         "system" => match value.get("subtype").and_then(Value::as_str) {
-            Some("init") => Some((
-                "run",
-                "Claude stream initialized",
-                "session ready".to_owned(),
-            )),
+            Some("init") => Some(("run", "Runtime ready", "Claude stream connected".to_owned())),
             Some("api_retry") => Some((
                 "run_error",
-                "Claude API retry",
+                "Retrying request",
                 truncate_activity_detail(&value.to_string()),
             )),
-            Some(subtype) => Some(("activity", "Claude system event", subtype.to_owned())),
-            None => value
-                .get("status")
-                .and_then(Value::as_str)
-                .map(|status| ("activity", "Claude status", status.to_owned())),
+            Some(_) => None,
+            None => None,
         },
         "rate_limit_event" => {
             let status = value
                 .pointer("/rate_limit_info/status")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
-            let kind = if status.eq_ignore_ascii_case("allowed") {
-                "run"
+            if status.eq_ignore_ascii_case("allowed") {
+                None
             } else {
-                "run_error"
-            };
-            Some((
-                kind,
-                "Claude rate limit status",
-                truncate_activity_detail(&value.to_string()),
-            ))
+                Some((
+                    "run_error",
+                    "Waiting on rate limit",
+                    format!("status={status}"),
+                ))
+            }
         }
         "stream_event" => {
             let event_type = value.pointer("/event/type").and_then(Value::as_str)?;
@@ -4332,19 +4336,14 @@ fn claude_stream_event_activity(value: &Value) -> Option<(&'static str, &'static
                             .pointer("/event/content_block/name")
                             .and_then(Value::as_str)
                             .unwrap_or("tool");
-                        Some(("tools", "Using tools", name.to_owned()))
+                        Some(("tools", "Using tool", name.to_owned()))
                     } else if block_type == "thinking" {
                         Some(("thinking", "Thinking", "Claude is thinking".to_owned()))
                     } else {
                         None
                     }
                 }
-                "content_block_stop" => Some((
-                    "acting",
-                    "Claude content block finished",
-                    event_type.to_owned(),
-                )),
-                "message_stop" => Some(("run", "Claude message finished", event_type.to_owned())),
+                "content_block_stop" | "message_stop" => None,
                 _ => None,
             }
         }
@@ -5202,7 +5201,7 @@ async fn interrupt_warm_codex_turn(
         Some(agent_id),
         Some(run_id),
         "run",
-        "Codex turn interrupt requested",
+        "Stop requested",
         turn_id,
     )
     .await?;
@@ -5370,7 +5369,7 @@ async fn steer_warm_codex_turn_if_same_surface(
         Some(agent_id),
         Some(active_run_id),
         "dispatch",
-        "Follow-up steered into active turn",
+        "Follow-up added",
         work_item_id.to_string(),
     )
     .await?;
@@ -5424,7 +5423,7 @@ async fn supervisor_start_codex_streaming_agent(
                 Some(agent_id),
                 None,
                 "dispatch",
-                "Codex runtime busy",
+                "Agent busy",
                 work_item_id
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| "no work item".to_owned()),
@@ -5492,7 +5491,7 @@ async fn supervisor_start_codex_streaming_agent(
             Some(agent_id),
             Some(run_id),
             "dispatch",
-            "Work item running",
+            "Request started",
             work_item_id.to_string(),
         )
         .await?;
@@ -5521,7 +5520,7 @@ async fn supervisor_start_codex_streaming_agent(
         Some(agent_id),
         Some(run_id),
         "run",
-        "Codex warm turn started",
+        "Started working",
         runtime
             .pid
             .map(|pid| format!("pid={pid}, thread_id={}", runtime.thread_id))
@@ -5651,7 +5650,7 @@ async fn supervisor_start_claude_streaming_agent(
                 Some(agent_id),
                 None,
                 "dispatch",
-                "Claude runtime busy",
+                "Agent busy",
                 work_item_id
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| "no work item".to_owned()),
@@ -5719,7 +5718,7 @@ async fn supervisor_start_claude_streaming_agent(
             Some(agent_id),
             Some(run_id),
             "dispatch",
-            "Work item running",
+            "Request started",
             work_item_id.to_string(),
         )
         .await?;
@@ -5748,7 +5747,7 @@ async fn supervisor_start_claude_streaming_agent(
         Some(agent_id),
         Some(run_id),
         "run",
-        "Claude warm turn started",
+        "Started working",
         runtime
             .pid
             .map(|pid| format!("pid={pid}"))
@@ -5942,7 +5941,7 @@ async fn supervisor_start_agent(
             Some(agent_id),
             Some(run_id),
             "dispatch",
-            "Work item running",
+            "Request started",
             work_item_id.to_string(),
         )
         .await?;
@@ -6177,9 +6176,9 @@ async fn finish_codex_steer_request(
         Some(steer.run_id),
         if success { "dispatch" } else { "run_error" },
         if success {
-            "Follow-up steer accepted"
+            "Follow-up added"
         } else {
-            "Follow-up steer rejected; queued"
+            "Follow-up queued"
         },
         error.unwrap_or_else(|| steer.work_item_id.to_string()),
     )
@@ -6324,8 +6323,8 @@ async fn handle_claude_warm_stdout_line(
                 Some(agent_id),
                 Some(active.0),
                 "acting",
-                "Claude first token",
-                format!("{} ms after user_message", elapsed.as_millis()),
+                "Responding",
+                format!("first_token_ms={}", elapsed.as_millis()),
             )
             .await?;
         }
@@ -6465,7 +6464,7 @@ async fn handle_codex_warm_stdout_line(
                         Some(agent_id),
                         Some(run_id),
                         "run",
-                        "Codex turn accepted",
+                        "Request acknowledged",
                         response_id.to_string(),
                     )
                     .await?;
@@ -6482,7 +6481,7 @@ async fn handle_codex_warm_stdout_line(
                         Some(agent_id),
                         Some(run_id),
                         "run",
-                        "Codex turn interrupt accepted",
+                        "Stop acknowledged",
                         response_id.to_string(),
                     )
                     .await?;
@@ -6555,8 +6554,8 @@ async fn handle_codex_warm_stdout_line(
                     Some(agent_id),
                     Some(active.0),
                     "acting",
-                    "Codex first token",
-                    format!("{} ms after turn/start", elapsed.as_millis()),
+                    "Responding",
+                    format!("first_token_ms={}", elapsed.as_millis()),
                 )
                 .await?;
             }
@@ -7069,7 +7068,7 @@ async fn finish_warm_claude_active_turn(
             Some(agent_id),
             Some(active.run_id),
             "dispatch",
-            format!("Work item {work_status}"),
+            work_status_title(work_status),
             work_item_id.to_string(),
         )
         .await?;
@@ -7103,11 +7102,11 @@ async fn finish_warm_claude_active_turn(
             "run_error"
         },
         if was_cancelled {
-            "Claude warm turn cancelled"
+            "Stopped"
         } else if success {
-            "Claude warm turn completed"
+            "Completed"
         } else {
-            "Claude warm turn failed"
+            "Failed"
         },
         if success || was_cancelled {
             format!("duration={elapsed_ms} ms")
@@ -7249,7 +7248,7 @@ async fn finish_warm_codex_active_turn(
             Some(agent_id),
             Some(active.run_id),
             "dispatch",
-            format!("Work item {work_status}"),
+            work_status_title(work_status),
             work_item_id.to_string(),
         )
         .await?;
@@ -7277,11 +7276,11 @@ async fn finish_warm_codex_active_turn(
             "run_error"
         },
         if was_cancelled {
-            "Codex warm turn cancelled"
+            "Stopped"
         } else if success {
-            "Codex warm turn completed"
+            "Completed"
         } else {
-            "Codex warm turn failed"
+            "Failed"
         },
         if success || was_cancelled {
             format!("duration={elapsed_ms} ms")
@@ -7359,8 +7358,8 @@ async fn supervisor_stop_run(
                     Some(agent_id),
                     Some(run_id),
                     "run",
-                    "Stop signal sent",
-                    "Codex turn/interrupt sent to warm runtime",
+                    "Stop requested",
+                    "Codex accepted stop request",
                 )
                 .await?;
                 return Ok(());
@@ -7381,7 +7380,7 @@ async fn supervisor_stop_run(
         Some(agent_id),
         Some(run_id),
         "run",
-        "Stop signal sent",
+        "Stop requested",
         format!("process_group={pid}"),
     )
     .await?;
@@ -7584,12 +7583,12 @@ fn main() {
 mod tests {
     use super::{
         append_streaming_agent_message, capped_stream_delta, claim_next_supervisor_command,
-        claude_message_text, claude_result_error, claude_text_delta, codex_turn_id_from_value,
-        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
-        insert_agent_message, load_messages, load_runtime_thread_id, migrate,
-        open_dm_with_agent_in_pool, parse_activity_metadata, send_owner_message_in_pool,
-        upsert_runtime_thread_id, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
-        STREAMING_TRUNCATION_MARKER,
+        claude_message_text, claude_result_error, claude_stream_event_activity, claude_text_delta,
+        codex_turn_id_from_value, extract_agent_event_json, extract_agent_mentions,
+        finish_streaming_agent_message, insert_agent_message, load_messages,
+        load_runtime_thread_id, migrate, open_dm_with_agent_in_pool, parse_activity_metadata,
+        send_owner_message_in_pool, upsert_runtime_thread_id, DEFAULT_DATABASE_URL,
+        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use serde_json::json;
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
@@ -7714,6 +7713,22 @@ mod tests {
                 &json!({"type": "result", "is_error": false, "api_error_status": "rate_limited", "result": "busy"})
             ),
             Some("rate_limited".to_owned())
+        );
+        assert_eq!(
+            claude_stream_event_activity(&json!({"type": "system", "subtype": "init"})),
+            Some(("run", "Runtime ready", "Claude stream connected".to_owned()))
+        );
+        assert_eq!(
+            claude_stream_event_activity(
+                &json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}})
+            ),
+            None
+        );
+        assert_eq!(
+            claude_stream_event_activity(
+                &json!({"type": "stream_event", "event": {"type": "message_stop"}})
+            ),
+            None
         );
     }
 

@@ -25,21 +25,6 @@ type AgentDetailDrawerProps = {
   onRetryWorkItem: (item: AgentWorkItem) => void;
 };
 
-const ACTIVITY_PHASE_LABELS: Record<string, string> = {
-  thinking: "Thinking",
-  runtime: "Runtime",
-  work: "Work",
-  profile: "Profile",
-  acting: "Acting",
-  tools: "Using tools",
-  error: "Error",
-  event: "Acting",
-  message: "Acting",
-  task: "Acting",
-  event_error: "Error",
-  run_error: "Error",
-};
-
 const ACTIVITY_STATUS_LABELS: Record<string, string> = {
   active: "Active",
   success: "Done",
@@ -48,12 +33,61 @@ const ACTIVITY_STATUS_LABELS: Record<string, string> = {
   info: "Info",
 };
 
-function phaseForActivity(activity: AgentActivity) {
-  return ACTIVITY_PHASE_LABELS[activity.phase] ?? ACTIVITY_PHASE_LABELS[activity.kind] ?? "Active";
-}
-
 function statusForActivity(activity: AgentActivity) {
   return ACTIVITY_STATUS_LABELS[activity.status] ?? activity.status;
+}
+
+function userFacingActivityTitle(activity: AgentActivity) {
+  const title = activity.summary || activity.title;
+  const lowered = title.toLowerCase();
+  if (lowered.includes("warm turn") && lowered.includes("started")) return "Started working";
+  if (lowered.includes("turn accepted")) return "Request acknowledged";
+  if (lowered.includes("turn interrupt") || lowered.includes("stop signal")) return "Stop requested";
+  if (lowered.includes("first token")) return "Responding";
+  if (lowered.includes("content block finished")) return "Finished step";
+  if (lowered.includes("message finished")) return "Finished response";
+  if (lowered.includes("stream initialized")) return "Runtime ready";
+  if (lowered.includes("system event") || lowered.includes("status")) return "Runtime status";
+  if (lowered.includes("rate limit")) return "Checking rate limit";
+  if (lowered.includes("follow-up steer")) return title.includes("rejected") ? "Follow-up queued" : "Follow-up added";
+  if (lowered.startsWith("work item ")) {
+    if (lowered.includes("running")) return "Request started";
+    if (lowered.includes("done")) return "Request completed";
+    if (lowered.includes("failed")) return "Request failed";
+    if (lowered.includes("cancelled")) return "Request cancelled";
+  }
+  return title;
+}
+
+function userFacingActivityCategory(activity: AgentActivity) {
+  if (activity.status === "error") return "Error";
+  switch (activity.phase || activity.kind) {
+    case "thinking":
+      return "Thinking";
+    case "tools":
+      return "Tool";
+    case "acting":
+      return "Response";
+    case "work":
+      return "Request";
+    case "runtime":
+      return "Runtime";
+    case "profile":
+      return "Profile";
+    default:
+      return "Working";
+  }
+}
+
+function userFacingActivityDetail(activity: AgentActivity) {
+  const detail = activity.detail.trim();
+  if (!detail) return "";
+  if (/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(detail)) return "";
+  if (["content_block_stop", "message_stop", "status"].includes(detail)) return "";
+  return detail
+    .replace(/^codex warm turn failed:/i, "Failed:")
+    .replace(/^claude warm turn failed:/i, "Failed:")
+    .replace(/^duration=/i, "duration ");
 }
 
 function phaseClass(kind: string) {
@@ -76,7 +110,7 @@ function compactValue(value: string, maxLength = 54) {
 
 function metadataEntries(activity: AgentActivity) {
   return Object.entries(activity.metadata ?? {})
-    .filter(([key]) => key !== "detail")
+    .filter(([key]) => !["detail", "reference_id", "run_id", "thread_id"].includes(key))
     .map(([key, value]) => [key, stringifyMetadata(value)] as const)
     .filter(([, value]) => value.length > 0);
 }
@@ -84,7 +118,7 @@ function metadataEntries(activity: AgentActivity) {
 function visibleMetadataEntries(activity: AgentActivity) {
   const priority = ["command", "tool", "duration_ms", "exit_code", "status", "type", "reason"];
   const entries = metadataEntries(activity)
-    .filter(([key]) => !["rate_limit_info", "uuid", "pid", "session_id", "run_id"].includes(key));
+    .filter(([key]) => !["rate_limit_info", "uuid", "pid", "session_id", "request_id"].includes(key));
 
   return entries
     .sort(([left], [right]) => {
@@ -173,54 +207,60 @@ export function AgentDetailDrawer({
             {activities.length === 0 && <p className="empty-mini">No activity yet.</p>}
             {activities.length > 0 && (
               <div className="activity-timeline" role="log" aria-label={`${agent.handle} activity`}>
-                {activities.map((activity) => (
-                  <article
-                    key={activity.id}
-                    className={`activity-timeline-row ${expandedActivityId === activity.id ? "expanded" : ""}`}
-                    data-kind={activity.kind}
-                    data-phase={activity.phase}
-                    data-status={activity.status}
-                    onClick={() => setExpandedActivityId((current) => current === activity.id ? null : activity.id)}
-                  >
-                    <time>{formatActivityTime(activity.created_at)}</time>
-                    <span
-                      className="activity-dot"
+                {activities.map((activity) => {
+                  const title = userFacingActivityTitle(activity);
+                  const detail = userFacingActivityDetail(activity);
+                  const category = userFacingActivityCategory(activity);
+                  const visibleMetadata = visibleMetadataEntries(activity);
+                  const allMetadata = metadataEntries(activity);
+                  return (
+                    <article
+                      key={activity.id}
+                      className={`activity-timeline-row ${expandedActivityId === activity.id ? "expanded" : ""}`}
                       data-kind={activity.kind}
                       data-phase={activity.phase}
                       data-status={activity.status}
-                      aria-hidden="true"
-                    />
-                    <div className="activity-timeline-body">
-                      <div className="activity-timeline-title">
-                        <strong>{activity.summary || activity.title}</strong>
-                        <span className={`activity-status status-${activity.status}`}>
-                          {statusForActivity(activity)}
-                        </span>
-                      </div>
-                      <div className="activity-structure-line">
-                        <span>{phaseForActivity(activity)}</span>
-                        <span>{activity.kind}</span>
-                        {activity.run_id && <span>run {activity.run_id.slice(0, 8)}</span>}
-                      </div>
-                      {visibleMetadataEntries(activity).length > 0 && (
-                        <div className="activity-metadata">
-                          {visibleMetadataEntries(activity).map(([key, value]) => (
-                            <span key={key} title={`${key}: ${value}`}>
-                              <b>{key}</b>
-                              {compactValue(value)}
-                            </span>
-                          ))}
+                      onClick={() => setExpandedActivityId((current) => current === activity.id ? null : activity.id)}
+                    >
+                      <time>{formatActivityTime(activity.created_at)}</time>
+                      <span
+                        className="activity-dot"
+                        data-kind={activity.kind}
+                        data-phase={activity.phase}
+                        data-status={activity.status}
+                        aria-hidden="true"
+                      />
+                      <div className="activity-timeline-body">
+                        <div className="activity-timeline-title">
+                          <strong>{title}</strong>
+                          <span className={`activity-status status-${activity.status}`}>
+                            {statusForActivity(activity)}
+                          </span>
                         </div>
-                      )}
-                      {activity.detail && (
-                        <p title="Click to expand activity detail">{compactValue(activity.detail, 120)}</p>
-                      )}
-                      {expandedActivityId === activity.id && metadataEntries(activity).length > 0 && (
-                        <pre className="activity-raw">{JSON.stringify(activity.metadata, null, 2)}</pre>
-                      )}
-                    </div>
-                  </article>
-                ))}
+                        <div className="activity-structure-line">
+                          <span>{category}</span>
+                          {activity.status === "active" && <span>In progress</span>}
+                        </div>
+                        {visibleMetadata.length > 0 && (
+                          <div className="activity-metadata">
+                            {visibleMetadata.map(([key, value]) => (
+                              <span key={key} title={`${key}: ${value}`}>
+                                <b>{key}</b>
+                                {compactValue(value)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {detail && (
+                          <p title="Click to expand activity detail">{compactValue(detail, 120)}</p>
+                        )}
+                        {expandedActivityId === activity.id && allMetadata.length > 0 && (
+                          <pre className="activity-raw">{JSON.stringify(activity.metadata, null, 2)}</pre>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>
