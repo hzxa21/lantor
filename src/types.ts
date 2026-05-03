@@ -38,6 +38,8 @@ export type Message = {
   body: string;
   is_task: boolean;
   thread_followed: boolean;
+  delivery_state: "complete" | "streaming" | "error" | string;
+  stream_key: string;
   task_number: number | null;
   task_status: string | null;
   created_at: string;

@@ -209,6 +209,12 @@ export function Conversation({
                     )}
                   </div>
                   <MessageMarkdown body={firstLines(message.body)} />
+                  {message.delivery_state === "streaming" && (
+                    <div className="message-stream-state">Streaming response...</div>
+                  )}
+                  {message.delivery_state === "error" && (
+                    <div className="message-stream-state error">Response interrupted</div>
+                  )}
                   {replyCount > 0 && <div className="thread-reply-count">{replyCount} {replyCount === 1 ? "reply" : "replies"}</div>}
                 </div>
               </article>

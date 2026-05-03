@@ -697,6 +697,8 @@ function App() {
       body,
       is_task: asTask,
       thread_followed: true,
+      delivery_state: "complete",
+      stream_key: "",
       task_number: null,
       task_status: null,
       created_at: new Date().toISOString(),

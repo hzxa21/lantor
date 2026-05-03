@@ -99,6 +99,12 @@ export function ThreadPanel({
               <time>{formatTime(activeRoot.created_at)}</time>
             </div>
             <MessageMarkdown body={activeRoot.body} />
+            {activeRoot.delivery_state === "streaming" && (
+              <div className="message-stream-state">Streaming response...</div>
+            )}
+            {activeRoot.delivery_state === "error" && (
+              <div className="message-stream-state error">Response interrupted</div>
+            )}
           </article>
         )}
 
@@ -157,6 +163,12 @@ export function ThreadPanel({
                     <time>{formatTime(reply.created_at)}</time>
                   </div>
                   <MessageMarkdown body={reply.body} />
+                  {reply.delivery_state === "streaming" && (
+                    <div className="message-stream-state">Streaming response...</div>
+                  )}
+                  {reply.delivery_state === "error" && (
+                    <div className="message-stream-state error">Response interrupted</div>
+                  )}
                 </div>
               </article>
             );

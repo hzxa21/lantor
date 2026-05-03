@@ -737,6 +737,34 @@ mark {
   margin-top: 3px;
 }
 
+.message-stream-state {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+  color: #5f6b7a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.message-stream-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 999px;
+  background: #2f80ed;
+  box-shadow: 0 0 0 4px rgba(47, 128, 237, 0.12);
+}
+
+.message-stream-state.error {
+  color: #a34828;
+}
+
+.message-stream-state.error::before {
+  background: #e1583f;
+  box-shadow: 0 0 0 4px rgba(225, 88, 63, 0.12);
+}
+
 .markdown-body {
   display: grid;
   gap: 6px;

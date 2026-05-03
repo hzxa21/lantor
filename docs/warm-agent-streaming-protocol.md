@@ -11,6 +11,13 @@ The target model is:
 - Parse runtime-native stdout into structured activity and streaming message updates.
 - Keep the existing one-shot `LOCAL_SLOCK_EVENT` path as a compatibility fallback.
 
+Current implementation status:
+
+- Codex uses `codex app-server --listen stdio://` for real-time JSON output parsing.
+- LocalSlock streams `item/agentMessage/delta` into visible `messages` rows with `delivery_state = 'streaming'`.
+- Codex thread ids are persisted in `runtime_sessions` and resumed on the next work item.
+- The process is still per-work-item in this slice. The next warm-runtime slice should keep the app-server process resident and deliver queued work through `turn/start` / `turn/steer`.
+
 ## Non-Goals
 
 - Do not build a generic long-lived `/bin/zsh` shell protocol.
@@ -22,7 +29,7 @@ The target model is:
 
 `@slock-ai/daemon@0.43.0` uses runtime-specific drivers:
 
-- Codex: `codex app-server --listen stdio://`, JSON-RPC over stdin/stdout.
+- Codex: `codex app-server --listen stdio://`, JSON request/notification protocol over stdin/stdout. Framing is one JSON object per line; requests use `method` / `id` / `params` and do not include a `jsonrpc` field.
 - Claude: `claude --output-format stream-json --input-format stream-json`, JSON lines over stdin/stdout.
 - OpenCode: per-turn process in the current daemon version, not the first LocalSlock target.
 
@@ -36,17 +43,14 @@ Add a runtime session table. Keep it separate from `agents` so session lifecycle
 
 ```sql
 create table if not exists runtime_sessions (
-    agent_id uuid primary key references agents(id) on delete cascade,
+    id uuid primary key default gen_random_uuid(),
+    agent_id uuid not null references agents(id) on delete cascade,
     runtime text not null,
-    model text not null,
-    session_id text not null default '',
-    process_status text not null default 'stopped',
-    pid integer,
-    current_run_id uuid references agent_runs(id) on delete set null,
-    current_work_item_id uuid references agent_work_items(id) on delete set null,
-    last_event_at timestamptz,
-    last_error text not null default '',
-    updated_at timestamptz not null default now()
+    provider_thread_id text not null,
+    status text not null default 'idle',
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    unique(agent_id, runtime)
 );
 ```
 
@@ -102,7 +106,7 @@ enum RuntimeDriverKind {
 
 ## Codex Warm Driver
 
-Codex should be first because its app-server protocol is explicit JSON-RPC.
+Codex should be first because its app-server protocol has explicit JSON request ids and structured streaming notifications.
 
 ### Spawn
 
@@ -124,12 +128,12 @@ Pass the same safety config currently implied by LocalSlock:
 2. Send:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"localslock","version":"0.1.0"},"capabilities":{"experimentalApi":true}}}
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"localslock","title":"LocalSlock","version":"0.1.0"},"capabilities":{"experimentalApi":true}}}
 ```
 
 3. On initialize result, send `initialized` notification.
-4. If `runtime_sessions.session_id` exists, send `thread/resume`; otherwise send `thread/start`.
-5. Store returned thread id as `runtime_sessions.session_id`.
+4. If `runtime_sessions.provider_thread_id` exists, send `thread/resume`; otherwise send `thread/start`.
+5. Store returned thread id as `runtime_sessions.provider_thread_id`.
 6. For a new work item, send `turn/start`.
 7. If a work item arrives while a turn is active, use `turn/steer` only for Codex.
 
@@ -139,12 +143,11 @@ Start a new turn:
 
 ```json
 {
-  "jsonrpc": "2.0",
   "id": 2,
   "method": "turn/start",
   "params": {
     "threadId": "<session_id>",
-    "input": [{ "type": "text", "text": "<work item prompt>" }]
+    "input": [{ "type": "text", "text": "<work item prompt>", "text_elements": [] }]
   }
 }
 ```
@@ -153,20 +156,19 @@ Steer an active turn:
 
 ```json
 {
-  "jsonrpc": "2.0",
   "id": 3,
   "method": "turn/steer",
   "params": {
     "threadId": "<session_id>",
     "expectedTurnId": "<active_turn_id>",
-    "input": [{ "type": "text", "text": "<new user message>" }]
+    "input": [{ "type": "text", "text": "<new user message>", "text_elements": [] }]
   }
 }
 ```
 
 ### Output Mapping
 
-Map stdout JSON-RPC notifications to LocalSlock events:
+Map stdout JSON notifications to LocalSlock events:
 
 - `thread/started` or thread result -> `SessionInit`.
 - `turn/started` -> mark `agent_work_items.status = 'running'`.
@@ -175,7 +177,7 @@ Map stdout JSON-RPC notifications to LocalSlock events:
 - `item/started` with `commandExecution`, `mcpToolCall`, `webSearch`, `fileChange` -> `ToolCall`.
 - `item/completed` with tool-like items -> `ToolOutput`.
 - `turn/completed` -> `TurnEnd`.
-- JSON-RPC `error` -> `Error`.
+- Error response or `error` notification -> `Error`.
 
 ## Streaming Message Contract
 
@@ -238,11 +240,11 @@ The one-shot driver keeps the current `start_agent` command semantics.
 
 Required behavior:
 
-- Process exits while `delivery_state = 'streaming'`: mark message `error`, work item `failed`, session `process_status = 'stopped'`.
+- Process exits while `delivery_state = 'streaming'`: mark message `error`, work item `failed`, session `status = 'failed'`.
 - Invalid JSON line: append run log, emit `error` activity after repeated failures, keep process alive.
-- Lost session id on disk/runtime side: clear `runtime_sessions.session_id` and cold-start a new thread.
+- Lost session id on disk/runtime side: clear `runtime_sessions.provider_thread_id` and cold-start a new thread.
 - `turn/steer` rejected because turn id changed: requeue the message and retry with `turn/start` after current turn ends.
-- User stops agent: terminate process group, mark session stopped, do not delete `session_id` unless user explicitly resets context.
+- User stops agent: terminate process group, mark session stopped, do not delete `provider_thread_id` unless user explicitly resets context.
 
 ## Implementation Plan
 
@@ -256,7 +258,7 @@ Required behavior:
 ### Slice 2: Codex Warm Driver
 
 - Implement `CodexWarmDriver`.
-- Persist and resume `session_id`.
+- Persist and resume `provider_thread_id`.
 - Deliver queued work via `turn/start`.
 - Keep `LOCAL_SLOCK_EVENT` handling available for final explicit messages.
 - Verify cold first turn, warm second turn, stop, process crash recovery.
