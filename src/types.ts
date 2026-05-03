@@ -42,7 +42,26 @@ export type Message = {
   stream_key: string;
   task_number: number | null;
   task_status: string | null;
+  attachments: MessageAttachment[];
   created_at: string;
+};
+
+export type MessageAttachment = {
+  id: string;
+  message_id: string;
+  original_name: string;
+  mime_type: string;
+  size_bytes: number;
+  storage_path: string;
+  created_at: string;
+};
+
+export type DraftAttachment = {
+  id: string;
+  file: File;
+  original_name: string;
+  mime_type: string;
+  size_bytes: number;
 };
 
 export type Task = {

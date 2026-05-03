@@ -34,6 +34,7 @@ const SUPERVISOR_WAKE_CHANNEL: &str = "localslock_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "localslock://refresh";
 const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by LocalSlock]";
+const ATTACHMENT_SIZE_LIMIT: usize = 25 * 1024 * 1024;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -166,7 +167,27 @@ struct Message {
     stream_key: String,
     task_number: Option<i64>,
     task_status: Option<String>,
+    attachments: Vec<MessageAttachment>,
     created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct MessageAttachment {
+    id: Uuid,
+    message_id: Uuid,
+    original_name: String,
+    mime_type: String,
+    size_bytes: i64,
+    storage_path: String,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentUpload {
+    original_name: String,
+    mime_type: String,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -335,6 +356,53 @@ fn db_url() -> String {
     env::var("LOCAL_SLOCK_DATABASE_URL")
         .or_else(|_| env::var("DATABASE_URL"))
         .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned())
+}
+
+fn attachment_root_dir() -> CommandResult<PathBuf> {
+    if let Ok(path) = env::var("LOCAL_SLOCK_ATTACHMENT_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+    let home = env::var("HOME").map_err(|_| "HOME is not set".to_owned())?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("LocalSlock")
+        .join("attachments"))
+}
+
+fn attachment_extension(original_name: &str) -> String {
+    let path = PathBuf::from(original_name);
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return String::new();
+    };
+    let sanitized: String = extension
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(12)
+        .collect();
+    if sanitized.is_empty() {
+        String::new()
+    } else {
+        format!(".{}", sanitized.to_ascii_lowercase())
+    }
+}
+
+fn write_attachment_file(
+    message_id: Uuid,
+    attachment_id: Uuid,
+    original_name: &str,
+    bytes: &[u8],
+) -> CommandResult<String> {
+    let root = attachment_root_dir()?;
+    let message_dir = root.join(message_id.to_string());
+    fs::create_dir_all(&message_dir).map_err(to_string)?;
+    let path = message_dir.join(format!(
+        "{}{}",
+        attachment_id,
+        attachment_extension(original_name)
+    ));
+    fs::write(&path, bytes).map_err(to_string)?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 async fn notify_postgres(pool: &PgPool, channel: &str, payload: &str) -> CommandResult<()> {
@@ -589,6 +657,27 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         on messages(stream_key)
         where stream_key <> ''
         "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        create table if not exists message_attachments (
+            id uuid primary key default gen_random_uuid(),
+            message_id uuid not null references messages(id) on delete cascade,
+            original_name text not null,
+            mime_type text not null,
+            size_bytes bigint not null,
+            storage_path text not null,
+            created_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "create index if not exists message_attachments_message_id_idx on message_attachments(message_id)",
     )
     .execute(pool)
     .await?;
@@ -2127,9 +2216,18 @@ async fn send_message(
     thread_root_id: Option<Uuid>,
     body: String,
     as_task: bool,
+    attachments: Option<Vec<AttachmentUpload>>,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
-    send_owner_message_in_pool(&state.pool, channel_id, thread_root_id, &body, as_task).await
+    send_owner_message_in_pool(
+        &state.pool,
+        channel_id,
+        thread_root_id,
+        &body,
+        as_task,
+        attachments.unwrap_or_default(),
+    )
+    .await
 }
 
 async fn send_owner_message_in_pool(
@@ -2138,7 +2236,11 @@ async fn send_owner_message_in_pool(
     thread_root_id: Option<Uuid>,
     body: &str,
     as_task: bool,
+    attachments: Vec<AttachmentUpload>,
 ) -> CommandResult<()> {
+    if body.trim().is_empty() && attachments.is_empty() {
+        return Err("message body or attachment is required".to_owned());
+    }
     let mut tx = pool.begin().await.map_err(to_string)?;
     let channel_kind: Option<String> =
         sqlx::query_scalar("select kind from channels where id = $1")
@@ -2167,6 +2269,55 @@ async fn send_owner_message_in_pool(
     .fetch_one(&mut *tx)
     .await
     .map_err(to_string)?;
+
+    for attachment in attachments {
+        if attachment.bytes.is_empty() {
+            continue;
+        }
+        if attachment.bytes.len() > ATTACHMENT_SIZE_LIMIT {
+            return Err(format!(
+                "attachment {} is larger than 25MB",
+                attachment.original_name
+            ));
+        }
+        let attachment_id = Uuid::new_v4();
+        let original_name = attachment.original_name.trim();
+        let original_name = if original_name.is_empty() {
+            "attachment"
+        } else {
+            original_name
+        };
+        let mime_type = attachment.mime_type.trim();
+        let mime_type = if mime_type.is_empty() {
+            "application/octet-stream"
+        } else {
+            mime_type
+        };
+        let storage_path =
+            write_attachment_file(msg_id, attachment_id, original_name, &attachment.bytes)?;
+        sqlx::query(
+            r#"
+            insert into message_attachments (
+                id,
+                message_id,
+                original_name,
+                mime_type,
+                size_bytes,
+                storage_path
+            )
+            values ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(attachment_id)
+        .bind(msg_id)
+        .bind(original_name)
+        .bind(mime_type)
+        .bind(attachment.bytes.len() as i64)
+        .bind(storage_path)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_string)?;
+    }
 
     let mut task_id = None;
     if as_task {
@@ -2520,7 +2671,7 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
     .await
     .map_err(to_string)?;
 
-    Ok(rows
+    let mut messages: Vec<Message> = rows
         .into_iter()
         .map(|row| Message {
             id: row.get("id"),
@@ -2535,9 +2686,12 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
             stream_key: row.get("stream_key"),
             task_number: row.get("task_number"),
             task_status: row.get("task_status"),
+            attachments: Vec::new(),
             created_at: row.get("created_at"),
         })
-        .collect())
+        .collect();
+    attach_message_attachments(pool, &mut messages).await?;
+    Ok(messages)
 }
 
 async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message> {
@@ -2567,7 +2721,7 @@ async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message>
     .await
     .map_err(to_string)?;
 
-    Ok(Message {
+    let mut message = Message {
         id: row.get("id"),
         channel_id: row.get("channel_id"),
         thread_root_id: row.get("thread_root_id"),
@@ -2580,8 +2734,52 @@ async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message>
         stream_key: row.get("stream_key"),
         task_number: row.get("task_number"),
         task_status: row.get("task_status"),
+        attachments: Vec::new(),
         created_at: row.get("created_at"),
-    })
+    };
+    attach_message_attachments(pool, std::slice::from_mut(&mut message)).await?;
+    Ok(message)
+}
+
+async fn attach_message_attachments(pool: &PgPool, messages: &mut [Message]) -> CommandResult<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = messages.iter().map(|message| message.id).collect();
+    let rows = sqlx::query(
+        r#"
+        select id, message_id, original_name, mime_type, size_bytes, storage_path, created_at
+        from message_attachments
+        where message_id = any($1)
+        order by created_at asc
+        "#,
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    let mut attachments_by_message: HashMap<Uuid, Vec<MessageAttachment>> = HashMap::new();
+    for row in rows {
+        let attachment = MessageAttachment {
+            id: row.get("id"),
+            message_id: row.get("message_id"),
+            original_name: row.get("original_name"),
+            mime_type: row.get("mime_type"),
+            size_bytes: row.get("size_bytes"),
+            storage_path: row.get("storage_path"),
+            created_at: row.get("created_at"),
+        };
+        attachments_by_message
+            .entry(attachment.message_id)
+            .or_default()
+            .push(attachment);
+    }
+    for message in messages {
+        message.attachments = attachments_by_message
+            .remove(&message.id)
+            .unwrap_or_default();
+    }
+    Ok(())
 }
 
 async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
@@ -7942,7 +8140,7 @@ mod tests {
                     .map_err(|err| err.to_string())?;
 
             let owner_task_err =
-                send_owner_message_in_pool(&pool, dm_channel_id, None, "task body", true)
+                send_owner_message_in_pool(&pool, dm_channel_id, None, "task body", true, vec![])
                     .await
                     .unwrap_err();
             assert!(owner_task_err.contains("direct messages do not support tasks"));
@@ -7953,8 +8151,15 @@ mod tests {
                     .unwrap_err();
             assert!(agent_task_err.contains("direct messages do not support tasks"));
 
-            send_owner_message_in_pool(&pool, dm_channel_id, None, "please inspect this", false)
-                .await?;
+            send_owner_message_in_pool(
+                &pool,
+                dm_channel_id,
+                None,
+                "please inspect this",
+                false,
+                vec![],
+            )
+            .await?;
             let work_items: i64 = sqlx::query_scalar(
                 r#"
                 select count(*)::bigint

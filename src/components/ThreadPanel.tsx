@@ -1,8 +1,9 @@
-import { MessageSquare, Reply, X } from "lucide-react";
+import { MessageSquare, Paperclip, Reply, X } from "lucide-react";
 import { useRef, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
-import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
+import { Agent, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
+import { MessageAttachments } from "./MessageAttachments";
 import { MessageMarkdown } from "./MessageMarkdown";
 
 type ThreadPanelProps = {
@@ -14,12 +15,15 @@ type ThreadPanelProps = {
   unreadCount: number;
   taskTitleDrafts: Record<string, string>;
   replyDraft: string;
+  replyAttachments: DraftAttachment[];
   setActiveThreadId: (threadId: string | null) => void;
   setTaskTitleDraft: (task: Task, title: string) => void;
   saveTaskTitle: (task: Task) => void;
   claimTask: (task: Task, agentId: string) => void;
   updateTaskStatus: (task: Task, status: string) => void;
   setReplyDraft: (value: string) => void;
+  addReplyAttachments: (files: FileList | File[]) => void;
+  removeReplyAttachment: (id: string) => void;
   sendReply: () => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
@@ -33,16 +37,20 @@ export function ThreadPanel({
   unreadCount,
   taskTitleDrafts,
   replyDraft,
+  replyAttachments,
   setActiveThreadId,
   setTaskTitleDraft,
   saveTaskTitle,
   claimTask,
   updateTaskStatus,
   setReplyDraft,
+  addReplyAttachments,
+  removeReplyAttachment,
   sendReply,
   onResizeStart,
 }: ThreadPanelProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
   const {
@@ -65,7 +73,7 @@ export function ThreadPanel({
   }
 
   function submitReply() {
-    if (!activeRoot || !replyDraft.trim()) return;
+    if (!activeRoot || (!replyDraft.trim() && replyAttachments.length === 0)) return;
     sendReply();
     closeMentionPicker();
     focusComposer();
@@ -99,6 +107,7 @@ export function ThreadPanel({
               <time>{formatTime(activeRoot.created_at)}</time>
             </div>
             <MessageMarkdown body={activeRoot.body} />
+            <MessageAttachments attachments={activeRoot.attachments} />
             {activeRoot.delivery_state === "streaming" && (
               <div className="message-stream-state">Streaming response...</div>
             )}
@@ -163,6 +172,7 @@ export function ThreadPanel({
                     <time>{formatTime(reply.created_at)}</time>
                   </div>
                   <MessageMarkdown body={reply.body} />
+                  <MessageAttachments attachments={reply.attachments} />
                   {reply.delivery_state === "streaming" && (
                     <div className="message-stream-state">Streaming response...</div>
                   )}
@@ -193,6 +203,16 @@ export function ThreadPanel({
               ))}
             </div>
           )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="file-input-hidden"
+            onChange={(event) => {
+              if (event.target.files) addReplyAttachments(event.target.files);
+              event.target.value = "";
+            }}
+          />
           <textarea
             ref={textareaRef}
             value={replyDraft}
@@ -205,7 +225,31 @@ export function ThreadPanel({
             disabled={!activeRoot}
             placeholder={activeRoot ? isDm ? `Reply to @${dmAgent?.handle || "agent"}` : "Reply in thread" : "Select a thread to reply"}
           />
-          <button className="reply-send" disabled={!activeRoot || !replyDraft.trim()} onClick={submitReply}>
+          {replyAttachments.length > 0 && (
+            <div className="draft-attachments">
+              {replyAttachments.map((attachment) => (
+                <span key={attachment.id}>
+                  {attachment.original_name}
+                  <button
+                    type="button"
+                    onClick={() => removeReplyAttachment(attachment.id)}
+                    aria-label={`Remove ${attachment.original_name}`}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            className="attach-button"
+            disabled={!activeRoot}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Paperclip size={15} />
+          </button>
+          <button className="reply-send" disabled={!activeRoot || (!replyDraft.trim() && replyAttachments.length === 0)} onClick={submitReply}>
             Reply <Reply size={15} />
           </button>
         </section>

@@ -4,13 +4,16 @@ import {
   LayoutList,
   MessageSquare,
   PanelRight,
+  Paperclip,
   Plus,
   Send,
+  X,
 } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
-import { Agent, Channel, Message, TASK_STATUSES, Task } from "../types";
+import { Agent, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
+import { MessageAttachments } from "./MessageAttachments";
 import { MessageMarkdown } from "./MessageMarkdown";
 
 type ConversationProps = {
@@ -23,6 +26,7 @@ type ConversationProps = {
   threadReplyCounts: Record<string, number>;
   visibleTasks: Task[];
   draft: string;
+  draftAttachments: DraftAttachment[];
   taskDraft: string;
   taskTitleDrafts: Record<string, string>;
   showThread: boolean;
@@ -39,6 +43,8 @@ type ConversationProps = {
   setTaskDraft: (value: string) => void;
   createTaskFromBoard: () => void;
   setDraft: (value: string) => void;
+  addDraftAttachments: (files: FileList | File[]) => void;
+  removeDraftAttachment: (id: string) => void;
   sendRootMessage: (asTask?: boolean) => void;
 };
 
@@ -52,6 +58,7 @@ export function Conversation({
   threadReplyCounts,
   visibleTasks,
   draft,
+  draftAttachments,
   taskDraft,
   taskTitleDrafts,
   showThread,
@@ -68,10 +75,13 @@ export function Conversation({
   setTaskDraft,
   createTaskFromBoard,
   setDraft,
+  addDraftAttachments,
+  removeDraftAttachment,
   sendRootMessage,
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
   const {
@@ -94,7 +104,7 @@ export function Conversation({
   }
 
   function submitComposer() {
-    if (!channel || !draft.trim()) return;
+    if (!channel || (!draft.trim() && draftAttachments.length === 0)) return;
     sendRootMessage(isDm ? false : sendAsTask);
     closeMentionPicker();
     focusComposer();
@@ -209,6 +219,7 @@ export function Conversation({
                     )}
                   </div>
                   <MessageMarkdown body={firstLines(message.body)} />
+                  <MessageAttachments attachments={message.attachments} />
                   {message.delivery_state === "streaming" && (
                     <div className="message-stream-state">Streaming response...</div>
                   )}
@@ -304,6 +315,16 @@ export function Conversation({
             ))}
           </div>
         )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="file-input-hidden"
+          onChange={(event) => {
+            if (event.target.files) addDraftAttachments(event.target.files);
+            event.target.value = "";
+          }}
+        />
         <textarea
           ref={textareaRef}
           value={draft}
@@ -322,6 +343,22 @@ export function Conversation({
               : "Create a channel before messaging"
           }
         />
+        {draftAttachments.length > 0 && (
+          <div className="draft-attachments">
+            {draftAttachments.map((attachment) => (
+              <span key={attachment.id}>
+                {attachment.original_name}
+                <button
+                  type="button"
+                  onClick={() => removeDraftAttachment(attachment.id)}
+                  aria-label={`Remove ${attachment.original_name}`}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="composer-actions">
           {!isDm && (
             <div className="send-mode" aria-label="Send mode">
@@ -330,7 +367,15 @@ export function Conversation({
             </div>
           )}
           <span className="composer-hint">Enter to send · Shift+Enter for newline</span>
-          <button className="send" disabled={!channel || !draft.trim()} onClick={submitComposer}>
+          <button
+            type="button"
+            className="attach-button"
+            disabled={!channel}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Paperclip size={16} />
+          </button>
+          <button className="send" disabled={!channel || (!draft.trim() && draftAttachments.length === 0)} onClick={submitComposer}>
             Send <Send size={15} />
           </button>
         </div>
