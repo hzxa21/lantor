@@ -193,8 +193,12 @@ struct AgentActivity {
     agent_handle: String,
     run_id: Option<Uuid>,
     kind: String,
+    phase: String,
+    status: String,
     title: String,
+    summary: String,
     detail: String,
+    metadata: Value,
     created_at: DateTime<Utc>,
 }
 
@@ -600,10 +604,63 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             agent_handle text not null default '',
             run_id uuid references agent_runs(id) on delete set null,
             kind text not null,
+            phase text not null default 'event',
+            status text not null default 'info',
             title text not null,
+            summary text not null default '',
             detail text not null default '',
+            metadata jsonb not null default '{}'::jsonb,
             created_at timestamptz not null default now()
         )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    for statement in [
+        "alter table agent_activities add column if not exists phase text not null default 'event'",
+        "alter table agent_activities add column if not exists status text not null default 'info'",
+        "alter table agent_activities add column if not exists summary text not null default ''",
+        "alter table agent_activities add column if not exists metadata jsonb not null default '{}'::jsonb",
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
+    sqlx::query(
+        r#"
+        update agent_activities
+        set phase = case
+                when kind = 'thinking' then 'thinking'
+                when kind = 'tools' then 'tools'
+                when kind in ('error', 'event_error', 'run_error') then 'error'
+                when kind = 'run' then 'runtime'
+                when kind in ('dispatch', 'mention', 'dm', 'task') then 'work'
+                when kind = 'profile' then 'profile'
+                else 'acting'
+            end,
+            status = case
+                when kind in ('error', 'event_error', 'run_error')
+                    or lower(title) like '%failed%'
+                    or lower(title) like '%error%'
+                    or lower(title) like '%rejected%' then 'error'
+                when lower(title) like '%cancel%' or lower(title) like '%stop%' then 'warning'
+                when lower(title) like '%completed%'
+                    or lower(title) like '%complete%'
+                    or lower(title) like '%done%'
+                    or lower(title) like '%exited%'
+                    or lower(title) like '%ready%'
+                    or lower(title) like '%accepted%' then 'success'
+                when lower(title) like '%running%'
+                    or lower(title) like '%started%'
+                    or lower(title) like '%queued%'
+                    or lower(title) like '%dispatched%' then 'active'
+                else 'info'
+            end,
+            summary = title,
+            metadata = case
+                when detail <> '' and metadata = '{}'::jsonb then jsonb_build_object('detail', detail)
+                else metadata
+            end
+        where summary = '' or metadata = '{}'::jsonb
         "#,
     )
     .execute(pool)
@@ -2715,7 +2772,19 @@ async fn load_agent_work_item_patch(
 async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity>> {
     let rows = sqlx::query(
         r#"
-        select id, agent_id, agent_handle, run_id, kind, title, detail, created_at
+        select
+            id,
+            agent_id,
+            agent_handle,
+            run_id,
+            kind,
+            phase,
+            status,
+            title,
+            summary,
+            detail,
+            metadata::text as metadata,
+            created_at
         from agent_activities
         order by created_at desc
         limit 80
@@ -2733,8 +2802,12 @@ async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity
             agent_handle: row.get("agent_handle"),
             run_id: row.get("run_id"),
             kind: row.get("kind"),
+            phase: row.get("phase"),
+            status: row.get("status"),
             title: row.get("title"),
+            summary: row.get("summary"),
             detail: row.get("detail"),
+            metadata: parse_json_value(row.get("metadata")),
             created_at: row.get("created_at"),
         })
         .collect())
@@ -2743,7 +2816,19 @@ async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity
 async fn load_agent_activity(pool: &PgPool, activity_id: Uuid) -> CommandResult<AgentActivity> {
     let row = sqlx::query(
         r#"
-        select id, agent_id, agent_handle, run_id, kind, title, detail, created_at
+        select
+            id,
+            agent_id,
+            agent_handle,
+            run_id,
+            kind,
+            phase,
+            status,
+            title,
+            summary,
+            detail,
+            metadata::text as metadata,
+            created_at
         from agent_activities
         where id = $1
         "#,
@@ -2759,8 +2844,12 @@ async fn load_agent_activity(pool: &PgPool, activity_id: Uuid) -> CommandResult<
         agent_handle: row.get("agent_handle"),
         run_id: row.get("run_id"),
         kind: row.get("kind"),
+        phase: row.get("phase"),
+        status: row.get("status"),
         title: row.get("title"),
+        summary: row.get("summary"),
         detail: row.get("detail"),
+        metadata: parse_json_value(row.get("metadata")),
         created_at: row.get("created_at"),
     })
 }
@@ -2821,6 +2910,98 @@ fn load_launch_agent_status() -> CommandResult<LaunchAgentStatus> {
     })
 }
 
+fn parse_json_value(raw: String) -> Value {
+    serde_json::from_str(&raw).unwrap_or_else(|_| json!({}))
+}
+
+fn activity_phase(kind: &str) -> &'static str {
+    match kind {
+        "thinking" => "thinking",
+        "tools" => "tools",
+        "error" | "event_error" | "run_error" => "error",
+        "run" => "runtime",
+        "dispatch" | "mention" | "dm" | "task" => "work",
+        "profile" => "profile",
+        _ => "acting",
+    }
+}
+
+fn activity_status(kind: &str, title: &str) -> &'static str {
+    let lowered = format!("{} {}", kind, title).to_lowercase();
+    if matches!(kind, "error" | "event_error" | "run_error")
+        || lowered.contains("failed")
+        || lowered.contains("error")
+        || lowered.contains("rejected")
+    {
+        "error"
+    } else if lowered.contains("cancel") || lowered.contains("stop") || lowered.contains("stopping")
+    {
+        "warning"
+    } else if lowered.contains("completed")
+        || lowered.contains("complete")
+        || lowered.contains("done")
+        || lowered.contains("exited")
+        || lowered.contains("ready")
+        || lowered.contains("accepted")
+    {
+        "success"
+    } else if lowered.contains("running")
+        || lowered.contains("started")
+        || lowered.contains("queued")
+        || lowered.contains("dispatched")
+        || lowered.contains("thinking")
+        || lowered.contains("using")
+    {
+        "active"
+    } else {
+        "info"
+    }
+}
+
+fn parse_activity_metadata(detail: &str) -> Value {
+    let detail = detail.trim();
+    if detail.is_empty() {
+        return json!({});
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(detail) {
+        if value.is_object() {
+            return value;
+        }
+    }
+
+    let mut metadata = serde_json::Map::new();
+    for segment in detail.split([',', '\n']) {
+        let Some((key, value)) = segment.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            continue;
+        }
+        metadata.insert(key.to_owned(), json!(value));
+        if key.ends_with("duration") || key == "duration" {
+            if let Some(ms) = value
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                metadata.insert("duration_ms".to_owned(), json!(ms));
+            }
+        }
+    }
+
+    if metadata.is_empty() {
+        if Uuid::parse_str(detail).is_ok() {
+            metadata.insert("reference_id".to_owned(), json!(detail));
+        } else {
+            metadata.insert("detail".to_owned(), json!(detail));
+        }
+    }
+
+    Value::Object(metadata)
+}
+
 async fn record_agent_activity(
     pool: &PgPool,
     agent_id: Option<Uuid>,
@@ -2838,11 +3019,28 @@ async fn record_agent_activity(
             .unwrap_or_else(|| "unknown".to_owned()),
         None => String::new(),
     };
+    let title = title.as_ref();
+    let detail = detail.as_ref();
+    let phase = activity_phase(kind);
+    let status = activity_status(kind, title);
+    let summary = title;
+    let metadata = parse_activity_metadata(detail);
 
     let activity_id: Uuid = sqlx::query_scalar(
         r#"
-        insert into agent_activities (agent_id, agent_handle, run_id, kind, title, detail)
-        values ($1, $2, $3, $4, $5, $6)
+        insert into agent_activities (
+            agent_id,
+            agent_handle,
+            run_id,
+            kind,
+            phase,
+            status,
+            title,
+            summary,
+            detail,
+            metadata
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
         returning id
         "#,
     )
@@ -2850,8 +3048,12 @@ async fn record_agent_activity(
     .bind(agent_handle)
     .bind(run_id)
     .bind(kind)
-    .bind(title.as_ref())
-    .bind(detail.as_ref())
+    .bind(phase)
+    .bind(status)
+    .bind(title)
+    .bind(summary)
+    .bind(detail)
+    .bind(metadata.to_string())
     .fetch_one(pool)
     .await
     .map_err(to_string)?;
@@ -6704,8 +6906,9 @@ mod tests {
         claude_message_text, claude_result_error, claude_text_delta, codex_turn_id_from_value,
         extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
         insert_agent_message, load_messages, load_runtime_thread_id, migrate,
-        open_dm_with_agent_in_pool, send_owner_message_in_pool, upsert_runtime_thread_id,
-        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        open_dm_with_agent_in_pool, parse_activity_metadata, send_owner_message_in_pool,
+        upsert_runtime_thread_id, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
+        STREAMING_TRUNCATION_MARKER,
     };
     use serde_json::json;
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
@@ -6767,6 +6970,14 @@ mod tests {
         assert!(truncated);
         assert!(capped.ends_with(STREAMING_TRUNCATION_MARKER));
         assert_eq!(capped.chars().count() + 4, STREAMING_MESSAGE_BODY_LIMIT);
+    }
+
+    #[test]
+    fn structures_activity_metadata_from_detail() {
+        let metadata = parse_activity_metadata("pid=123, thread_id=abc, duration=42 ms");
+        assert_eq!(metadata["pid"], "123");
+        assert_eq!(metadata["thread_id"], "abc");
+        assert_eq!(metadata["duration_ms"], 42);
     }
 
     #[test]

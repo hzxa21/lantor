@@ -34,6 +34,9 @@ import "./styles.css";
 
 const ACTIVITY_PHASE_LABELS: Record<string, string> = {
   thinking: "Thinking",
+  runtime: "Runtime",
+  work: "Work",
+  profile: "Profile",
   acting: "Acting",
   tools: "Using tools",
   error: "Error",
@@ -565,9 +568,9 @@ function App() {
 
   const selectedAgentPhase = selectedAgent ? (selectedAgentRun
     ? {
-        kind: selectedAgentLiveActivity?.kind ?? "run",
-        label: selectedAgentLiveActivity ? phaseForActivity(selectedAgentLiveActivity.kind) : "Running",
-        detail: selectedAgentLiveActivity?.detail ?? "Waiting for observable output from the agent.",
+        kind: selectedAgentLiveActivity?.phase ?? selectedAgentLiveActivity?.kind ?? "run",
+        label: selectedAgentLiveActivity ? phaseForActivity(selectedAgentLiveActivity.phase || selectedAgentLiveActivity.kind) : "Running",
+        detail: selectedAgentLiveActivity?.summary || selectedAgentLiveActivity?.detail || "Waiting for observable output from the agent.",
       }
     : {
         kind: selectedAgent.status,

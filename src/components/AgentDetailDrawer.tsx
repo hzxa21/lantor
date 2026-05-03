@@ -25,6 +25,9 @@ type AgentDetailDrawerProps = {
 
 const ACTIVITY_PHASE_LABELS: Record<string, string> = {
   thinking: "Thinking",
+  runtime: "Runtime",
+  work: "Work",
+  profile: "Profile",
   acting: "Acting",
   tools: "Using tools",
   error: "Error",
@@ -35,12 +38,39 @@ const ACTIVITY_PHASE_LABELS: Record<string, string> = {
   run_error: "Error",
 };
 
-function phaseForActivity(kind: string) {
-  return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
+const ACTIVITY_STATUS_LABELS: Record<string, string> = {
+  active: "Active",
+  success: "Done",
+  warning: "Needs attention",
+  error: "Error",
+  info: "Info",
+};
+
+function phaseForActivity(activity: AgentActivity) {
+  return ACTIVITY_PHASE_LABELS[activity.phase] ?? ACTIVITY_PHASE_LABELS[activity.kind] ?? "Active";
+}
+
+function statusForActivity(activity: AgentActivity) {
+  return ACTIVITY_STATUS_LABELS[activity.status] ?? activity.status;
 }
 
 function phaseClass(kind: string) {
   return `phase-${kind.replace(/[^a-z0-9_-]/gi, "-")}`;
+}
+
+function stringifyMetadata(value: unknown) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+function metadataEntries(activity: AgentActivity) {
+  return Object.entries(activity.metadata ?? {})
+    .filter(([key]) => key !== "detail")
+    .map(([key, value]) => [key, stringifyMetadata(value)] as const)
+    .filter(([, value]) => value.length > 0);
 }
 
 function formatActivityTime(value: string) {
@@ -121,16 +151,43 @@ export function AgentDetailDrawer({
                     key={activity.id}
                     className={`activity-timeline-row ${expandedActivityId === activity.id ? "expanded" : ""}`}
                     data-kind={activity.kind}
+                    data-phase={activity.phase}
+                    data-status={activity.status}
                     onClick={() => setExpandedActivityId((current) => current === activity.id ? null : activity.id)}
                   >
                     <time>{formatActivityTime(activity.created_at)}</time>
-                    <span className="activity-dot" data-kind={activity.kind} aria-hidden="true" />
+                    <span
+                      className="activity-dot"
+                      data-kind={activity.kind}
+                      data-phase={activity.phase}
+                      data-status={activity.status}
+                      aria-hidden="true"
+                    />
                     <div className="activity-timeline-body">
                       <div className="activity-timeline-title">
-                        <strong>{activity.title}</strong>
-                        <span>{phaseForActivity(activity.kind)}</span>
+                        <strong>{activity.summary || activity.title}</strong>
+                        <span className={`activity-status status-${activity.status}`}>
+                          {statusForActivity(activity)}
+                        </span>
                       </div>
-                      <p title="Click to expand activity detail">{activity.detail}</p>
+                      <div className="activity-structure-line">
+                        <span>{phaseForActivity(activity)}</span>
+                        <span>{activity.kind}</span>
+                        {activity.run_id && <span>run {activity.run_id.slice(0, 8)}</span>}
+                      </div>
+                      {metadataEntries(activity).length > 0 && (
+                        <div className="activity-metadata">
+                          {metadataEntries(activity).map(([key, value]) => (
+                            <span key={key}>
+                              <b>{key}</b>
+                              {value}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {activity.detail && (
+                        <p title="Click to expand activity detail">{activity.detail}</p>
+                      )}
                     </div>
                   </article>
                 ))}

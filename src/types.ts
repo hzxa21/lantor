@@ -99,8 +99,12 @@ export type AgentActivity = {
   agent_handle: string;
   run_id: string | null;
   kind: string;
+  phase: string;
+  status: string;
   title: string;
+  summary: string;
   detail: string;
+  metadata: Record<string, unknown>;
   created_at: string;
 };
 

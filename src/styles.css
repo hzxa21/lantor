@@ -1871,6 +1871,21 @@ body.resizing-column * {
   box-shadow: 0 0 0 3px rgba(255, 69, 58, 0.14);
 }
 
+.activity-dot[data-status="success"] {
+  background: #34c759;
+  box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.14);
+}
+
+.activity-dot[data-status="warning"] {
+  background: #ff9f0a;
+  box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.16);
+}
+
+.activity-dot[data-status="error"] {
+  background: #ff453a;
+  box-shadow: 0 0 0 3px rgba(255, 69, 58, 0.14);
+}
+
 .activity-timeline-body {
   display: grid;
   min-width: 0;
@@ -1896,6 +1911,81 @@ body.resizing-column * {
   color: #8e8e93;
   font-size: 12px;
   font-weight: 600;
+}
+
+.activity-status {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid rgba(142, 142, 147, 0.22);
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.08);
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.activity-status.status-active {
+  border-color: rgba(0, 122, 255, 0.16);
+  background: rgba(0, 122, 255, 0.08);
+  color: #007aff;
+}
+
+.activity-status.status-success {
+  border-color: rgba(52, 199, 89, 0.16);
+  background: rgba(52, 199, 89, 0.1);
+  color: #1f9d4c;
+}
+
+.activity-status.status-warning {
+  border-color: rgba(255, 159, 10, 0.18);
+  background: rgba(255, 159, 10, 0.1);
+  color: #a25c00;
+}
+
+.activity-status.status-error {
+  border-color: rgba(255, 69, 58, 0.18);
+  background: rgba(255, 69, 58, 0.1);
+  color: #c91810;
+}
+
+.activity-structure-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: #8e8e93;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.activity-structure-line span {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(118, 118, 128, 0.08);
+}
+
+.activity-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.activity-metadata span {
+  display: inline-flex;
+  max-width: 100%;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 1px solid rgba(118, 118, 128, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #4b5563;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.activity-metadata b {
+  color: #8e8e93;
+  font-weight: 700;
 }
 
 .activity-timeline-body p {
