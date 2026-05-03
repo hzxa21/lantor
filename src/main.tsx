@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
+import type { AgentPerformance } from "./components/AgentDetailDrawer";
 import { AgentFormModal } from "./components/AgentFormModal";
 import { ChannelAgentsModal } from "./components/ChannelAgentsModal";
 import { ChannelSettingsModal } from "./components/ChannelSettingsModal";
@@ -99,6 +100,61 @@ function matchesSearchTime(value: string | null, range: SearchTimeRange) {
 
 function searchScopeAllows(scope: SearchScope, kind: SearchScope) {
   return scope === "all" || scope === kind;
+}
+
+function numericMetadata(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function percentile(values: number[], ratio: number) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1);
+  return sorted[index];
+}
+
+function buildAgentPerformance(activities: AgentActivity[]): AgentPerformance {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const recent = activities.filter((activity) => {
+    const timestamp = new Date(activity.created_at).getTime();
+    return Number.isNaN(timestamp) || timestamp >= cutoff;
+  });
+  const firstTokenMs = recent
+    .filter((activity) => activity.title === "Responding" || activity.summary === "Responding")
+    .map((activity) => numericMetadata(activity.metadata.first_token_ms))
+    .filter((value): value is number => value !== null);
+  const finishedTurns = recent.filter((activity) =>
+    activity.phase === "runtime" &&
+    ["Completed", "Failed", "Stopped"].includes(activity.title || activity.summary));
+  const turnDurations = finishedTurns
+    .filter((activity) => activity.status === "success")
+    .map((activity) => numericMetadata(activity.metadata.duration_ms))
+    .filter((value): value is number => value !== null);
+  const failedTurns = finishedTurns.filter((activity) => activity.status === "error").length;
+  const completedTurns = finishedTurns.filter((activity) => activity.status === "success").length;
+  const activeTurns = recent.filter((activity) =>
+    activity.phase === "runtime" &&
+    activity.status === "active" &&
+    (activity.title === "Started working" || activity.summary === "Started working")).length;
+  const turns = completedTurns + failedTurns + activeTurns;
+
+  return {
+    windowLabel: "Last 24h",
+    turns,
+    completedTurns,
+    failedTurns,
+    activeTurns,
+    p50FirstTokenMs: percentile(firstTokenMs, 0.5),
+    p95FirstTokenMs: percentile(firstTokenMs, 0.95),
+    p50TurnMs: percentile(turnDurations, 0.5),
+    p95TurnMs: percentile(turnDurations, 0.95),
+    errorRate: completedTurns + failedTurns === 0 ? 0 : failedTurns / (completedTurns + failedTurns),
+  };
 }
 
 function App() {
@@ -582,6 +638,10 @@ function App() {
       .filter((activity) => activity.agent_id === selectedAgent.id || activity.agent_handle === selectedAgent.handle)
       .slice(0, 80);
   }, [data, selectedAgent]);
+
+  const selectedAgentPerformance = useMemo(() => {
+    return buildAgentPerformance(selectedAgentActivities);
+  }, [selectedAgentActivities]);
 
   const selectedAgentLiveActivity = useMemo(() => {
     return selectedAgentActivities.find((activity) => activity.run_id === selectedAgentRun?.id)
@@ -1292,6 +1352,7 @@ function App() {
           activeRun={selectedAgentRun}
           phase={selectedAgentPhase}
           activities={selectedAgentActivities}
+          performance={selectedAgentPerformance}
           workItems={selectedAgentWorkItems}
           onClose={() => setSelectedAgentId(null)}
           onDelete={deleteAgent}

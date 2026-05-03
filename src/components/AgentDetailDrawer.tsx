@@ -13,6 +13,7 @@ type AgentDetailDrawerProps = {
   activeRun: AgentRun | null;
   phase: AgentPhase | null;
   activities: AgentActivity[];
+  performance: AgentPerformance;
   workItems: AgentWorkItem[];
   onClose: () => void;
   onDelete: (agent: Agent) => void;
@@ -23,6 +24,19 @@ type AgentDetailDrawerProps = {
   onOpenWorkItem: (item: AgentWorkItem) => void;
   onCancelWorkItem: (item: AgentWorkItem) => void;
   onRetryWorkItem: (item: AgentWorkItem) => void;
+};
+
+export type AgentPerformance = {
+  windowLabel: string;
+  turns: number;
+  completedTurns: number;
+  failedTurns: number;
+  activeTurns: number;
+  p50FirstTokenMs: number | null;
+  p95FirstTokenMs: number | null;
+  p50TurnMs: number | null;
+  p95TurnMs: number | null;
+  errorRate: number;
 };
 
 const ACTIVITY_STATUS_LABELS: Record<string, string> = {
@@ -138,11 +152,18 @@ function formatActivityTime(value: string) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function formatDuration(value: number | null) {
+  if (value === null || Number.isNaN(value)) return "n/a";
+  if (value < 1000) return `${Math.round(value)} ms`;
+  return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)} s`;
+}
+
 export function AgentDetailDrawer({
   agent,
   activeRun,
   phase,
   activities,
+  performance,
   workItems,
   onClose,
   onDelete,
@@ -197,6 +218,34 @@ export function AgentDetailDrawer({
             <div>
               <span>Description</span>
               <code>{agent.description || "No notes"}</code>
+            </div>
+          </section>
+          <section className="detail-section performance-section">
+            <div className="detail-section-head">
+              <h4>Performance</h4>
+              <span>{performance.windowLabel}</span>
+            </div>
+            <div className="performance-grid">
+              <div className="performance-card">
+                <span>Turns</span>
+                <strong>{performance.turns}</strong>
+                <small>{performance.completedTurns} done · {performance.failedTurns} failed</small>
+              </div>
+              <div className="performance-card">
+                <span>First token</span>
+                <strong>{formatDuration(performance.p50FirstTokenMs)}</strong>
+                <small>p95 {formatDuration(performance.p95FirstTokenMs)}</small>
+              </div>
+              <div className="performance-card">
+                <span>Turn duration</span>
+                <strong>{formatDuration(performance.p50TurnMs)}</strong>
+                <small>p95 {formatDuration(performance.p95TurnMs)}</small>
+              </div>
+              <div className="performance-card">
+                <span>Error rate</span>
+                <strong>{Math.round(performance.errorRate * 100)}%</strong>
+                <small>{performance.activeTurns} currently active</small>
+              </div>
             </div>
           </section>
           <section className="detail-section live-activity-section">
