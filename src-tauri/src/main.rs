@@ -1338,6 +1338,8 @@ async fn create_agent(
         .next()
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_else(|| "A".to_owned());
+    let working_directory = working_directory.trim();
+    ensure_agent_workspace(working_directory, normalized_handle)?;
 
     let agent_id: Uuid = sqlx::query_scalar(
         r#"
@@ -1362,7 +1364,7 @@ async fn create_agent(
     .bind(model.trim())
     .bind(avatar)
     .bind(launch_command.trim())
-    .bind(working_directory.trim())
+    .bind(working_directory)
     .fetch_one(&state.pool)
     .await
     .map_err(to_string)?;
@@ -1405,6 +1407,8 @@ async fn update_agent(
         .next()
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_else(|| "A".to_owned());
+    let working_directory = working_directory.trim();
+    ensure_agent_workspace(working_directory, normalized_handle)?;
 
     sqlx::query(
         r#"
@@ -1428,7 +1432,7 @@ async fn update_agent(
     .bind(avatar)
     .bind(description.trim())
     .bind(launch_command.trim())
-    .bind(working_directory.trim())
+    .bind(working_directory)
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
@@ -4440,6 +4444,67 @@ fn build_work_item_prompt(
     lines.join("\n")
 }
 
+fn load_agent_memory_context(working_directory: &str) -> CommandResult<Option<String>> {
+    let working_directory = working_directory.trim();
+    if working_directory.is_empty() {
+        return Ok(None);
+    }
+    let memory_path = PathBuf::from(working_directory).join("MEMORY.md");
+    if !memory_path.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(&memory_path).map_err(to_string)?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    if metadata.len() > 128 * 1024 {
+        return Err(format!(
+            "{} is larger than the 128KB LocalSlock memory limit",
+            memory_path.display()
+        ));
+    }
+    let memory = fs::read_to_string(&memory_path).map_err(to_string)?;
+    let memory = memory.trim();
+    if memory.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(format!(
+            "Persistent agent memory from {}:\n{}\n\nUse this as durable context for this workspace, but prefer the current user request when there is a conflict.",
+            memory_path.display(),
+            memory
+        )))
+    }
+}
+
+fn ensure_agent_workspace(working_directory: &str, handle: &str) -> CommandResult<()> {
+    let working_directory = working_directory.trim();
+    if working_directory.is_empty() {
+        return Ok(());
+    }
+    let workspace = PathBuf::from(working_directory);
+    fs::create_dir_all(&workspace).map_err(to_string)?;
+    let memory_path = workspace.join("MEMORY.md");
+    if memory_path.exists() {
+        return Ok(());
+    }
+    let template = format!(
+        "# @{handle}\n\n## Role\nLocalSlock agent.\n\n## Persistent Context\n- Add durable facts, user preferences, project notes, and handoff context here.\n- LocalSlock automatically injects this file into future agent turns for this workspace.\n",
+    );
+    fs::write(memory_path, template).map_err(to_string)?;
+    Ok(())
+}
+
+fn prepend_memory_context(prompt: String, memory_context: Option<&str>) -> String {
+    let Some(memory_context) = memory_context else {
+        return prompt;
+    };
+    if prompt.trim().is_empty() {
+        memory_context.to_owned()
+    } else {
+        format!("{memory_context}\n\n{prompt}")
+    }
+}
+
 fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
     if legacy_prompt.trim().is_empty() {
         return "No current LocalSlock work item is assigned. Reply with a short ready status."
@@ -6219,6 +6284,21 @@ async fn supervisor_start_agent(
     let model: String = row.get("model");
     let launch_command: String = row.get("launch_command");
     let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
+    let memory_context = match load_agent_memory_context(&working_directory) {
+        Ok(memory_context) => memory_context,
+        Err(err) => {
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "profile",
+                "Memory context skipped",
+                err,
+            )
+            .await?;
+            None
+        }
+    };
     let work_item_prompt = match work_item_id {
         Some(work_item_id) => {
             let row = sqlx::query(
@@ -6256,6 +6336,7 @@ async fn supervisor_start_agent(
         }
         None => String::new(),
     };
+    let work_item_prompt = prepend_memory_context(work_item_prompt, memory_context.as_deref());
     if runtime.eq_ignore_ascii_case("codex") {
         return supervisor_start_codex_streaming_agent(
             pool,

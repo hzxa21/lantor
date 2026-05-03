@@ -92,6 +92,15 @@ export function AgentFormModal({
             />
           </label>
         )}
+        <label>
+          <span>Workspace directory</span>
+          <input
+            value={form.workingDirectory}
+            onChange={(event) => onChange({ ...form, workingDirectory: event.target.value })}
+            placeholder="/Users/dylan/Desktop/workspace/localslock/agents/<handle>"
+          />
+          <small>LocalSlock loads MEMORY.md from this directory as persistent context when the agent runs.</small>
+        </label>
         <div className="modal-actions">
           <button onClick={onCancel}>Cancel</button>
           <button className="primary" disabled={!form.handle.trim()} onClick={onSubmit}>{submitLabel}</button>

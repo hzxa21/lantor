@@ -125,6 +125,11 @@ async function attachmentUploads(attachments: DraftAttachment[]) {
   }));
 }
 
+function defaultAgentWorkspace(handle: string) {
+  const normalized = handle.trim().replace(/^@/, "").replace(/[^A-Za-z0-9_-]/g, "-");
+  return normalized ? `/Users/dylan/Desktop/workspace/localslock/agents/${normalized}` : "";
+}
+
 function numericMetadata(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -977,7 +982,7 @@ function App() {
       handle,
       displayName: agentDraft.displayName || handle,
       launchCommand: buildPresetCommand({ ...agentDraft, handle, displayName: agentDraft.displayName || handle }),
-      workingDirectory: "",
+      workingDirectory: agentDraft.workingDirectory.trim() || defaultAgentWorkspace(handle),
     };
     const agentId = await invoke<string>("create_agent", {
       handle,
@@ -1050,7 +1055,7 @@ function App() {
       handle,
       displayName: agentEdit.displayName || handle,
       launchCommand: buildPresetCommand({ ...agentEdit, handle, displayName: agentEdit.displayName || handle }),
-      workingDirectory: "",
+      workingDirectory: agentEdit.workingDirectory.trim(),
     };
     await mutate("update_agent", {
       agentId: editingAgentId,
