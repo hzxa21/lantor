@@ -4145,11 +4145,18 @@ async fn write_supervisor_heartbeat(pool: &PgPool) -> CommandResult<()> {
 async fn claim_next_supervisor_command(pool: &PgPool) -> CommandResult<Option<SupervisorCommand>> {
     let row = sqlx::query(
         r#"
-        select id, command_type, agent_id, run_id, work_item_id
-        from supervisor_commands
-        where status = 'pending'
-        order by created_at asc
-        limit 1
+        update supervisor_commands
+        set status = 'running',
+            updated_at = now()
+        where id = (
+            select id
+            from supervisor_commands
+            where status = 'pending'
+            order by created_at asc
+            for update skip locked
+            limit 1
+        )
+        returning id, command_type, agent_id, run_id, work_item_id
         "#,
     )
     .fetch_optional(pool)
@@ -4167,14 +4174,6 @@ async fn claim_next_supervisor_command(pool: &PgPool) -> CommandResult<Option<Su
         run_id: row.get("run_id"),
         work_item_id: row.get("work_item_id"),
     };
-
-    sqlx::query(
-        "update supervisor_commands set status = 'running', updated_at = now() where id = $1",
-    )
-    .bind(command.id)
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
 
     Ok(Some(command))
 }
@@ -5748,8 +5747,9 @@ fn main() {
 mod tests {
     use super::{
         append_streaming_agent_message, capped_stream_delta, codex_turn_id_from_value,
-        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
-        insert_agent_message, load_messages, load_runtime_thread_id, migrate,
+        claim_next_supervisor_command, extract_agent_event_json, extract_agent_mentions,
+        finish_streaming_agent_message, insert_agent_message, load_messages, load_runtime_thread_id,
+        migrate,
         open_dm_with_agent_in_pool, send_owner_message_in_pool, upsert_runtime_thread_id,
         DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
@@ -5832,10 +5832,14 @@ mod tests {
     }
 
     async fn test_pool() -> Option<(PgPool, String)> {
+        test_pool_with_connections(1).await
+    }
+
+    async fn test_pool_with_connections(max_connections: u32) -> Option<(PgPool, String)> {
         let database_url = std::env::var("LOCAL_SLOCK_TEST_DATABASE_URL")
             .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
         let pool = match PgPoolOptions::new()
-            .max_connections(1)
+            .max_connections(max_connections)
             .connect(&database_url)
             .await
         {
@@ -6042,6 +6046,51 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(work_items, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn supervisor_command_claim_is_single_consumer() {
+        let Some((pool, schema)) = test_pool_with_connections(8).await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let command_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into supervisor_commands (command_type)
+                values ('start_agent')
+                returning id
+                "#,
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let (r1, r2, r3, r4) = tokio::join!(
+                claim_next_supervisor_command(&pool),
+                claim_next_supervisor_command(&pool),
+                claim_next_supervisor_command(&pool),
+                claim_next_supervisor_command(&pool)
+            );
+            let mut claimed = Vec::new();
+            for result in [r1, r2, r3, r4] {
+                if let Some(command) = result? {
+                    claimed.push(command.id);
+                }
+            }
+
+            assert_eq!(claimed, vec![command_id]);
+            let status: String =
+                sqlx::query_scalar("select status from supervisor_commands where id = $1")
+                    .bind(command_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(status, "running");
             Ok(())
         }
         .await;
