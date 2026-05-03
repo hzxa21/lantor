@@ -878,6 +878,8 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         update agent_activities
         set phase = case
                 when kind = 'thinking' then 'thinking'
+                when kind = 'command' then 'command'
+                when kind = 'file_edit' then 'file_edit'
                 when kind = 'tools' then 'tools'
                 when kind in ('error', 'event_error', 'run_error') then 'error'
                 when kind = 'run' then 'runtime'
@@ -895,9 +897,11 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
                     or lower(title) like '%complete%'
                     or lower(title) like '%done%'
                     or lower(title) like '%exited%'
+                    or lower(title) like '%finished%'
                     or lower(title) like '%ready%'
                     or lower(title) like '%accepted%' then 'success'
                 when lower(title) like '%running%'
+                    or lower(title) like '%editing%'
                     or lower(title) like '%started%'
                     or lower(title) like '%queued%'
                     or lower(title) like '%dispatched%' then 'active'
@@ -3312,6 +3316,8 @@ fn parse_json_value(raw: String) -> Value {
 fn activity_phase(kind: &str) -> &'static str {
     match kind {
         "thinking" => "thinking",
+        "command" => "command",
+        "file_edit" => "file_edit",
         "tools" => "tools",
         "error" | "event_error" | "run_error" => "error",
         "run" => "runtime",
@@ -3336,6 +3342,7 @@ fn activity_status(kind: &str, title: &str) -> &'static str {
         || lowered.contains("complete")
         || lowered.contains("done")
         || lowered.contains("exited")
+        || lowered.contains("finished")
         || lowered.contains("ready")
         || lowered.contains("accepted")
     {
@@ -3346,6 +3353,7 @@ fn activity_status(kind: &str, title: &str) -> &'static str {
         || lowered.contains("dispatched")
         || lowered.contains("responding")
         || lowered.contains("thinking")
+        || lowered.contains("editing")
         || lowered.contains("using")
     {
         "active"
@@ -4610,6 +4618,58 @@ fn codex_item_summary(value: &Value) -> String {
     }
 }
 
+fn first_nonempty_item_value<'a>(item: &'a Value, fields: &[&str]) -> Option<&'a str> {
+    fields
+        .iter()
+        .find_map(|field| item.pointer(field).or_else(|| item.get(*field)))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn codex_item_file_summary(item: &Value) -> String {
+    let path = first_nonempty_item_value(
+        item,
+        &[
+            "path",
+            "file",
+            "filePath",
+            "filename",
+            "/path",
+            "/file",
+            "/filePath",
+            "/changes/0/path",
+            "/changes/0/file",
+        ],
+    )
+    .unwrap_or("file");
+    let operation = first_nonempty_item_value(
+        item,
+        &["operation", "action", "change", "/operation", "/action"],
+    )
+    .unwrap_or("edit");
+    json!({ "file": path, "operation": operation }).to_string()
+}
+
+fn codex_item_started_activity(value: &Value) -> (&'static str, &'static str, String) {
+    let Some(item) = value.pointer("/params/item") else {
+        return ("activity", "Codex activity", "item".to_owned());
+    };
+    match item.get("type").and_then(Value::as_str).unwrap_or("item") {
+        "reasoning" => ("thinking", "Thinking", "Thinking".to_owned()),
+        "commandExecution" => (
+            "command",
+            "Running command",
+            json!({ "command": codex_item_summary(value) }).to_string(),
+        ),
+        "fileChange" => ("file_edit", "Editing file", codex_item_file_summary(item)),
+        "mcpToolCall" | "dynamicToolCall" | "webSearch" => {
+            ("tools", "Using tool", codex_item_summary(value))
+        }
+        "agentMessage" => ("acting", "Writing response", "Writing response".to_owned()),
+        _ => ("activity", "Codex activity", codex_item_summary(value)),
+    }
+}
+
 fn first_nonempty_item_string<'a>(item: &'a Value, fields: &[&str]) -> Option<&'a str> {
     fields
         .iter()
@@ -4617,7 +4677,7 @@ fn first_nonempty_item_string<'a>(item: &'a Value, fields: &[&str]) -> Option<&'
         .filter(|value| !value.trim().is_empty())
 }
 
-fn codex_tool_completion_summary(value: &Value) -> Option<String> {
+fn codex_tool_completion_activity(value: &Value) -> Option<(&'static str, &'static str, String)> {
     let item = value.pointer("/params/item")?;
     let item_type = item.get("type").and_then(Value::as_str).unwrap_or("item");
     if !matches!(
@@ -4627,21 +4687,40 @@ fn codex_tool_completion_summary(value: &Value) -> Option<String> {
         return None;
     }
 
-    let mut detail = codex_item_summary(value);
-    if let Some(exit_code) = item.get("exitCode").and_then(Value::as_i64) {
-        detail.push_str(&format!(" · exit {exit_code}"));
-    }
-    if let Some(status) = first_nonempty_item_string(item, &["status", "state"]) {
-        detail.push_str(&format!(" · {status}"));
-    }
-    if let Some(output) =
-        first_nonempty_item_string(item, &["output", "stdout", "stderr", "result", "error"])
-    {
-        detail.push_str("\n");
-        detail.push_str(output);
+    let (kind, title, mut metadata) = match item_type {
+        "commandExecution" => (
+            "command",
+            "Command finished",
+            json!({ "command": codex_item_summary(value) }),
+        ),
+        "fileChange" => (
+            "file_edit",
+            "File edit finished",
+            serde_json::from_str(&codex_item_file_summary(item))
+                .unwrap_or_else(|_| json!({ "file": "file" })),
+        ),
+        _ => (
+            "tools",
+            "Tool completed",
+            json!({ "tool": codex_item_summary(value) }),
+        ),
+    };
+
+    if let Some(object) = metadata.as_object_mut() {
+        if let Some(exit_code) = item.get("exitCode").and_then(Value::as_i64) {
+            object.insert("exit_code".to_owned(), json!(exit_code));
+        }
+        if let Some(status) = first_nonempty_item_string(item, &["status", "state"]) {
+            object.insert("status".to_owned(), json!(status));
+        }
+        if let Some(output) =
+            first_nonempty_item_string(item, &["output", "stdout", "stderr", "result", "error"])
+        {
+            object.insert("output".to_owned(), json!(truncate_activity_detail(output)));
+        }
     }
 
-    Some(truncate_activity_detail(&detail))
+    Some((kind, title, metadata.to_string()))
 }
 
 fn effective_codex_cwd(working_directory: &str) -> CommandResult<String> {
@@ -4786,7 +4865,19 @@ fn claude_stream_event_activity(value: &Value) -> Option<(&'static str, &'static
                             .pointer("/event/content_block/name")
                             .and_then(Value::as_str)
                             .unwrap_or("tool");
-                        Some(("tools", "Using tool", name.to_owned()))
+                        match name {
+                            "Bash" => Some((
+                                "command",
+                                "Running command",
+                                json!({ "tool": name }).to_string(),
+                            )),
+                            "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => Some((
+                                "file_edit",
+                                "Editing file",
+                                json!({ "tool": name }).to_string(),
+                            )),
+                            _ => Some(("tools", "Using tool", name.to_owned())),
+                        }
                     } else if block_type == "thinking" {
                         Some(("thinking", "Thinking", "Claude is thinking".to_owned()))
                     } else {
@@ -7076,37 +7167,23 @@ async fn handle_codex_warm_stdout_line(
             let Some(run_id) = active_run_id else {
                 return Ok(());
             };
-            if let Some(detail) = codex_tool_completion_summary(&value) {
-                record_agent_activity(
-                    pool,
-                    Some(agent_id),
-                    Some(run_id),
-                    "tools",
-                    "Tool completed",
-                    detail,
-                )
-                .await?;
+            if let Some((kind, title, detail)) = codex_tool_completion_activity(&value) {
+                record_agent_activity(pool, Some(agent_id), Some(run_id), kind, title, detail)
+                    .await?;
             }
         }
         Some("item/started") => {
             let Some(run_id) = active_run_id else {
                 return Ok(());
             };
-            let item_type = codex_item_type(&value).unwrap_or("item");
-            let (kind, title) = match item_type {
-                "reasoning" => ("thinking", "Thinking"),
-                "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "webSearch"
-                | "fileChange" => ("tools", "Using tools"),
-                "agentMessage" => ("acting", "Writing response"),
-                _ => ("activity", "Codex activity"),
-            };
+            let (kind, title, detail) = codex_item_started_activity(&value);
             record_agent_activity_throttled(
                 pool,
                 Some(agent_id),
                 Some(run_id),
                 kind,
                 title,
-                codex_item_summary(&value),
+                detail,
             )
             .await?;
         }
@@ -8050,11 +8127,11 @@ mod tests {
     use super::{
         append_streaming_agent_message, capped_stream_delta, claim_next_supervisor_command,
         claude_message_text, claude_result_error, claude_stream_event_activity, claude_text_delta,
-        codex_turn_id_from_value, extract_agent_event_json, extract_agent_mentions,
-        finish_streaming_agent_message, insert_agent_message, load_messages,
-        load_runtime_thread_id, migrate, open_dm_with_agent_in_pool, parse_activity_metadata,
-        send_owner_message_in_pool, upsert_runtime_thread_id, DEFAULT_DATABASE_URL,
-        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        codex_item_started_activity, codex_turn_id_from_value, extract_agent_event_json,
+        extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
+        load_messages, load_runtime_thread_id, migrate, open_dm_with_agent_in_pool,
+        parse_activity_metadata, send_owner_message_in_pool, upsert_runtime_thread_id,
+        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use serde_json::json;
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
@@ -8143,6 +8220,41 @@ mod tests {
     }
 
     #[test]
+    fn maps_codex_command_and_file_activity() {
+        assert_eq!(
+            codex_item_started_activity(&json!({
+                "params": {
+                    "item": {
+                        "type": "commandExecution",
+                        "command": "cargo test"
+                    }
+                }
+            })),
+            (
+                "command",
+                "Running command",
+                json!({"command": "cargo test"}).to_string()
+            )
+        );
+        assert_eq!(
+            codex_item_started_activity(&json!({
+                "params": {
+                    "item": {
+                        "type": "fileChange",
+                        "path": "src/main.rs",
+                        "operation": "update"
+                    }
+                }
+            })),
+            (
+                "file_edit",
+                "Editing file",
+                json!({"file": "src/main.rs", "operation": "update"}).to_string()
+            )
+        );
+    }
+
+    #[test]
     fn parses_claude_stream_json_events() {
         assert_eq!(
             claude_text_delta(
@@ -8195,6 +8307,26 @@ mod tests {
                 &json!({"type": "stream_event", "event": {"type": "message_stop"}})
             ),
             None
+        );
+        assert_eq!(
+            claude_stream_event_activity(
+                &json!({"type": "stream_event", "event": {"type": "content_block_start", "content_block": {"type": "tool_use", "name": "Bash"}}})
+            ),
+            Some((
+                "command",
+                "Running command",
+                json!({"tool": "Bash"}).to_string()
+            ))
+        );
+        assert_eq!(
+            claude_stream_event_activity(
+                &json!({"type": "stream_event", "event": {"type": "content_block_start", "content_block": {"type": "tool_use", "name": "Edit"}}})
+            ),
+            Some((
+                "file_edit",
+                "Editing file",
+                json!({"tool": "Edit"}).to_string()
+            ))
         );
     }
 

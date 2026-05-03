@@ -1895,6 +1895,16 @@ body.resizing-column * {
   color: #0071a8;
 }
 
+.phase-badge.phase-command {
+  background: rgba(255, 159, 10, 0.18);
+  color: #9a5a00;
+}
+
+.phase-badge.phase-file_edit {
+  background: rgba(191, 90, 242, 0.14);
+  color: #7b2cbf;
+}
+
 .phase-badge.phase-acting,
 .phase-badge.phase-event,
 .phase-badge.phase-message,
@@ -2096,6 +2106,16 @@ body.resizing-column * {
 .activity-dot[data-kind="thinking"] {
   background: #64d2ff;
   box-shadow: 0 0 0 3px rgba(100, 210, 255, 0.14);
+}
+
+.activity-dot[data-kind="command"] {
+  background: #ff9f0a;
+  box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.16);
+}
+
+.activity-dot[data-kind="file_edit"] {
+  background: #bf5af2;
+  box-shadow: 0 0 0 3px rgba(191, 90, 242, 0.14);
 }
 
 .activity-dot[data-kind="acting"],

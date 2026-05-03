@@ -55,6 +55,10 @@ function userFacingActivityTitle(activity: AgentActivity) {
   const title = activity.summary || activity.title;
   const lowered = title.toLowerCase();
   if (lowered.includes("warm turn") && lowered.includes("started")) return "Started working";
+  if (lowered.includes("running command")) return "Running command";
+  if (lowered.includes("command finished")) return "Command finished";
+  if (lowered.includes("editing file")) return "Editing file";
+  if (lowered.includes("file edit finished")) return "File edit finished";
   if (lowered.includes("turn accepted")) return "Request acknowledged";
   if (lowered.includes("turn interrupt") || lowered.includes("stop signal")) return "Stop requested";
   if (lowered.includes("first token")) return "Responding";
@@ -78,6 +82,10 @@ function userFacingActivityCategory(activity: AgentActivity) {
   switch (activity.phase || activity.kind) {
     case "thinking":
       return "Thinking";
+    case "command":
+      return "Command";
+    case "file_edit":
+      return "File edit";
     case "tools":
       return "Tool";
     case "acting":
@@ -130,7 +138,7 @@ function metadataEntries(activity: AgentActivity) {
 }
 
 function visibleMetadataEntries(activity: AgentActivity) {
-  const priority = ["command", "tool", "duration_ms", "exit_code", "status", "type", "reason"];
+  const priority = ["command", "file", "operation", "tool", "duration_ms", "exit_code", "status", "type", "reason"];
   const entries = metadataEntries(activity)
     .filter(([key]) => !["rate_limit_info", "uuid", "pid", "session_id", "request_id"].includes(key));
 

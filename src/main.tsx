@@ -36,6 +36,8 @@ import "./styles.css";
 
 const ACTIVITY_PHASE_LABELS: Record<string, string> = {
   thinking: "Thinking",
+  command: "Running command",
+  file_edit: "Editing file",
   runtime: "Runtime",
   work: "Work",
   profile: "Profile",
