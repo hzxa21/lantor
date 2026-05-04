@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Agent, AgentActivity, AgentRun, AgentWorkItem } from "../types";
+import { useEffect, useMemo, useState } from "react";
+import { Agent, AgentActivity, AgentRun, AgentSchedule, AgentWorkItem, Channel } from "../types";
 import { formatTime } from "../ui-utils";
 
 type AgentPhase = {
@@ -15,6 +15,9 @@ type AgentDetailDrawerProps = {
   activities: AgentActivity[];
   performance: AgentPerformance;
   workItems: AgentWorkItem[];
+  schedules: AgentSchedule[];
+  channels: Channel[];
+  activeChannelId: string | null;
   onClose: () => void;
   onDelete: (agent: Agent) => void;
   onStart: (agent: Agent) => void;
@@ -24,6 +27,19 @@ type AgentDetailDrawerProps = {
   onOpenWorkItem: (item: AgentWorkItem) => void;
   onCancelWorkItem: (item: AgentWorkItem) => void;
   onRetryWorkItem: (item: AgentWorkItem) => void;
+  onCreateSchedule: (draft: AgentScheduleDraft) => void | Promise<void>;
+  onPauseSchedule: (schedule: AgentSchedule) => void | Promise<void>;
+  onResumeSchedule: (schedule: AgentSchedule) => void | Promise<void>;
+  onCancelSchedule: (schedule: AgentSchedule) => void | Promise<void>;
+};
+
+export type AgentScheduleDraft = {
+  agentId: string;
+  channelId: string;
+  title: string;
+  prompt: string;
+  cadence: string;
+  nextRunAt: string;
 };
 
 export type AgentPerformance = {
@@ -160,10 +176,25 @@ function formatActivityTime(value: string) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function datetimeLocalValue(date: Date) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function defaultNextRunAt() {
+  const date = new Date(Date.now() + 60 * 60 * 1000);
+  date.setSeconds(0, 0);
+  return datetimeLocalValue(date);
+}
+
 function formatDuration(value: number | null) {
   if (value === null || Number.isNaN(value)) return "n/a";
   if (value < 1000) return `${Math.round(value)} ms`;
   return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)} s`;
+}
+
+function channelLabel(channel: Channel) {
+  return channel.kind === "dm" ? "DM" : `#${channel.name}`;
 }
 
 export function AgentDetailDrawer({
@@ -173,6 +204,9 @@ export function AgentDetailDrawer({
   activities,
   performance,
   workItems,
+  schedules,
+  channels,
+  activeChannelId,
   onClose,
   onDelete,
   onStart,
@@ -182,8 +216,58 @@ export function AgentDetailDrawer({
   onOpenWorkItem,
   onCancelWorkItem,
   onRetryWorkItem,
+  onCreateSchedule,
+  onPauseSchedule,
+  onResumeSchedule,
+  onCancelSchedule,
 }: AgentDetailDrawerProps) {
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
+  const scheduleChannels = useMemo(() => {
+    return channels.filter((channel) => channel.kind !== "dm" || channel.dm_agent_id === agent.id);
+  }, [channels, agent.id]);
+  const defaultScheduleChannelId =
+    (activeChannelId && scheduleChannels.some((channel) => channel.id === activeChannelId) ? activeChannelId : null)
+    ?? scheduleChannels.find((channel) => channel.kind === "dm" && channel.dm_agent_id === agent.id)?.id
+    ?? scheduleChannels[0]?.id
+    ?? "";
+  const [scheduleTitle, setScheduleTitle] = useState("");
+  const [schedulePrompt, setSchedulePrompt] = useState("");
+  const [scheduleCadence, setScheduleCadence] = useState("daily");
+  const [scheduleChannelId, setScheduleChannelId] = useState(defaultScheduleChannelId);
+  const [scheduleNextRunAt, setScheduleNextRunAt] = useState(defaultNextRunAt);
+
+  useEffect(() => {
+    setScheduleTitle("");
+    setSchedulePrompt("");
+    setScheduleCadence("daily");
+    setScheduleChannelId(defaultScheduleChannelId);
+    setScheduleNextRunAt(defaultNextRunAt());
+  }, [agent.id, defaultScheduleChannelId]);
+
+  const canCreateSchedule =
+    scheduleTitle.trim().length > 0 &&
+    schedulePrompt.trim().length > 0 &&
+    scheduleChannelId.length > 0 &&
+    scheduleNextRunAt.length > 0;
+
+  async function submitSchedule() {
+    if (!canCreateSchedule) return;
+    try {
+      await onCreateSchedule({
+        agentId: agent.id,
+        channelId: scheduleChannelId,
+        title: scheduleTitle.trim(),
+        prompt: schedulePrompt.trim(),
+        cadence: scheduleCadence,
+        nextRunAt: scheduleNextRunAt,
+      });
+      setScheduleTitle("");
+      setSchedulePrompt("");
+      setScheduleNextRunAt(defaultNextRunAt());
+    } catch {
+      // App-level mutation errors are surfaced by the parent toast.
+    }
+  }
 
   return (
     <aside className="agent-drawer">
@@ -255,6 +339,68 @@ export function AgentDetailDrawer({
                 <small>{performance.activeTurns} currently active</small>
               </div>
             </div>
+          </section>
+          <section className="detail-section schedule-section">
+            <div className="detail-section-head">
+              <h4>Scheduled routines</h4>
+              <span>{schedules.length} routines</span>
+            </div>
+            <div className="schedule-create">
+              <input
+                value={scheduleTitle}
+                onChange={(event) => setScheduleTitle(event.target.value)}
+                placeholder="Routine title"
+              />
+              <textarea
+                value={schedulePrompt}
+                onChange={(event) => setSchedulePrompt(event.target.value)}
+                placeholder="What should this agent do on schedule?"
+              />
+              <div className="schedule-create-grid">
+                <select
+                  value={scheduleChannelId}
+                  onChange={(event) => setScheduleChannelId(event.target.value)}
+                  disabled={scheduleChannels.length === 0}
+                >
+                  {scheduleChannels.map((channel) => (
+                    <option key={channel.id} value={channel.id}>{channelLabel(channel)}</option>
+                  ))}
+                </select>
+                <select value={scheduleCadence} onChange={(event) => setScheduleCadence(event.target.value)}>
+                  <option value="hourly">Hourly</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+                <input
+                  type="datetime-local"
+                  value={scheduleNextRunAt}
+                  onChange={(event) => setScheduleNextRunAt(event.target.value)}
+                />
+                <button className="primary" disabled={!canCreateSchedule} onClick={submitSchedule}>
+                  Add routine
+                </button>
+              </div>
+            </div>
+            {schedules.length === 0 && <p className="empty-mini">No scheduled routines yet.</p>}
+            {schedules.map((schedule) => (
+              <article key={schedule.id} className={`schedule-row ${schedule.status}`}>
+                <div>
+                  <strong>{schedule.title}</strong>
+                  <span>
+                    {schedule.status} · {schedule.cadence} · {schedule.channel_kind === "dm" ? "DM" : `#${schedule.channel_name}`} · next {formatTime(schedule.next_run_at)}
+                  </span>
+                  <p>{compactValue(schedule.prompt, 112)}</p>
+                </div>
+                <div className="schedule-actions">
+                  {schedule.status === "active" ? (
+                    <button onClick={() => onPauseSchedule(schedule)}>Pause</button>
+                  ) : (
+                    <button onClick={() => onResumeSchedule(schedule)}>Resume</button>
+                  )}
+                  <button className="danger" onClick={() => onCancelSchedule(schedule)}>Cancel</button>
+                </div>
+              </article>
+            ))}
           </section>
           <section className="detail-section live-activity-section">
             <div className="detail-section-head">

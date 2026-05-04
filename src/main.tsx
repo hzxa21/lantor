@@ -894,6 +894,11 @@ function App() {
     return data.agent_work_items.filter((item) => item.agent_id === selectedAgent.id).slice(0, 6);
   }, [data, selectedAgent]);
 
+  const selectedAgentSchedules = useMemo(() => {
+    if (!data || !selectedAgent) return [];
+    return data.agent_schedules.filter((item) => item.agent_id === selectedAgent.id);
+  }, [data, selectedAgent]);
+
   const searchResults = useMemo(() => {
     if (!data) return [];
     const query = searchQuery.trim().toLowerCase();
@@ -1581,6 +1586,33 @@ function App() {
     await mutate("cancel_reminder", { reminderId: reminder.id });
   }
 
+  async function createAgentSchedule(draft: {
+    agentId: string;
+    channelId: string;
+    title: string;
+    prompt: string;
+    cadence: string;
+    nextRunAt: string;
+  }) {
+    const nextRunAt = new Date(draft.nextRunAt);
+    if (Number.isNaN(nextRunAt.getTime())) {
+      throw new Error("Invalid schedule time");
+    }
+    await mutate("create_agent_schedule", {
+      agentId: draft.agentId,
+      channelId: draft.channelId,
+      threadRootId: null,
+      title: draft.title,
+      prompt: draft.prompt,
+      cadence: draft.cadence,
+      nextRunAt: nextRunAt.toISOString(),
+    });
+  }
+
+  async function updateAgentScheduleStatus(scheduleId: string, status: string) {
+    await mutate("update_agent_schedule_status", { scheduleId, status });
+  }
+
   async function installSupervisorService() {
     await mutate("install_supervisor_service");
   }
@@ -1704,6 +1736,9 @@ function App() {
           activities={selectedAgentActivities}
           performance={selectedAgentPerformance}
           workItems={selectedAgentWorkItems}
+          schedules={selectedAgentSchedules}
+          channels={data.channels}
+          activeChannelId={activeChannelId}
           onClose={() => setSelectedAgentId(null)}
           onDelete={deleteAgent}
           onStart={startAgent}
@@ -1719,6 +1754,10 @@ function App() {
           }}
           onCancelWorkItem={cancelWorkItem}
           onRetryWorkItem={retryWorkItem}
+          onCreateSchedule={createAgentSchedule}
+          onPauseSchedule={(schedule) => updateAgentScheduleStatus(schedule.id, "paused")}
+          onResumeSchedule={(schedule) => updateAgentScheduleStatus(schedule.id, "active")}
+          onCancelSchedule={(schedule) => updateAgentScheduleStatus(schedule.id, "cancelled")}
         />
       ) : showThread && (
         <ThreadPanel

@@ -2038,6 +2038,123 @@ body.resizing-column * {
   white-space: nowrap;
 }
 
+.schedule-section {
+  gap: 10px;
+}
+
+.schedule-create {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(118, 118, 128, 0.15);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.schedule-create input,
+.schedule-create textarea,
+.schedule-create select {
+  width: 100%;
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--ink);
+  font: inherit;
+}
+
+.schedule-create input,
+.schedule-create select {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.schedule-create textarea {
+  min-height: 74px;
+  resize: vertical;
+  padding: 10px;
+  line-height: 1.42;
+}
+
+.schedule-create-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) 0.8fr minmax(0, 1.1fr) auto;
+  gap: 8px;
+}
+
+.schedule-create button,
+.schedule-actions button {
+  height: 36px;
+  padding: 0 11px;
+  border-radius: 11px;
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.schedule-create button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.schedule-create button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.schedule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #fff;
+}
+
+.schedule-row.paused {
+  background: rgba(142, 142, 147, 0.07);
+}
+
+.schedule-row > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.schedule-row strong {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-row span,
+.schedule-row p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.schedule-row p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.schedule-actions button.danger {
+  background: rgba(255, 59, 48, 0.11);
+  color: #c91810;
+}
+
 .activity-timeline {
   display: grid;
   max-height: min(43vh, 520px);

@@ -224,6 +224,26 @@ struct Reminder {
 }
 
 #[derive(Debug, Serialize)]
+struct AgentSchedule {
+    id: Uuid,
+    agent_id: Uuid,
+    agent_handle: String,
+    channel_id: Uuid,
+    channel_name: String,
+    channel_kind: String,
+    thread_root_id: Option<Uuid>,
+    title: String,
+    prompt: String,
+    cadence: String,
+    status: String,
+    next_run_at: DateTime<Utc>,
+    last_run_at: Option<DateTime<Utc>>,
+    last_work_item_id: Option<Uuid>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
 struct AgentRun {
     id: Uuid,
     agent_id: Uuid,
@@ -362,6 +382,7 @@ struct Bootstrap {
     messages: Vec<Message>,
     tasks: Vec<Task>,
     reminders: Vec<Reminder>,
+    agent_schedules: Vec<AgentSchedule>,
     agent_runs: Vec<AgentRun>,
     agent_work_items: Vec<AgentWorkItem>,
     agent_activities: Vec<AgentActivity>,
@@ -653,6 +674,9 @@ fn spawn_reminder_worker(pool: PgPool) {
             if let Err(err) = process_due_reminders(&pool).await {
                 eprintln!("LocalSlock reminder worker failed: {err}");
             }
+            if let Err(err) = process_due_agent_schedules(&pool).await {
+                eprintln!("LocalSlock schedule worker failed: {err}");
+            }
             sleep(Duration::from_secs(15)).await;
         }
     });
@@ -721,6 +745,131 @@ async fn process_due_reminders(pool: &PgPool) -> CommandResult<()> {
     }
     if fired_any {
         let _ = notify_ui_refresh(pool, "reminder_due").await;
+    }
+    Ok(())
+}
+
+async fn process_due_agent_schedules(pool: &PgPool) -> CommandResult<()> {
+    let rows = sqlx::query(
+        r#"
+        update agent_schedules s
+        set last_run_at = now(),
+            next_run_at = case
+                when s.cadence = 'hourly' then now() + interval '1 hour'
+                when s.cadence = 'daily' then now() + interval '1 day'
+                when s.cadence = 'weekly' then now() + interval '7 days'
+                else now() + interval '1 day'
+            end,
+            updated_at = now()
+        where s.id in (
+            select id
+            from agent_schedules
+            where status = 'active'
+              and next_run_at <= now()
+            order by next_run_at asc
+            for update skip locked
+            limit 8
+        )
+        returning
+            s.id,
+            s.agent_id,
+            (select handle from agents where id = s.agent_id) as agent_handle,
+            s.channel_id,
+            (select name from channels where id = s.channel_id) as channel_name,
+            s.thread_root_id,
+            s.title,
+            s.prompt,
+            s.cadence,
+            s.next_run_at
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    let fired_any = !rows.is_empty();
+    for row in rows {
+        let schedule_id: Uuid = row.get("id");
+        let agent_id: Uuid = row.get("agent_id");
+        let agent_handle: String = row.get("agent_handle");
+        let channel_id: Uuid = row.get("channel_id");
+        let channel_name: String = row.get("channel_name");
+        let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+        let title: String = row.get("title");
+        let prompt: String = row.get("prompt");
+        let cadence: String = row.get("cadence");
+        let next_run_at: DateTime<Utc> = row.get("next_run_at");
+
+        let system_body = format!(
+            "Scheduled routine for @{agent_handle}: {title}\nNext run: {}",
+            next_run_at.to_rfc3339()
+        );
+        let source_message_id =
+            insert_system_message(pool, channel_id, thread_root_id, system_body).await?;
+        let work_thread_root_id = thread_root_id.or(Some(source_message_id));
+        let context = build_schedule_work_context(
+            schedule_id,
+            &agent_handle,
+            &channel_name,
+            work_thread_root_id,
+            source_message_id,
+            &title,
+            &prompt,
+            &cadence,
+        );
+        let work_item_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_work_items (
+                agent_id, channel_id, thread_root_id, source_message_id, title, context, status
+            )
+            values ($1, $2, $3, $4, $5, $6, 'queued')
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(channel_id)
+        .bind(work_thread_root_id)
+        .bind(source_message_id)
+        .bind(&title)
+        .bind(&context)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+
+        sqlx::query(
+            "update agent_schedules set last_work_item_id = $2, updated_at = now() where id = $1",
+        )
+        .bind(schedule_id)
+        .bind(work_item_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_created").await;
+        let scheduled = enqueue_agent_work_if_available(pool, agent_id, work_item_id).await?;
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            None,
+            "schedule",
+            if scheduled {
+                "Scheduled routine dispatched"
+            } else {
+                "Scheduled routine queued"
+            },
+            json!({
+                "schedule_id": schedule_id,
+                "work_item_id": work_item_id,
+                "channel": format!("#{channel_name}"),
+                "cadence": cadence,
+                "next_run_at": next_run_at.to_rfc3339()
+            })
+            .to_string(),
+        )
+        .await?;
+    }
+    if fired_any {
+        let _ = notify_ui_refresh(pool, "agent_schedule_due").await;
     }
     Ok(())
 }
@@ -962,6 +1111,33 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         r#"
+        create table if not exists agent_schedules (
+            id uuid primary key default gen_random_uuid(),
+            agent_id uuid not null references agents(id) on delete cascade,
+            channel_id uuid not null references channels(id) on delete cascade,
+            thread_root_id uuid references messages(id) on delete set null,
+            title text not null,
+            prompt text not null default '',
+            cadence text not null default 'daily',
+            status text not null default 'active',
+            next_run_at timestamptz not null,
+            last_run_at timestamptz,
+            last_work_item_id uuid,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "create index if not exists agent_schedules_due_idx on agent_schedules(status, next_run_at)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         create table if not exists agent_runs (
             id uuid primary key default gen_random_uuid(),
             agent_id uuid not null references agents(id) on delete cascade,
@@ -1172,6 +1348,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let messages = load_messages(&state.pool).await?;
     let tasks = load_tasks(&state.pool).await?;
     let reminders = load_reminders(&state.pool).await?;
+    let agent_schedules = load_agent_schedules(&state.pool).await?;
     let agent_runs = load_agent_runs(&state.pool).await?;
     let agent_work_items = load_agent_work_items(&state.pool).await?;
     let agent_activities = load_agent_activities(&state.pool).await?;
@@ -1186,6 +1363,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         messages,
         tasks,
         reminders,
+        agent_schedules,
         agent_runs,
         agent_work_items,
         agent_activities,
@@ -2979,6 +3157,41 @@ fn normalize_recurrence(value: &str) -> CommandResult<String> {
     }
 }
 
+fn normalize_schedule_cadence(value: &str) -> CommandResult<String> {
+    let cadence = value.trim();
+    if matches!(cadence, "hourly" | "daily" | "weekly") {
+        Ok(cadence.to_owned())
+    } else {
+        Err(format!("unsupported schedule cadence: {cadence}"))
+    }
+}
+
+fn build_schedule_work_context(
+    schedule_id: Uuid,
+    agent_handle: &str,
+    channel_name: &str,
+    thread_root_id: Option<Uuid>,
+    source_message_id: Uuid,
+    title: &str,
+    prompt: &str,
+    cadence: &str,
+) -> String {
+    let mut lines = vec![
+        format!("Scheduled routine id: {schedule_id}"),
+        format!("Assigned agent: @{agent_handle}"),
+        format!("Surface: #{channel_name}"),
+        format!("Source message id: {source_message_id}"),
+        format!("Cadence: {cadence}"),
+    ];
+    if let Some(thread_root_id) = thread_root_id {
+        lines.push(format!("Thread root id: {thread_root_id}"));
+    }
+    lines.push(format!("Routine title: {title}"));
+    lines.push("Routine prompt:".to_owned());
+    lines.push(prompt.trim().to_owned());
+    lines.join("\n")
+}
+
 async fn insert_reminder_event(
     pool: &PgPool,
     reminder_id: Uuid,
@@ -3126,6 +3339,163 @@ async fn cancel_reminder(reminder_id: Uuid, state: State<'_, AppState>) -> Comma
     .map_err(to_string)?;
     insert_reminder_event(&state.pool, reminder_id, "cancelled", "").await?;
     let _ = notify_ui_refresh(&state.pool, "reminder_cancelled").await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn create_agent_schedule(
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    title: String,
+    prompt: String,
+    cadence: String,
+    next_run_at: String,
+    state: State<'_, AppState>,
+) -> CommandResult<Uuid> {
+    let title = title.trim();
+    let prompt = prompt.trim();
+    if title.is_empty() {
+        return Err("schedule title is empty".to_owned());
+    }
+    if prompt.is_empty() {
+        return Err("schedule prompt is empty".to_owned());
+    }
+    let next_run_at = parse_due_at(&next_run_at)?;
+    let cadence = normalize_schedule_cadence(&cadence)?;
+
+    let agent_exists: bool = sqlx::query_scalar("select exists(select 1 from agents where id = $1)")
+        .bind(agent_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(to_string)?;
+    if !agent_exists {
+        return Err("agent does not exist".to_owned());
+    }
+
+    let channel_row = sqlx::query("select kind, dm_agent_id from channels where id = $1")
+        .bind(channel_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(to_string)?;
+    let Some(channel_row) = channel_row else {
+        return Err("channel does not exist".to_owned());
+    };
+    let channel_kind: String = channel_row.get("kind");
+    let dm_agent_id: Option<Uuid> = channel_row.get("dm_agent_id");
+    if channel_kind == "dm" && dm_agent_id != Some(agent_id) {
+        return Err("direct message schedules must target their DM agent".to_owned());
+    }
+
+    if let Some(thread_root_id) = thread_root_id {
+        let root_channel: Option<Uuid> = sqlx::query_scalar(
+            "select channel_id from messages where id = $1 and thread_root_id is null",
+        )
+        .bind(thread_root_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(to_string)?;
+        if root_channel != Some(channel_id) {
+            return Err("thread root does not belong to target channel".to_owned());
+        }
+    }
+
+    if channel_kind != "dm" {
+        sqlx::query(
+            r#"
+            insert into channel_members (channel_id, agent_id)
+            values ($1, $2)
+            on conflict (channel_id, agent_id) do nothing
+            "#,
+        )
+        .bind(channel_id)
+        .bind(agent_id)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+    }
+
+    let schedule_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_schedules (
+            agent_id, channel_id, thread_root_id, title, prompt, cadence, status, next_run_at
+        )
+        values ($1, $2, $3, $4, $5, $6, 'active', $7)
+        returning id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(title)
+    .bind(prompt)
+    .bind(&cadence)
+    .bind(next_run_at)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(to_string)?;
+
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "schedule",
+        "Scheduled routine created",
+        json!({
+            "schedule_id": schedule_id,
+            "cadence": cadence,
+            "next_run_at": next_run_at.to_rfc3339()
+        })
+        .to_string(),
+    )
+    .await?;
+    let _ = notify_ui_refresh(&state.pool, "agent_schedule_created").await;
+    Ok(schedule_id)
+}
+
+#[tauri::command]
+async fn update_agent_schedule_status(
+    schedule_id: Uuid,
+    status: String,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let status = status.trim();
+    if !matches!(status, "active" | "paused" | "cancelled") {
+        return Err(format!("unsupported schedule status: {status}"));
+    }
+    let row = sqlx::query(
+        r#"
+        update agent_schedules
+        set status = $2,
+            updated_at = now()
+        where id = $1 and status <> 'cancelled'
+        returning agent_id
+        "#,
+    )
+    .bind(schedule_id)
+    .bind(status)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(to_string)?;
+    let Some(row) = row else {
+        return Err("schedule does not exist or is already cancelled".to_owned());
+    };
+    let agent_id: Uuid = row.get("agent_id");
+    record_agent_activity(
+        &state.pool,
+        Some(agent_id),
+        None,
+        "schedule",
+        match status {
+            "active" => "Scheduled routine resumed",
+            "paused" => "Scheduled routine paused",
+            "cancelled" => "Scheduled routine cancelled",
+            _ => "Scheduled routine updated",
+        },
+        schedule_id.to_string(),
+    )
+    .await?;
+    let _ = notify_ui_refresh(&state.pool, "agent_schedule_updated").await;
     Ok(())
 }
 
@@ -3514,6 +3884,63 @@ async fn load_reminders(pool: &PgPool) -> CommandResult<Vec<Reminder>> {
         .collect())
 }
 
+async fn load_agent_schedules(pool: &PgPool) -> CommandResult<Vec<AgentSchedule>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            s.id,
+            s.agent_id,
+            a.handle as agent_handle,
+            s.channel_id,
+            c.name as channel_name,
+            c.kind as channel_kind,
+            s.thread_root_id,
+            s.title,
+            s.prompt,
+            s.cadence,
+            s.status,
+            s.next_run_at,
+            s.last_run_at,
+            s.last_work_item_id,
+            s.created_at,
+            s.updated_at
+        from agent_schedules s
+        join agents a on a.id = s.agent_id
+        join channels c on c.id = s.channel_id
+        where s.status in ('active', 'paused')
+        order by
+            case s.status when 'active' then 0 else 1 end,
+            s.next_run_at asc
+        limit 100
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| AgentSchedule {
+            id: row.get("id"),
+            agent_id: row.get("agent_id"),
+            agent_handle: row.get("agent_handle"),
+            channel_id: row.get("channel_id"),
+            channel_name: row.get("channel_name"),
+            channel_kind: row.get("channel_kind"),
+            thread_root_id: row.get("thread_root_id"),
+            title: row.get("title"),
+            prompt: row.get("prompt"),
+            cadence: row.get("cadence"),
+            status: row.get("status"),
+            next_run_at: row.get("next_run_at"),
+            last_run_at: row.get("last_run_at"),
+            last_work_item_id: row.get("last_work_item_id"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        })
+        .collect())
+}
+
 async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
     let rows = sqlx::query(
         r#"
@@ -3860,7 +4287,7 @@ fn activity_phase(kind: &str) -> &'static str {
         "tools" => "tools",
         "error" | "event_error" | "run_error" => "error",
         "run" => "runtime",
-        "dispatch" | "mention" | "dm" | "task" => "work",
+        "dispatch" | "mention" | "dm" | "task" | "schedule" => "work",
         "profile" => "profile",
         _ => "acting",
     }
@@ -8721,6 +9148,7 @@ pub fn run() {
             check_runtime,
             complete_reminder,
             create_agent,
+            create_agent_schedule,
             create_channel,
             create_reminder,
             claim_task,
@@ -8739,6 +9167,7 @@ pub fn run() {
             stop_agent,
             uninstall_supervisor_service,
             update_agent,
+            update_agent_schedule_status,
             update_channel,
             update_message,
             update_thread_followed,
@@ -8767,11 +9196,13 @@ mod tests {
         codex_item_started_activity, codex_turn_id_from_value, extract_agent_event_json,
         extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
         load_channel_agent_roster, load_messages, load_runtime_thread_id, migrate,
-        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_reminders,
-        queue_mentions_as_work_items, send_owner_message_in_pool, upsert_runtime_thread_id,
+        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
+        process_due_reminders, queue_mentions_as_work_items, send_owner_message_in_pool,
+        upsert_runtime_thread_id,
         MentionDispatchOrigin, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
         STREAMING_TRUNCATION_MARKER,
     };
+    use chrono::{DateTime, Utc};
     use serde_json::json;
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
     use uuid::Uuid;
@@ -9470,6 +9901,83 @@ mod tests {
                 where channel_id = $1
                   and sender_role = 'system'
                   and body like 'Reminder:%'
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(system_messages, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn due_agent_schedule_dispatches_work_item() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "scheduler").await?;
+            let channel_id = insert_test_channel(&pool, "scheduled").await?;
+            let schedule_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_schedules (
+                    agent_id, channel_id, title, prompt, cadence, next_run_at, status
+                )
+                values ($1, $2, 'Daily check', 'Summarize open work', 'daily', now() - interval '1 minute', 'active')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            process_due_agent_schedules(&pool).await?;
+
+            let schedule = sqlx::query(
+                "select last_run_at, last_work_item_id, next_run_at > now() as future from agent_schedules where id = $1",
+            )
+            .bind(schedule_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let last_run_at: Option<DateTime<Utc>> = schedule.get("last_run_at");
+            let last_work_item_id: Option<Uuid> = schedule.get("last_work_item_id");
+            let future: bool = schedule.get("future");
+            assert!(last_run_at.is_some());
+            assert!(last_work_item_id.is_some());
+            assert!(future);
+
+            let work_items: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_work_items
+                where agent_id = $1
+                  and channel_id = $2
+                  and title = 'Daily check'
+                  and context like '%Scheduled routine id:%'
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(work_items, 1);
+
+            let system_messages: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from messages
+                where channel_id = $1
+                  and sender_role = 'system'
+                  and body like 'Scheduled routine for @scheduler:%'
                 "#,
             )
             .bind(channel_id)
