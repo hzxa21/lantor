@@ -195,6 +195,26 @@ export type SearchResult = {
   agentId: string | null;
 };
 
+export type InboxKind = "mention" | "dm" | "thread" | "task" | "reminder" | "channel";
+
+export type InboxItem = {
+  id: string;
+  kind: InboxKind;
+  title: string;
+  excerpt: string;
+  surface: string;
+  actor: string;
+  timestamp: string;
+  unread: boolean;
+  channelId: string | null;
+  threadId: string | null;
+  messageId: string | null;
+  taskId: string | null;
+  reminderId: string | null;
+  replyCount: number;
+  newCount: number;
+};
+
 export type AgentForm = {
   handle: string;
   displayName: string;

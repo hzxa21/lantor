@@ -3,7 +3,7 @@ import {
   Circle,
   Clock3,
   Hash,
-  MessageSquare,
+  Inbox,
   Plus,
   Search,
   Settings,
@@ -19,10 +19,10 @@ type SidebarProps = {
   data: Bootstrap;
   channel: Channel | null;
   channelAlertIds: Set<string>;
-  threadUnreadCounts: Record<string, number>;
+  inboxUnreadCount: number;
   openSearch: () => void;
+  openInbox: () => void;
   openReminders: () => void;
-  openThreadBrowser: () => void;
   openCreateChannelModal: () => void;
   openChannelSettingsModal: () => void;
   selectChannel: (channelId: string) => void;
@@ -36,10 +36,10 @@ export function Sidebar({
   data,
   channel,
   channelAlertIds,
-  threadUnreadCounts,
+  inboxUnreadCount,
   openSearch,
+  openInbox,
   openReminders,
-  openThreadBrowser,
   openCreateChannelModal,
   openChannelSettingsModal,
   selectChannel,
@@ -51,7 +51,6 @@ export function Sidebar({
   const [collapsedSections, setCollapsedSections] = useState({ channels: false, dms: false });
   const normalChannels = data.channels.filter((item) => item.kind !== "dm");
   const dmChannels = data.channels.filter((item) => item.kind === "dm");
-  const hasThreadUnread = Object.values(threadUnreadCounts).some((count) => count > 0);
   const dueReminders = data.reminders.filter((reminder) => reminder.status === "fired").length;
   const toggleSection = (section: "channels" | "dms") => {
     setCollapsedSections((current) => ({ ...current, [section]: !current[section] }));
@@ -75,12 +74,12 @@ export function Sidebar({
           <kbd>⌘K</kbd>
         </button>
         <button
-          className={`sidebar-nav-trigger ${hasThreadUnread ? "has-unread" : ""}`}
-          onClick={openThreadBrowser}
+          className={`sidebar-nav-trigger ${inboxUnreadCount ? "has-unread" : ""}`}
+          onClick={openInbox}
         >
-          <MessageSquare size={18} />
-          <span>Threads</span>
-          {hasThreadUnread && <strong>new</strong>}
+          <Inbox size={18} />
+          <span>Inbox</span>
+          {inboxUnreadCount > 0 && <strong>{inboxUnreadCount}</strong>}
         </button>
         <button
           className={`sidebar-nav-trigger ${dueReminders ? "has-unread" : ""}`}

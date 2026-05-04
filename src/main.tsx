@@ -9,10 +9,10 @@ import { ChannelAgentsModal } from "./components/ChannelAgentsModal";
 import { ChannelSettingsModal } from "./components/ChannelSettingsModal";
 import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
+import { InboxModal } from "./components/InboxModal";
 import { SearchModal } from "./components/SearchModal";
 import { ReminderModal } from "./components/ReminderModal";
 import { Sidebar } from "./components/Sidebar";
-import { ThreadBrowserModal } from "./components/ThreadBrowserModal";
 import { ThreadPanel } from "./components/ThreadPanel";
 import {
   ACTIVE_RUN_STATUSES,
@@ -24,6 +24,7 @@ import {
   Bootstrap,
   DraftAttachment,
   EMPTY_AGENT_FORM,
+  InboxItem,
   Message,
   Reminder,
   RUNTIME_PRESETS,
@@ -62,6 +63,7 @@ const MIN_CONVERSATION_WIDTH = 420;
 const UI_REFRESH_EVENT = "localslock://refresh";
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
 
 type UiBackendEvent =
   | { type: "refresh"; reason?: string }
@@ -154,6 +156,11 @@ function percentile(values: number[], ratio: number) {
   return sorted[index];
 }
 
+function messageMentionsOwner(message: Message) {
+  const body = message.body.toLowerCase();
+  return OWNER_MENTION_HANDLES.some((handle) => body.includes(handle.toLowerCase()));
+}
+
 function buildAgentPerformance(activities: AgentActivity[]): AgentPerformance {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
   const recent = activities.filter((activity) => {
@@ -219,8 +226,8 @@ function App() {
   const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showInboxModal, setShowInboxModal] = useState(false);
   const [showReminderModal, setShowReminderModal] = useState(false);
-  const [showThreadBrowserModal, setShowThreadBrowserModal] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
   const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
@@ -571,7 +578,8 @@ function App() {
         showChannelAgentsModal ||
         showCreateAgentModal ||
         showSearchModal ||
-        showThreadBrowserModal ||
+        showInboxModal ||
+        showReminderModal ||
         Boolean(editingAgentId);
       if (event.key === "Escape" && !modalOpen && !isTextInput(event.target)) {
         if (selectedAgentId) {
@@ -593,8 +601,9 @@ function App() {
     showChannelSettingsModal,
     showCreateAgentModal,
     showCreateChannelModal,
+    showInboxModal,
+    showReminderModal,
     showSearchModal,
-    showThreadBrowserModal,
     showThread,
   ]);
 
@@ -639,6 +648,177 @@ function App() {
         !locallyUnfollowedThreadIds.has(message.id))
       .sort((left, right) => (latestByRoot.get(right.id) ?? 0) - (latestByRoot.get(left.id) ?? 0));
   }, [data?.messages, locallyUnfollowedThreadIds, threadUnreadCounts]);
+
+  const inboxItems = useMemo(() => {
+    if (!data) return [];
+    const channelsById = new Map(data.channels.map((item) => [item.id, item]));
+    const agentsById = new Map(data.agents.map((item) => [item.id, item]));
+    const latestByChannel = new Map<string, Message>();
+    const latestReplyByRoot = new Map<string, Message>();
+
+    for (const message of data.messages) {
+      const currentChannelLatest = latestByChannel.get(message.channel_id);
+      if (!currentChannelLatest || new Date(message.created_at) > new Date(currentChannelLatest.created_at)) {
+        latestByChannel.set(message.channel_id, message);
+      }
+      if (message.thread_root_id) {
+        const currentThreadLatest = latestReplyByRoot.get(message.thread_root_id);
+        if (!currentThreadLatest || new Date(message.created_at) > new Date(currentThreadLatest.created_at)) {
+          latestReplyByRoot.set(message.thread_root_id, message);
+        }
+      }
+    }
+
+    const channelLabel = (channelId: string | null) => {
+      if (!channelId) return "LocalSlock";
+      const target = channelsById.get(channelId);
+      if (!target) return "Unknown";
+      if (target.kind === "dm") {
+        const agent = target.dm_agent_id ? agentsById.get(target.dm_agent_id) : null;
+        return agent ? `@${agent.handle}` : "Direct message";
+      }
+      return `#${target.name}`;
+    };
+    const timestamp = (value: string | null | undefined) => value || new Date(0).toISOString();
+    const items: InboxItem[] = [];
+
+    for (const channel of data.channels) {
+      const unread = channel.unread_count > 0 || channelAlertIds.has(channel.id);
+      if (!unread) continue;
+      const latest = latestByChannel.get(channel.id);
+      const dmAgent = channel.kind === "dm" && channel.dm_agent_id ? agentsById.get(channel.dm_agent_id) : null;
+      items.push({
+        id: `${channel.kind}:${channel.id}`,
+        kind: channel.kind === "dm" ? "dm" : "channel",
+        title: channel.kind === "dm" ? `DM with @${dmAgent?.handle ?? "agent"}` : `New activity in #${channel.name}`,
+        excerpt: latest?.body ?? channel.description,
+        surface: channel.kind === "dm" ? "Direct message" : `#${channel.name}`,
+        actor: latest?.sender_name ?? "",
+        timestamp: timestamp(latest?.created_at),
+        unread: true,
+        channelId: channel.id,
+        threadId: latest?.thread_root_id ?? null,
+        messageId: latest?.id ?? null,
+        taskId: null,
+        reminderId: null,
+        replyCount: latest?.thread_root_id ? (threadReplyCounts[latest.thread_root_id] ?? 0) : 0,
+        newCount: channel.unread_count,
+      });
+    }
+
+    for (const root of allThreadRootMessages) {
+      const latestReply = latestReplyByRoot.get(root.id);
+      const unread = (threadUnreadCounts[root.id] ?? 0) > 0;
+      items.push({
+        id: `thread:${root.id}`,
+        kind: "thread",
+        title: firstLines(root.body, 1),
+        excerpt: latestReply ? `${latestReply.sender_name}: ${latestReply.body}` : root.body,
+        surface: channelLabel(root.channel_id),
+        actor: root.sender_name,
+        timestamp: timestamp(latestReply?.created_at ?? root.created_at),
+        unread,
+        channelId: root.channel_id,
+        threadId: root.id,
+        messageId: root.id,
+        taskId: null,
+        reminderId: null,
+        replyCount: threadReplyCounts[root.id] ?? 0,
+        newCount: threadUnreadCounts[root.id] ?? 0,
+      });
+    }
+
+    data.messages
+      .filter((message) => message.sender_role !== "owner" && messageMentionsOwner(message))
+      .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+      .slice(0, 24)
+      .forEach((message) => {
+        const rootId = message.thread_root_id ?? message.id;
+        items.push({
+          id: `mention:${message.id}`,
+          kind: "mention",
+          title: firstLines(message.body, 1),
+          excerpt: message.body,
+          surface: channelLabel(message.channel_id),
+          actor: message.sender_name,
+          timestamp: message.created_at,
+          unread: channelAlertIds.has(message.channel_id) || (message.thread_root_id ? (threadUnreadCounts[message.thread_root_id] ?? 0) > 0 : false),
+          channelId: message.channel_id,
+          threadId: rootId,
+          messageId: message.id,
+          taskId: null,
+          reminderId: null,
+          replyCount: threadReplyCounts[rootId] ?? 0,
+          newCount: message.thread_root_id ? (threadUnreadCounts[message.thread_root_id] ?? 0) : 0,
+        });
+      });
+
+    data.tasks
+      .filter((task) => task.status !== "done")
+      .slice(0, 24)
+      .forEach((task) => {
+        items.push({
+          id: `task:${task.id}`,
+          kind: "task",
+          title: `Task #${task.number}: ${task.title}`,
+          excerpt: task.assignee_name ? `Assigned to ${task.assignee_name}` : "Unassigned",
+          surface: `#${task.channel_name}`,
+          actor: task.status.replace("_", " "),
+          timestamp: task.updated_at,
+          unread: task.status === "in_review",
+          channelId: task.channel_id,
+          threadId: task.message_id,
+          messageId: task.message_id,
+          taskId: task.id,
+          reminderId: null,
+          replyCount: threadReplyCounts[task.message_id] ?? 0,
+          newCount: 0,
+        });
+      });
+
+    data.reminders
+      .filter((reminder) => reminder.status === "fired")
+      .forEach((reminder) => {
+        items.push({
+          id: `reminder:${reminder.id}`,
+          kind: "reminder",
+          title: reminder.title,
+          excerpt: reminder.note,
+          surface: reminder.channel_id ? channelLabel(reminder.channel_id) : "Reminder",
+          actor: "Reminder due",
+          timestamp: reminder.fired_at ?? reminder.due_at,
+          unread: true,
+          channelId: reminder.channel_id,
+          threadId: reminder.thread_root_id,
+          messageId: reminder.message_id,
+          taskId: null,
+          reminderId: reminder.id,
+          replyCount: reminder.thread_root_id ? (threadReplyCounts[reminder.thread_root_id] ?? 0) : 0,
+          newCount: 1,
+        });
+      });
+
+    const kindPriority: Record<InboxItem["kind"], number> = {
+      reminder: 0,
+      mention: 1,
+      dm: 2,
+      thread: 3,
+      task: 4,
+      channel: 5,
+    };
+    return items
+      .sort((left, right) => {
+        if (left.unread !== right.unread) return left.unread ? -1 : 1;
+        const priority = kindPriority[left.kind] - kindPriority[right.kind];
+        if (priority !== 0) return priority;
+        return new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime();
+      })
+      .slice(0, 120);
+  }, [allThreadRootMessages, channelAlertIds, data, threadReplyCounts, threadUnreadCounts]);
+
+  const inboxUnreadCount = useMemo(() => {
+    return inboxItems.filter((item) => item.unread).length;
+  }, [inboxItems]);
 
   const visibleTasks = useMemo(() => {
     if (!data || !channel) return [];
@@ -1246,12 +1426,55 @@ function App() {
     setShowSearchModal(false);
   }
 
-  function openThreadFromBrowser(message: Message) {
-    selectChannel(message.channel_id);
-    openThread(message.id);
-    setActiveTab("chat");
-    setShowThread(true);
-    setShowThreadBrowserModal(false);
+  function openInboxItem(item: InboxItem) {
+    if (item.channelId) selectChannel(item.channelId);
+    if (item.threadId) {
+      openThread(item.threadId);
+      setActiveTab("chat");
+      setShowThread(true);
+    }
+    setShowInboxModal(false);
+  }
+
+  async function markInboxItemRead(item: InboxItem) {
+    if (item.threadId) {
+      setThreadUnreadCounts((current) => {
+        if (!current[item.threadId!]) return current;
+        const next = { ...current };
+        delete next[item.threadId!];
+        return next;
+      });
+    }
+    if (item.channelId) {
+      setChannelAlertIds((current) => {
+        if (!current.has(item.channelId!)) return current;
+        const next = new Set(current);
+        next.delete(item.channelId!);
+        return next;
+      });
+      await invoke("mark_channel_read", { channelId: item.channelId });
+    }
+    if (item.reminderId) {
+      await invoke("complete_reminder", { reminderId: item.reminderId });
+    }
+    await refresh();
+  }
+
+  async function markAllInboxRead() {
+    if (!data) return;
+    const channelIds = new Set<string>();
+    for (const item of inboxItems) {
+      if (item.channelId && (item.unread || channelAlertIds.has(item.channelId))) {
+        channelIds.add(item.channelId);
+      }
+    }
+    await Promise.all([...channelIds].map((channelId) => invoke("mark_channel_read", { channelId })));
+    await Promise.all(data.reminders
+      .filter((reminder) => reminder.status === "fired")
+      .map((reminder) => invoke("complete_reminder", { reminderId: reminder.id })));
+    setChannelAlertIds(new Set());
+    setThreadUnreadCounts({});
+    await refresh();
   }
 
   function startSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -1301,23 +1524,6 @@ function App() {
     document.body.classList.add("resizing-column");
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
-  }
-
-  async function toggleThreadFollow(message: Message) {
-    if (message.thread_followed) {
-      setLocallyUnfollowedThreadIds((current) => new Set(current).add(message.id));
-    } else {
-      setLocallyUnfollowedThreadIds((current) => {
-        if (!current.has(message.id)) return current;
-        const next = new Set(current);
-        next.delete(message.id);
-        return next;
-      });
-    }
-    await mutate("update_thread_followed", {
-      threadRootId: message.id,
-      followed: !message.thread_followed,
-    });
   }
 
   async function startAgent(agent: Agent) {
@@ -1399,10 +1605,10 @@ function App() {
         data={data}
         channel={channel}
         channelAlertIds={channelAlertIds}
-        threadUnreadCounts={threadUnreadCounts}
+        inboxUnreadCount={inboxUnreadCount}
         openSearch={() => setShowSearchModal(true)}
+        openInbox={() => setShowInboxModal(true)}
         openReminders={() => setShowReminderModal(true)}
-        openThreadBrowser={() => setShowThreadBrowserModal(true)}
         openCreateChannelModal={() => setShowCreateChannelModal(true)}
         openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
         selectChannel={selectChannel}
@@ -1426,6 +1632,15 @@ function App() {
         onClose={() => setShowSearchModal(false)}
       />
 
+      <InboxModal
+        open={showInboxModal}
+        items={inboxItems}
+        onOpenItem={openInboxItem}
+        onMarkItemRead={markInboxItemRead}
+        onMarkAllRead={markAllInboxRead}
+        onClose={() => setShowInboxModal(false)}
+      />
+
       <ReminderModal
         open={showReminderModal}
         reminders={data.reminders}
@@ -1447,18 +1662,6 @@ function App() {
         onComplete={completeReminder}
         onCancelReminder={cancelReminder}
         onClose={() => setShowReminderModal(false)}
-      />
-
-      <ThreadBrowserModal
-        open={showThreadBrowserModal}
-        channels={data.channels}
-        threads={allThreadRootMessages}
-        activeThreadId={activeThreadId}
-        replyCounts={threadReplyCounts}
-        unreadCounts={threadUnreadCounts}
-        onOpenThread={openThreadFromBrowser}
-        onToggleFollow={toggleThreadFollow}
-        onClose={() => setShowThreadBrowserModal(false)}
       />
 
       <Conversation
