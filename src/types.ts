@@ -78,6 +78,23 @@ export type Task = {
   updated_at: string;
 };
 
+export type Reminder = {
+  id: string;
+  channel_id: string | null;
+  channel_name: string | null;
+  thread_root_id: string | null;
+  message_id: string | null;
+  title: string;
+  note: string;
+  status: string;
+  recurrence: "none" | "daily" | "weekly" | string;
+  due_at: string;
+  fired_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type AgentRun = {
   id: string;
   agent_id: string;
@@ -154,6 +171,7 @@ export type Bootstrap = {
   agents: Agent[];
   messages: Message[];
   tasks: Task[];
+  reminders: Reminder[];
   agent_runs: AgentRun[];
   agent_work_items: AgentWorkItem[];
   agent_activities: AgentActivity[];

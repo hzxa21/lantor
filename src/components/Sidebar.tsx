@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   Circle,
+  Clock3,
   Hash,
   MessageSquare,
   Plus,
@@ -20,6 +21,7 @@ type SidebarProps = {
   channelAlertIds: Set<string>;
   threadUnreadCounts: Record<string, number>;
   openSearch: () => void;
+  openReminders: () => void;
   openThreadBrowser: () => void;
   openCreateChannelModal: () => void;
   openChannelSettingsModal: () => void;
@@ -36,6 +38,7 @@ export function Sidebar({
   channelAlertIds,
   threadUnreadCounts,
   openSearch,
+  openReminders,
   openThreadBrowser,
   openCreateChannelModal,
   openChannelSettingsModal,
@@ -49,6 +52,7 @@ export function Sidebar({
   const normalChannels = data.channels.filter((item) => item.kind !== "dm");
   const dmChannels = data.channels.filter((item) => item.kind === "dm");
   const hasThreadUnread = Object.values(threadUnreadCounts).some((count) => count > 0);
+  const dueReminders = data.reminders.filter((reminder) => reminder.status === "fired").length;
   const toggleSection = (section: "channels" | "dms") => {
     setCollapsedSections((current) => ({ ...current, [section]: !current[section] }));
   };
@@ -77,6 +81,14 @@ export function Sidebar({
           <MessageSquare size={18} />
           <span>Threads</span>
           {hasThreadUnread && <strong>new</strong>}
+        </button>
+        <button
+          className={`sidebar-nav-trigger ${dueReminders ? "has-unread" : ""}`}
+          onClick={openReminders}
+        >
+          <Clock3 size={18} />
+          <span>Reminders</span>
+          {dueReminders > 0 && <strong>{dueReminders}</strong>}
         </button>
       </section>
 

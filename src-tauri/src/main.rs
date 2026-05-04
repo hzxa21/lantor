@@ -206,6 +206,24 @@ struct Task {
 }
 
 #[derive(Debug, Serialize)]
+struct Reminder {
+    id: Uuid,
+    channel_id: Option<Uuid>,
+    channel_name: Option<String>,
+    thread_root_id: Option<Uuid>,
+    message_id: Option<Uuid>,
+    title: String,
+    note: String,
+    status: String,
+    recurrence: String,
+    due_at: DateTime<Utc>,
+    fired_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
 struct AgentRun {
     id: Uuid,
     agent_id: Uuid,
@@ -343,6 +361,7 @@ struct Bootstrap {
     agents: Vec<Agent>,
     messages: Vec<Message>,
     tasks: Vec<Task>,
+    reminders: Vec<Reminder>,
     agent_runs: Vec<AgentRun>,
     agent_work_items: Vec<AgentWorkItem>,
     agent_activities: Vec<AgentActivity>,
@@ -628,6 +647,84 @@ async fn notify_supervisor_wake(pool: &PgPool) -> CommandResult<()> {
     notify_postgres(pool, SUPERVISOR_WAKE_CHANNEL, "wake").await
 }
 
+fn spawn_reminder_worker(pool: PgPool) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if let Err(err) = process_due_reminders(&pool).await {
+                eprintln!("LocalSlock reminder worker failed: {err}");
+            }
+            sleep(Duration::from_secs(15)).await;
+        }
+    });
+}
+
+async fn process_due_reminders(pool: &PgPool) -> CommandResult<()> {
+    let rows = sqlx::query(
+        r#"
+        update reminders
+        set status = case when recurrence = 'none' then 'fired' else 'scheduled' end,
+            fired_at = now(),
+            due_at = case
+                when recurrence = 'daily' then now() + interval '1 day'
+                when recurrence = 'weekly' then now() + interval '7 days'
+                else due_at
+            end,
+            updated_at = now()
+        where id in (
+            select id
+            from reminders
+            where status = 'scheduled'
+              and due_at <= now()
+            order by due_at asc
+            for update skip locked
+            limit 12
+        )
+        returning id, channel_id, thread_root_id, title, note, recurrence, status, due_at
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    let fired_any = !rows.is_empty();
+    for row in rows {
+        let reminder_id: Uuid = row.get("id");
+        let channel_id: Option<Uuid> = row.get("channel_id");
+        let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+        let title: String = row.get("title");
+        let note: String = row.get("note");
+        let recurrence: String = row.get("recurrence");
+        let status: String = row.get("status");
+        let next_due_at: DateTime<Utc> = row.get("due_at");
+        insert_reminder_event(
+            pool,
+            reminder_id,
+            "fired",
+            if recurrence == "none" {
+                String::new()
+            } else {
+                format!("next_due_at={}", next_due_at.to_rfc3339())
+            },
+        )
+        .await?;
+
+        if let Some(channel_id) = channel_id {
+            let mut body = format!("Reminder: {title}");
+            if !note.trim().is_empty() {
+                body.push_str(&format!("\n{}", note.trim()));
+            }
+            if recurrence != "none" && status == "scheduled" {
+                body.push_str(&format!("\nNext reminder: {}", next_due_at.to_rfc3339()));
+            }
+            let _ = insert_system_message(pool, channel_id, thread_root_id, body).await;
+        }
+    }
+    if fired_any {
+        let _ = notify_ui_refresh(pool, "reminder_due").await;
+    }
+    Ok(())
+}
+
 fn spawn_ui_refresh_listener(app: tauri::AppHandle, database_url: String) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -819,6 +916,44 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             assignee_agent_id uuid references agents(id) on delete set null,
             created_at timestamptz not null default now(),
             updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        create table if not exists reminders (
+            id uuid primary key default gen_random_uuid(),
+            channel_id uuid references channels(id) on delete set null,
+            thread_root_id uuid references messages(id) on delete set null,
+            message_id uuid references messages(id) on delete set null,
+            title text not null,
+            note text not null default '',
+            status text not null default 'scheduled',
+            recurrence text not null default 'none',
+            due_at timestamptz not null,
+            fired_at timestamptz,
+            completed_at timestamptz,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("create index if not exists reminders_due_idx on reminders(status, due_at)")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        r#"
+        create table if not exists reminder_events (
+            id uuid primary key default gen_random_uuid(),
+            reminder_id uuid not null references reminders(id) on delete cascade,
+            event_type text not null,
+            detail text not null default '',
+            created_at timestamptz not null default now()
         )
         "#,
     )
@@ -1036,6 +1171,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let agents = load_agents(&state.pool).await?;
     let messages = load_messages(&state.pool).await?;
     let tasks = load_tasks(&state.pool).await?;
+    let reminders = load_reminders(&state.pool).await?;
     let agent_runs = load_agent_runs(&state.pool).await?;
     let agent_work_items = load_agent_work_items(&state.pool).await?;
     let agent_activities = load_agent_activities(&state.pool).await?;
@@ -1049,6 +1185,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         agents,
         messages,
         tasks,
+        reminders,
         agent_runs,
         agent_work_items,
         agent_activities,
@@ -2827,6 +2964,171 @@ async fn update_task_title(
     Ok(())
 }
 
+fn parse_due_at(value: &str) -> CommandResult<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|err| format!("invalid reminder due_at: {err}"))
+}
+
+fn normalize_recurrence(value: &str) -> CommandResult<String> {
+    let recurrence = value.trim();
+    if matches!(recurrence, "none" | "daily" | "weekly") {
+        Ok(recurrence.to_owned())
+    } else {
+        Err(format!("unsupported reminder recurrence: {recurrence}"))
+    }
+}
+
+async fn insert_reminder_event(
+    pool: &PgPool,
+    reminder_id: Uuid,
+    event_type: &str,
+    detail: impl AsRef<str>,
+) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        insert into reminder_events (reminder_id, event_type, detail)
+        values ($1, $2, $3)
+        "#,
+    )
+    .bind(reminder_id)
+    .bind(event_type)
+    .bind(detail.as_ref())
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn create_reminder(
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+    message_id: Option<Uuid>,
+    title: String,
+    note: String,
+    due_at: String,
+    recurrence: String,
+    state: State<'_, AppState>,
+) -> CommandResult<Uuid> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("reminder title is empty".to_owned());
+    }
+    let due_at = parse_due_at(&due_at)?;
+    let recurrence = normalize_recurrence(&recurrence)?;
+
+    if let Some(thread_root_id) = thread_root_id {
+        let exists: bool = sqlx::query_scalar(
+            "select exists(select 1 from messages where id = $1 and thread_root_id is null)",
+        )
+        .bind(thread_root_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(to_string)?;
+        if !exists {
+            return Err("thread root does not exist".to_owned());
+        }
+    }
+
+    let reminder_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into reminders (
+            channel_id, thread_root_id, message_id, title, note, due_at, recurrence, status
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, 'scheduled')
+        returning id
+        "#,
+    )
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(message_id)
+    .bind(title)
+    .bind(note.trim())
+    .bind(due_at)
+    .bind(&recurrence)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(to_string)?;
+    insert_reminder_event(&state.pool, reminder_id, "created", due_at.to_rfc3339()).await?;
+    let _ = notify_ui_refresh(&state.pool, "reminder_created").await;
+    Ok(reminder_id)
+}
+
+#[tauri::command]
+async fn snooze_reminder(
+    reminder_id: Uuid,
+    minutes: i64,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    if !(1..=10_080).contains(&minutes) {
+        return Err("snooze minutes must be between 1 and 10080".to_owned());
+    }
+    sqlx::query(
+        r#"
+        update reminders
+        set status = 'scheduled',
+            due_at = now() + ($2::text || ' minutes')::interval,
+            updated_at = now()
+        where id = $1 and status in ('scheduled', 'fired')
+        "#,
+    )
+    .bind(reminder_id)
+    .bind(minutes)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+    insert_reminder_event(
+        &state.pool,
+        reminder_id,
+        "snoozed",
+        format!("{minutes} minutes"),
+    )
+    .await?;
+    let _ = notify_ui_refresh(&state.pool, "reminder_snoozed").await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn complete_reminder(reminder_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        update reminders
+        set status = 'done',
+            completed_at = now(),
+            updated_at = now()
+        where id = $1 and status in ('scheduled', 'fired')
+        "#,
+    )
+    .bind(reminder_id)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+    insert_reminder_event(&state.pool, reminder_id, "completed", "").await?;
+    let _ = notify_ui_refresh(&state.pool, "reminder_completed").await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_reminder(reminder_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        update reminders
+        set status = 'cancelled',
+            completed_at = now(),
+            updated_at = now()
+        where id = $1 and status in ('scheduled', 'fired')
+        "#,
+    )
+    .bind(reminder_id)
+    .execute(&state.pool)
+    .await
+    .map_err(to_string)?;
+    insert_reminder_event(&state.pool, reminder_id, "cancelled", "").await?;
+    let _ = notify_ui_refresh(&state.pool, "reminder_cancelled").await;
+    Ok(())
+}
+
 #[tauri::command]
 async fn mark_channel_read(channel_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
     sqlx::query(
@@ -3154,6 +3456,58 @@ async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
             channel_name: row.get("channel_name"),
             assignee_id: row.get("assignee_id"),
             assignee_name: row.get("assignee_name"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        })
+        .collect())
+}
+
+async fn load_reminders(pool: &PgPool) -> CommandResult<Vec<Reminder>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            r.id,
+            r.channel_id,
+            c.name as channel_name,
+            r.thread_root_id,
+            r.message_id,
+            r.title,
+            r.note,
+            r.status,
+            r.recurrence,
+            r.due_at,
+            r.fired_at,
+            r.completed_at,
+            r.created_at,
+            r.updated_at
+        from reminders r
+        left join channels c on c.id = r.channel_id
+        where r.status in ('scheduled', 'fired')
+        order by
+            case r.status when 'fired' then 0 else 1 end,
+            r.due_at asc
+        limit 100
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| Reminder {
+            id: row.get("id"),
+            channel_id: row.get("channel_id"),
+            channel_name: row.get("channel_name"),
+            thread_root_id: row.get("thread_root_id"),
+            message_id: row.get("message_id"),
+            title: row.get("title"),
+            note: row.get("note"),
+            status: row.get("status"),
+            recurrence: row.get("recurrence"),
+            due_at: row.get("due_at"),
+            fired_at: row.get("fired_at"),
+            completed_at: row.get("completed_at"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -3810,7 +4164,7 @@ async fn pipe_run_output<R>(
             Ok(Some(line)) => {
                 let _ = append_run_log(&pool, run_id, format!("[{label}] {line}\n")).await;
                 if let Some((kind, title, detail)) = classify_agent_output_activity(label, &line) {
-                    let _ = record_agent_activity(
+                    let _ = record_agent_activity_throttled(
                         &pool,
                         Some(agent_id),
                         Some(run_id),
@@ -5634,9 +5988,14 @@ async fn run_supervisor() -> CommandResult<()> {
         .listen(SUPERVISOR_WAKE_CHANNEL)
         .await
         .map_err(to_string)?;
+    let mut last_command_cleanup = Instant::now() - Duration::from_secs(3600);
 
     loop {
         write_supervisor_heartbeat(&pool).await?;
+        if last_command_cleanup.elapsed() >= Duration::from_secs(3600) {
+            cleanup_supervisor_commands(&pool).await?;
+            last_command_cleanup = Instant::now();
+        }
         schedule_queued_work_items(&pool, &codex_registry).await?;
         let mut processed_command = false;
         while let Some(command) = claim_next_supervisor_command(&pool).await? {
@@ -5898,6 +6257,20 @@ async fn finish_supervisor_command(
     .await
     .map_err(to_string)?;
 
+    Ok(())
+}
+
+async fn cleanup_supervisor_commands(pool: &PgPool) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        delete from supervisor_commands
+        where status in ('done', 'failed')
+          and updated_at < now() - interval '7 days'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
     Ok(())
 }
 
@@ -7419,8 +7792,15 @@ async fn handle_codex_warm_stdout_line(
                 return Ok(());
             };
             if let Some((kind, title, detail)) = codex_tool_completion_activity(&value) {
-                record_agent_activity(pool, Some(agent_id), Some(run_id), kind, title, detail)
-                    .await?;
+                record_agent_activity_throttled(
+                    pool,
+                    Some(agent_id),
+                    Some(run_id),
+                    kind,
+                    title,
+                    detail,
+                )
+                .await?;
             }
         }
         Some("item/started") => {
@@ -8319,6 +8699,7 @@ pub fn run() {
     tauri::async_runtime::block_on(migrate(&pool)).expect("failed to initialize LocalSlock schema");
     spawn_supervisor_process(&database_url);
     let state_db_url = database_url.clone();
+    let reminder_pool = pool.clone();
 
     tauri::Builder::default()
         .manage(AppState {
@@ -8327,6 +8708,7 @@ pub fn run() {
         })
         .setup(move |app| {
             spawn_ui_refresh_listener(app.handle().clone(), database_url.clone());
+            spawn_reminder_worker(reminder_pool.clone());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("LocalSlock");
             }
@@ -8335,9 +8717,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             cancel_agent_work,
+            cancel_reminder,
             check_runtime,
+            complete_reminder,
             create_agent,
             create_channel,
+            create_reminder,
             claim_task,
             delete_agent,
             delete_channel,
@@ -8349,6 +8734,7 @@ pub fn run() {
             retry_agent_work,
             send_message,
             set_channel_agent_membership,
+            snooze_reminder,
             start_agent,
             stop_agent,
             uninstall_supervisor_service,
@@ -8381,9 +8767,10 @@ mod tests {
         codex_item_started_activity, codex_turn_id_from_value, extract_agent_event_json,
         extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
         load_channel_agent_roster, load_messages, load_runtime_thread_id, migrate,
-        open_dm_with_agent_in_pool, parse_activity_metadata, queue_mentions_as_work_items,
-        send_owner_message_in_pool, upsert_runtime_thread_id, MentionDispatchOrigin,
-        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_reminders,
+        queue_mentions_as_work_items, send_owner_message_in_pool, upsert_runtime_thread_id,
+        MentionDispatchOrigin, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
+        STREAMING_TRUNCATION_MARKER,
     };
     use serde_json::json;
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
@@ -8952,6 +9339,144 @@ mod tests {
             assert_eq!(roster.len(), 1);
             assert!(roster[0].contains("@peer"));
             assert!(!roster[0].contains("@current"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn agent_collaboration_pauses_after_thread_limit() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let author_id = insert_test_agent(&pool, "loop-author").await?;
+            let reviewer_id = insert_test_agent(&pool, "loop-reviewer").await?;
+            let channel_id = insert_test_channel(&pool, "loop-guard").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2), ($1, $3)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(author_id)
+            .bind(reviewer_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'start collaboration', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            for index in 0..10 {
+                insert_agent_message(
+                    &pool,
+                    author_id,
+                    channel_id,
+                    Some(root_id),
+                    &format!("agent loop message {index}"),
+                    false,
+                )
+                .await?;
+            }
+            insert_agent_message(
+                &pool,
+                author_id,
+                channel_id,
+                Some(root_id),
+                "@loop-reviewer continue the loop",
+                false,
+            )
+            .await?;
+
+            let work_items: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_work_items
+                where channel_id = $1 and agent_id = $2
+                "#,
+            )
+            .bind(channel_id)
+            .bind(reviewer_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(work_items, 0);
+            let system_messages: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from messages
+                where channel_id = $1
+                  and thread_root_id = $2
+                  and sender_role = 'system'
+                  and body like 'Inter-agent collaboration paused:%'
+                "#,
+            )
+            .bind(channel_id)
+            .bind(root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(system_messages, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn due_reminder_fires_system_message() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "reminders").await?;
+            let reminder_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into reminders (channel_id, title, note, due_at, recurrence, status)
+                values ($1, 'Check thread', 'Follow up with Dylan', now() - interval '1 minute', 'none', 'scheduled')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            process_due_reminders(&pool).await?;
+
+            let status: String = sqlx::query_scalar("select status from reminders where id = $1")
+                .bind(reminder_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(status, "fired");
+            let system_messages: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from messages
+                where channel_id = $1
+                  and sender_role = 'system'
+                  and body like 'Reminder:%'
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(system_messages, 1);
             Ok(())
         }
         .await;
