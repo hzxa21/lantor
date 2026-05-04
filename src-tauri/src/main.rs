@@ -2019,6 +2019,31 @@ fn extract_agent_mentions(body: &str) -> Vec<String> {
     handles
 }
 
+#[derive(Clone, Copy)]
+enum MentionDispatchOrigin {
+    Owner,
+    Agent { sender_agent_id: Uuid },
+}
+
+impl MentionDispatchOrigin {
+    fn sender_agent_id(self) -> Option<Uuid> {
+        match self {
+            MentionDispatchOrigin::Owner => None,
+            MentionDispatchOrigin::Agent { sender_agent_id } => Some(sender_agent_id),
+        }
+    }
+
+    fn allows_dm_auto_dispatch(self) -> bool {
+        matches!(self, MentionDispatchOrigin::Owner)
+    }
+
+    fn is_agent(self) -> bool {
+        matches!(self, MentionDispatchOrigin::Agent { .. })
+    }
+}
+
+const INTER_AGENT_THREAD_MESSAGE_LIMIT: i64 = 10;
+
 async fn queue_mentions_as_work_items(
     pool: &PgPool,
     channel_id: Uuid,
@@ -2026,6 +2051,7 @@ async fn queue_mentions_as_work_items(
     message_id: Uuid,
     task_id: Option<Uuid>,
     body: &str,
+    origin: MentionDispatchOrigin,
 ) -> CommandResult<()> {
     let mentions = extract_agent_mentions(body);
     let channel_row = sqlx::query("select name, kind, dm_agent_id from channels where id = $1")
@@ -2039,6 +2065,9 @@ async fn queue_mentions_as_work_items(
 
     let mut targets = Vec::new();
     if channel_kind == "dm" {
+        if !origin.allows_dm_auto_dispatch() {
+            return Ok(());
+        }
         if let Some(agent_id) = dm_agent_id {
             let agent_handle: Option<String> =
                 sqlx::query_scalar("select handle from agents where id = $1")
@@ -2061,6 +2090,28 @@ async fn queue_mentions_as_work_items(
             let Some(agent_id) = agent_id else {
                 continue;
             };
+            if Some(agent_id) == origin.sender_agent_id() {
+                continue;
+            }
+            if origin.is_agent() {
+                let is_channel_member: bool = sqlx::query_scalar(
+                    r#"
+                    select exists (
+                        select 1
+                        from channel_members
+                        where channel_id = $1 and agent_id = $2
+                    )
+                    "#,
+                )
+                .bind(channel_id)
+                .bind(agent_id)
+                .fetch_one(pool)
+                .await
+                .map_err(to_string)?;
+                if !is_channel_member {
+                    continue;
+                }
+            }
             targets.push((agent_id, handle));
         }
     }
@@ -2069,6 +2120,22 @@ async fn queue_mentions_as_work_items(
         return Ok(());
     }
     let reply_thread_root_id = thread_root_id.unwrap_or(message_id);
+    if origin.is_agent()
+        && inter_agent_thread_message_count_since_last_owner(pool, channel_id, reply_thread_root_id)
+            .await?
+            >= INTER_AGENT_THREAD_MESSAGE_LIMIT
+    {
+        insert_system_message(
+            pool,
+            channel_id,
+            Some(reply_thread_root_id),
+            format!(
+                "Inter-agent collaboration paused: this thread reached {INTER_AGENT_THREAD_MESSAGE_LIMIT} agent messages. Add a human reply to continue."
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
 
     let title = body
         .lines()
@@ -2078,6 +2145,24 @@ async fn queue_mentions_as_work_items(
         .unwrap_or_else(|| format!("Mention in #{channel_name}"));
 
     for (agent_id, agent_handle) in targets {
+        let already_queued: bool = sqlx::query_scalar(
+            r#"
+            select exists (
+                select 1
+                from agent_work_items
+                where source_message_id = $1 and agent_id = $2
+            )
+            "#,
+        )
+        .bind(message_id)
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+        if already_queued {
+            continue;
+        }
+
         sqlx::query(
             r#"
             insert into channel_members (channel_id, agent_id)
@@ -2138,12 +2223,16 @@ async fn queue_mentions_as_work_items(
             if scheduled {
                 if channel_kind == "dm" {
                     "DM dispatched"
+                } else if origin.is_agent() {
+                    "Collaboration dispatched"
                 } else {
                     "Mention dispatched"
                 }
             } else {
                 if channel_kind == "dm" {
                     "DM queued"
+                } else if origin.is_agent() {
+                    "Collaboration queued"
                 } else {
                     "Mention queued"
                 }
@@ -2154,6 +2243,101 @@ async fn queue_mentions_as_work_items(
     }
 
     Ok(())
+}
+
+async fn inter_agent_thread_message_count_since_last_owner(
+    pool: &PgPool,
+    channel_id: Uuid,
+    thread_root_id: Uuid,
+) -> CommandResult<i64> {
+    let last_owner_created_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+        r#"
+        select max(created_at)
+        from messages
+        where channel_id = $1
+          and (id = $2 or thread_root_id = $2)
+          and sender_role = 'owner'
+        "#,
+    )
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    let count = if let Some(last_owner_created_at) = last_owner_created_at {
+        sqlx::query_scalar(
+            r#"
+            select count(*)::bigint
+            from messages
+            where channel_id = $1
+              and (id = $2 or thread_root_id = $2)
+              and sender_agent_id is not null
+              and created_at > $3
+            "#,
+        )
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .bind(last_owner_created_at)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?
+    } else {
+        sqlx::query_scalar(
+            r#"
+            select count(*)::bigint
+            from messages
+            where channel_id = $1
+              and (id = $2 or thread_root_id = $2)
+              and sender_agent_id is not null
+            "#,
+        )
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?
+    };
+    Ok(count)
+}
+
+async fn queue_agent_message_mentions(pool: &PgPool, message_id: Uuid) -> CommandResult<()> {
+    let Some(row) = sqlx::query(
+        r#"
+        select channel_id, thread_root_id, sender_agent_id, body, is_task
+        from messages
+        where id = $1
+        "#,
+    )
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?
+    else {
+        return Ok(());
+    };
+
+    let Some(sender_agent_id) = row.get::<Option<Uuid>, _>("sender_agent_id") else {
+        return Ok(());
+    };
+    let is_task: bool = row.get("is_task");
+    if is_task {
+        return Ok(());
+    }
+
+    let channel_id: Uuid = row.get("channel_id");
+    let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+    let body: String = row.get("body");
+    queue_mentions_as_work_items(
+        pool,
+        channel_id,
+        thread_root_id,
+        message_id,
+        None,
+        body.trim(),
+        MentionDispatchOrigin::Agent { sender_agent_id },
+    )
+    .await
 }
 
 async fn build_mention_work_context(
@@ -2171,7 +2355,7 @@ async fn build_mention_work_context(
     if let Some(thread_root_id) = thread_root_id {
         lines.push(format!("Thread root id: {thread_root_id}"));
     }
-    lines.push("Mentioned message from Dylan:".to_owned());
+    lines.push("Mentioned message:".to_owned());
     lines.push(body.trim().to_owned());
 
     if let Some(thread_root_id) = thread_root_id {
@@ -2462,6 +2646,7 @@ async fn send_owner_message_in_pool(
         msg_id,
         task_id,
         body.trim(),
+        MentionDispatchOrigin::Owner,
     )
     .await?;
     let _ = notify_ui_refresh(pool, "message").await;
@@ -4075,6 +4260,9 @@ async fn insert_agent_message(
     }
 
     tx.commit().await.map_err(to_string)?;
+    if !as_task {
+        queue_agent_message_mentions(pool, msg_id).await?;
+    }
     let _ = notify_ui_refresh(pool, "message").await;
     Ok(msg_id)
 }
@@ -4149,6 +4337,9 @@ async fn append_streaming_agent_message(
         let _ =
             notify_ui_message_delta(pool, message_id, &append_delta, delivery_state, "stream_delta")
                 .await;
+        if truncated {
+            queue_agent_message_mentions(pool, message_id).await?;
+        }
         return Ok(message_id);
     }
 
@@ -4195,6 +4386,9 @@ async fn append_streaming_agent_message(
     } else {
         let _ = notify_ui_refresh(pool, "stream_start").await;
     }
+    if truncated {
+        queue_agent_message_mentions(pool, message_id).await?;
+    }
     Ok(message_id)
 }
 
@@ -4229,6 +4423,9 @@ async fn finish_streaming_agent_message(
                 let _ = notify_ui_message_upsert(pool, &message, "stream_finish").await;
             } else {
                 let _ = notify_ui_refresh(pool, "stream_finish").await;
+            }
+            if delivery_state == "complete" {
+                queue_agent_message_mentions(pool, message_id).await?;
             }
         }
     }
@@ -4426,6 +4623,7 @@ fn build_work_item_prompt(
     channel_name: Option<&str>,
     task_number: Option<i64>,
     thread_root_id: Option<Uuid>,
+    available_agents: &[String],
 ) -> String {
     let mut lines = vec![
         "Current LocalSlock work item:".to_owned(),
@@ -4441,6 +4639,16 @@ fn build_work_item_prompt(
     if let Some(thread_root_id) = thread_root_id {
         lines.push(format!("thread_root_id: {thread_root_id}"));
     }
+    if !available_agents.is_empty() {
+        lines.push("available_agents_in_channel:".to_owned());
+        for agent in available_agents {
+            lines.push(format!("- {agent}"));
+        }
+        lines.push(
+            "If you need input from another agent, mention their @handle in your visible reply. LocalSlock will dispatch them in this same thread. Use this sparingly, and never mention yourself for delegation."
+                .to_owned(),
+        );
+    }
     if !context.trim().is_empty() {
         lines.push("context:".to_owned());
         lines.push(context.trim().to_owned());
@@ -4450,6 +4658,45 @@ fn build_work_item_prompt(
             .to_owned(),
     );
     lines.join("\n")
+}
+
+async fn load_channel_agent_roster(
+    pool: &PgPool,
+    channel_id: Option<Uuid>,
+    current_agent_id: Uuid,
+) -> CommandResult<Vec<String>> {
+    let Some(channel_id) = channel_id else {
+        return Ok(vec![]);
+    };
+    let rows = sqlx::query(
+        r#"
+        select a.handle, a.display_name, a.runtime, a.model, a.status
+        from channels c
+        join channel_members cm on cm.channel_id = c.id
+        join agents a on a.id = cm.agent_id
+        where c.id = $1
+          and c.kind = 'channel'
+          and a.id <> $2
+        order by lower(a.handle)
+        "#,
+    )
+    .bind(channel_id)
+    .bind(current_agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let handle: String = row.get("handle");
+            let display_name: String = row.get("display_name");
+            let runtime: String = row.get("runtime");
+            let model: String = row.get("model");
+            let status: String = row.get("status");
+            format!("@{handle} - {display_name} - {runtime}/{model} - {status}")
+        })
+        .collect())
 }
 
 fn load_agent_memory_context(working_directory: &str) -> CommandResult<Option<String>> {
@@ -6395,6 +6642,7 @@ async fn supervisor_start_agent(
             let row = sqlx::query(
                 r#"
                 select
+                    w.channel_id,
                     w.title,
                     w.context,
                     c.name as channel_name,
@@ -6413,9 +6661,11 @@ async fn supervisor_start_agent(
             .map_err(to_string)?;
             let title: String = row.get("title");
             let context: String = row.get("context");
+            let channel_id: Option<Uuid> = row.get("channel_id");
             let channel_name: Option<String> = row.get("channel_name");
             let task_number: Option<i64> = row.get("task_number");
             let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+            let available_agents = load_channel_agent_roster(pool, channel_id, agent_id).await?;
             build_work_item_prompt(
                 work_item_id,
                 &title,
@@ -6423,6 +6673,7 @@ async fn supervisor_start_agent(
                 channel_name.as_deref(),
                 task_number,
                 thread_root_id,
+                &available_agents,
             )
         }
         None => String::new(),
@@ -8129,8 +8380,9 @@ mod tests {
         claude_message_text, claude_result_error, claude_stream_event_activity, claude_text_delta,
         codex_item_started_activity, codex_turn_id_from_value, extract_agent_event_json,
         extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
-        load_messages, load_runtime_thread_id, migrate, open_dm_with_agent_in_pool,
-        parse_activity_metadata, send_owner_message_in_pool, upsert_runtime_thread_id,
+        load_channel_agent_roster, load_messages, load_runtime_thread_id, migrate,
+        open_dm_with_agent_in_pool, parse_activity_metadata, queue_mentions_as_work_items,
+        send_owner_message_in_pool, upsert_runtime_thread_id, MentionDispatchOrigin,
         DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use serde_json::json;
@@ -8552,6 +8804,154 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(work_items, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn agent_mentions_dispatch_other_agents_once_in_same_thread() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let author_id = insert_test_agent(&pool, "author").await?;
+            let reviewer_id = insert_test_agent(&pool, "reviewer").await?;
+            let outsider_id = insert_test_agent(&pool, "outsider").await?;
+            let channel_id = insert_test_channel(&pool, "collab").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2), ($1, $3)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(author_id)
+            .bind(reviewer_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let message_id = insert_agent_message(
+                &pool,
+                author_id,
+                channel_id,
+                None,
+                "@author ignore self, @reviewer please review this, @outsider ignore non-member",
+                false,
+            )
+            .await?;
+            queue_mentions_as_work_items(
+                &pool,
+                channel_id,
+                None,
+                message_id,
+                None,
+                "@reviewer please review this again",
+                MentionDispatchOrigin::Agent {
+                    sender_agent_id: author_id,
+                },
+            )
+            .await?;
+
+            let work_items = sqlx::query(
+                r#"
+                select agent_id, thread_root_id, source_message_id
+                from agent_work_items
+                where source_message_id = $1
+                "#,
+            )
+            .bind(message_id)
+            .fetch_all(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(work_items.len(), 1);
+            assert_eq!(work_items[0].get::<Uuid, _>("agent_id"), reviewer_id);
+            assert_ne!(work_items[0].get::<Uuid, _>("agent_id"), outsider_id);
+            assert_eq!(
+                work_items[0].get::<Option<Uuid>, _>("thread_root_id"),
+                Some(message_id)
+            );
+            assert_eq!(
+                work_items[0].get::<Option<Uuid>, _>("source_message_id"),
+                Some(message_id)
+            );
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn agent_mentions_do_not_cross_dispatch_from_dm() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let dm_agent_id = insert_test_agent(&pool, "dm-agent").await?;
+            let reviewer_id = insert_test_agent(&pool, "dm-reviewer").await?;
+            let dm_channel_id =
+                Uuid::parse_str(&open_dm_with_agent_in_pool(&pool, dm_agent_id).await?)
+                    .map_err(|err| err.to_string())?;
+
+            insert_agent_message(
+                &pool,
+                dm_agent_id,
+                dm_channel_id,
+                None,
+                "@dm-reviewer please join this DM",
+                false,
+            )
+            .await?;
+            let work_items: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_work_items
+                where channel_id = $1 and agent_id = $2
+                "#,
+            )
+            .bind(dm_channel_id)
+            .bind(reviewer_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(work_items, 0);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn channel_agent_roster_excludes_current_agent() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let current_id = insert_test_agent(&pool, "current").await?;
+            let peer_id = insert_test_agent(&pool, "peer").await?;
+            let channel_id = insert_test_channel(&pool, "roster").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2), ($1, $3)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(current_id)
+            .bind(peer_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let roster = load_channel_agent_roster(&pool, Some(channel_id), current_id).await?;
+            assert_eq!(roster.len(), 1);
+            assert!(roster[0].contains("@peer"));
+            assert!(!roster[0].contains("@current"));
             Ok(())
         }
         .await;
