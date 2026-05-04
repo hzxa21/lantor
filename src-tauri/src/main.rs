@@ -29,6 +29,7 @@ const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/local
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
 const LAUNCH_AGENT_LABEL: &str = "local.localslock.supervisor";
 const AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
+const SILENT_REPLY_PREFIX: &str = "LOCAL_SLOCK_SILENT_REPLY";
 const UI_REFRESH_CHANNEL: &str = "localslock_ui_refresh";
 const SUPERVISOR_WAKE_CHANNEL: &str = "localslock_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "localslock://refresh";
@@ -371,6 +372,9 @@ enum AgentEvent {
         task_number: i64,
         assignee_handle: Option<String>,
     },
+    Silent {
+        reason: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -500,6 +504,20 @@ async fn notify_ui_message_delta(
     .await
 }
 
+async fn notify_ui_message_delete(
+    pool: &PgPool,
+    message_id: Uuid,
+    reason: &str,
+) -> CommandResult<()> {
+    notify_postgres(
+        pool,
+        UI_REFRESH_CHANNEL,
+        &json!({ "type": "message_delete", "reason": reason, "message_id": message_id })
+            .to_string(),
+    )
+    .await
+}
+
 async fn notify_ui_activity_upsert(
     pool: &PgPool,
     activity: &AgentActivity,
@@ -598,6 +616,17 @@ async fn maybe_insert_work_item_system_message(
     work_item: &AgentWorkItemPatch,
     reason: &str,
 ) -> CommandResult<()> {
+    // Conversation-triggered agent turns are attention events, not timeline-level tasks.
+    // Keep normal lifecycle messages for explicit task-backed work only; still surface
+    // exceptional failures/cancellations for conversational turns.
+    if work_item.task_number.is_none()
+        && !matches!(
+            reason,
+            "work_item_failed" | "work_item_cancelled" | "work_item_finished"
+        )
+    {
+        return Ok(());
+    }
     let Some(channel_id) = work_item.channel_id else {
         return Ok(());
     };
@@ -656,6 +685,7 @@ async fn maybe_insert_work_item_system_message(
                 "@{} cancelled work{}{}",
                 work_item.agent_handle, task_suffix, title_suffix
             ),
+            "silent" => return Ok(()),
             _ => return Ok(()),
         },
         _ => return Ok(()),
@@ -3364,11 +3394,12 @@ async fn create_agent_schedule(
     let next_run_at = parse_due_at(&next_run_at)?;
     let cadence = normalize_schedule_cadence(&cadence)?;
 
-    let agent_exists: bool = sqlx::query_scalar("select exists(select 1 from agents where id = $1)")
-        .bind(agent_id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(to_string)?;
+    let agent_exists: bool =
+        sqlx::query_scalar("select exists(select 1 from agents where id = $1)")
+            .bind(agent_id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(to_string)?;
     if !agent_exists {
         return Err("agent does not exist".to_owned());
     }
@@ -4332,6 +4363,7 @@ fn work_status_title(status: &str) -> &'static str {
     match status {
         "running" => "Request started",
         "done" => "Request completed",
+        "silent" => "No visible reply needed",
         "cancelled" => "Request cancelled",
         "failed" => "Request failed",
         "queued" => "Request queued",
@@ -4602,6 +4634,10 @@ async fn pipe_run_output<R>(
                     .await;
                 }
                 if parse_agent_events {
+                    if let Some(reason) = silent_reply_reason(&line) {
+                        let _ = mark_run_work_item_silent(&pool, agent_id, run_id, &reason).await;
+                        continue;
+                    }
                     match ingest_agent_event_line(&pool, agent_id, run_id, &line).await {
                         Ok(Some(note)) => {
                             let _ =
@@ -4657,7 +4693,9 @@ async fn ingest_agent_event_line(
         return Ok(None);
     }
     let event: AgentEvent = serde_json::from_str(json).map_err(to_string)?;
-    handle_agent_event(pool, agent_id, event).await.map(Some)
+    handle_agent_event(pool, agent_id, run_id, event)
+        .await
+        .map(Some)
 }
 
 async fn claim_agent_event(pool: &PgPool, run_id: Uuid, json: &str) -> CommandResult<bool> {
@@ -4721,7 +4759,7 @@ async fn replay_agent_events_from_run_log_if_needed(
         let result = match serde_json::from_str::<AgentEvent>(json).map_err(to_string) {
             Ok(event) => {
                 if claim_agent_event(pool, run_id, json).await? {
-                    handle_agent_event(pool, agent_id, event).await
+                    handle_agent_event(pool, agent_id, run_id, event).await
                 } else {
                     continue;
                 }
@@ -4774,6 +4812,7 @@ fn extract_agent_event_json(line: &str) -> Option<&str> {
 async fn handle_agent_event(
     pool: &PgPool,
     agent_id: Uuid,
+    run_id: Uuid,
     event: AgentEvent,
 ) -> CommandResult<String> {
     match event {
@@ -4911,6 +4950,12 @@ async fn handle_agent_event(
             )
             .await?;
             Ok(format!("task #{task_number} assignee updated"))
+        }
+        AgentEvent::Silent { reason } => {
+            let reason =
+                reason.unwrap_or_else(|| "Agent judged no visible reply was needed.".to_owned());
+            mark_run_work_item_silent(pool, agent_id, run_id, &reason).await?;
+            Ok("silent reply accepted".to_owned())
         }
     }
 }
@@ -5213,6 +5258,138 @@ async fn finish_streaming_agent_message(
     Ok(())
 }
 
+fn silent_reply_reason(body: &str) -> Option<String> {
+    let first_line = body.trim().lines().next()?.trim().trim_matches('`').trim();
+    let rest = first_line.strip_prefix(SILENT_REPLY_PREFIX)?;
+    if !rest.is_empty()
+        && !rest.starts_with(':')
+        && !rest
+            .chars()
+            .next()
+            .map(char::is_whitespace)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    let reason = rest.trim_start_matches(':').trim();
+    Some(reason.to_owned())
+}
+
+async fn mark_work_item_silent(
+    pool: &PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+    work_item_id: Uuid,
+    reason: &str,
+) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        update agent_work_items
+        set status = 'silent',
+            completed_at = coalesce(completed_at, now()),
+            updated_at = now()
+        where id = $1
+          and status not in ('cancelled', 'failed')
+        "#,
+    )
+    .bind(work_item_id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    notify_ui_work_item_changed(pool, work_item_id, "work_item_silent").await;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        Some(run_id),
+        "decision",
+        "No visible reply needed",
+        json!({
+            "work_item_id": work_item_id,
+            "reason": if reason.trim().is_empty() {
+                "Agent judged the message as non-actionable."
+            } else {
+                reason.trim()
+            }
+        })
+        .to_string(),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn mark_run_work_item_silent(
+    pool: &PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+    reason: &str,
+) -> CommandResult<()> {
+    let work_item_id: Option<Uuid> =
+        sqlx::query_scalar("select work_item_id from agent_runs where id = $1 and agent_id = $2")
+            .bind(run_id)
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string)?
+            .flatten();
+    if let Some(work_item_id) = work_item_id {
+        mark_work_item_silent(pool, agent_id, run_id, work_item_id, reason).await?;
+    } else {
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            Some(run_id),
+            "decision",
+            "No visible reply needed",
+            reason.trim(),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn maybe_hide_silent_streaming_reply(
+    pool: &PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+    work_item_id: Option<Uuid>,
+    stream_key: &str,
+) -> CommandResult<bool> {
+    let Some(row) = sqlx::query("select id, body from messages where stream_key = $1")
+        .bind(stream_key)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?
+    else {
+        return Ok(false);
+    };
+    let message_id: Uuid = row.get("id");
+    let body: String = row.get("body");
+    let Some(reason) = silent_reply_reason(&body) else {
+        return Ok(false);
+    };
+
+    sqlx::query("delete from messages where id = $1")
+        .bind(message_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+    let _ = notify_ui_message_delete(pool, message_id, "silent_reply").await;
+    if let Some(work_item_id) = work_item_id {
+        mark_work_item_silent(pool, agent_id, run_id, work_item_id, &reason).await?;
+    } else {
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            Some(run_id),
+            "decision",
+            "No visible reply needed",
+            reason.trim(),
+        )
+        .await?;
+    }
+    Ok(true)
+}
+
 async fn load_runtime_thread_id(
     pool: &PgPool,
     agent_id: Uuid,
@@ -5342,6 +5519,8 @@ async fn wait_for_agent_run(
                 .flatten();
         let work_status = if current_status.as_deref() == Some("cancelling") {
             "cancelled"
+        } else if current_status.as_deref() == Some("silent") && run_status == "exited" {
+            "silent"
         } else if run_status == "exited" {
             "done"
         } else {
@@ -5434,6 +5613,10 @@ fn build_work_item_prompt(
         lines.push("context:".to_owned());
         lines.push(context.trim().to_owned());
     }
+    lines.push(
+        "Before producing a visible reply, decide whether the latest user message actually needs an agent response. If it is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, do not write a normal answer. Instead output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Visible replies are for questions, requests, reviews, code/task work, decisions, useful status, or meaningful collaboration."
+            .to_owned(),
+    );
     lines.push(
         "When you finish, write results back with LOCAL_SLOCK_EVENT lines and update task status if applicable."
             .to_owned(),
@@ -5548,7 +5731,7 @@ fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
     }
     legacy_prompt.replace(
         "When you finish, write results back with LOCAL_SLOCK_EVENT lines and update task status if applicable.",
-        "Reply normally. LocalSlock will stream your assistant text into the correct channel/thread automatically. Do not emit LOCAL_SLOCK_EVENT lines in this Codex JSON streaming mode.",
+        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Do not emit LOCAL_SLOCK_EVENT lines in this Codex JSON streaming mode.",
     )
 }
 
@@ -5557,6 +5740,7 @@ fn codex_developer_instructions(handle: &str) -> String {
         "You are @{handle}, a local agent running inside LocalSlock.\n\
          You collaborate with one local human through channels, threads, tasks, and DMs.\n\
          LocalSlock is connected to Codex through the official app-server JSON protocol and streams your assistant text into chat automatically.\n\
+         Before replying, decide whether a visible response is useful; for greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly LOCAL_SLOCK_SILENT_REPLY: <short reason> and nothing else.\n\
          Do not print LOCAL_SLOCK_EVENT lines unless explicitly asked to debug the legacy runtime path.\n\
          Keep user-visible replies concise and include concrete results or blockers."
     )
@@ -5777,7 +5961,7 @@ fn build_claude_streaming_prompt(legacy_prompt: &str) -> String {
     }
     legacy_prompt.replace(
         "When you finish, write results back with LOCAL_SLOCK_EVENT lines and update task status if applicable.",
-        "Reply normally. LocalSlock will stream your assistant text into the correct channel/thread automatically. Do not emit LOCAL_SLOCK_EVENT lines in this Claude stream-json mode.",
+        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Do not emit LOCAL_SLOCK_EVENT lines in this Claude stream-json mode.",
     )
 }
 
@@ -8189,13 +8373,14 @@ async fn handle_codex_warm_stdout_line(
                     active.run_id,
                     active.channel_id,
                     active.thread_root_id,
+                    active.work_item_id,
                     stream_key,
                 )
             };
             if let Some(channel_id) = active.1 {
                 let existing: Option<Uuid> =
                     sqlx::query_scalar("select id from messages where stream_key = $1")
-                        .bind(&active.3)
+                        .bind(&active.4)
                         .fetch_optional(pool)
                         .await
                         .map_err(to_string)?;
@@ -8206,12 +8391,18 @@ async fn handle_codex_warm_stdout_line(
                         .filter(|text| !text.is_empty())
                     {
                         append_streaming_agent_message(
-                            pool, agent_id, channel_id, active.2, &active.3, text,
+                            pool, agent_id, channel_id, active.2, &active.4, text,
                         )
                         .await?;
                     }
                 }
-                finish_streaming_agent_message(pool, &active.3, "complete").await?;
+                let hidden = maybe_hide_silent_streaming_reply(
+                    pool, agent_id, active.0, active.3, &active.4,
+                )
+                .await?;
+                if !hidden {
+                    finish_streaming_agent_message(pool, &active.4, "complete").await?;
+                }
             }
         }
         Some("item/completed") => {
@@ -8585,16 +8776,30 @@ async fn finish_warm_claude_active_turn(
     };
     let was_cancelled = current_work_status.as_deref() == Some("cancelling");
 
-    finish_streaming_agent_message(
-        pool,
-        &active.stream_key,
-        if success && !was_cancelled {
-            "complete"
-        } else {
-            "error"
-        },
-    )
-    .await?;
+    let hidden = if success && !was_cancelled {
+        maybe_hide_silent_streaming_reply(
+            pool,
+            agent_id,
+            active.run_id,
+            active.work_item_id,
+            &active.stream_key,
+        )
+        .await?
+    } else {
+        false
+    };
+    if !hidden {
+        finish_streaming_agent_message(
+            pool,
+            &active.stream_key,
+            if success && !was_cancelled {
+                "complete"
+            } else {
+                "error"
+            },
+        )
+        .await?;
+    }
 
     let run_status = if was_cancelled {
         "cancelled"
@@ -8642,8 +8847,17 @@ async fn finish_warm_claude_active_turn(
         .map_err(to_string)?;
 
     if let Some(work_item_id) = active.work_item_id {
+        let current_work_status: Option<String> =
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?;
+        let was_silent = current_work_status.as_deref() == Some("silent");
         let work_status = if was_cancelled {
             "cancelled"
+        } else if was_silent && success {
+            "silent"
         } else if success {
             "done"
         } else {
@@ -8749,16 +8963,30 @@ async fn finish_warm_codex_active_turn(
     let was_cancelled = current_work_status.as_deref() == Some("cancelling");
 
     for stream_key in active.stream_keys {
-        finish_streaming_agent_message(
-            pool,
-            &stream_key,
-            if success && !was_cancelled {
-                "complete"
-            } else {
-                "error"
-            },
-        )
-        .await?;
+        let hidden = if success && !was_cancelled {
+            maybe_hide_silent_streaming_reply(
+                pool,
+                agent_id,
+                active.run_id,
+                active.work_item_id,
+                &stream_key,
+            )
+            .await?
+        } else {
+            false
+        };
+        if !hidden {
+            finish_streaming_agent_message(
+                pool,
+                &stream_key,
+                if success && !was_cancelled {
+                    "complete"
+                } else {
+                    "error"
+                },
+            )
+            .await?;
+        }
     }
 
     for steer in active.steer_requests.into_values() {
@@ -8822,8 +9050,17 @@ async fn finish_warm_codex_active_turn(
         .map_err(to_string)?;
 
     if let Some(work_item_id) = active.work_item_id {
+        let current_work_status: Option<String> =
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?;
+        let was_silent = current_work_status.as_deref() == Some("silent");
         let work_status = if was_cancelled {
             "cancelled"
+        } else if was_silent && success {
+            "silent"
         } else if success {
             "done"
         } else {
@@ -9195,12 +9432,12 @@ mod tests {
         claude_message_text, claude_result_error, claude_stream_event_activity, claude_text_delta,
         codex_item_started_activity, codex_turn_id_from_value, extract_agent_event_json,
         extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
-        load_channel_agent_roster, load_messages, load_runtime_thread_id, migrate,
-        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
-        process_due_reminders, queue_mentions_as_work_items, send_owner_message_in_pool,
-        upsert_runtime_thread_id,
-        MentionDispatchOrigin, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
-        STREAMING_TRUNCATION_MARKER,
+        load_channel_agent_roster, load_messages, load_runtime_thread_id,
+        maybe_hide_silent_streaming_reply, migrate, open_dm_with_agent_in_pool,
+        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
+        queue_mentions_as_work_items, send_owner_message_in_pool, silent_reply_reason,
+        upsert_runtime_thread_id, MentionDispatchOrigin, DEFAULT_DATABASE_URL,
+        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use chrono::{DateTime, Utc};
     use serde_json::json;
@@ -9263,6 +9500,19 @@ mod tests {
         assert!(truncated);
         assert!(capped.ends_with(STREAMING_TRUNCATION_MARKER));
         assert_eq!(capped.chars().count() + 4, STREAMING_MESSAGE_BODY_LIMIT);
+    }
+
+    #[test]
+    fn detects_silent_reply_marker() {
+        assert_eq!(
+            silent_reply_reason("LOCAL_SLOCK_SILENT_REPLY: greeting only"),
+            Some("greeting only".to_owned())
+        );
+        assert_eq!(
+            silent_reply_reason("LOCAL_SLOCK_SILENT_REPLY"),
+            Some(String::new())
+        );
+        assert_eq!(silent_reply_reason("LOCAL_SLOCK_SILENT_REPLYING"), None);
     }
 
     #[test]
@@ -9524,6 +9774,80 @@ mod tests {
         .await;
         drop_test_schema(pool, schema).await;
         result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn silent_streaming_reply_hides_message_and_marks_work_item() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "silent-agent").await?;
+            let channel_id = insert_test_channel(&pool, "silent-channel").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let work_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_work_items (agent_id, channel_id, title, context, status, run_id)
+                values ($1, $2, 'hello', 'hi', 'running', $3)
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let stream_key = "silent-run:item-1";
+            let message_id = append_streaming_agent_message(
+                &pool,
+                agent_id,
+                channel_id,
+                None,
+                stream_key,
+                "LOCAL_SLOCK_SILENT_REPLY: greeting only",
+            )
+            .await?;
+            assert!(
+                maybe_hide_silent_streaming_reply(
+                    &pool,
+                    agent_id,
+                    run_id,
+                    Some(work_item_id),
+                    stream_key,
+                )
+                .await?
+            );
+
+            let remaining: i64 =
+                sqlx::query_scalar("select count(*)::bigint from messages where id = $1")
+                    .bind(message_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(remaining, 0);
+            let status: String =
+                sqlx::query_scalar("select status from agent_work_items where id = $1")
+                    .bind(work_item_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(status, "silent");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[tokio::test]

@@ -69,6 +69,7 @@ type UiBackendEvent =
   | { type: "refresh"; reason?: string }
   | { type: "message_upsert"; reason?: string; message: Message }
   | { type: "message_delta"; reason?: string; message_id: string; append: string; delivery_state: Message["delivery_state"] }
+  | { type: "message_delete"; reason?: string; message_id: string }
   | { type: "activity_upsert"; reason?: string; activity: AgentActivity }
   | { type: "agent_run_upsert"; reason?: string; run: Omit<AgentRun, "log"> & { log?: string } }
   | { type: "work_item_upsert"; reason?: string; work_item: Omit<AgentWorkItem, "context"> & { context?: string } };
@@ -348,6 +349,16 @@ function App() {
     });
   }
 
+  function applyMessageDelete(messageId: string) {
+    setData((current) => {
+      if (!current) {
+        requestRefresh("Failed to refresh LocalSlock state after message deletion");
+        return current;
+      }
+      return { ...current, messages: current.messages.filter((item) => item.id !== messageId) };
+    });
+  }
+
   function applyActivityUpsert(activity: AgentActivity) {
     setData((current) => {
       if (!current) {
@@ -419,6 +430,10 @@ function App() {
     }
     if (parsed.type === "message_delta") {
       applyMessageDelta(parsed.message_id, parsed.append, parsed.delivery_state);
+      return;
+    }
+    if (parsed.type === "message_delete") {
+      applyMessageDelete(parsed.message_id);
       return;
     }
     if (parsed.type === "activity_upsert") {
@@ -897,7 +912,9 @@ function App() {
 
   const selectedAgentWorkItems = useMemo(() => {
     if (!data || !selectedAgent) return [];
-    return data.agent_work_items.filter((item) => item.agent_id === selectedAgent.id).slice(0, 6);
+    return data.agent_work_items
+      .filter((item) => item.agent_id === selectedAgent.id && item.status !== "silent")
+      .slice(0, 6);
   }, [data, selectedAgent]);
 
   const selectedAgentSchedules = useMemo(() => {
@@ -1019,6 +1036,7 @@ function App() {
 
       results.push(...data.agent_work_items
         .filter((item) =>
+          item.status !== "silent" &&
           matchesSearchTime(item.updated_at, searchTimeRange) &&
           includes(`${item.agent_handle} ${item.status} ${item.title} ${item.context}`))
         .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
