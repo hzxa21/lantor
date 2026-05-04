@@ -1794,6 +1794,29 @@ body.resizing-column * {
   background: #fff;
 }
 
+.modal-form .modal-member-editor label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.modal-form .modal-member-editor label:hover {
+  background: rgba(10, 132, 255, 0.07);
+}
+
+.modal-form .modal-member-editor input[type="checkbox"] {
+  width: 17px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0;
+  border-radius: 5px;
+  accent-color: var(--accent);
+}
+
 .app-toast {
   position: fixed;
   right: 24px;
