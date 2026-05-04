@@ -256,6 +256,7 @@ function App() {
   });
   const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
+  const [dismissedInboxItems, setDismissedInboxItems] = useState<Record<string, string>>({});
   const [locallyUnfollowedThreadIds, setLocallyUnfollowedThreadIds] = useState<Set<string>>(() => new Set());
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
@@ -807,6 +808,11 @@ function App() {
       channel: 5,
     };
     return items
+      .filter((item) => {
+        const dismissedAt = dismissedInboxItems[item.id];
+        if (!dismissedAt) return true;
+        return new Date(item.timestamp).getTime() > new Date(dismissedAt).getTime();
+      })
       .sort((left, right) => {
         if (left.unread !== right.unread) return left.unread ? -1 : 1;
         const priority = kindPriority[left.kind] - kindPriority[right.kind];
@@ -814,7 +820,7 @@ function App() {
         return new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime();
       })
       .slice(0, 120);
-  }, [allThreadRootMessages, channelAlertIds, data, threadReplyCounts, threadUnreadCounts]);
+  }, [allThreadRootMessages, channelAlertIds, data, dismissedInboxItems, threadReplyCounts, threadUnreadCounts]);
 
   const inboxUnreadCount = useMemo(() => {
     return inboxItems.filter((item) => item.unread).length;
@@ -1442,6 +1448,7 @@ function App() {
   }
 
   async function markInboxItemRead(item: InboxItem) {
+    setDismissedInboxItems((current) => ({ ...current, [item.id]: item.timestamp }));
     if (item.threadId) {
       setThreadUnreadCounts((current) => {
         if (!current[item.threadId!]) return current;
@@ -1467,6 +1474,13 @@ function App() {
 
   async function markAllInboxRead() {
     if (!data) return;
+    setDismissedInboxItems((current) => {
+      const next = { ...current };
+      for (const item of inboxItems) {
+        next[item.id] = item.timestamp;
+      }
+      return next;
+    });
     const channelIds = new Set<string>();
     for (const item of inboxItems) {
       if (item.channelId && (item.unread || channelAlertIds.has(item.channelId))) {
