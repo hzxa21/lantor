@@ -1377,6 +1377,7 @@ body.resizing-column * {
 }
 
 .thread-root {
+  grid-row: 1;
   margin: 8px 12px 4px;
   padding: 10px 12px;
   border: 1px solid var(--line);
@@ -1392,6 +1393,7 @@ body.resizing-column * {
 }
 
 .thread-task-card {
+  grid-row: 2;
   display: grid;
   gap: 10px;
   margin: 0 22px 8px;
@@ -1408,6 +1410,7 @@ body.resizing-column * {
 }
 
 .reply-list {
+  grid-row: 3;
   display: grid;
   align-content: start;
   gap: 0;
@@ -1440,6 +1443,8 @@ body.resizing-column * {
 }
 
 .reply-composer {
+  z-index: 1;
+  grid-row: 4;
   display: grid;
   grid-template-rows: auto minmax(72px, auto) auto auto;
   gap: 8px;
@@ -1661,6 +1666,7 @@ body.resizing-column * {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-height: 0;
+  overflow: hidden;
 }
 
 .app.thread-hidden {
