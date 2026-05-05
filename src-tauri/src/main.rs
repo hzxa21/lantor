@@ -1419,6 +1419,23 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
 
     sqlx::query(
+        r#"
+        create table if not exists agent_thread_subscriptions (
+            agent_id uuid not null references agents(id) on delete cascade,
+            channel_id uuid not null references channels(id) on delete cascade,
+            thread_root_id uuid not null references messages(id) on delete cascade,
+            source_kind text not null default 'manual',
+            last_source_message_id uuid references messages(id) on delete set null,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now(),
+            primary key (agent_id, thread_root_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "alter table agent_runs add column if not exists work_item_id uuid references agent_work_items(id) on delete set null",
     )
     .execute(pool)
@@ -2173,6 +2190,19 @@ async fn dispatch_agent_work(
         .map_err(to_string)?;
     }
 
+    if let (Some(channel_id), Some(thread_root_id)) = (resolved_channel_id, resolved_thread_root_id)
+    {
+        upsert_agent_thread_subscription(
+            &state.pool,
+            agent_id,
+            channel_id,
+            thread_root_id,
+            source_kind,
+            None,
+        )
+        .await?;
+    }
+
     let scheduled = enqueue_agent_work_if_available(&state.pool, agent_id, work_item_id).await?;
     record_agent_activity(
         &state.pool,
@@ -2551,6 +2581,38 @@ enum DispatchKind {
     ThreadFollowUp,
 }
 
+async fn upsert_agent_thread_subscription(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Uuid,
+    source_kind: &str,
+    source_message_id: Option<Uuid>,
+) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        insert into agent_thread_subscriptions (
+            agent_id, channel_id, thread_root_id, source_kind, last_source_message_id
+        )
+        values ($1, $2, $3, $4, $5)
+        on conflict (agent_id, thread_root_id) do update
+        set channel_id = excluded.channel_id,
+            source_kind = excluded.source_kind,
+            last_source_message_id = coalesce(excluded.last_source_message_id, agent_thread_subscriptions.last_source_message_id),
+            updated_at = now()
+        "#,
+    )
+    .bind(agent_id)
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(source_kind)
+    .bind(source_message_id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    Ok(())
+}
+
 async fn queue_mentions_as_work_items(
     pool: &PgPool,
     channel_id: Uuid,
@@ -2718,6 +2780,15 @@ async fn queue_mentions_as_work_items(
                 (DispatchKind::Mention, false) => "mention",
             }
         };
+        upsert_agent_thread_subscription(
+            pool,
+            agent_id,
+            channel_id,
+            reply_thread_root_id,
+            source_kind,
+            Some(message_id),
+        )
+        .await?;
         let context = build_dispatch_work_context(
             pool,
             channel_id,
@@ -2798,6 +2869,12 @@ async fn load_thread_followup_targets(
                 union all
                 select agent_id, max(created_at) as last_at
                 from agent_work_items
+                where channel_id = $1
+                  and thread_root_id = $2
+                group by agent_id
+                union all
+                select agent_id, max(updated_at) as last_at
+                from agent_thread_subscriptions
                 where channel_id = $1
                   and thread_root_id = $2
                 group by agent_id
@@ -5463,6 +5540,20 @@ async fn insert_agent_message(
     }
 
     tx.commit().await.map_err(to_string)?;
+    let conversation_thread_root_id = thread_root_id.unwrap_or(msg_id);
+    upsert_agent_thread_subscription(
+        pool,
+        agent_id,
+        channel_id,
+        conversation_thread_root_id,
+        if as_task {
+            "task_message"
+        } else {
+            "agent_message"
+        },
+        Some(msg_id),
+    )
+    .await?;
     if !as_task {
         queue_agent_message_mentions(pool, msg_id).await?;
     }
@@ -10389,9 +10480,9 @@ mod tests {
         load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
         open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
         process_due_reminders, queue_mentions_as_work_items, send_owner_message_in_pool, short_id,
-        silent_reply_reason, upsert_runtime_thread_id, MentionDispatchOrigin,
-        AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
-        STREAMING_TRUNCATION_MARKER,
+        silent_reply_reason, upsert_agent_thread_subscription, upsert_runtime_thread_id,
+        MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL,
+        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::json;
@@ -11247,6 +11338,81 @@ mod tests {
             let context: String = work_items[0].get("context");
             assert!(context.contains("Latest thread reply:"));
             assert!(context.contains("Thread reply message id:"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn owner_thread_followup_uses_agent_thread_subscription_after_work_done() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "sub-agent").await?;
+            let channel_id = insert_test_channel(&pool, "thread-subscription").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'root request', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            upsert_agent_thread_subscription(
+                &pool,
+                agent_id,
+                channel_id,
+                root_id,
+                "mention",
+                Some(root_id),
+            )
+            .await?;
+
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                Some(root_id),
+                "继续补充，不需要重新 @ agent",
+                false,
+                vec![],
+            )
+            .await?;
+
+            let row = sqlx::query(
+                r#"
+                select source_kind, thread_root_id, task_id
+                from agent_work_items
+                where agent_id = $1 and source_message_id <> $2
+                order by created_at desc
+                limit 1
+                "#,
+            )
+            .bind(agent_id)
+            .bind(root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(row.get::<String, _>("source_kind"), "thread_followup");
+            assert_eq!(row.get::<Option<Uuid>, _>("thread_root_id"), Some(root_id));
+            assert_eq!(row.get::<Option<Uuid>, _>("task_id"), None);
             Ok(())
         }
         .await;
