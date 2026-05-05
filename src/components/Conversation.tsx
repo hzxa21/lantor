@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
+import { isImeComposing } from "../input-utils";
 import { Agent, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
@@ -97,6 +98,7 @@ export function Conversation({
   } = useMentionPicker({ agents, value: draft, setValue: setDraft, textareaRef });
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (isImeComposing(event)) return;
     if (handleMentionKeyDown(event)) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -280,6 +282,7 @@ export function Conversation({
                 onChange={(event) => setTaskTitleDraft(task, event.target.value)}
                 onBlur={() => saveTaskTitle(task)}
                 onKeyDown={(event) => {
+                  if (isImeComposing(event)) return;
                   if (event.key === "Enter") saveTaskTitle(task);
                 }}
               />

@@ -1,6 +1,7 @@
 import { MessageSquare, Paperclip, Reply, X } from "lucide-react";
 import { useRef, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
+import { isImeComposing } from "../input-utils";
 import { Agent, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
 import { MessageAttachments } from "./MessageAttachments";
@@ -65,6 +66,7 @@ export function ThreadPanel({
   } = useMentionPicker({ agents, value: replyDraft, setValue: setReplyDraft, textareaRef });
 
   function handleReplyKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (isImeComposing(event)) return;
     if (handleMentionKeyDown(event)) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -137,6 +139,7 @@ export function ThreadPanel({
               onChange={(event) => setTaskTitleDraft(activeTask, event.target.value)}
               onBlur={() => saveTaskTitle(activeTask)}
               onKeyDown={(event) => {
+                if (isImeComposing(event)) return;
                 if (event.key === "Enter") saveTaskTitle(activeTask);
               }}
             />
