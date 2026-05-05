@@ -18,9 +18,11 @@ export function presetPrompt(form: AgentForm) {
     '{"type":"message","channel":"local-slock","body":"..."}',
     '{"type":"message","channel":"local-slock","thread_root_id":"uuid","body":"..."}',
     '{"type":"message","channel":"local-slock","body":"...","as_task":true}  // creates an explicit global task',
+    '{"type":"activity","kind":"command","title":"Running tests","detail":"cargo test"}',
     '{"type":"task_status","task_number":1,"status":"in_review"}',
     '{"type":"task_claim","task_number":1}',
     "Do not wrap LOCAL_SLOCK_EVENT lines in markdown.",
+    "Keep visible chat replies high-density. Put intermediate progress in activity events, not chat messages.",
     "Use normal stdout for reasoning/logs only when you do not want to create LocalSlock state.",
   ].join("\n");
 }

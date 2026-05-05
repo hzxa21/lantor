@@ -375,6 +375,11 @@ enum AgentEvent {
         body: String,
         as_task: Option<bool>,
     },
+    Activity {
+        kind: Option<String>,
+        title: String,
+        detail: Option<String>,
+    },
     TaskCreate {
         channel: Option<String>,
         channel_id: Option<Uuid>,
@@ -4695,6 +4700,22 @@ fn activity_phase(kind: &str) -> &'static str {
     }
 }
 
+fn normalize_agent_activity_kind(kind: Option<&str>) -> &'static str {
+    match kind.map(str::trim).filter(|kind| !kind.is_empty()) {
+        Some("thinking") => "thinking",
+        Some("command") | Some("running_command") => "command",
+        Some("file_edit") | Some("editing_file") => "file_edit",
+        Some("tools") | Some("tool") => "tools",
+        Some("error") => "error",
+        Some("task") => "task",
+        Some("message") => "message",
+        Some("dispatch") => "dispatch",
+        Some("reminder") => "schedule",
+        Some("schedule") => "schedule",
+        _ => "acting",
+    }
+}
+
 fn activity_status(kind: &str, title: &str) -> &'static str {
     let lowered = format!("{} {}", kind, title).to_lowercase();
     if matches!(kind, "error" | "event_error" | "run_error")
@@ -5222,6 +5243,27 @@ async fn handle_agent_event(
             )
             .await?;
             Ok(format!("message accepted {msg_id}"))
+        }
+        AgentEvent::Activity {
+            kind,
+            title,
+            detail,
+        } => {
+            let title = title.trim();
+            if title.is_empty() {
+                return Err("activity title is required".to_owned());
+            }
+            let kind = normalize_agent_activity_kind(kind.as_deref());
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                kind,
+                title,
+                detail.unwrap_or_default(),
+            )
+            .await?;
+            Ok("activity accepted".to_owned())
         }
         AgentEvent::TaskCreate {
             channel,
@@ -6327,6 +6369,12 @@ fn build_work_item_prompt(
             .to_owned(),
     );
     lines.push(
+        r#"Visible reply policy: keep thread messages high-density. Do not narrate every intermediate step, tool call, command output, or file edit in chat. Use visible replies for final results, important decisions, blockers, user questions, and handoffs. Put intermediate progress in activity instead:
+LOCAL_SLOCK_EVENT {"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"<short user-facing status>","detail":"<optional compact detail>"}
+Use one activity event per meaningful phase change, not per log line."#
+            .to_owned(),
+    );
+    lines.push(
         r#"You can manage reminders by emitting a standalone control line:
 LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title":"<title>","note":"<optional note>","recurrence":"none|daily|weekly"}
 LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
@@ -6455,6 +6503,8 @@ fn build_runtime_standing_prompt(
          For read-only LocalSlock history lookup, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool history-read --target \"#channel[:thread_id]\" --limit 20`.\n\
          For read-only message search, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool message-search --query \"text\" --target \"#channel\" --limit 20`. Omit --target to search all local messages.\n\
          Before replying, decide whether a visible response is useful; for greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly LOCAL_SLOCK_SILENT_REPLY: <short reason> and nothing else.\n\
+         Keep thread messages high-density: do not narrate every intermediate step, tool call, command output, or file edit in chat. Use visible replies for final results, important decisions, blockers, user questions, and handoffs.\n\
+         For intermediate progress, emit standalone LOCAL_SLOCK_EVENT activity control lines such as {{\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}}; LocalSlock records them in the agent activity feed and hides the control line from chat.\n\
          You may print standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines to manage future reminders; LocalSlock consumes and hides those lines. Do not print LOCAL_SLOCK_EVENT message/task lines unless explicitly asked to debug the legacy runtime path.\n\
          Keep user-visible replies concise and include concrete results or blockers."
     );
@@ -6472,7 +6522,7 @@ fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
     }
     legacy_prompt.replace(
         "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number.",
-        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines when you need to schedule or cancel reminders; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Codex JSON streaming mode.",
+        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. For progress, emit standalone LOCAL_SLOCK_EVENT activity control lines like {\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}; LocalSlock consumes and records them in the activity feed. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines when you need to schedule or cancel reminders; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Codex JSON streaming mode.",
     )
 }
 
@@ -6714,7 +6764,7 @@ fn build_claude_streaming_prompt(legacy_prompt: &str) -> String {
     }
     legacy_prompt.replace(
         "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number.",
-        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines when you need to schedule or cancel reminders; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Claude stream-json mode.",
+        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. For progress, emit standalone LOCAL_SLOCK_EVENT activity control lines like {\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}; LocalSlock consumes and records them in the activity feed. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines when you need to schedule or cancel reminders; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Claude stream-json mode.",
     )
 }
 
@@ -11682,6 +11732,66 @@ mod tests {
             .map_err(|err| err.to_string())?;
             assert!(subscribed);
             assert!(task_row.get::<i64, _>("number") > 0);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn activity_event_records_progress_without_chat_message() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "activity-agent").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, working_directory, status)
+                values ($1, 'test', '', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::Activity {
+                    kind: Some("running_command".to_owned()),
+                    title: "Running tests".to_owned(),
+                    detail: Some("cargo test".to_owned()),
+                },
+            )
+            .await?;
+
+            let row = sqlx::query(
+                r#"
+                select kind, phase, status, title, detail
+                from agent_activities
+                where agent_id = $1 and run_id = $2
+                "#,
+            )
+            .bind(agent_id)
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(row.get::<String, _>("kind"), "command");
+            assert_eq!(row.get::<String, _>("phase"), "command");
+            assert_eq!(row.get::<String, _>("status"), "active");
+            assert_eq!(row.get::<String, _>("title"), "Running tests");
+            assert_eq!(row.get::<String, _>("detail"), "cargo test");
+            let messages: i64 = sqlx::query_scalar("select count(*)::bigint from messages")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(messages, 0);
             Ok(())
         }
         .await;
