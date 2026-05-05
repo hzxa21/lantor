@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Default LocalSlock desktop permissions.","local":true,"windows":["main"],"permissions":["core:default","core:event:default"]}}

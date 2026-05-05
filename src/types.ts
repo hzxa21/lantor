@@ -82,6 +82,8 @@ export type Reminder = {
   id: string;
   channel_id: string | null;
   channel_name: string | null;
+  creator_agent_id: string | null;
+  creator_agent_handle: string | null;
   thread_root_id: string | null;
   message_id: string | null;
   title: string;

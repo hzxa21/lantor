@@ -1,4 +1,4 @@
-import { Bell, Check, Clock3, X } from "lucide-react";
+import { Bell, Check, Clock3, Repeat2, TimerReset, X } from "lucide-react";
 import type { Channel, Reminder } from "../types";
 import { formatTime } from "../ui-utils";
 import { Modal } from "./Modal";
@@ -46,6 +46,12 @@ function dueLabel(reminder: Reminder) {
   return due.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function datetimeLocalValue(date: Date) {
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
 export function ReminderModal({
   open,
   reminders,
@@ -71,17 +77,28 @@ export function ReminderModal({
   const scheduled = reminders.filter((reminder) => reminder.status === "scheduled");
   const fired = reminders.filter((reminder) => reminder.status === "fired");
   const canCreate = title.trim() && dueAt.trim();
+  const nextReminder = scheduled[0] ?? null;
+  const quickDue = (minutes: number) => {
+    const date = new Date(Date.now() + minutes * 60_000);
+    date.setSeconds(0, 0);
+    onDueAtChange(datetimeLocalValue(date));
+  };
 
   return (
-    <Modal open={open} title="Reminders" onClose={onClose} width={720}>
+    <Modal open={open} title="Reminders" onClose={onClose} width={880}>
       <div className="reminder-modal">
         <section className="reminder-create">
-          <div className="reminder-create-head">
-            <Bell size={18} />
+          <div className="reminder-hero">
+            <div className="reminder-icon"><Bell size={18} /></div>
             <div>
               <strong>New reminder</strong>
-              <span>{currentChannel ? `Anchored to ${currentChannel.kind === "dm" ? "this DM" : `#${currentChannel.name}`}` : "No active channel"}</span>
+              <span>{currentChannel ? `Anchored to ${currentChannel.kind === "dm" ? "this DM" : `#${currentChannel.name}`}` : "No active channel selected"}</span>
             </div>
+          </div>
+          <div className="reminder-quick-grid" aria-label="Quick reminder times">
+            <button type="button" onClick={() => quickDue(30)}>30m</button>
+            <button type="button" onClick={() => quickDue(60)}>1h</button>
+            <button type="button" onClick={() => quickDue(24 * 60)}>Tomorrow</button>
           </div>
           <input
             value={title}
@@ -114,7 +131,7 @@ export function ReminderModal({
               disabled={!activeThreadId}
               onChange={(event) => onIncludeThreadChange(event.target.checked)}
             />
-            Anchor to current thread
+            <span>Anchor to current thread</span>
           </label>
           <button className="primary" disabled={!canCreate} onClick={onCreate}>
             Create reminder
@@ -122,37 +139,67 @@ export function ReminderModal({
         </section>
 
         <section className="reminder-list">
+          <div className="reminder-summary">
+            <div>
+              <span>Due now</span>
+              <strong>{fired.length}</strong>
+            </div>
+            <div>
+              <span>Scheduled</span>
+              <strong>{scheduled.length}</strong>
+            </div>
+            <div>
+              <span>Next</span>
+              <strong>{nextReminder ? dueLabel(nextReminder) : "None"}</strong>
+            </div>
+          </div>
           {fired.length > 0 && (
             <div className="reminder-group">
-              <h4>Due now</h4>
+              <div className="reminder-group-head">
+                <h4>Due now</h4>
+                <span>{fired.length}</span>
+              </div>
               {fired.map((reminder) => (
                 <article key={reminder.id} className="reminder-row fired">
-                  <Clock3 size={16} />
-                  <div>
-                    <strong>{reminder.title}</strong>
-                    <span>{channelLabel(channels, reminder)} · {dueLabel(reminder)}</span>
+                  <div className="reminder-row-icon"><TimerReset size={15} /></div>
+                  <div className="reminder-row-body">
+                    <div className="reminder-row-title">
+                      <strong>{reminder.title}</strong>
+                      <span className="reminder-status due">Due</span>
+                    </div>
+                    <span>{channelLabel(channels, reminder)} · {dueLabel(reminder)}{reminder.creator_agent_handle ? ` · by @${reminder.creator_agent_handle}` : ""}</span>
                     {reminder.note && <p>{reminder.note}</p>}
                   </div>
-                  <button onClick={() => onSnooze(reminder, 10)}>10m</button>
-                  <button onClick={() => onComplete(reminder)}><Check size={15} /></button>
+                  <div className="reminder-row-actions">
+                    <button onClick={() => onSnooze(reminder, 10)}>Snooze 10m</button>
+                    <button className="icon" onClick={() => onComplete(reminder)} title="Complete"><Check size={15} /></button>
+                  </div>
                 </article>
               ))}
             </div>
           )}
 
           <div className="reminder-group">
-            <h4>Scheduled</h4>
+            <div className="reminder-group-head">
+              <h4>Scheduled</h4>
+              <span>{scheduled.length}</span>
+            </div>
             {scheduled.length === 0 && <p className="empty-mini">No scheduled reminders.</p>}
             {scheduled.map((reminder) => (
               <article key={reminder.id} className="reminder-row">
-                <Clock3 size={16} />
-                <div>
-                  <strong>{reminder.title}</strong>
-                  <span>{channelLabel(channels, reminder)} · {dueLabel(reminder)}{reminder.recurrence !== "none" ? ` · ${reminder.recurrence}` : ""}</span>
+                <div className="reminder-row-icon">{reminder.recurrence !== "none" ? <Repeat2 size={15} /> : <Clock3 size={15} />}</div>
+                <div className="reminder-row-body">
+                  <div className="reminder-row-title">
+                    <strong>{reminder.title}</strong>
+                    {reminder.recurrence !== "none" && <span className="reminder-status">{reminder.recurrence}</span>}
+                  </div>
+                  <span>{channelLabel(channels, reminder)} · {dueLabel(reminder)}{reminder.creator_agent_handle ? ` · by @${reminder.creator_agent_handle}` : ""}</span>
                   {reminder.note && <p>{reminder.note}</p>}
                 </div>
-                <button onClick={() => onSnooze(reminder, 60)}>+1h</button>
-                <button className="danger" onClick={() => onCancelReminder(reminder)}><X size={15} /></button>
+                <div className="reminder-row-actions">
+                  <button onClick={() => onSnooze(reminder, 60)}>+1h</button>
+                  <button className="icon danger" onClick={() => onCancelReminder(reminder)} title="Cancel"><X size={15} /></button>
+                </div>
               </article>
             ))}
           </div>
