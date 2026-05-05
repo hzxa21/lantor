@@ -36,6 +36,11 @@ const UI_REFRESH_EVENT: &str = "localslock://refresh";
 const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by LocalSlock]";
 const ATTACHMENT_SIZE_LIMIT: usize = 25 * 1024 * 1024;
+const AGENT_MEMORY_CONTEXT_LIMIT: usize = 16 * 1024;
+const DISPATCH_CONTEXT_LIMIT: usize = 18 * 1024;
+const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
+const DISPATCH_THREAD_MESSAGE_LIMIT: i64 = 6;
+const DISPATCH_THREAD_MESSAGE_BODY_LIMIT: usize = 1_500;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -2910,7 +2915,7 @@ async fn build_dispatch_work_context(
         lines.push(format!("Thread root id: {thread_root_id}"));
     }
     lines.push(format!("{message_body_label}:"));
-    lines.push(body.trim().to_owned());
+    lines.push(compact_chars_middle(body, DISPATCH_MESSAGE_BODY_LIMIT));
 
     if let Some(thread_root_id) = thread_root_id {
         let rows = sqlx::query(
@@ -2919,10 +2924,11 @@ async fn build_dispatch_work_context(
             from messages
             where id = $1 or thread_root_id = $1
             order by created_at desc
-            limit 12
+            limit $2
             "#,
         )
         .bind(thread_root_id)
+        .bind(DISPATCH_THREAD_MESSAGE_LIMIT)
         .fetch_all(pool)
         .await
         .map_err(to_string)?;
@@ -2934,6 +2940,7 @@ async fn build_dispatch_work_context(
                 let sender_role: String = row.get("sender_role");
                 let created_at: DateTime<Utc> = row.get("created_at");
                 let body: String = row.get("body");
+                let body = compact_chars_middle(&body, DISPATCH_THREAD_MESSAGE_BODY_LIMIT);
                 lines.push(format!(
                     "- {sender_name} ({sender_role}) at {}: {}",
                     created_at.to_rfc3339(),
@@ -2957,7 +2964,10 @@ async fn build_dispatch_work_context(
             .to_owned(),
     );
 
-    Ok(lines.join("\n\n"))
+    Ok(compact_chars_middle(
+        &lines.join("\n\n"),
+        DISPATCH_CONTEXT_LIMIT,
+    ))
 }
 
 #[tauri::command]
@@ -6034,6 +6044,24 @@ fn effective_launch_command(
         .to_owned()
 }
 
+fn compact_chars_middle(value: &str, limit: usize) -> String {
+    let trimmed = value.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= limit {
+        return trimmed.to_owned();
+    }
+
+    let head_len = limit.saturating_mul(2) / 3;
+    let tail_len = limit.saturating_sub(head_len);
+    let omitted = chars.len().saturating_sub(head_len + tail_len);
+    let head = chars.iter().take(head_len).collect::<String>();
+    let tail = chars
+        .iter()
+        .skip(chars.len().saturating_sub(tail_len))
+        .collect::<String>();
+    format!("{head}\n\n[... LocalSlock omitted {omitted} chars to keep agent context bounded ...]\n\n{tail}")
+}
+
 fn build_work_item_prompt(
     work_item_id: Uuid,
     title: &str,
@@ -6141,17 +6169,12 @@ fn load_agent_memory_context(working_directory: &str) -> CommandResult<Option<St
     if !metadata.is_file() {
         return Ok(None);
     }
-    if metadata.len() > 128 * 1024 {
-        return Err(format!(
-            "{} is larger than the 128KB LocalSlock memory limit",
-            memory_path.display()
-        ));
-    }
     let memory = fs::read_to_string(&memory_path).map_err(to_string)?;
     let memory = memory.trim();
     if memory.is_empty() {
         Ok(None)
     } else {
+        let memory = compact_chars_middle(memory, AGENT_MEMORY_CONTEXT_LIMIT);
         Ok(Some(format!(
             "Persistent agent memory from {}:\n{}\n\nUse this as durable context for this workspace, but prefer the current user request when there is a conflict.",
             memory_path.display(),
@@ -6172,7 +6195,7 @@ fn ensure_agent_workspace(working_directory: &str, handle: &str) -> CommandResul
         return Ok(());
     }
     let template = format!(
-        "# @{handle}\n\n## Role\nLocalSlock agent.\n\n## Persistent Context\n- Add durable facts, user preferences, project notes, and handoff context here.\n- LocalSlock automatically injects this file into future agent turns for this workspace.\n",
+        "# @{handle}\n\n## Role\nLocalSlock agent.\n\n## Persistent Context\n- Add durable facts, user preferences, project notes, and handoff context here.\n- LocalSlock injects this file into the warm runtime standing prompt with a bounded context budget.\n",
     );
     fs::write(memory_path, template).map_err(to_string)?;
     Ok(())
@@ -6189,6 +6212,28 @@ fn prepend_memory_context(prompt: String, memory_context: Option<&str>) -> Strin
     }
 }
 
+fn build_runtime_standing_prompt(
+    handle: &str,
+    transport_note: &str,
+    memory_context: Option<&str>,
+) -> String {
+    let mut prompt = format!(
+        "You are @{handle}, a local agent running inside LocalSlock.\n\
+         You collaborate with one local human through channels, threads, tasks, and DMs.\n\
+         {transport_note}\n\
+         LocalSlock keeps one warm runtime session per agent so previous turns remain in provider context; channel and thread are delivered as message envelope fields, not as separate runtime sessions.\n\
+         Each new turn contains the latest inbox item plus a bounded context snapshot. Do not assume it is an exhaustive transcript; rely on the active runtime session and ask for more context if the task is ambiguous.\n\
+         Before replying, decide whether a visible response is useful; for greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly LOCAL_SLOCK_SILENT_REPLY: <short reason> and nothing else.\n\
+         You may print standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines to manage future reminders; LocalSlock consumes and hides those lines. Do not print LOCAL_SLOCK_EVENT message/task lines unless explicitly asked to debug the legacy runtime path.\n\
+         Keep user-visible replies concise and include concrete results or blockers."
+    );
+    if let Some(memory_context) = memory_context.filter(|context| !context.trim().is_empty()) {
+        prompt.push_str("\n\n");
+        prompt.push_str(memory_context.trim());
+    }
+    prompt
+}
+
 fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
     if legacy_prompt.trim().is_empty() {
         return "No current LocalSlock agent request is assigned. Reply with a short ready status."
@@ -6200,14 +6245,19 @@ fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
     )
 }
 
-fn codex_developer_instructions(handle: &str) -> String {
-    format!(
-        "You are @{handle}, a local agent running inside LocalSlock.\n\
-         You collaborate with one local human through channels, threads, tasks, and DMs.\n\
-         LocalSlock is connected to Codex through the official app-server JSON protocol and streams your assistant text into chat automatically.\n\
-         Before replying, decide whether a visible response is useful; for greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly LOCAL_SLOCK_SILENT_REPLY: <short reason> and nothing else.\n\
-         You may print standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines to manage future reminders; LocalSlock consumes and hides those lines. Do not print LOCAL_SLOCK_EVENT message/task lines unless explicitly asked to debug the legacy runtime path.\n\
-         Keep user-visible replies concise and include concrete results or blockers."
+fn codex_developer_instructions(handle: &str, memory_context: Option<&str>) -> String {
+    build_runtime_standing_prompt(
+        handle,
+        "LocalSlock is connected to Codex through the official app-server JSON protocol and streams your assistant text into chat automatically.",
+        memory_context,
+    )
+}
+
+fn claude_system_prompt(handle: &str, memory_context: Option<&str>) -> String {
+    build_runtime_standing_prompt(
+        handle,
+        "LocalSlock is connected to Claude through Claude Code stream-json and streams your assistant text into chat automatically.",
+        memory_context,
     )
 }
 
@@ -6586,6 +6636,7 @@ async fn get_or_spawn_warm_claude_runtime(
     handle: &str,
     model: &str,
     working_directory: &str,
+    memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmClaudeRuntime>> {
     if let Some(runtime) = {
         let runtimes = registry.runtimes.lock().await;
@@ -6604,6 +6655,7 @@ async fn get_or_spawn_warm_claude_runtime(
         handle,
         model,
         working_directory,
+        memory_context,
     )
     .await?;
     registry
@@ -6650,6 +6702,7 @@ async fn spawn_warm_claude_runtime(
     handle: &str,
     model: &str,
     working_directory: &str,
+    memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmClaudeRuntime>> {
     let model = if model.trim().is_empty() {
         "sonnet".to_owned()
@@ -6659,6 +6712,8 @@ async fn spawn_warm_claude_runtime(
     let mut command = Command::new("claude");
     command
         .arg("-p")
+        .arg("--system-prompt")
+        .arg(claude_system_prompt(handle, memory_context))
         .arg("--model")
         .arg(&model)
         .arg("--output-format")
@@ -6780,6 +6835,7 @@ async fn get_or_spawn_warm_codex_runtime(
     handle: &str,
     model: &str,
     working_directory: &str,
+    memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
     if let Some(runtime) = {
         let runtimes = registry.runtimes.lock().await;
@@ -6798,6 +6854,7 @@ async fn get_or_spawn_warm_codex_runtime(
         handle,
         model,
         working_directory,
+        memory_context,
     )
     .await?;
     registry
@@ -6815,6 +6872,7 @@ async fn spawn_warm_codex_runtime(
     handle: &str,
     model: &str,
     working_directory: &str,
+    memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
     let cwd = effective_codex_cwd(working_directory)?;
     let mut command = Command::new("/bin/zsh");
@@ -6861,7 +6919,7 @@ async fn spawn_warm_codex_runtime(
     };
     let stderr = child.stderr.take();
     let mut reader = BufReader::new(stdout);
-    let developer_instructions = codex_developer_instructions(handle);
+    let developer_instructions = codex_developer_instructions(handle, memory_context);
     let model_value = codex_model_value(model);
     let mut next_request_id = 1_i64;
     let initialize_id = next_request_id;
@@ -7622,6 +7680,7 @@ async fn supervisor_start_codex_streaming_agent(
     model: String,
     working_directory: String,
     work_item_prompt: String,
+    memory_context: Option<String>,
 ) -> CommandResult<()> {
     let command_text = "codex app-server --listen stdio://".to_owned();
     let codex_prompt = build_codex_streaming_prompt(&work_item_prompt);
@@ -7632,6 +7691,7 @@ async fn supervisor_start_codex_streaming_agent(
         &handle,
         &model,
         &working_directory,
+        memory_context.as_deref(),
     )
     .await?;
 
@@ -7835,6 +7895,7 @@ async fn supervisor_start_claude_streaming_agent(
     model: String,
     working_directory: String,
     work_item_prompt: String,
+    memory_context: Option<String>,
 ) -> CommandResult<()> {
     let claude_prompt = build_claude_streaming_prompt(&work_item_prompt);
     let model = if model.trim().is_empty() {
@@ -7850,6 +7911,7 @@ async fn supervisor_start_claude_streaming_agent(
         &handle,
         &model,
         &working_directory,
+        memory_context.as_deref(),
     )
     .await
     {
@@ -8127,7 +8189,6 @@ async fn supervisor_start_agent(
         }
         None => String::new(),
     };
-    let work_item_prompt = prepend_memory_context(work_item_prompt, memory_context.as_deref());
     if runtime.eq_ignore_ascii_case("codex") {
         return supervisor_start_codex_streaming_agent(
             pool,
@@ -8138,6 +8199,7 @@ async fn supervisor_start_agent(
             model,
             working_directory,
             work_item_prompt,
+            memory_context,
         )
         .await;
     }
@@ -8151,9 +8213,11 @@ async fn supervisor_start_agent(
             model,
             working_directory,
             work_item_prompt,
+            memory_context,
         )
         .await;
     }
+    let work_item_prompt = prepend_memory_context(work_item_prompt, memory_context.as_deref());
     let command_text = effective_launch_command(launch_command, runtime, model, handle.clone());
     let initial_log = if work_item_prompt.is_empty() {
         format!("$ {command_text}\n")
@@ -9894,15 +9958,17 @@ fn main() {
 mod tests {
     use super::{
         append_streaming_agent_message, capped_stream_delta, claim_next_supervisor_command,
-        claude_message_text, claude_result_error, claude_stream_event_activity, claude_text_delta,
-        codex_item_started_activity, codex_turn_id_from_value,
-        consume_streaming_agent_control_lines, extract_agent_event_json, extract_agent_mentions,
-        finish_streaming_agent_message, insert_agent_message, load_channel_agent_roster,
-        load_messages, load_reminders, load_runtime_thread_id, maybe_hide_silent_streaming_reply,
-        migrate, open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
+        claude_message_text, claude_result_error, claude_stream_event_activity,
+        claude_system_prompt, claude_text_delta, codex_item_started_activity,
+        codex_turn_id_from_value, consume_streaming_agent_control_lines, extract_agent_event_json,
+        extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
+        load_agent_memory_context, load_channel_agent_roster, load_messages, load_reminders,
+        load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
+        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
         process_due_reminders, queue_mentions_as_work_items, send_owner_message_in_pool,
-        silent_reply_reason, upsert_runtime_thread_id, MentionDispatchOrigin, DEFAULT_DATABASE_URL,
-        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        silent_reply_reason, upsert_runtime_thread_id, MentionDispatchOrigin,
+        AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
+        STREAMING_TRUNCATION_MARKER,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::json;
@@ -9919,6 +9985,36 @@ mod tests {
     fn ignores_empty_or_email_like_at_signs() {
         let mentions = extract_agent_mentions("email a@b.com and a lone @ sign");
         assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn memory_context_is_bounded_and_preserves_tail() {
+        let dir = std::env::temp_dir().join(format!("localslock-memory-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp memory dir");
+        let memory_path = dir.join("MEMORY.md");
+        let memory = format!(
+            "# Agent\n\n{}\n\n## Active Context\nimportant tail survives",
+            "context ".repeat(AGENT_MEMORY_CONTEXT_LIMIT)
+        );
+        std::fs::write(&memory_path, memory).expect("write memory");
+
+        let context =
+            load_agent_memory_context(dir.to_str().expect("utf8 temp dir")).expect("load memory");
+        std::fs::remove_dir_all(&dir).ok();
+
+        let context = context.expect("memory should load");
+        assert!(context.contains("LocalSlock omitted"));
+        assert!(context.contains("important tail survives"));
+        assert!(context.chars().count() < AGENT_MEMORY_CONTEXT_LIMIT + 1_000);
+    }
+
+    #[test]
+    fn runtime_standing_prompt_carries_memory_once() {
+        let prompt =
+            claude_system_prompt("tester", Some("Persistent memory: prefer concise replies"));
+        assert!(prompt.contains("one warm runtime session per agent"));
+        assert!(prompt.contains("channel and thread are delivered as message envelope fields"));
+        assert!(prompt.contains("Persistent memory: prefer concise replies"));
     }
 
     #[test]
