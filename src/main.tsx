@@ -1155,6 +1155,11 @@ function App() {
     });
   }
 
+  function revealThread(threadId: string | null) {
+    openThread(threadId);
+    if (threadId) setShowThread(true);
+  }
+
   function addOptimisticOwnerMessage(channelId: string, threadRootId: string | null, body: string, asTask: boolean) {
     const id = `local-${crypto.randomUUID()}`;
     const optimisticMessage: Message = {
@@ -1457,14 +1462,14 @@ function App() {
 
   function openTask(task: Task) {
     setActiveChannelId(task.channel_id);
-    openThread(task.message_id);
+    revealThread(task.message_id);
     setActiveTab("chat");
   }
 
   function openWorkItem(item: AgentWorkItem) {
     if (item.channel_id) setActiveChannelId(item.channel_id);
     if (item.thread_root_id) {
-      openThread(item.thread_root_id);
+      revealThread(item.thread_root_id);
       setActiveTab("chat");
     }
     const agent = data?.agents.find((candidate) => candidate.id === item.agent_id);
@@ -1478,7 +1483,7 @@ function App() {
     }
     if (result.channelId) selectChannel(result.channelId);
     if (result.threadId) {
-      openThread(result.threadId);
+      revealThread(result.threadId);
       setActiveTab("chat");
     }
     setShowSearchModal(false);
@@ -1487,9 +1492,8 @@ function App() {
   function openInboxItem(item: InboxItem) {
     if (item.channelId) selectChannel(item.channelId);
     if (item.threadId) {
-      openThread(item.threadId);
+      revealThread(item.threadId);
       setActiveTab("chat");
-      setShowThread(true);
     }
     setShowInboxModal(false);
   }
@@ -1745,7 +1749,7 @@ function App() {
         taskTitleDrafts={taskTitleDrafts}
         showThread={showThread}
         setActiveTab={setActiveTab}
-        setActiveThreadId={openThread}
+        setActiveThreadId={revealThread}
         setShowThread={setShowThread}
         openChannelAgentsModal={() => setShowChannelAgentsModal(true)}
         taskForMessage={taskForMessage}
