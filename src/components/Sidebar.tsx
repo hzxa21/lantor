@@ -14,6 +14,7 @@ import {
   Bootstrap,
   Channel,
 } from "../types";
+import { AgentAvatar } from "./AgentAvatar";
 
 type SidebarProps = {
   data: Bootstrap;
@@ -154,28 +155,31 @@ export function Sidebar({
                 : ""
             : "";
           return (
-            <button
+            <div
               key={agent.id}
-              className={`dm ${item?.id === channel?.id ? "selected" : ""} ${badge ? "has-unread" : ""}`}
-              onClick={() => item ? selectChannel(item.id) : openDmWithAgent(agent)}
+              className={`dm-row ${item?.id === channel?.id ? "selected" : ""} ${badge ? "has-unread" : ""}`}
             >
-              <div
-                className="avatar small dm-detail-trigger"
+              <button
+                type="button"
+                className="dm-detail-trigger"
                 title={`View @${agent.handle} details`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openAgentDetail(agent);
-                }}
+                onClick={() => openAgentDetail(agent)}
               >
-                {agent.avatar || "A"}
-              </div>
-              <div>
-                <strong>{agent.display_name}</strong>
-                <span>@{agent.handle} · {agent.status}</span>
-              </div>
-              <Circle className={`dot ${agent.status}`} size={10} />
-              {badge && <strong>{badge}</strong>}
-            </button>
+                <AgentAvatar agent={agent} size="sm" />
+              </button>
+              <button
+                type="button"
+                className="dm"
+                onClick={() => item ? selectChannel(item.id) : openDmWithAgent(agent)}
+              >
+                <div>
+                  <strong>{agent.display_name}</strong>
+                  <span>@{agent.handle} · {agent.status}</span>
+                </div>
+                <Circle className={`dot ${agent.status}`} size={10} />
+                {badge && <strong>{badge}</strong>}
+              </button>
+            </div>
           );
         })}
         {!collapsedSections.dms && data.agents.length === 0 && (

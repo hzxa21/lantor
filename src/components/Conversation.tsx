@@ -13,6 +13,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { Agent, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
+import { AgentAvatar } from "./AgentAvatar";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageMarkdown } from "./MessageMarkdown";
 
@@ -121,7 +122,7 @@ export function Conversation({
       <header className="topbar">
         <div className="channel-title">
           <span className={`hash-card ${isDm ? "dm-card" : ""}`}>
-            {isDm ? <span>{dmAgent?.avatar || "A"}</span> : <Hash />}
+            {isDm && dmAgent ? <AgentAvatar agent={dmAgent} size="sm" /> : <Hash />}
           </span>
           <div>
             <h1>{isDm ? dmAgent?.display_name || "Direct Message" : channel?.name || "No channel"}</h1>
