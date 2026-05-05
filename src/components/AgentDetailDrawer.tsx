@@ -249,6 +249,7 @@ export function AgentDetailDrawer({
     schedulePrompt.trim().length > 0 &&
     scheduleChannelId.length > 0 &&
     scheduleNextRunAt.length > 0;
+  const deleteDisabled = Boolean(activeRun);
 
   async function submitSchedule() {
     if (!canCreateSchedule) return;
@@ -276,7 +277,17 @@ export function AgentDetailDrawer({
           <span>Agent</span>
           <h2>@{agent.handle}</h2>
         </div>
-        <button onClick={onClose} aria-label="Close agent detail">×</button>
+        <div className="agent-drawer-head-actions">
+          <button
+            className="danger"
+            disabled={deleteDisabled}
+            title={deleteDisabled ? "Stop the active run before deleting this agent" : `Delete @${agent.handle}`}
+            onClick={() => onDelete(agent)}
+          >
+            Delete
+          </button>
+          <button onClick={onClose} aria-label="Close agent detail">×</button>
+        </div>
       </header>
       <div className="agent-drawer-body">
         <div className="agent-detail">
@@ -506,7 +517,14 @@ export function AgentDetailDrawer({
         </div>
       </div>
       <footer className="agent-drawer-actions">
-        <button className="danger" onClick={() => onDelete(agent)}>Delete</button>
+        <button
+          className="danger"
+          disabled={deleteDisabled}
+          title={deleteDisabled ? "Stop the active run before deleting this agent" : `Delete @${agent.handle}`}
+          onClick={() => onDelete(agent)}
+        >
+          Delete
+        </button>
         <div>
           <button onClick={() => onOpenDm(agent)}>Open DM</button>
           {activeRun ? (

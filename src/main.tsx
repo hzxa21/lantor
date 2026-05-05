@@ -1305,10 +1305,16 @@ function App() {
   }
 
   async function deleteAgent(agent: Agent) {
-    if (!window.confirm(`Delete @${agent.handle}? Existing messages will keep their sender name.`)) return;
+    const agentDm = data?.channels.find((item) => item.kind === "dm" && item.dm_agent_id === agent.id) ?? null;
+    const fallbackChannelId = data?.channels.find((item) => item.id !== agentDm?.id)?.id ?? null;
+    if (!window.confirm(`Delete @${agent.handle}? Its DM, schedules, runs, and pending requests will be removed. Existing channel messages keep their sender name.`)) return;
     await mutate("delete_agent", { agentId: agent.id });
     if (editingAgentId === agent.id) setEditingAgentId(null);
     if (selectedAgentId === agent.id) setSelectedAgentId(null);
+    if (agentDm && activeChannelId === agentDm.id) {
+      setActiveChannelId(fallbackChannelId ?? "");
+      setActiveThreadId(null);
+    }
   }
 
   async function sendRootMessage(asTask = false) {
