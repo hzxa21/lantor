@@ -499,45 +499,32 @@ button,
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  background:
-    radial-gradient(circle at var(--avatar-x) var(--avatar-y), rgba(255, 255, 255, 0.82), transparent 0 19%, transparent 20%),
-    linear-gradient(var(--avatar-rotate), var(--avatar-a), var(--avatar-b) 54%, var(--avatar-c));
-  color: #fff;
-  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.26);
+  background: var(--avatar-bg);
+  color: transparent;
+  --avatar-cell-gap: 2px;
+  --avatar-cell-radius: 2px;
+  --avatar-pixel-inset: 7px;
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
-    inset 0 -18px 34px rgba(0, 0, 0, 0.2),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.42),
+    inset 0 0 0 2px rgba(0, 0, 0, 0.04),
     0 10px 24px rgba(20, 22, 28, 0.16);
 }
 
-.agent-avatar::before,
-.agent-avatar::after {
-  content: "";
+.agent-avatar-pixels {
   position: absolute;
-  border-radius: 999px;
-  pointer-events: none;
+  inset: var(--avatar-pixel-inset);
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  grid-template-rows: repeat(5, 1fr);
+  gap: var(--avatar-cell-gap);
 }
 
-.agent-avatar::before {
-  inset: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.33);
-  transform: rotate(calc(var(--avatar-rotate) * -1));
+.agent-avatar-pixels span {
+  border-radius: var(--avatar-cell-radius);
 }
 
-.agent-avatar::after {
-  right: -18%;
-  bottom: -22%;
-  width: 72%;
-  height: 72%;
-  background: rgba(255, 255, 255, 0.18);
-  filter: blur(1px);
-}
-
-.agent-avatar-mark {
-  position: relative;
-  z-index: 1;
-  font-size: 0.88em;
-  letter-spacing: -0.05em;
+.agent-avatar-pixels span.filled {
+  background: var(--avatar-color);
 }
 
 .agent-avatar-lg {
@@ -545,6 +532,9 @@ button,
   height: 62px;
   border-radius: 20px;
   font-size: 19px;
+  --avatar-cell-gap: 3px;
+  --avatar-cell-radius: 3px;
+  --avatar-pixel-inset: 10px;
 }
 
 .agent-avatar-sm {
@@ -552,6 +542,9 @@ button,
   height: 30px;
   border-radius: 11px;
   font-size: 13px;
+  --avatar-cell-gap: 1px;
+  --avatar-cell-radius: 1px;
+  --avatar-pixel-inset: 6px;
 }
 
 .profile strong {

@@ -2,22 +2,14 @@ import type { CSSProperties } from "react";
 import type { Agent } from "../types";
 
 type AgentAvatarProps = {
-  agent: Pick<Agent, "handle" | "display_name" | "avatar" | "status"> & Partial<Pick<Agent, "runtime">>;
+  agent: Pick<Agent, "handle" | "display_name" | "status"> & Partial<Pick<Agent, "id" | "runtime">>;
   size?: "sm" | "md" | "lg";
   className?: string;
   title?: string;
 };
 
-const PALETTES = [
-  ["#0a84ff", "#64d2ff", "#04395e"],
-  ["#ff7a18", "#ffd166", "#7a2e00"],
-  ["#30d158", "#b8f7c5", "#06451c"],
-  ["#ff375f", "#ff9fbd", "#5b1023"],
-  ["#5e5ce6", "#bfbcff", "#1d1b5f"],
-  ["#00c7be", "#9ff7ef", "#004743"],
-  ["#af52de", "#f0b5ff", "#4b1065"],
-  ["#8e8e93", "#f2f2f7", "#1c1c1e"],
-];
+const IDENTICON_SIZE = 5;
+const IDENTICON_MIRROR_WIDTH = Math.ceil(IDENTICON_SIZE / 2);
 
 function hashSeed(seed: string) {
   let hash = 2166136261;
@@ -28,28 +20,41 @@ function hashSeed(seed: string) {
   return hash >>> 0;
 }
 
-function initials(agent: AgentAvatarProps["agent"]) {
-  if (agent.avatar.trim()) return agent.avatar.trim().slice(0, 2);
-  const parts = (agent.display_name || agent.handle)
-    .replace(/^@/, "")
-    .split(/[\s._-]+/)
-    .filter(Boolean);
-  const letters = parts.length > 1
-    ? `${parts[0][0]}${parts[1][0]}`
-    : (parts[0] ?? agent.handle).slice(0, 2);
-  return letters.toUpperCase();
+function nextSeed(seed: number) {
+  let next = seed + 0x6d2b79f5;
+  next = Math.imul(next ^ (next >>> 15), next | 1);
+  next ^= next + Math.imul(next ^ (next >>> 7), next | 61);
+  return (next ^ (next >>> 14)) >>> 0;
+}
+
+function generateIdenticon(seedText: string) {
+  let seed = hashSeed(seedText);
+  const cells = Array.from({ length: IDENTICON_SIZE * IDENTICON_SIZE }, () => false);
+
+  for (let y = 0; y < IDENTICON_SIZE; y += 1) {
+    for (let x = 0; x < IDENTICON_MIRROR_WIDTH; x += 1) {
+      seed = nextSeed(seed);
+      const isFilled = seed % 100 < 58;
+      cells[y * IDENTICON_SIZE + x] = isFilled;
+      cells[y * IDENTICON_SIZE + (IDENTICON_SIZE - 1 - x)] = isFilled;
+    }
+  }
+
+  const colorSeed = hashSeed(`${seedText}:color`);
+  const hue = colorSeed % 360;
+  return {
+    cells,
+    foreground: `hsl(${hue} 68% 42%)`,
+    background: `hsl(${hue} 36% 94%)`,
+  };
 }
 
 export function AgentAvatar({ agent, size = "md", className = "", title }: AgentAvatarProps) {
-  const seed = hashSeed(`${agent.handle}:${agent.display_name}:${agent.runtime ?? ""}`);
-  const palette = PALETTES[seed % PALETTES.length];
+  const seedText = agent.id || `${agent.handle}:${agent.display_name}:${agent.runtime ?? ""}`;
+  const identicon = generateIdenticon(seedText);
   const style = {
-    "--avatar-a": palette[0],
-    "--avatar-b": palette[1],
-    "--avatar-c": palette[2],
-    "--avatar-rotate": `${seed % 360}deg`,
-    "--avatar-x": `${18 + (seed % 48)}%`,
-    "--avatar-y": `${16 + ((seed >> 8) % 48)}%`,
+    "--avatar-color": identicon.foreground,
+    "--avatar-bg": identicon.background,
   } as CSSProperties;
 
   return (
@@ -59,7 +64,11 @@ export function AgentAvatar({ agent, size = "md", className = "", title }: Agent
       title={title}
       aria-hidden={!title}
     >
-      <span className="agent-avatar-mark">{initials(agent)}</span>
+      <span className="agent-avatar-pixels" aria-hidden="true">
+        {identicon.cells.map((filled, index) => (
+          <span key={index} className={filled ? "filled" : ""} />
+        ))}
+      </span>
     </span>
   );
 }
