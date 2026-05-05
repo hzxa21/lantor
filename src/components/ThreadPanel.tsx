@@ -17,7 +17,7 @@ type ThreadPanelProps = {
   taskTitleDrafts: Record<string, string>;
   replyDraft: string;
   replyAttachments: DraftAttachment[];
-  setActiveThreadId: (threadId: string | null) => void;
+  onClose: () => void;
   setTaskTitleDraft: (task: Task, title: string) => void;
   saveTaskTitle: (task: Task) => void;
   claimTask: (task: Task, agentId: string) => void;
@@ -39,7 +39,7 @@ export function ThreadPanel({
   taskTitleDrafts,
   replyDraft,
   replyAttachments,
-  setActiveThreadId,
+  onClose,
   setTaskTitleDraft,
   saveTaskTitle,
   claimTask,
@@ -98,7 +98,7 @@ export function ThreadPanel({
             {unreadCount > 0 ? ` · ${unreadCount} new` : ""}
           </p>
         </div>
-        <button onClick={() => setActiveThreadId(null)}><X size={18} /></button>
+        <button type="button" onClick={onClose} aria-label="Close thread panel"><X size={18} /></button>
       </header>
 
       <section className="thread-focus">
@@ -263,17 +263,27 @@ export function ThreadPanel({
               ))}
             </div>
           )}
-          <button
-            type="button"
-            className="attach-button"
-            disabled={!activeRoot}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <Paperclip size={15} />
-          </button>
-          <button className="reply-send" disabled={!activeRoot || (!replyDraft.trim() && replyAttachments.length === 0)} onClick={submitReply}>
-            Reply <Reply size={15} />
-          </button>
+          <div className="reply-composer-actions">
+            <span className="composer-hint">Enter to reply · Shift+Enter for newline</span>
+            <div className="reply-composer-buttons">
+              <button
+                type="button"
+                className="attach-button"
+                disabled={!activeRoot}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Paperclip size={15} />
+              </button>
+              <button
+                type="button"
+                className="reply-send"
+                disabled={!activeRoot || (!replyDraft.trim() && replyAttachments.length === 0)}
+                onClick={submitReply}
+              >
+                Reply <Reply size={15} />
+              </button>
+            </div>
+          </div>
         </section>
       </section>
 

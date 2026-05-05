@@ -3,7 +3,6 @@ import {
   Hash,
   LayoutList,
   MessageSquare,
-  PanelRight,
   Paperclip,
   Plus,
   Send,
@@ -31,10 +30,8 @@ type ConversationProps = {
   draftAttachments: DraftAttachment[];
   taskDraft: string;
   taskTitleDrafts: Record<string, string>;
-  showThread: boolean;
   setActiveTab: (tab: "chat" | "tasks") => void;
   setActiveThreadId: (threadId: string | null) => void;
-  setShowThread: (value: boolean) => void;
   openChannelAgentsModal: () => void;
   taskForMessage: (messageId: string) => Task | null;
   setTaskTitleDraft: (task: Task, title: string) => void;
@@ -63,10 +60,8 @@ export function Conversation({
   draftAttachments,
   taskDraft,
   taskTitleDrafts,
-  showThread,
   setActiveTab,
   setActiveThreadId,
-  setShowThread,
   openChannelAgentsModal,
   taskForMessage,
   setTaskTitleDraft,
@@ -152,15 +147,6 @@ export function Conversation({
               </div>
             )}
           </div>
-        </div>
-        <div className="top-actions">
-          <button
-            className={`thread-toggle ${showThread ? "active" : ""}`}
-            onClick={() => setShowThread(!showThread)}
-            title={showThread ? "Hide thread panel" : "Show thread panel"}
-          >
-            <PanelRight size={16} />
-          </button>
         </div>
       </header>
 

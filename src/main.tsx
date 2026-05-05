@@ -1747,10 +1747,8 @@ function App() {
         draftAttachments={draftAttachments}
         taskDraft={taskDraft}
         taskTitleDrafts={taskTitleDrafts}
-        showThread={showThread}
         setActiveTab={setActiveTab}
         setActiveThreadId={revealThread}
-        setShowThread={setShowThread}
         openChannelAgentsModal={() => setShowChannelAgentsModal(true)}
         taskForMessage={taskForMessage}
         setTaskTitleDraft={setTaskTitleDraft}
@@ -1801,7 +1799,10 @@ function App() {
           taskTitleDrafts={taskTitleDrafts}
           replyDraft={replyDraft}
           replyAttachments={replyAttachments}
-          setActiveThreadId={openThread}
+          onClose={() => {
+            openThread(null);
+            setShowThread(false);
+          }}
           setTaskTitleDraft={setTaskTitleDraft}
           saveTaskTitle={saveTaskTitle}
           claimTask={claimTask}
