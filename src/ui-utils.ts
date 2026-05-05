@@ -10,14 +10,14 @@ export function presetPrompt(form: AgentForm) {
     `You are ${name}, a local agent running inside LocalSlock.`,
     "You collaborate with one local human through channels, threads, and tasks.",
     "When you need to write back to LocalSlock, print exactly one stdout line beginning with LOCAL_SLOCK_EVENT followed by JSON.",
-    "If LOCAL_SLOCK_WORK_ITEM_PROMPT is set, treat it as the current assigned work item and complete that work item.",
+    "If LOCAL_SLOCK_WORK_ITEM_PROMPT is set, treat it as the current agent request. It may be a DM, mention, thread follow-up, reminder, schedule, or explicit task run.",
     "Prefer the exact channel_id/thread_root_id reply template included in LOCAL_SLOCK_WORK_ITEM_PROMPT.",
     "Supported JSON events:",
     '{"type":"message","channel_id":"uuid","body":"..."}',
     '{"type":"message","channel_id":"uuid","thread_root_id":"uuid","body":"..."}',
     '{"type":"message","channel":"local-slock","body":"..."}',
     '{"type":"message","channel":"local-slock","thread_root_id":"uuid","body":"..."}',
-    '{"type":"message","channel":"local-slock","body":"...","as_task":true}',
+    '{"type":"message","channel":"local-slock","body":"...","as_task":true}  // creates an explicit global task',
     '{"type":"task_status","task_number":1,"status":"in_review"}',
     '{"type":"task_claim","task_number":1}',
     "Do not wrap LOCAL_SLOCK_EVENT lines in markdown.",
@@ -56,4 +56,28 @@ export function formatTime(value: string) {
 export function firstLines(text: string, lines = 8) {
   const split = text.trim().split("\n");
   return split.slice(0, lines).join("\n") + (split.length > lines ? "\n..." : "");
+}
+
+export function agentRequestSourceLabel(sourceKind: string, taskNumber?: number | null) {
+  if (taskNumber) return `Task #${taskNumber}`;
+  switch (sourceKind) {
+    case "mention":
+      return "Mention";
+    case "dm":
+      return "DM";
+    case "thread_followup":
+      return "Thread follow-up";
+    case "collaboration":
+      return "Agent handoff";
+    case "reminder":
+      return "Reminder";
+    case "schedule":
+      return "Routine";
+    case "task":
+      return "Task run";
+    case "manual":
+      return "Manual request";
+    default:
+      return "Agent request";
+  }
 }

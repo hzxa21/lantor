@@ -304,6 +304,7 @@ struct AgentWorkItem {
     source_message_id: Option<Uuid>,
     task_id: Option<Uuid>,
     task_number: Option<i64>,
+    source_kind: String,
     title: String,
     context: String,
     status: String,
@@ -324,6 +325,7 @@ struct AgentWorkItemPatch {
     source_message_id: Option<Uuid>,
     task_id: Option<Uuid>,
     task_number: Option<i64>,
+    source_kind: String,
     title: String,
     status: String,
     run_id: Option<Uuid>,
@@ -648,10 +650,10 @@ async fn maybe_insert_work_item_system_message(
         return Ok(());
     };
     let thread_root_id = work_item.thread_root_id.or(work_item.source_message_id);
-    let task_suffix = work_item
+    let object_label = work_item
         .task_number
-        .map(|number| format!(" for task #{number}"))
-        .unwrap_or_default();
+        .map(|number| format!("task run for task #{number}"))
+        .unwrap_or_else(|| "agent request".to_owned());
     let title = work_item.title.trim();
     let title_suffix = if title.is_empty() {
         String::new()
@@ -661,46 +663,46 @@ async fn maybe_insert_work_item_system_message(
     let body = match reason {
         "work_item_created" | "work_item_queued" => {
             format!(
-                "@{} queued work{}{}",
-                work_item.agent_handle, task_suffix, title_suffix
+                "@{} queued {}{}",
+                work_item.agent_handle, object_label, title_suffix
             )
         }
         "work_item_running" => {
             format!(
-                "@{} started working{}{}",
-                work_item.agent_handle, task_suffix, title_suffix
+                "@{} started {}{}",
+                work_item.agent_handle, object_label, title_suffix
             )
         }
         "work_item_cancelling" => {
             format!(
-                "@{} is stopping work{}{}",
-                work_item.agent_handle, task_suffix, title_suffix
+                "@{} is stopping {}{}",
+                work_item.agent_handle, object_label, title_suffix
             )
         }
         "work_item_cancelled" => {
             format!(
-                "@{} cancelled work{}{}",
-                work_item.agent_handle, task_suffix, title_suffix
+                "@{} cancelled {}{}",
+                work_item.agent_handle, object_label, title_suffix
             )
         }
         "work_item_failed" => {
             format!(
-                "@{} failed work{}{}",
-                work_item.agent_handle, task_suffix, title_suffix
+                "@{} failed {}{}",
+                work_item.agent_handle, object_label, title_suffix
             )
         }
         "work_item_finished" => match work_item.status.as_str() {
             "done" => format!(
-                "@{} completed work{}{}",
-                work_item.agent_handle, task_suffix, title_suffix
+                "@{} completed {}{}",
+                work_item.agent_handle, object_label, title_suffix
             ),
             "failed" => format!(
-                "@{} failed work{}{}",
-                work_item.agent_handle, task_suffix, title_suffix
+                "@{} failed {}{}",
+                work_item.agent_handle, object_label, title_suffix
             ),
             "cancelled" => format!(
-                "@{} cancelled work{}{}",
-                work_item.agent_handle, task_suffix, title_suffix
+                "@{} cancelled {}{}",
+                work_item.agent_handle, object_label, title_suffix
             ),
             "silent" => return Ok(()),
             _ => return Ok(()),
@@ -851,9 +853,9 @@ async fn dispatch_due_reminder_to_agent(
     let work_item_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_work_items (
-            agent_id, channel_id, thread_root_id, source_message_id, title, context, status
+            agent_id, channel_id, thread_root_id, source_message_id, source_kind, title, context, status
         )
-        values ($1, $2, $3, $4, $5, $6, 'queued')
+        values ($1, $2, $3, $4, 'reminder', $5, $6, 'queued')
         returning id
         "#,
     )
@@ -960,9 +962,9 @@ async fn process_due_agent_schedules(pool: &PgPool) -> CommandResult<()> {
         let work_item_id: Uuid = sqlx::query_scalar(
             r#"
             insert into agent_work_items (
-                agent_id, channel_id, thread_root_id, source_message_id, title, context, status
+                agent_id, channel_id, thread_root_id, source_message_id, source_kind, title, context, status
             )
-            values ($1, $2, $3, $4, $5, $6, 'queued')
+            values ($1, $2, $3, $4, 'schedule', $5, $6, 'queued')
             returning id
             "#,
         )
@@ -1384,6 +1386,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             thread_root_id uuid references messages(id) on delete set null,
             source_message_id uuid references messages(id) on delete set null,
             task_id uuid references tasks(id) on delete set null,
+            source_kind text not null default 'manual',
             title text not null,
             context text not null default '',
             status text not null default 'queued',
@@ -1399,6 +1402,11 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         "alter table agent_work_items add column if not exists source_message_id uuid references messages(id) on delete set null",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "alter table agent_work_items add column if not exists source_kind text not null default 'manual'",
     )
     .execute(pool)
     .await?;
@@ -2093,19 +2101,20 @@ async fn dispatch_agent_work(
                         .map(|line| line.chars().take(120).collect())
                 })
                 .filter(|line: &String| !line.trim().is_empty())
-                .unwrap_or_else(|| "LocalSlock work item".to_owned())
+                .unwrap_or_else(|| "LocalSlock agent request".to_owned())
             }
-            None => "LocalSlock work item".to_owned(),
+            None => "LocalSlock agent request".to_owned(),
         };
     }
 
     let work_context = context.trim();
+    let source_kind = if task_id.is_some() { "task" } else { "manual" };
     let work_item_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_work_items (
-            agent_id, channel_id, thread_root_id, task_id, title, context, status
+            agent_id, channel_id, thread_root_id, task_id, source_kind, title, context, status
         )
-        values ($1, $2, $3, $4, $5, $6, 'queued')
+        values ($1, $2, $3, $4, $5, $6, $7, 'queued')
         returning id
         "#,
     )
@@ -2113,6 +2122,7 @@ async fn dispatch_agent_work(
     .bind(resolved_channel_id)
     .bind(resolved_thread_root_id)
     .bind(task_id)
+    .bind(source_kind)
     .bind(&resolved_title)
     .bind(work_context)
     .fetch_one(&state.pool)
@@ -2144,9 +2154,9 @@ async fn dispatch_agent_work(
         None,
         "dispatch",
         if scheduled {
-            "Work item dispatched"
+            "Agent request dispatched"
         } else {
-            "Work item queued"
+            "Agent request queued"
         },
         format!("#{work_item_id} to @{agent_handle}: {resolved_title}"),
     )
@@ -2204,7 +2214,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
         }
         "running" => {
             let Some(run_id) = run_id else {
-                return Err("running work item does not have a run id".to_owned());
+                return Err("running agent request does not have a run id".to_owned());
             };
             sqlx::query(
                 r#"
@@ -2251,7 +2261,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
             }
         }
         "cancelling" => return Ok(()),
-        other => return Err(format!("cannot cancel work item with status {other}")),
+        other => return Err(format!("cannot cancel agent request with status {other}")),
     }
 
     record_agent_activity(
@@ -2259,7 +2269,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
         Some(agent_id),
         run_id,
         "dispatch",
-        "Work item cancel requested",
+        "Agent request cancel requested",
         work_item_id.to_string(),
     )
     .await?;
@@ -2271,7 +2281,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
 async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> CommandResult<Uuid> {
     let row = sqlx::query(
         r#"
-        select agent_id, channel_id, thread_root_id, source_message_id, task_id, title, context, status
+        select agent_id, channel_id, thread_root_id, source_message_id, task_id, source_kind, title, context, status
         from agent_work_items
         where id = $1
         "#,
@@ -2282,7 +2292,9 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     .map_err(to_string)?;
     let old_status: String = row.get("status");
     if matches!(old_status.as_str(), "queued" | "running" | "cancelling") {
-        return Err(format!("cannot retry work item with status {old_status}"));
+        return Err(format!(
+            "cannot retry agent request with status {old_status}"
+        ));
     }
 
     let agent_id: Uuid = row.get("agent_id");
@@ -2291,9 +2303,9 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     let new_work_item_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_work_items (
-            agent_id, channel_id, thread_root_id, source_message_id, task_id, title, context, status
+            agent_id, channel_id, thread_root_id, source_message_id, task_id, source_kind, title, context, status
         )
-        values ($1, $2, $3, $4, $5, $6, $7, 'queued')
+        values ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
         returning id
         "#,
     )
@@ -2302,6 +2314,7 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     .bind(row.get::<Option<Uuid>, _>("thread_root_id"))
     .bind(row.get::<Option<Uuid>, _>("source_message_id"))
     .bind(row.get::<Option<Uuid>, _>("task_id"))
+    .bind(row.get::<String, _>("source_kind"))
     .bind(&title)
     .bind(&context)
     .fetch_one(&state.pool)
@@ -2317,9 +2330,9 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
         None,
         "dispatch",
         if scheduled {
-            "Work item retried"
+            "Agent request retried"
         } else {
-            "Retried work item queued"
+            "Retried agent request queued"
         },
         format!("{work_item_id} -> {new_work_item_id}: {title}"),
     )
@@ -2669,6 +2682,16 @@ async fn queue_mentions_as_work_items(
                 ("Mentioned message id", "Mentioned message")
             }
         };
+        let source_kind = if task_id.is_some() {
+            "task"
+        } else {
+            match (dispatch_kind, origin.is_agent()) {
+                (DispatchKind::Dm, _) => "dm",
+                (DispatchKind::ThreadFollowUp, _) => "thread_followup",
+                (DispatchKind::Mention, true) => "collaboration",
+                (DispatchKind::Mention, false) => "mention",
+            }
+        };
         let context = build_dispatch_work_context(
             pool,
             channel_id,
@@ -2683,9 +2706,9 @@ async fn queue_mentions_as_work_items(
         let work_item_id: Uuid = sqlx::query_scalar(
             r#"
             insert into agent_work_items (
-                agent_id, channel_id, thread_root_id, source_message_id, task_id, title, context, status
+                agent_id, channel_id, thread_root_id, source_message_id, task_id, source_kind, title, context, status
             )
-            values ($1, $2, $3, $4, $5, $6, $7, 'queued')
+            values ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
             returning id
             "#,
         )
@@ -2694,6 +2717,7 @@ async fn queue_mentions_as_work_items(
         .bind(reply_thread_root_id)
         .bind(message_id)
         .bind(task_id)
+        .bind(source_kind)
         .bind(&title)
         .bind(&context)
         .fetch_one(pool)
@@ -4296,6 +4320,7 @@ async fn load_agent_work_items(pool: &PgPool) -> CommandResult<Vec<AgentWorkItem
             w.source_message_id,
             w.task_id,
             t.number as task_number,
+            w.source_kind,
             w.title,
             w.context,
             w.status,
@@ -4327,6 +4352,7 @@ async fn load_agent_work_items(pool: &PgPool) -> CommandResult<Vec<AgentWorkItem
             source_message_id: row.get("source_message_id"),
             task_id: row.get("task_id"),
             task_number: row.get("task_number"),
+            source_kind: row.get("source_kind"),
             title: row.get("title"),
             context: row.get("context"),
             status: row.get("status"),
@@ -4354,6 +4380,7 @@ async fn load_agent_work_item_patch(
             w.source_message_id,
             w.task_id,
             t.number as task_number,
+            w.source_kind,
             w.title,
             w.status,
             w.run_id,
@@ -4382,6 +4409,7 @@ async fn load_agent_work_item_patch(
         source_message_id: row.get("source_message_id"),
         task_id: row.get("task_id"),
         task_number: row.get("task_number"),
+        source_kind: row.get("source_kind"),
         title: row.get("title"),
         status: row.get("status"),
         run_id: row.get("run_id"),
@@ -6016,7 +6044,7 @@ fn build_work_item_prompt(
     available_agents: &[String],
 ) -> String {
     let mut lines = vec![
-        "Current LocalSlock work item:".to_owned(),
+        "Current LocalSlock agent request:".to_owned(),
         format!("id: {work_item_id}"),
         format!("title: {title}"),
     ];
@@ -6055,7 +6083,7 @@ Use reminders when the user asks for a future follow-up or when you need to re-c
             .to_owned(),
     );
     lines.push(
-        "When you finish, write results back with LOCAL_SLOCK_EVENT lines and update task status if applicable."
+        "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number."
             .to_owned(),
     );
     lines.join("\n")
@@ -6163,11 +6191,11 @@ fn prepend_memory_context(prompt: String, memory_context: Option<&str>) -> Strin
 
 fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
     if legacy_prompt.trim().is_empty() {
-        return "No current LocalSlock work item is assigned. Reply with a short ready status."
+        return "No current LocalSlock agent request is assigned. Reply with a short ready status."
             .to_owned();
     }
     legacy_prompt.replace(
-        "When you finish, write results back with LOCAL_SLOCK_EVENT lines and update task status if applicable.",
+        "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number.",
         "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines when you need to schedule or cancel reminders; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Codex JSON streaming mode.",
     )
 }
@@ -6393,11 +6421,11 @@ fn codex_model_value(model: &str) -> Value {
 
 fn build_claude_streaming_prompt(legacy_prompt: &str) -> String {
     if legacy_prompt.trim().is_empty() {
-        return "No current LocalSlock work item is assigned. Reply with a short ready status."
+        return "No current LocalSlock agent request is assigned. Reply with a short ready status."
             .to_owned();
     }
     legacy_prompt.replace(
-        "When you finish, write results back with LOCAL_SLOCK_EVENT lines and update task status if applicable.",
+        "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number.",
         "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines when you need to schedule or cancel reminders; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Claude stream-json mode.",
     )
 }
@@ -7183,7 +7211,7 @@ async fn schedule_queued_work_items(
                 Some(agent_id),
                 None,
                 "dispatch",
-                "Backlog work item scheduled",
+                "Backlog agent request scheduled",
                 work_item_id.to_string(),
             )
             .await?;
@@ -7635,7 +7663,7 @@ async fn supervisor_start_codex_streaming_agent(
                 "Agent busy",
                 work_item_id
                     .map(|id| id.to_string())
-                    .unwrap_or_else(|| "no work item".to_owned()),
+                    .unwrap_or_else(|| "no agent request".to_owned()),
             )
             .await?;
             return Ok(());
@@ -7646,7 +7674,7 @@ async fn supervisor_start_codex_streaming_agent(
         format!("$ {command_text}\n[warm process reused]\n")
     } else {
         format!(
-            "$ {command_text}\n[warm process reused]\n\n[streaming work item]\n{codex_prompt}\n"
+            "$ {command_text}\n[warm process reused]\n\n[streaming agent request]\n{codex_prompt}\n"
         )
     };
 
@@ -7862,7 +7890,7 @@ async fn supervisor_start_claude_streaming_agent(
                 "Agent busy",
                 work_item_id
                     .map(|id| id.to_string())
-                    .unwrap_or_else(|| "no work item".to_owned()),
+                    .unwrap_or_else(|| "no agent request".to_owned()),
             )
             .await?;
             return Ok(());
@@ -7873,7 +7901,7 @@ async fn supervisor_start_claude_streaming_agent(
         format!("$ {command_text}\n[warm process reused]\n")
     } else {
         format!(
-            "$ {command_text}\n[warm process reused]\n\n[streaming work item]\n{claude_prompt}\n"
+            "$ {command_text}\n[warm process reused]\n\n[streaming agent request]\n{claude_prompt}\n"
         )
     };
 
@@ -8018,7 +8046,7 @@ async fn supervisor_start_agent(
                 Some(agent_id),
                 None,
                 "dispatch",
-                "Cancelled work item skipped",
+                "Cancelled agent request skipped",
                 work_item_id.to_string(),
             )
             .await?;
@@ -8130,7 +8158,7 @@ async fn supervisor_start_agent(
     let initial_log = if work_item_prompt.is_empty() {
         format!("$ {command_text}\n")
     } else {
-        format!("$ {command_text}\n\n[work item]\n{work_item_prompt}\n")
+        format!("$ {command_text}\n\n[agent request]\n{work_item_prompt}\n")
     };
 
     let run_id: Uuid = sqlx::query_scalar(
@@ -10481,6 +10509,15 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(work_items, 1);
+            let source_kind: String = sqlx::query_scalar(
+                "select source_kind from agent_work_items where channel_id = $1 and agent_id = $2",
+            )
+            .bind(dm_channel_id)
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(source_kind, "dm");
             Ok(())
         }
         .await;
@@ -10546,7 +10583,7 @@ mod tests {
 
             let work_items = sqlx::query(
                 r#"
-                select source_message_id, title, context
+                select source_message_id, source_kind, title, context
                 from agent_work_items
                 where channel_id = $1 and agent_id = $2 and source_message_id <> $3
                 "#,
@@ -10560,6 +10597,10 @@ mod tests {
 
             assert_eq!(work_items.len(), 1);
             assert_eq!(
+                work_items[0].get::<String, _>("source_kind"),
+                "thread_followup"
+            );
+            assert_eq!(
                 work_items[0]
                     .get::<Option<String>, _>("title")
                     .unwrap_or_default(),
@@ -10568,6 +10609,67 @@ mod tests {
             let context: String = work_items[0].get("context");
             assert!(context.contains("Latest thread reply:"));
             assert!(context.contains("Thread reply message id:"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn mentions_create_agent_requests_but_only_task_mode_creates_global_tasks() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "task-agent").await?;
+            let channel_id = insert_test_channel(&pool, "task-semantics").await?;
+
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                None,
+                "@task-agent please look at this",
+                false,
+                vec![],
+            )
+            .await?;
+            let task_count: i64 = sqlx::query_scalar("select count(*)::bigint from tasks")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(task_count, 0);
+            let mention_source_kind: String = sqlx::query_scalar(
+                "select source_kind from agent_work_items where agent_id = $1 order by created_at desc limit 1",
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(mention_source_kind, "mention");
+
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                None,
+                "@task-agent implement the tracked feature",
+                true,
+                vec![],
+            )
+            .await?;
+            let task_count: i64 = sqlx::query_scalar("select count(*)::bigint from tasks")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(task_count, 1);
+            let task_source_kind: String = sqlx::query_scalar(
+                "select source_kind from agent_work_items where agent_id = $1 order by created_at desc limit 1",
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(task_source_kind, "task");
             Ok(())
         }
         .await;

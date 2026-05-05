@@ -37,7 +37,7 @@ const GROUPS = [
   { key: "messages", title: "Messages", kinds: new Set(["message", "reply"]), icon: MessageSquare },
   { key: "tasks", title: "Tasks", kinds: new Set(["task"]), icon: LayoutList },
   { key: "agents", title: "Agents", kinds: new Set(["agent"]), icon: Bot },
-  { key: "activity", title: "Activity & Work", kinds: new Set(["activity", "work"]), icon: Activity },
+  { key: "activity", title: "Activity & agent turns", kinds: new Set(["activity", "request"]), icon: Activity },
 ];
 
 function escapeRegExp(value: string) {
@@ -47,7 +47,7 @@ function escapeRegExp(value: string) {
 function resultLabel(kind: string) {
   if (kind === "dm") return "DM";
   if (kind === "reply") return "Thread";
-  if (kind === "work") return "Work";
+  if (kind === "request") return "Agent turn";
   return kind;
 }
 
@@ -148,7 +148,7 @@ export function SearchModal({
             <div className="search-empty">
               <Search size={32} />
               <h3>Search LocalSlock</h3>
-              <p>Use filters to narrow by message, channel, task, agent, work, or activity.</p>
+              <p>Use filters to narrow by message, channel, task, agent, agent turn, or activity.</p>
             </div>
           )}
 

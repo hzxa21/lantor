@@ -141,6 +141,7 @@ export type AgentWorkItem = {
   source_message_id: string | null;
   task_id: string | null;
   task_number: number | null;
+  source_kind: string;
   title: string;
   context: string;
   status: string;

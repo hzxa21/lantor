@@ -34,7 +34,7 @@ import {
   SearchTimeRange,
   Task,
 } from "./types";
-import { buildPresetCommand, firstLines, formatTime } from "./ui-utils";
+import { agentRequestSourceLabel, buildPresetCommand, firstLines, formatTime } from "./ui-utils";
 import "./styles.css";
 
 const ACTIVITY_PHASE_LABELS: Record<string, string> = {
@@ -396,13 +396,14 @@ function App() {
   function applyWorkItemUpsert(patch: Omit<AgentWorkItem, "context"> & { context?: string }) {
     setData((current) => {
       if (!current) {
-        requestRefresh("Failed to refresh LocalSlock state after work item update");
+        requestRefresh("Failed to refresh LocalSlock state after agent request update");
         return current;
       }
       const existing = current.agent_work_items.find((item) => item.id === patch.id);
       const workItem: AgentWorkItem = {
         ...patch,
         context: patch.context ?? existing?.context ?? "",
+        source_kind: patch.source_kind ?? existing?.source_kind ?? "manual",
       };
       const agent_work_items = existing
         ? current.agent_work_items.map((item) => item.id === patch.id ? { ...item, ...workItem } : item)
@@ -1042,9 +1043,9 @@ function App() {
         .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
         .map((item) => ({
         id: item.id,
-        kind: "work",
+        kind: "request",
         title: item.title,
-        detail: `${item.agent_handle} · ${item.status} · ${channelLabel(item.channel_id)}`,
+        detail: `${agentRequestSourceLabel(item.source_kind, item.task_number)} · ${item.agent_handle} · ${item.status} · ${channelLabel(item.channel_id)}`,
         excerpt: firstLines(item.context, 2),
         createdAt: item.updated_at,
         channelId: item.channel_id,

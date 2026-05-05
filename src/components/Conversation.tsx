@@ -263,7 +263,7 @@ export function Conversation({
             <div className="empty-state">
               <LayoutList size={34} />
               <h2>No tasks in this channel</h2>
-              <p>Create a task above or use “Send Task” in the channel composer.</p>
+              <p>Create a task above or switch the composer to Task mode for explicit tracked work.</p>
             </div>
           )}
           {visibleTasks.map((task) => (

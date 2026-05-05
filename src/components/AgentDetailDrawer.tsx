@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Agent, AgentActivity, AgentRun, AgentSchedule, AgentWorkItem, Channel } from "../types";
-import { formatTime } from "../ui-utils";
+import { agentRequestSourceLabel, formatTime } from "../ui-utils";
 
 type AgentPhase = {
   kind: string;
@@ -84,7 +84,7 @@ function userFacingActivityTitle(activity: AgentActivity) {
   if (lowered.includes("system event") || lowered.includes("status")) return "Runtime status";
   if (lowered.includes("rate limit")) return "Checking rate limit";
   if (lowered.includes("follow-up steer")) return title.includes("rejected") ? "Follow-up queued" : "Follow-up added";
-  if (lowered.startsWith("work item ")) {
+  if (lowered.startsWith("work item ") || lowered.startsWith("agent request ")) {
     if (lowered.includes("running")) return "Request started";
     if (lowered.includes("done")) return "Request completed";
     if (lowered.includes("failed")) return "Request failed";
@@ -468,13 +468,13 @@ export function AgentDetailDrawer({
             )}
           </section>
           <section className="detail-section">
-            <h4>Work items</h4>
-            {workItems.length === 0 && <p className="empty-mini">No work assigned yet.</p>}
+            <h4>Agent inbox</h4>
+            {workItems.length === 0 && <p className="empty-mini">No agent requests yet.</p>}
             {workItems.map((item) => (
               <article key={item.id} className="detail-work" onClick={() => onOpenWorkItem(item)}>
                 <div>
                   <strong>{item.title}</strong>
-                  <span>{item.status}{item.task_number ? ` · task #${item.task_number}` : ""}</span>
+                  <span>{agentRequestSourceLabel(item.source_kind, item.task_number)} · {item.status}</span>
                 </div>
                 <div className="detail-work-actions">
                   {["queued", "running", "cancelling"].includes(item.status) && (
