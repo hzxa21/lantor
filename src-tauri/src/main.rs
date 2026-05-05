@@ -2505,6 +2505,13 @@ impl MentionDispatchOrigin {
 
 const INTER_AGENT_THREAD_MESSAGE_LIMIT: i64 = 10;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DispatchKind {
+    Mention,
+    Dm,
+    ThreadFollowUp,
+}
+
 async fn queue_mentions_as_work_items(
     pool: &PgPool,
     channel_id: Uuid,
@@ -2525,7 +2532,9 @@ async fn queue_mentions_as_work_items(
     let dm_agent_id: Option<Uuid> = channel_row.get("dm_agent_id");
 
     let mut targets = Vec::new();
+    let mut dispatch_kind = DispatchKind::Mention;
     if channel_kind == "dm" {
+        dispatch_kind = DispatchKind::Dm;
         if !origin.allows_dm_auto_dispatch() {
             return Ok(());
         }
@@ -2575,6 +2584,14 @@ async fn queue_mentions_as_work_items(
             }
             targets.push((agent_id, handle));
         }
+        if targets.is_empty() && matches!(origin, MentionDispatchOrigin::Owner) {
+            if let Some(thread_root_id) = thread_root_id {
+                targets = load_thread_followup_targets(pool, channel_id, thread_root_id).await?;
+                if !targets.is_empty() {
+                    dispatch_kind = DispatchKind::ThreadFollowUp;
+                }
+            }
+        }
     }
 
     if targets.is_empty() {
@@ -2603,7 +2620,11 @@ async fn queue_mentions_as_work_items(
         .next()
         .map(|line| line.chars().take(120).collect::<String>())
         .filter(|line| !line.trim().is_empty())
-        .unwrap_or_else(|| format!("Mention in #{channel_name}"));
+        .unwrap_or_else(|| match dispatch_kind {
+            DispatchKind::Dm => format!("DM in #{channel_name}"),
+            DispatchKind::Mention => format!("Mention in #{channel_name}"),
+            DispatchKind::ThreadFollowUp => format!("Thread follow-up in #{channel_name}"),
+        });
 
     for (agent_id, agent_handle) in targets {
         let already_queued: bool = sqlx::query_scalar(
@@ -2642,13 +2663,21 @@ async fn queue_mentions_as_work_items(
         } else {
             format!("#{channel_name}")
         };
-        let context = build_mention_work_context(
+        let (message_id_label, message_body_label) = match dispatch_kind {
+            DispatchKind::ThreadFollowUp => ("Thread reply message id", "Latest thread reply"),
+            DispatchKind::Dm | DispatchKind::Mention => {
+                ("Mentioned message id", "Mentioned message")
+            }
+        };
+        let context = build_dispatch_work_context(
             pool,
             channel_id,
             &channel_label,
             Some(reply_thread_root_id),
             message_id,
             body,
+            message_id_label,
+            message_body_label,
         )
         .await?;
         let work_item_id: Uuid = sqlx::query_scalar(
@@ -2676,27 +2705,20 @@ async fn queue_mentions_as_work_items(
             pool,
             Some(agent_id),
             None,
-            if channel_kind == "dm" {
-                "dm"
-            } else {
-                "mention"
+            match dispatch_kind {
+                DispatchKind::Dm => "dm",
+                DispatchKind::Mention => "mention",
+                DispatchKind::ThreadFollowUp => "thread",
             },
-            if scheduled {
-                if channel_kind == "dm" {
-                    "DM dispatched"
-                } else if origin.is_agent() {
-                    "Collaboration dispatched"
-                } else {
-                    "Mention dispatched"
-                }
-            } else {
-                if channel_kind == "dm" {
-                    "DM queued"
-                } else if origin.is_agent() {
-                    "Collaboration queued"
-                } else {
-                    "Mention queued"
-                }
+            match (dispatch_kind, scheduled, origin.is_agent()) {
+                (DispatchKind::Dm, true, _) => "DM dispatched",
+                (DispatchKind::Dm, false, _) => "DM queued",
+                (DispatchKind::ThreadFollowUp, true, _) => "Thread follow-up dispatched",
+                (DispatchKind::ThreadFollowUp, false, _) => "Thread follow-up queued",
+                (DispatchKind::Mention, true, true) => "Collaboration dispatched",
+                (DispatchKind::Mention, false, true) => "Collaboration queued",
+                (DispatchKind::Mention, true, false) => "Mention dispatched",
+                (DispatchKind::Mention, false, false) => "Mention queued",
             },
             format!("#{channel_name} to @{agent_handle}: {title}"),
         )
@@ -2704,6 +2726,51 @@ async fn queue_mentions_as_work_items(
     }
 
     Ok(())
+}
+
+async fn load_thread_followup_targets(
+    pool: &PgPool,
+    channel_id: Uuid,
+    thread_root_id: Uuid,
+) -> CommandResult<Vec<(Uuid, String)>> {
+    let rows = sqlx::query(
+        r#"
+        select a.id, a.handle
+        from (
+            select agent_id, max(last_at) as last_at
+            from (
+                select sender_agent_id as agent_id, max(created_at) as last_at
+                from messages
+                where channel_id = $1
+                  and (id = $2 or thread_root_id = $2)
+                  and sender_agent_id is not null
+                group by sender_agent_id
+                union all
+                select agent_id, max(created_at) as last_at
+                from agent_work_items
+                where channel_id = $1
+                  and thread_root_id = $2
+                group by agent_id
+            ) candidates
+            where agent_id is not null
+            group by agent_id
+        ) candidates
+        join agents a on a.id = candidates.agent_id
+        join channel_members cm on cm.channel_id = $1 and cm.agent_id = a.id
+        order by candidates.last_at desc, lower(a.handle)
+        limit 8
+        "#,
+    )
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.get("id"), row.get("handle")))
+        .collect())
 }
 
 async fn inter_agent_thread_message_count_since_last_owner(
@@ -2801,22 +2868,24 @@ async fn queue_agent_message_mentions(pool: &PgPool, message_id: Uuid) -> Comman
     .await
 }
 
-async fn build_mention_work_context(
+async fn build_dispatch_work_context(
     pool: &PgPool,
     channel_id: Uuid,
     channel_label: &str,
     thread_root_id: Option<Uuid>,
     message_id: Uuid,
     body: &str,
+    message_id_label: &str,
+    message_body_label: &str,
 ) -> CommandResult<String> {
     let mut lines = vec![
         format!("Surface: {channel_label}"),
-        format!("Mentioned message id: {message_id}"),
+        format!("{message_id_label}: {message_id}"),
     ];
     if let Some(thread_root_id) = thread_root_id {
         lines.push(format!("Thread root id: {thread_root_id}"));
     }
-    lines.push("Mentioned message:".to_owned());
+    lines.push(format!("{message_body_label}:"));
     lines.push(body.trim().to_owned());
 
     if let Some(thread_root_id) = thread_root_id {
@@ -10412,6 +10481,93 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(work_items, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn owner_thread_followup_dispatches_to_thread_agents_without_mentions() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "thread-agent").await?;
+            let channel_id = insert_test_channel(&pool, "thread-followup").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', '@thread-agent please investigate', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into agent_work_items (
+                    agent_id, channel_id, thread_root_id, source_message_id, title, context, status
+                )
+                values ($1, $2, $3, $3, 'Initial dispatch', 'Initial dispatch', 'done')
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(root_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                Some(root_id),
+                "我补充一下：这个复现只在 thread 里出现",
+                false,
+                vec![],
+            )
+            .await?;
+
+            let work_items = sqlx::query(
+                r#"
+                select source_message_id, title, context
+                from agent_work_items
+                where channel_id = $1 and agent_id = $2 and source_message_id <> $3
+                "#,
+            )
+            .bind(channel_id)
+            .bind(agent_id)
+            .bind(root_id)
+            .fetch_all(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            assert_eq!(work_items.len(), 1);
+            assert_eq!(
+                work_items[0]
+                    .get::<Option<String>, _>("title")
+                    .unwrap_or_default(),
+                "我补充一下：这个复现只在 thread 里出现"
+            );
+            let context: String = work_items[0].get("context");
+            assert!(context.contains("Latest thread reply:"));
+            assert!(context.contains("Thread reply message id:"));
             Ok(())
         }
         .await;
