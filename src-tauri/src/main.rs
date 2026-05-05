@@ -33,6 +33,7 @@ const SILENT_REPLY_PREFIX: &str = "LOCAL_SLOCK_SILENT_REPLY";
 const UI_REFRESH_CHANNEL: &str = "localslock_ui_refresh";
 const SUPERVISOR_WAKE_CHANNEL: &str = "localslock_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "localslock://refresh";
+const LOCAL_SLOCK_CONTEXT_TOOL_ENV: &str = "LOCAL_SLOCK_CONTEXT_TOOL";
 const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by LocalSlock]";
 const ATTACHMENT_SIZE_LIMIT: usize = 25 * 1024 * 1024;
@@ -41,6 +42,7 @@ const DISPATCH_CONTEXT_LIMIT: usize = 18 * 1024;
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
 const DISPATCH_THREAD_MESSAGE_LIMIT: i64 = 6;
 const DISPATCH_THREAD_MESSAGE_BODY_LIMIT: usize = 1_500;
+const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -6222,7 +6224,9 @@ fn build_runtime_standing_prompt(
          You collaborate with one local human through channels, threads, tasks, and DMs.\n\
          {transport_note}\n\
          LocalSlock keeps one warm runtime session per agent so previous turns remain in provider context; channel and thread are delivered as message envelope fields, not as separate runtime sessions.\n\
-         Each new turn contains the latest inbox item plus a bounded context snapshot. Do not assume it is an exhaustive transcript; rely on the active runtime session and ask for more context if the task is ambiguous.\n\
+         Each new turn contains the latest inbox item plus a bounded context snapshot. Do not assume it is an exhaustive transcript; rely on the active runtime session and use the history/search tool when older context is needed.\n\
+         For read-only LocalSlock history lookup, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool history-read --target \"#channel[:thread_id]\" --limit 20`.\n\
+         For read-only message search, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool message-search --query \"text\" --target \"#channel\" --limit 20`. Omit --target to search all local messages.\n\
          Before replying, decide whether a visible response is useful; for greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly LOCAL_SLOCK_SILENT_REPLY: <short reason> and nothing else.\n\
          You may print standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines to manage future reminders; LocalSlock consumes and hides those lines. Do not print LOCAL_SLOCK_EVENT message/task lines unless explicitly asked to debug the legacy runtime path.\n\
          Keep user-visible replies concise and include concrete results or blockers."
@@ -6259,6 +6263,13 @@ fn claude_system_prompt(handle: &str, memory_context: Option<&str>) -> String {
         "LocalSlock is connected to Claude through Claude Code stream-json and streams your assistant text into chat automatically.",
         memory_context,
     )
+}
+
+fn configure_agent_context_tool_env(command: &mut Command) {
+    if let Ok(exe_path) = env::current_exe() {
+        command.env(LOCAL_SLOCK_CONTEXT_TOOL_ENV, exe_path);
+    }
+    command.env("LOCAL_SLOCK_DATABASE_URL", db_url());
 }
 
 fn codex_stream_key(run_id: Uuid, item_id: &str) -> String {
@@ -6726,6 +6737,7 @@ async fn spawn_warm_claude_runtime(
         .arg("bypassPermissions");
     command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
     command.env("LOCAL_SLOCK_AGENT_HANDLE", handle);
+    configure_agent_context_tool_env(&mut command);
     #[cfg(unix)]
     command.process_group(0);
     if !working_directory.is_empty() {
@@ -6881,6 +6893,7 @@ async fn spawn_warm_codex_runtime(
         .arg("exec codex app-server --listen stdio://");
     command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
     command.env("LOCAL_SLOCK_AGENT_HANDLE", handle);
+    configure_agent_context_tool_env(&mut command);
     #[cfg(unix)]
     command.process_group(0);
     command.current_dir(&cwd);
@@ -8281,6 +8294,7 @@ async fn supervisor_start_agent(
     command.arg("-lc").arg(&command_text);
     command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
     command.env("LOCAL_SLOCK_AGENT_HANDLE", &handle);
+    configure_agent_context_tool_env(&mut command);
     command.env("LOCAL_SLOCK_RUN_ID", run_id.to_string());
     command.env(
         "LOCAL_SLOCK_WORK_ITEM_ID",
@@ -9879,6 +9893,377 @@ fn to_string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+struct AgentContextTarget {
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    label: String,
+}
+
+fn arg_value(args: &[String], name: &str) -> Option<String> {
+    args.windows(2)
+        .find_map(|window| (window[0] == name).then(|| window[1].clone()))
+}
+
+fn has_arg(args: &[String], name: &str) -> bool {
+    args.iter().any(|arg| arg == name)
+}
+
+fn parse_context_tool_limit(args: &[String], default: i64, max: i64) -> CommandResult<i64> {
+    let Some(raw) = arg_value(args, "--limit") else {
+        return Ok(default);
+    };
+    let parsed = raw
+        .parse::<i64>()
+        .map_err(|_| format!("invalid --limit value: {raw}"))?;
+    Ok(parsed.clamp(1, max))
+}
+
+fn short_id(id: Uuid) -> String {
+    id.to_string().chars().take(8).collect()
+}
+
+fn split_context_target(raw_target: &str) -> (String, Option<String>) {
+    let target = raw_target.trim();
+    if let Some(rest) = target.strip_prefix("dm:@") {
+        if let Some((handle, thread)) = rest.split_once(':') {
+            return (format!("dm:@{handle}"), Some(thread.to_owned()));
+        }
+        return (target.to_owned(), None);
+    }
+    if let Some(rest) = target.strip_prefix('#') {
+        if let Some((channel, thread)) = rest.split_once(':') {
+            return (format!("#{channel}"), Some(thread.to_owned()));
+        }
+    }
+    if let Some((channel, thread)) = target.split_once(':') {
+        return (channel.to_owned(), Some(thread.to_owned()));
+    }
+    (target.to_owned(), None)
+}
+
+async fn resolve_agent_context_channel(
+    pool: &PgPool,
+    channel_ref: &str,
+) -> CommandResult<(Uuid, String)> {
+    let channel_ref = channel_ref.trim();
+    if channel_ref.is_empty() {
+        return Err("target channel is empty".to_owned());
+    }
+
+    if let Some(handle) = channel_ref.strip_prefix("dm:@") {
+        let row = sqlx::query(
+            r#"
+            select c.id, a.handle
+            from channels c
+            join agents a on a.id = c.dm_agent_id
+            where c.kind = 'dm' and lower(a.handle) = lower($1)
+            "#,
+        )
+        .bind(handle)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+        let Some(row) = row else {
+            return Err(format!("unknown DM target: {channel_ref}"));
+        };
+        let channel_id: Uuid = row.get("id");
+        let handle: String = row.get("handle");
+        return Ok((channel_id, format!("dm:@{handle}")));
+    }
+
+    if let Ok(channel_id) = Uuid::parse_str(channel_ref.trim_start_matches("channel:")) {
+        let row = sqlx::query("select name, kind from channels where id = $1")
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string)?;
+        let Some(row) = row else {
+            return Err(format!("unknown channel id: {channel_id}"));
+        };
+        let name: String = row.get("name");
+        let kind: String = row.get("kind");
+        return Ok((
+            channel_id,
+            if kind == "dm" {
+                format!("dm:{name}")
+            } else {
+                format!("#{name}")
+            },
+        ));
+    }
+
+    let name = channel_ref.trim_start_matches('#');
+    let row = sqlx::query("select id, name, kind from channels where lower(name) = lower($1)")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+    let Some(row) = row else {
+        return Err(format!("unknown channel: {channel_ref}"));
+    };
+    let channel_id: Uuid = row.get("id");
+    let name: String = row.get("name");
+    let kind: String = row.get("kind");
+    Ok((
+        channel_id,
+        if kind == "dm" {
+            format!("dm:{name}")
+        } else {
+            format!("#{name}")
+        },
+    ))
+}
+
+async fn resolve_agent_context_thread(
+    pool: &PgPool,
+    channel_id: Uuid,
+    raw_thread: &str,
+) -> CommandResult<Uuid> {
+    let raw_thread = raw_thread.trim();
+    if raw_thread.is_empty() {
+        return Err("thread reference is empty".to_owned());
+    }
+    if let Ok(thread_id) = Uuid::parse_str(raw_thread) {
+        return Ok(thread_id);
+    }
+    let pattern = format!("{raw_thread}%");
+    let thread_id: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from messages
+        where channel_id = $1 and id::text like $2
+        order by created_at asc
+        limit 1
+        "#,
+    )
+    .bind(channel_id)
+    .bind(pattern)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+    thread_id.ok_or_else(|| format!("unknown thread/message id in target: {raw_thread}"))
+}
+
+async fn resolve_agent_context_target(
+    pool: &PgPool,
+    raw_target: &str,
+    thread_override: Option<&str>,
+) -> CommandResult<AgentContextTarget> {
+    let (channel_ref, thread_from_target) = split_context_target(raw_target);
+    let (channel_id, channel_label) = resolve_agent_context_channel(pool, &channel_ref).await?;
+    let thread_ref = thread_override
+        .map(str::to_owned)
+        .or(thread_from_target)
+        .filter(|thread| !thread.trim().is_empty());
+    let thread_root_id = match thread_ref {
+        Some(thread_ref) => {
+            Some(resolve_agent_context_thread(pool, channel_id, &thread_ref).await?)
+        }
+        None => None,
+    };
+    let label = match thread_root_id {
+        Some(thread_root_id) => format!("{channel_label}:{}", short_id(thread_root_id)),
+        None => channel_label,
+    };
+    Ok(AgentContextTarget {
+        channel_id,
+        thread_root_id,
+        label,
+    })
+}
+
+fn format_context_message_row(row: &sqlx::postgres::PgRow, include_channel: bool) -> String {
+    let id: Uuid = row.get("id");
+    let sender_name: String = row.get("sender_name");
+    let sender_role: String = row.get("sender_role");
+    let body: String = row.get("body");
+    let created_at: DateTime<Utc> = row.get("created_at");
+    let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+    let task_number: Option<i64> = row.get("task_number");
+    let task_status: Option<String> = row.get("task_status");
+    let body = compact_chars_middle(&body, AGENT_CONTEXT_TOOL_MESSAGE_LIMIT).replace('\n', "\n  ");
+    let mut head = format!(
+        "[{}] id={} sender={}({})",
+        created_at.to_rfc3339(),
+        short_id(id),
+        sender_name,
+        sender_role
+    );
+    if include_channel {
+        let channel_name: String = row.get("channel_name");
+        let channel_kind: String = row.get("channel_kind");
+        if channel_kind == "dm" {
+            head.push_str(&format!(" surface=dm:{channel_name}"));
+        } else {
+            head.push_str(&format!(" surface=#{channel_name}"));
+        }
+    }
+    if let Some(thread_root_id) = thread_root_id {
+        head.push_str(&format!(" thread={}", short_id(thread_root_id)));
+    }
+    if let Some(task_number) = task_number {
+        head.push_str(&format!(
+            " task=#{task_number}({})",
+            task_status.unwrap_or_else(|| "unknown".to_owned())
+        ));
+    }
+    format!("{head}\n  {body}")
+}
+
+async fn agent_context_history_read(pool: &PgPool, args: &[String]) -> CommandResult<String> {
+    let target = arg_value(args, "--target")
+        .or_else(|| arg_value(args, "--channel"))
+        .ok_or_else(|| "history-read requires --target \"#channel[:thread]\"".to_owned())?;
+    let limit = parse_context_tool_limit(args, 30, 100)?;
+    let thread_override = arg_value(args, "--thread");
+    let target = resolve_agent_context_target(pool, &target, thread_override.as_deref()).await?;
+
+    let rows = if let Some(thread_root_id) = target.thread_root_id {
+        sqlx::query(
+            r#"
+            select
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                t.number as task_number, t.status as task_status
+            from messages m
+            left join tasks t on t.message_id = m.id
+            where m.channel_id = $1
+              and (m.id = $2 or m.thread_root_id = $2)
+            order by m.created_at desc
+            limit $3
+            "#,
+        )
+        .bind(target.channel_id)
+        .bind(thread_root_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    } else {
+        sqlx::query(
+            r#"
+            select
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                t.number as task_number, t.status as task_status
+            from messages m
+            left join tasks t on t.message_id = m.id
+            where m.channel_id = $1
+              and m.thread_root_id is null
+            order by m.created_at desc
+            limit $2
+            "#,
+        )
+        .bind(target.channel_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    };
+
+    let mut output = vec![format!(
+        "LocalSlock history for {} ({} message{})",
+        target.label,
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
+    )];
+    for row in rows.into_iter().rev() {
+        output.push(format_context_message_row(&row, false));
+    }
+    Ok(output.join("\n\n"))
+}
+
+async fn agent_context_message_search(pool: &PgPool, args: &[String]) -> CommandResult<String> {
+    let query = arg_value(args, "--query")
+        .or_else(|| arg_value(args, "-q"))
+        .ok_or_else(|| "message-search requires --query <text>".to_owned())?;
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("message-search query is empty".to_owned());
+    }
+    let limit = parse_context_tool_limit(args, 30, 100)?;
+    let target = match arg_value(args, "--target").or_else(|| arg_value(args, "--channel")) {
+        Some(target) => Some(resolve_agent_context_target(pool, &target, None).await?),
+        None => None,
+    };
+    let pattern = format!("%{query}%");
+
+    let rows = if let Some(target) = target {
+        sqlx::query(
+            r#"
+            select
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                c.name as channel_name, c.kind as channel_kind,
+                t.number as task_number, t.status as task_status
+            from messages m
+            join channels c on c.id = m.channel_id
+            left join tasks t on t.message_id = m.id
+            where m.channel_id = $1
+              and m.body ilike $2
+            order by m.created_at desc
+            limit $3
+            "#,
+        )
+        .bind(target.channel_id)
+        .bind(pattern)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    } else {
+        sqlx::query(
+            r#"
+            select
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                c.name as channel_name, c.kind as channel_kind,
+                t.number as task_number, t.status as task_status
+            from messages m
+            join channels c on c.id = m.channel_id
+            left join tasks t on t.message_id = m.id
+            where m.body ilike $1
+            order by m.created_at desc
+            limit $2
+            "#,
+        )
+        .bind(pattern)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    };
+
+    let mut output = vec![format!(
+        "LocalSlock message search for {:?} ({} result{})",
+        query,
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
+    )];
+    for row in rows {
+        output.push(format_context_message_row(&row, true));
+    }
+    Ok(output.join("\n\n"))
+}
+
+async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
+    if args.is_empty() || has_arg(args, "--help") || has_arg(args, "-h") {
+        return Ok(
+            "LocalSlock agent context tool\n\nCommands:\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID."
+                .to_owned(),
+        );
+    }
+
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url())
+        .await
+        .map_err(to_string)?;
+    match args[0].as_str() {
+        "history-read" | "read-history" | "read" => agent_context_history_read(&pool, args).await,
+        "message-search" | "search-messages" | "search" => {
+            agent_context_message_search(&pool, args).await
+        }
+        other => Err(format!("unknown agent context tool command: {other}")),
+    }
+}
+
 pub fn run() {
     let database_url = db_url();
     let pool = tauri::async_runtime::block_on(async {
@@ -9945,7 +10330,25 @@ pub fn run() {
 }
 
 fn main() {
-    if env::args().any(|arg| arg == "--supervisor") {
+    let args = env::args().collect::<Vec<_>>();
+    if let Some(tool_arg_index) = args.iter().position(|arg| arg == "--agent-context-tool") {
+        let tool_args = args
+            .get(tool_arg_index + 1..)
+            .map(|args| args.to_vec())
+            .unwrap_or_default();
+        match tauri::async_runtime::block_on(run_agent_context_tool(&tool_args)) {
+            Ok(output) => {
+                println!("{output}");
+                return;
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|arg| arg == "--supervisor") {
         if let Err(err) = tauri::async_runtime::block_on(run_supervisor()) {
             eprintln!("LocalSlock supervisor stopped: {err}");
         }
@@ -9957,18 +10360,18 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_streaming_agent_message, capped_stream_delta, claim_next_supervisor_command,
-        claude_message_text, claude_result_error, claude_stream_event_activity,
-        claude_system_prompt, claude_text_delta, codex_item_started_activity,
-        codex_turn_id_from_value, consume_streaming_agent_control_lines, extract_agent_event_json,
-        extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
-        load_agent_memory_context, load_channel_agent_roster, load_messages, load_reminders,
-        load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
-        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
-        process_due_reminders, queue_mentions_as_work_items, send_owner_message_in_pool,
-        silent_reply_reason, upsert_runtime_thread_id, MentionDispatchOrigin,
-        AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
-        STREAMING_TRUNCATION_MARKER,
+        agent_context_history_read, agent_context_message_search, append_streaming_agent_message,
+        capped_stream_delta, claim_next_supervisor_command, claude_message_text,
+        claude_result_error, claude_stream_event_activity, claude_system_prompt, claude_text_delta,
+        codex_item_started_activity, codex_turn_id_from_value,
+        consume_streaming_agent_control_lines, extract_agent_event_json, extract_agent_mentions,
+        finish_streaming_agent_message, insert_agent_message, load_agent_memory_context,
+        load_channel_agent_roster, load_messages, load_reminders, load_runtime_thread_id,
+        maybe_hide_silent_streaming_reply, migrate, open_dm_with_agent_in_pool,
+        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
+        queue_mentions_as_work_items, send_owner_message_in_pool, short_id, silent_reply_reason,
+        upsert_runtime_thread_id, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
+        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::json;
@@ -10015,6 +10418,66 @@ mod tests {
         assert!(prompt.contains("one warm runtime session per agent"));
         assert!(prompt.contains("channel and thread are delivered as message envelope fields"));
         assert!(prompt.contains("Persistent memory: prefer concise replies"));
+    }
+
+    #[tokio::test]
+    async fn agent_context_tool_reads_thread_history_and_searches_messages() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "context-tools").await?;
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'root message with needle', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into messages (channel_id, thread_root_id, sender_name, sender_role, body, is_task)
+                values ($1, $2, 'agent', 'agent', 'reply inside thread', false),
+                       ($1, null, 'Dylan', 'owner', 'separate root message', false)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(root_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let history_args = vec![
+                "history-read".to_owned(),
+                "--target".to_owned(),
+                format!("#context-tools:{}", short_id(root_id)),
+                "--limit".to_owned(),
+                "10".to_owned(),
+            ];
+            let history = agent_context_history_read(&pool, &history_args).await?;
+            assert!(history.contains("root message with needle"));
+            assert!(history.contains("reply inside thread"));
+            assert!(!history.contains("separate root message"));
+
+            let search_args = vec![
+                "message-search".to_owned(),
+                "--query".to_owned(),
+                "needle".to_owned(),
+                "--target".to_owned(),
+                "#context-tools".to_owned(),
+            ];
+            let search = agent_context_message_search(&pool, &search_args).await?;
+            assert!(search.contains("root message with needle"));
+            assert!(search.contains("surface=#context-tools"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[test]
