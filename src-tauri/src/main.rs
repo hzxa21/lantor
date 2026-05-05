@@ -375,6 +375,15 @@ enum AgentEvent {
         body: String,
         as_task: Option<bool>,
     },
+    TaskCreate {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        title: String,
+        body: Option<String>,
+        thread_body: Option<String>,
+        assign_self: Option<bool>,
+        status: Option<String>,
+    },
     TaskStatus {
         task_number: i64,
         status: String,
@@ -5214,6 +5223,43 @@ async fn handle_agent_event(
             .await?;
             Ok(format!("message accepted {msg_id}"))
         }
+        AgentEvent::TaskCreate {
+            channel,
+            channel_id,
+            title,
+            body,
+            thread_body,
+            assign_self,
+            status,
+        } => {
+            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
+            let (task_number, root_message_id, thread_reply_id) = create_agent_task_thread(
+                pool,
+                agent_id,
+                channel_id,
+                &title,
+                body.as_deref(),
+                thread_body.as_deref(),
+                assign_self.unwrap_or(true),
+                status.as_deref(),
+            )
+            .await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "task",
+                format!("Task #{task_number} created"),
+                json!({
+                    "task_number": task_number,
+                    "message_id": root_message_id,
+                    "thread_reply_id": thread_reply_id,
+                })
+                .to_string(),
+            )
+            .await?;
+            Ok(format!("task #{task_number} created {root_message_id}"))
+        }
         AgentEvent::TaskStatus {
             task_number,
             status,
@@ -5559,6 +5605,71 @@ async fn insert_agent_message(
     }
     let _ = notify_ui_refresh(pool, "message").await;
     Ok(msg_id)
+}
+
+async fn create_agent_task_thread(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    title: &str,
+    body: Option<&str>,
+    thread_body: Option<&str>,
+    assign_self: bool,
+    status: Option<&str>,
+) -> CommandResult<(i64, Uuid, Option<Uuid>)> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("task_create title is required".to_owned());
+    }
+    let final_status = status
+        .map(str::trim)
+        .filter(|status| !status.is_empty())
+        .unwrap_or(if assign_self { "in_progress" } else { "todo" });
+    if !matches!(final_status, "todo" | "in_progress" | "in_review" | "done") {
+        return Err(format!("unsupported task status: {final_status}"));
+    }
+    let root_body = body
+        .map(str::trim)
+        .filter(|body| !body.is_empty())
+        .unwrap_or(title);
+    let root_message_id =
+        insert_agent_message(pool, agent_id, channel_id, None, root_body, true).await?;
+    let task_row = sqlx::query(
+        r#"
+        update tasks
+        set title = $2,
+            status = $3,
+            assignee_agent_id = case when $4 then $5 else null end,
+            updated_at = now()
+        where message_id = $1
+        returning number
+        "#,
+    )
+    .bind(root_message_id)
+    .bind(title)
+    .bind(final_status)
+    .bind(assign_self)
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    let task_number: i64 = task_row.get("number");
+    let thread_reply_id = match thread_body.map(str::trim).filter(|body| !body.is_empty()) {
+        Some(thread_body) => Some(
+            insert_agent_message(
+                pool,
+                agent_id,
+                channel_id,
+                Some(root_message_id),
+                thread_body,
+                false,
+            )
+            .await?,
+        ),
+        None => None,
+    };
+    let _ = notify_ui_refresh(pool, "task_create").await;
+    Ok((task_number, root_message_id, thread_reply_id))
 }
 
 fn capped_stream_delta(delta: &str, current_len: usize) -> (String, bool) {
@@ -6220,6 +6331,12 @@ fn build_work_item_prompt(
 LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title":"<title>","note":"<optional note>","recurrence":"none|daily|weekly"}
 LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
 Use reminders when the user asks for a future follow-up or when you need to re-check state later. Reminders you create are anchored to this channel/thread by default and will wake you again when due."#
+            .to_owned(),
+    );
+    lines.push(
+        r#"You can create explicit tracked tasks only when the conversation is durable work that should be tracked globally:
+LOCAL_SLOCK_EVENT {"type":"task_create","channel_id":"<channel uuid>","title":"<short task title>","body":"<root task message>","thread_body":"<first execution update in the task thread>","assign_self":true,"status":"in_progress"}
+This creates a root task message in the channel and opens its execution thread with thread_body. Do not create tasks for greetings, small clarifications, or ordinary chat. For normal follow-up, reply in the current thread with a message event instead."#
             .to_owned(),
     );
     lines.push(
@@ -10475,13 +10592,13 @@ mod tests {
         claude_result_error, claude_stream_event_activity, claude_system_prompt, claude_text_delta,
         codex_item_started_activity, codex_turn_id_from_value,
         consume_streaming_agent_control_lines, delete_agent_in_pool, extract_agent_event_json,
-        extract_agent_mentions, finish_streaming_agent_message, insert_agent_message,
-        load_agent_memory_context, load_channel_agent_roster, load_messages, load_reminders,
-        load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
+        extract_agent_mentions, finish_streaming_agent_message, handle_agent_event,
+        insert_agent_message, load_agent_memory_context, load_channel_agent_roster, load_messages,
+        load_reminders, load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
         open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
         process_due_reminders, queue_mentions_as_work_items, send_owner_message_in_pool, short_id,
         silent_reply_reason, upsert_agent_thread_subscription, upsert_runtime_thread_id,
-        MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL,
+        AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL,
         STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -11474,6 +11591,97 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(task_source_kind, "task");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn task_create_event_creates_root_task_and_execution_thread() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "task-thread-agent").await?;
+            let channel_id = insert_test_channel(&pool, "task-thread-api").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, working_directory, status)
+                values ($1, 'test', '', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::TaskCreate {
+                    channel: None,
+                    channel_id: Some(channel_id),
+                    title: "Investigate task thread API".to_owned(),
+                    body: Some("Track this as a durable task".to_owned()),
+                    thread_body: Some("Starting execution in the task thread".to_owned()),
+                    assign_self: Some(true),
+                    status: Some("in_progress".to_owned()),
+                },
+            )
+            .await?;
+
+            let task_row = sqlx::query(
+                r#"
+                select t.number, t.status, t.assignee_agent_id, m.id as message_id, m.body, m.thread_root_id
+                from tasks t
+                join messages m on m.id = t.message_id
+                where t.channel_id = $1
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let root_message_id: Uuid = task_row.get("message_id");
+            assert_eq!(task_row.get::<String, _>("status"), "in_progress");
+            assert_eq!(
+                task_row.get::<Option<Uuid>, _>("assignee_agent_id"),
+                Some(agent_id)
+            );
+            assert_eq!(task_row.get::<String, _>("body"), "Track this as a durable task");
+            assert_eq!(task_row.get::<Option<Uuid>, _>("thread_root_id"), None);
+
+            let reply_body: String = sqlx::query_scalar(
+                "select body from messages where channel_id = $1 and thread_root_id = $2",
+            )
+            .bind(channel_id)
+            .bind(root_message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(reply_body, "Starting execution in the task thread");
+
+            let subscribed: bool = sqlx::query_scalar(
+                r#"
+                select exists (
+                    select 1
+                    from agent_thread_subscriptions
+                    where agent_id = $1 and channel_id = $2 and thread_root_id = $3
+                )
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(root_message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert!(subscribed);
+            assert!(task_row.get::<i64, _>("number") > 0);
             Ok(())
         }
         .await;
