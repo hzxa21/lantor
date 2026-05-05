@@ -279,6 +279,7 @@ export function AgentDetailDrawer({
         </div>
         <div className="agent-drawer-head-actions">
           <button
+            type="button"
             className="danger"
             disabled={deleteDisabled}
             title={deleteDisabled ? "Stop the active run before deleting this agent" : `Delete @${agent.handle}`}
@@ -286,7 +287,7 @@ export function AgentDetailDrawer({
           >
             Delete
           </button>
-          <button onClick={onClose} aria-label="Close agent detail">×</button>
+          <button type="button" onClick={onClose} aria-label="Close agent detail">×</button>
         </div>
       </header>
       <div className="agent-drawer-body">
@@ -518,6 +519,7 @@ export function AgentDetailDrawer({
       </div>
       <footer className="agent-drawer-actions">
         <button
+          type="button"
           className="danger"
           disabled={deleteDisabled}
           title={deleteDisabled ? "Stop the active run before deleting this agent" : `Delete @${agent.handle}`}
@@ -526,13 +528,13 @@ export function AgentDetailDrawer({
           Delete
         </button>
         <div>
-          <button onClick={() => onOpenDm(agent)}>Open DM</button>
+          <button type="button" onClick={() => onOpenDm(agent)}>Open DM</button>
           {activeRun ? (
-            <button onClick={() => onStop(activeRun)}>Stop</button>
+            <button type="button" onClick={() => onStop(activeRun)}>Stop</button>
           ) : (
-            <button onClick={() => onStart(agent)}>Start</button>
+            <button type="button" onClick={() => onStart(agent)}>Start</button>
           )}
-          <button className="primary" onClick={() => onEdit(agent)}>Edit</button>
+          <button type="button" className="primary" onClick={() => onEdit(agent)}>Edit</button>
         </div>
       </footer>
     </aside>

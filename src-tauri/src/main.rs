@@ -1746,11 +1746,20 @@ async fn set_channel_agent_membership(
 
 #[tauri::command]
 async fn delete_channel(channel_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
-    sqlx::query("delete from channels where id = $1")
+    delete_channel_in_pool(&state.pool, channel_id).await
+}
+
+async fn delete_channel_in_pool(pool: &PgPool, channel_id: Uuid) -> CommandResult<()> {
+    let result = sqlx::query("delete from channels where id = $1")
         .bind(channel_id)
-        .execute(&state.pool)
+        .execute(pool)
         .await
         .map_err(to_string)?;
+    if result.rows_affected() == 0 {
+        return Err("channel does not exist".to_owned());
+    }
+
+    let _ = notify_ui_refresh(pool, "channel_deleted").await;
 
     Ok(())
 }
@@ -10641,14 +10650,15 @@ mod tests {
         capped_stream_delta, claim_next_supervisor_command, claude_message_text,
         claude_result_error, claude_stream_event_activity, claude_system_prompt, claude_text_delta,
         codex_item_started_activity, codex_turn_id_from_value,
-        consume_streaming_agent_control_lines, delete_agent_in_pool, extract_agent_event_json,
-        extract_agent_mentions, finish_streaming_agent_message, handle_agent_event,
-        insert_agent_message, load_agent_memory_context, load_channel_agent_roster, load_messages,
-        load_reminders, load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
-        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
-        process_due_reminders, queue_mentions_as_work_items, send_owner_message_in_pool, short_id,
-        silent_reply_reason, upsert_agent_thread_subscription, upsert_runtime_thread_id,
-        AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL,
+        consume_streaming_agent_control_lines, delete_agent_in_pool, delete_channel_in_pool,
+        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
+        handle_agent_event, insert_agent_message, load_agent_memory_context,
+        load_channel_agent_roster, load_messages, load_reminders, load_runtime_thread_id,
+        maybe_hide_silent_streaming_reply, migrate, open_dm_with_agent_in_pool,
+        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
+        queue_mentions_as_work_items, send_owner_message_in_pool, short_id, silent_reply_reason,
+        upsert_agent_thread_subscription, upsert_runtime_thread_id, AgentEvent,
+        MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL,
         STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -11353,6 +11363,105 @@ mod tests {
             assert_eq!(message.get::<Option<Uuid>, _>("sender_agent_id"), None);
             assert_eq!(message.get::<String, _>("sender_name"), "delete-me");
             assert_eq!(message.get::<String, _>("body"), "channel message");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn delete_channel_removes_timeline_and_unlinks_requests() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "channel-delete-agent").await?;
+            let channel_id = insert_test_channel(&pool, "channel-delete").await?;
+            sqlx::query("insert into channel_members (channel_id, agent_id) values ($1, $2)")
+                .bind(channel_id)
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            let message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'delete channel body', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into tasks (message_id, channel_id, title, status, assignee_agent_id)
+                values ($1, $2, 'delete channel task', 'in_progress', $3)
+                "#,
+            )
+            .bind(message_id)
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into reminders (channel_id, creator_agent_id, title, due_at)
+                values ($1, $2, 'channel reminder', now() + interval '1 hour')
+                "#,
+            )
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let work_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_work_items (agent_id, channel_id, source_message_id, title, context, status)
+                values ($1, $2, $3, 'request', 'context', 'queued')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            delete_channel_in_pool(&pool, channel_id).await?;
+
+            let channel_count: i64 =
+                sqlx::query_scalar("select count(*)::bigint from channels where id = $1")
+                    .bind(channel_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(channel_count, 0);
+            let message_count: i64 =
+                sqlx::query_scalar("select count(*)::bigint from messages where id = $1")
+                    .bind(message_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(message_count, 0);
+            let unlinked_work_item_channel: Option<Uuid> =
+                sqlx::query_scalar("select channel_id from agent_work_items where id = $1")
+                    .bind(work_item_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(unlinked_work_item_channel, None);
+            let reminder_channel_count: i64 = sqlx::query_scalar(
+                "select count(*)::bigint from reminders where title = 'channel reminder' and channel_id is null",
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(reminder_channel_count, 1);
             Ok(())
         }
         .await;

@@ -1811,6 +1811,18 @@ body.resizing-column * {
   opacity: 0.48;
 }
 
+.confirm-modal {
+  display: grid;
+  gap: 18px;
+}
+
+.confirm-modal p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
 .modal-member-editor {
   background: #fff;
 }

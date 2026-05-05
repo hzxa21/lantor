@@ -70,10 +70,10 @@ export function ChannelSettingsModal({
             ))}
           </div>
           <div className="modal-actions split">
-            <button className="danger" onClick={onDelete}>Delete Channel</button>
+            <button type="button" className="danger" onClick={onDelete}>Delete Channel</button>
             <div>
-              <button onClick={onCancel}>Cancel</button>
-              <button className="primary" disabled={!nameDraft.trim()} onClick={onSave}>Save</button>
+              <button type="button" onClick={onCancel}>Cancel</button>
+              <button type="button" className="primary" disabled={!nameDraft.trim()} onClick={onSave}>Save</button>
             </div>
           </div>
         </div>

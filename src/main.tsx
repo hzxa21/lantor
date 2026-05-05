@@ -7,6 +7,7 @@ import type { AgentPerformance } from "./components/AgentDetailDrawer";
 import { AgentFormModal } from "./components/AgentFormModal";
 import { ChannelAgentsModal } from "./components/ChannelAgentsModal";
 import { ChannelSettingsModal } from "./components/ChannelSettingsModal";
+import { ConfirmModal } from "./components/ConfirmModal";
 import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { InboxModal } from "./components/InboxModal";
@@ -73,6 +74,13 @@ type UiBackendEvent =
   | { type: "activity_upsert"; reason?: string; activity: AgentActivity }
   | { type: "agent_run_upsert"; reason?: string; run: Omit<AgentRun, "log"> & { log?: string } }
   | { type: "work_item_upsert"; reason?: string; work_item: Omit<AgentWorkItem, "context"> & { context?: string } };
+
+type ConfirmRequest = {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<void> | void;
+};
 
 function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
@@ -231,6 +239,7 @@ function App() {
   const [showReminderModal, setShowReminderModal] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
   const [reminderTitle, setReminderTitle] = useState("");
   const [reminderNote, setReminderNote] = useState("");
@@ -1103,9 +1112,21 @@ function App() {
 
   async function deleteChannel() {
     if (!channel) return;
-    if (!window.confirm(`Delete #${channel.name} and its messages/tasks?`)) return;
-    await mutate("delete_channel", { channelId: channel.id });
-    setShowChannelSettingsModal(false);
+    const channelToDelete = channel;
+    const fallbackChannelId = data?.channels.find((item) => item.id !== channelToDelete.id)?.id ?? "";
+    setConfirmRequest({
+      title: `Delete #${channelToDelete.name}?`,
+      body: "This removes the channel timeline, tasks, threads, agent memberships, schedules, and attachments for this channel. This cannot be undone.",
+      confirmLabel: "Delete channel",
+      onConfirm: async () => {
+        await mutate("delete_channel", { channelId: channelToDelete.id });
+        setShowChannelSettingsModal(false);
+        if (activeChannelId === channelToDelete.id) {
+          setActiveChannelId(fallbackChannelId);
+          setActiveThreadId(null);
+        }
+      },
+    });
   }
 
   function selectChannel(channelId: string) {
@@ -1307,14 +1328,20 @@ function App() {
   async function deleteAgent(agent: Agent) {
     const agentDm = data?.channels.find((item) => item.kind === "dm" && item.dm_agent_id === agent.id) ?? null;
     const fallbackChannelId = data?.channels.find((item) => item.id !== agentDm?.id)?.id ?? null;
-    if (!window.confirm(`Delete @${agent.handle}? Its DM, schedules, runs, and pending requests will be removed. Existing channel messages keep their sender name.`)) return;
-    await mutate("delete_agent", { agentId: agent.id });
-    if (editingAgentId === agent.id) setEditingAgentId(null);
-    if (selectedAgentId === agent.id) setSelectedAgentId(null);
-    if (agentDm && activeChannelId === agentDm.id) {
-      setActiveChannelId(fallbackChannelId ?? "");
-      setActiveThreadId(null);
-    }
+    setConfirmRequest({
+      title: `Delete @${agent.handle}?`,
+      body: "This removes the agent profile, DM, schedules, runtime sessions, runs, and pending requests. Existing channel messages keep their sender name.",
+      confirmLabel: "Delete agent",
+      onConfirm: async () => {
+        await mutate("delete_agent", { agentId: agent.id });
+        if (editingAgentId === agent.id) setEditingAgentId(null);
+        if (selectedAgentId === agent.id) setSelectedAgentId(null);
+        if (agentDm && activeChannelId === agentDm.id) {
+          setActiveChannelId(fallbackChannelId ?? "");
+          setActiveThreadId(null);
+        }
+      },
+    });
   }
 
   async function sendRootMessage(asTask = false) {
@@ -1850,6 +1877,15 @@ function App() {
         onDelete={deleteChannel}
         onCancel={() => setShowChannelSettingsModal(false)}
         onSave={saveChannel}
+      />
+
+      <ConfirmModal
+        open={Boolean(confirmRequest)}
+        title={confirmRequest?.title ?? ""}
+        body={confirmRequest?.body ?? ""}
+        confirmLabel={confirmRequest?.confirmLabel ?? "Confirm"}
+        onCancel={() => setConfirmRequest(null)}
+        onConfirm={confirmRequest?.onConfirm ?? (() => {})}
       />
 
       <ChannelAgentsModal
