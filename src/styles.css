@@ -527,6 +527,17 @@ button,
   background: var(--avatar-color);
 }
 
+.agent-avatar-glyph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--avatar-color);
+  font-size: 0.92em;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
 .agent-avatar-lg {
   width: 62px;
   height: 62px;
@@ -815,6 +826,11 @@ button,
 .meta span,
 .meta time {
   color: var(--muted);
+}
+
+.meta .edited-indicator {
+  font-size: 11px;
+  font-style: italic;
 }
 
 mark {

@@ -29,6 +29,12 @@ type ThreadPanelProps = {
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
+function wasEdited(message: Message) {
+  const created = new Date(message.created_at).getTime();
+  const updated = new Date(message.updated_at).getTime();
+  return Number.isFinite(created) && Number.isFinite(updated) && updated - created > 1000;
+}
+
 export function ThreadPanel({
   channel,
   agents,
@@ -114,6 +120,7 @@ export function ThreadPanel({
                 <div className="meta">
                   <strong>{activeRoot.sender_name}</strong>
                   <time>{formatTime(activeRoot.created_at)}</time>
+                  {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
                 </div>
                 <MessageMarkdown body={activeRoot.body} />
                 <MessageAttachments attachments={activeRoot.attachments} />
@@ -192,6 +199,7 @@ export function ThreadPanel({
                   <div className="meta">
                     <strong>{reply.sender_name}</strong>
                     <time>{formatTime(reply.created_at)}</time>
+                    {wasEdited(reply) && <span className="edited-indicator">edited</span>}
                   </div>
                   <MessageMarkdown body={reply.body} />
                   <MessageAttachments attachments={reply.attachments} />

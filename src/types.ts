@@ -10,6 +10,7 @@ export type Agent = {
   description: string;
   launch_command: string;
   working_directory: string;
+  daily_budget_micros: number;
 };
 
 export type Channel = {
@@ -44,6 +45,7 @@ export type Message = {
   task_status: string | null;
   attachments: MessageAttachment[];
   created_at: string;
+  updated_at: string;
 };
 
 export type MessageAttachment = {
@@ -127,6 +129,9 @@ export type AgentRun = {
   pid: number | null;
   exit_code: number | null;
   log: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_micros: number;
   started_at: string;
   stopped_at: string | null;
 };
@@ -241,21 +246,27 @@ export type InboxItem = {
 export type AgentForm = {
   handle: string;
   displayName: string;
+  role: string;
+  avatar: string;
   runtime: string;
   model: string;
   description: string;
   launchCommand: string;
   workingDirectory: string;
+  dailyBudgetUsd: string;
 };
 
 export const EMPTY_AGENT_FORM: AgentForm = {
   handle: "",
   displayName: "",
+  role: "agent",
+  avatar: "",
   runtime: "codex",
   model: "gpt-5.5",
   description: "",
   launchCommand: "",
   workingDirectory: "",
+  dailyBudgetUsd: "",
 };
 
 export const TASK_STATUSES = ["todo", "in_progress", "in_review", "done"] as const;

@@ -140,6 +140,7 @@ struct Agent {
     description: String,
     launch_command: String,
     working_directory: String,
+    daily_budget_micros: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -177,6 +178,7 @@ struct Message {
     task_status: Option<String>,
     attachments: Vec<MessageAttachment>,
     created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]
@@ -265,6 +267,9 @@ struct AgentRun {
     pid: Option<i32>,
     exit_code: Option<i32>,
     log: String,
+    input_tokens: i64,
+    output_tokens: i64,
+    cost_micros: i64,
     started_at: DateTime<Utc>,
     stopped_at: Option<DateTime<Utc>>,
 }
@@ -280,6 +285,9 @@ struct AgentRunPatch {
     status: String,
     pid: Option<i32>,
     exit_code: Option<i32>,
+    input_tokens: i64,
+    output_tokens: i64,
+    cost_micros: i64,
     started_at: DateTime<Utc>,
     stopped_at: Option<DateTime<Utc>>,
 }
@@ -414,6 +422,34 @@ enum AgentEvent {
     },
     ReminderCancel {
         reminder_id: Uuid,
+    },
+    Usage {
+        #[serde(default)]
+        input_tokens: Option<i64>,
+        #[serde(default)]
+        output_tokens: Option<i64>,
+        #[serde(default)]
+        total_tokens: Option<i64>,
+        #[serde(default)]
+        cost_micros: Option<i64>,
+        #[serde(default)]
+        cost_usd: Option<f64>,
+    },
+    MemoryAppend {
+        body: String,
+    },
+    MemoryCompact {
+        body: String,
+    },
+    ChannelCreate {
+        name: String,
+        description: Option<String>,
+        agent_handles: Option<Vec<String>>,
+    },
+    ChannelInvite {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        agent_handles: Vec<String>,
     },
 }
 
@@ -1101,6 +1137,11 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    sqlx::query(
+        "alter table agents add column if not exists daily_budget_micros bigint not null default 0",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         r#"
@@ -1165,6 +1206,11 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
     sqlx::query(
         "alter table messages add column if not exists stream_key text not null default ''",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "alter table messages add column if not exists updated_at timestamptz not null default now()",
     )
     .execute(pool)
     .await?;
@@ -1454,6 +1500,13 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    for statement in [
+        "alter table agent_runs add column if not exists input_tokens bigint not null default 0",
+        "alter table agent_runs add column if not exists output_tokens bigint not null default 0",
+        "alter table agent_runs add column if not exists cost_micros bigint not null default 0",
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
 
     sqlx::query(
         r#"
@@ -1838,10 +1891,14 @@ async fn open_dm_with_agent_in_pool(pool: &PgPool, agent_id: Uuid) -> CommandRes
 async fn create_agent(
     handle: String,
     display_name: String,
+    role: Option<String>,
     runtime: String,
     model: String,
+    avatar: Option<String>,
+    description: Option<String>,
     launch_command: String,
     working_directory: String,
+    daily_budget_micros: Option<i64>,
     state: State<'_, AppState>,
 ) -> CommandResult<String> {
     let normalized_handle = handle.trim().trim_start_matches('@');
@@ -1853,11 +1910,29 @@ async fn create_agent(
     } else {
         display_name.trim()
     };
-    let avatar = normalized_handle
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_else(|| "A".to_owned());
+    let role = role
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("agent");
+    let avatar = avatar
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            normalized_handle
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_else(|| "A".to_owned())
+        });
+    let description = description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Local agent");
+    let daily_budget_micros = daily_budget_micros.unwrap_or_default().max(0);
     let working_directory = working_directory.trim();
     ensure_agent_workspace(working_directory, normalized_handle)?;
 
@@ -1865,26 +1940,32 @@ async fn create_agent(
         r#"
         insert into agents (
             handle, display_name, role, status, runtime, model, avatar, description,
-            launch_command, working_directory
+            launch_command, working_directory, daily_budget_micros
         )
-        values ($1, $2, 'agent', 'idle', $3, $4, $5, 'Local agent', $6, $7)
+        values ($1, $2, $3, 'idle', $4, $5, $6, $7, $8, $9, $10)
         on conflict (handle) do update set
             display_name = excluded.display_name,
+            role = excluded.role,
             runtime = excluded.runtime,
             model = excluded.model,
             avatar = excluded.avatar,
+            description = excluded.description,
             launch_command = excluded.launch_command,
-            working_directory = excluded.working_directory
+            working_directory = excluded.working_directory,
+            daily_budget_micros = excluded.daily_budget_micros
         returning id
         "#,
     )
     .bind(normalized_handle)
     .bind(display_name)
+    .bind(role)
     .bind(runtime.trim())
     .bind(model.trim())
     .bind(avatar)
+    .bind(description)
     .bind(launch_command.trim())
     .bind(working_directory)
+    .bind(daily_budget_micros)
     .fetch_one(&state.pool)
     .await
     .map_err(to_string)?;
@@ -1906,11 +1987,14 @@ async fn update_agent(
     agent_id: Uuid,
     handle: String,
     display_name: String,
+    role: Option<String>,
     runtime: String,
     model: String,
+    avatar: Option<String>,
     description: String,
     launch_command: String,
     working_directory: String,
+    daily_budget_micros: Option<i64>,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     let normalized_handle = handle.trim().trim_start_matches('@');
@@ -1922,11 +2006,24 @@ async fn update_agent(
     } else {
         display_name.trim()
     };
-    let avatar = normalized_handle
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_else(|| "A".to_owned());
+    let role = role
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("agent");
+    let avatar = avatar
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            normalized_handle
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_else(|| "A".to_owned())
+        });
+    let daily_budget_micros = daily_budget_micros.unwrap_or_default().max(0);
     let working_directory = working_directory.trim();
     ensure_agent_workspace(working_directory, normalized_handle)?;
 
@@ -1935,24 +2032,28 @@ async fn update_agent(
         update agents
         set handle = $2,
             display_name = $3,
-            runtime = $4,
-            model = $5,
-            avatar = $6,
-            description = $7,
-            launch_command = $8,
-            working_directory = $9
+            role = $4,
+            runtime = $5,
+            model = $6,
+            avatar = $7,
+            description = $8,
+            launch_command = $9,
+            working_directory = $10,
+            daily_budget_micros = $11
         where id = $1
         "#,
     )
     .bind(agent_id)
     .bind(normalized_handle)
     .bind(display_name)
+    .bind(role)
     .bind(runtime.trim())
     .bind(model.trim())
     .bind(avatar)
     .bind(description.trim())
     .bind(launch_command.trim())
     .bind(working_directory)
+    .bind(daily_budget_micros)
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
@@ -3350,7 +3451,7 @@ async fn update_message(
     }
 
     let mut tx = state.pool.begin().await.map_err(to_string)?;
-    let result = sqlx::query("update messages set body = $2 where id = $1")
+    let result = sqlx::query("update messages set body = $2, updated_at = now() where id = $1")
         .bind(message_id)
         .bind(body)
         .execute(&mut *tx)
@@ -3501,7 +3602,7 @@ async fn update_task_title(
     .await
     .map_err(to_string)?;
 
-    sqlx::query("update messages set body = $2 where id = $1")
+    sqlx::query("update messages set body = $2, updated_at = now() where id = $1")
         .bind(message_id)
         .bind(title)
         .execute(&mut *tx)
@@ -4032,7 +4133,8 @@ async fn load_agents(pool: &PgPool) -> CommandResult<Vec<Agent>> {
             avatar,
             description,
             launch_command,
-            working_directory
+            working_directory,
+            daily_budget_micros
         from agents
         order by case when handle = 'Hancock' then 0 else 1 end, display_name
         "#,
@@ -4055,6 +4157,7 @@ async fn load_agents(pool: &PgPool) -> CommandResult<Vec<Agent>> {
             description: row.get("description"),
             launch_command: row.get("launch_command"),
             working_directory: row.get("working_directory"),
+            daily_budget_micros: row.get("daily_budget_micros"),
         })
         .collect())
 }
@@ -4075,7 +4178,8 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
             m.stream_key,
             t.number as task_number,
             t.status as task_status,
-            m.created_at
+            m.created_at,
+            m.updated_at
         from messages m
         left join tasks t on t.message_id = m.id
         order by m.created_at asc
@@ -4102,6 +4206,7 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
             task_status: row.get("task_status"),
             attachments: Vec::new(),
             created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
         })
         .collect();
     attach_message_attachments(pool, &mut messages).await?;
@@ -4124,7 +4229,8 @@ async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message>
             m.stream_key,
             t.number as task_number,
             t.status as task_status,
-            m.created_at
+            m.created_at,
+            m.updated_at
         from messages m
         left join tasks t on t.message_id = m.id
         where m.id = $1
@@ -4150,6 +4256,7 @@ async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message>
         task_status: row.get("task_status"),
         attachments: Vec::new(),
         created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
     };
     attach_message_attachments(pool, std::slice::from_mut(&mut message)).await?;
     Ok(message)
@@ -4367,6 +4474,9 @@ async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
             r.pid,
             r.exit_code,
             r.log,
+            r.input_tokens,
+            r.output_tokens,
+            r.cost_micros,
             r.started_at,
             r.stopped_at
         from agent_runs r
@@ -4392,6 +4502,9 @@ async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
             pid: row.get("pid"),
             exit_code: row.get("exit_code"),
             log: row.get("log"),
+            input_tokens: row.get("input_tokens"),
+            output_tokens: row.get("output_tokens"),
+            cost_micros: row.get("cost_micros"),
             started_at: row.get("started_at"),
             stopped_at: row.get("stopped_at"),
         })
@@ -4411,6 +4524,9 @@ async fn load_agent_run_patch(pool: &PgPool, run_id: Uuid) -> CommandResult<Agen
             r.status,
             r.pid,
             r.exit_code,
+            r.input_tokens,
+            r.output_tokens,
+            r.cost_micros,
             r.started_at,
             r.stopped_at
         from agent_runs r
@@ -4433,6 +4549,9 @@ async fn load_agent_run_patch(pool: &PgPool, run_id: Uuid) -> CommandResult<Agen
         status: row.get("status"),
         pid: row.get("pid"),
         exit_code: row.get("exit_code"),
+        input_tokens: row.get("input_tokens"),
+        output_tokens: row.get("output_tokens"),
+        cost_micros: row.get("cost_micros"),
         started_at: row.get("started_at"),
         stopped_at: row.get("stopped_at"),
     })
@@ -4702,9 +4821,9 @@ fn activity_phase(kind: &str) -> &'static str {
         "file_edit" => "file_edit",
         "tools" => "tools",
         "error" | "event_error" | "run_error" => "error",
-        "run" => "runtime",
-        "dispatch" | "mention" | "dm" | "task" | "schedule" => "work",
-        "profile" => "profile",
+        "run" | "usage" => "runtime",
+        "dispatch" | "mention" | "dm" | "task" | "schedule" | "channel" | "membership" => "work",
+        "profile" | "memory" => "profile",
         _ => "acting",
     }
 }
@@ -4721,6 +4840,10 @@ fn normalize_agent_activity_kind(kind: Option<&str>) -> &'static str {
         Some("dispatch") => "dispatch",
         Some("reminder") => "schedule",
         Some("schedule") => "schedule",
+        Some("usage") => "usage",
+        Some("memory") => "memory",
+        Some("channel") => "channel",
+        Some("membership") => "membership",
         _ => "acting",
     }
 }
@@ -4814,6 +4937,253 @@ fn parse_activity_metadata(detail: &str) -> Value {
     }
 
     Value::Object(metadata)
+}
+
+fn value_i64_at(value: &Value, path: &str) -> Option<i64> {
+    value.pointer(path).and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+            .or_else(|| value.as_f64().map(|value| value.round() as i64))
+    })
+}
+
+fn usage_from_runtime_event(value: &Value) -> Option<(i64, i64)> {
+    let input_tokens = [
+        "/params/usage/input_tokens",
+        "/params/usage/inputTokens",
+        "/params/usage/input",
+        "/params/usage/prompt_tokens",
+        "/params/usage/promptTokens",
+        "/usage/input_tokens",
+        "/usage/inputTokens",
+        "/usage/prompt_tokens",
+        "/message/usage/input_tokens",
+        "/message/usage/prompt_tokens",
+    ]
+    .iter()
+    .find_map(|path| value_i64_at(value, path))
+    .unwrap_or_default();
+    let output_tokens = [
+        "/params/usage/output_tokens",
+        "/params/usage/outputTokens",
+        "/params/usage/output",
+        "/params/usage/completion_tokens",
+        "/params/usage/completionTokens",
+        "/usage/output_tokens",
+        "/usage/outputTokens",
+        "/usage/completion_tokens",
+        "/message/usage/output_tokens",
+        "/message/usage/completion_tokens",
+    ]
+    .iter()
+    .find_map(|path| value_i64_at(value, path))
+    .unwrap_or_default();
+
+    (input_tokens > 0 || output_tokens > 0).then_some((input_tokens.max(0), output_tokens.max(0)))
+}
+
+fn model_cost_micros(runtime: &str, model: &str, input_tokens: i64, output_tokens: i64) -> i64 {
+    let model = model.to_lowercase();
+    let runtime = runtime.to_lowercase();
+    let (input_per_million, output_per_million) = if runtime == "claude" {
+        if model.contains("opus") {
+            (15_000_000_i64, 75_000_000_i64)
+        } else if model.contains("haiku") {
+            (250_000_i64, 1_250_000_i64)
+        } else {
+            (3_000_000_i64, 15_000_000_i64)
+        }
+    } else if model.contains("mini") {
+        (150_000_i64, 600_000_i64)
+    } else if model.contains("codex") {
+        (1_500_000_i64, 6_000_000_i64)
+    } else {
+        (1_000_000_i64, 5_000_000_i64)
+    };
+    ((input_tokens.max(0) * input_per_million) + (output_tokens.max(0) * output_per_million))
+        / 1_000_000
+}
+
+async fn record_run_usage(
+    pool: &PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+    input_tokens: i64,
+    output_tokens: i64,
+    cost_micros: Option<i64>,
+) -> CommandResult<()> {
+    let row = sqlx::query("select runtime, model from agents where id = $1")
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    let runtime: String = row.get("runtime");
+    let model: String = row.get("model");
+    let estimated_cost = cost_micros
+        .unwrap_or_else(|| model_cost_micros(&runtime, &model, input_tokens, output_tokens))
+        .max(0);
+    sqlx::query(
+        r#"
+        update agent_runs
+        set input_tokens = greatest(input_tokens, $2),
+            output_tokens = greatest(output_tokens, $3),
+            cost_micros = greatest(cost_micros, $4)
+        where id = $1
+        "#,
+    )
+    .bind(run_id)
+    .bind(input_tokens.max(0))
+    .bind(output_tokens.max(0))
+    .bind(estimated_cost)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    notify_ui_agent_run_changed(pool, run_id, "run_usage").await;
+    Ok(())
+}
+
+async fn agent_budget_exhausted(pool: &PgPool, agent_id: Uuid) -> CommandResult<Option<String>> {
+    let daily_budget_micros: i64 =
+        sqlx::query_scalar("select daily_budget_micros from agents where id = $1")
+            .bind(agent_id)
+            .fetch_one(pool)
+            .await
+            .map_err(to_string)?;
+    if daily_budget_micros <= 0 {
+        return Ok(None);
+    }
+    let spent: i64 = sqlx::query_scalar(
+        r#"
+        select coalesce(sum(cost_micros), 0)::bigint
+        from agent_runs
+        where agent_id = $1
+          and started_at >= date_trunc('day', now())
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    if spent >= daily_budget_micros {
+        Ok(Some(format!(
+            "daily budget reached: spent ${:.4} / ${:.4}",
+            spent as f64 / 1_000_000.0,
+            daily_budget_micros as f64 / 1_000_000.0
+        )))
+    } else {
+        Ok(None)
+    }
+}
+
+fn memory_path_for_workspace(working_directory: &str) -> CommandResult<PathBuf> {
+    let working_directory = working_directory.trim();
+    if working_directory.is_empty() {
+        return Err("agent working_directory is not configured".to_owned());
+    }
+    let workspace = PathBuf::from(working_directory);
+    fs::create_dir_all(&workspace).map_err(to_string)?;
+    Ok(workspace.join("MEMORY.md"))
+}
+
+async fn agent_memory_path(pool: &PgPool, agent_id: Uuid) -> CommandResult<PathBuf> {
+    let row = sqlx::query("select handle, working_directory from agents where id = $1")
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    let handle: String = row.get("handle");
+    let working_directory: String = row.get("working_directory");
+    ensure_agent_workspace(working_directory.trim(), &handle)?;
+    memory_path_for_workspace(&working_directory)
+}
+
+async fn append_agent_memory(pool: &PgPool, agent_id: Uuid, body: &str) -> CommandResult<()> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("memory_append body is empty".to_owned());
+    }
+    let path = agent_memory_path(pool, agent_id).await?;
+    let entry = format!(
+        "\n\n## Memory update {}\n{}\n",
+        Utc::now().to_rfc3339(),
+        body
+    );
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, entry.as_bytes()))
+        .map_err(to_string)
+}
+
+async fn compact_agent_memory(pool: &PgPool, agent_id: Uuid, body: &str) -> CommandResult<()> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("memory_compact body is empty".to_owned());
+    }
+    let path = agent_memory_path(pool, agent_id).await?;
+    if path.exists() {
+        let backup = path.with_extension(format!("md.bak-{}", Utc::now().format("%Y%m%d%H%M%S")));
+        let _ = fs::copy(&path, backup);
+    }
+    fs::write(path, format!("{body}\n")).map_err(to_string)
+}
+
+async fn create_channel_in_pool(
+    pool: &PgPool,
+    name: &str,
+    description: &str,
+) -> CommandResult<Uuid> {
+    let normalized = normalize_channel_name(name);
+    if normalized.is_empty() {
+        return Err("channel name is empty".to_owned());
+    }
+    sqlx::query_scalar(
+        r#"
+        insert into channels (name, description, kind)
+        values ($1, $2, 'channel')
+        on conflict (name) do update
+            set description = case
+                when excluded.description <> '' then excluded.description
+                else channels.description
+            end
+        returning id
+        "#,
+    )
+    .bind(normalized)
+    .bind(description.trim())
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)
+}
+
+async fn add_agent_to_channel(
+    pool: &PgPool,
+    channel_id: Uuid,
+    agent_id: Uuid,
+) -> CommandResult<()> {
+    let kind: Option<String> = sqlx::query_scalar("select kind from channels where id = $1")
+        .bind(channel_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+    if kind.as_deref() == Some("dm") {
+        return Err("direct message membership is fixed".to_owned());
+    }
+    sqlx::query(
+        r#"
+        insert into channel_members (channel_id, agent_id)
+        values ($1, $2)
+        on conflict (channel_id, agent_id) do nothing
+        "#,
+    )
+    .bind(channel_id)
+    .bind(agent_id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    Ok(())
 }
 
 async fn record_agent_activity(
@@ -5478,6 +5848,161 @@ async fn handle_agent_event(
             )
             .await?;
             Ok(format!("reminder cancelled {reminder_id}"))
+        }
+        AgentEvent::Usage {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost_micros,
+            cost_usd,
+        } => {
+            let input_tokens = input_tokens.unwrap_or_default().max(0);
+            let mut output_tokens = output_tokens.unwrap_or_default().max(0);
+            if output_tokens == 0 {
+                if let Some(total_tokens) = total_tokens {
+                    output_tokens = (total_tokens - input_tokens).max(0);
+                }
+            }
+            let event_cost_micros = cost_micros
+                .or_else(|| cost_usd.map(|value| (value.max(0.0) * 1_000_000.0).round() as i64));
+            record_run_usage(
+                pool,
+                agent_id,
+                run_id,
+                input_tokens,
+                output_tokens,
+                event_cost_micros,
+            )
+            .await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "usage",
+                "Usage recorded",
+                json!({
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost_micros": event_cost_micros
+                })
+                .to_string(),
+            )
+            .await?;
+            Ok("usage accepted".to_owned())
+        }
+        AgentEvent::MemoryAppend { body } => {
+            append_agent_memory(pool, agent_id, &body).await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "memory",
+                "Memory updated",
+                json!({ "operation": "append" }).to_string(),
+            )
+            .await?;
+            Ok("memory appended".to_owned())
+        }
+        AgentEvent::MemoryCompact { body } => {
+            compact_agent_memory(pool, agent_id, &body).await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "memory",
+                "Memory compacted",
+                json!({ "operation": "compact" }).to_string(),
+            )
+            .await?;
+            Ok("memory compacted".to_owned())
+        }
+        AgentEvent::ChannelCreate {
+            name,
+            description,
+            agent_handles,
+        } => {
+            let channel_id =
+                create_channel_in_pool(pool, &name, description.as_deref().unwrap_or("")).await?;
+            add_agent_to_channel(pool, channel_id, agent_id).await?;
+            let mut invited = Vec::new();
+            for handle in agent_handles.unwrap_or_default() {
+                let invited_agent_id = resolve_agent_by_handle(pool, &handle).await?;
+                add_agent_to_channel(pool, channel_id, invited_agent_id).await?;
+                invited.push(handle.trim().trim_start_matches('@').to_owned());
+            }
+            insert_system_message(
+                pool,
+                channel_id,
+                None,
+                format!(
+                    "@{} created #{}{}",
+                    sqlx::query_scalar::<_, String>("select handle from agents where id = $1")
+                        .bind(agent_id)
+                        .fetch_one(pool)
+                        .await
+                        .map_err(to_string)?,
+                    normalize_channel_name(&name),
+                    if invited.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " and invited {}",
+                            invited
+                                .iter()
+                                .map(|h| format!("@{h}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }
+                ),
+            )
+            .await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "channel",
+                "Channel created",
+                json!({
+                    "channel_id": channel_id,
+                    "name": normalize_channel_name(&name),
+                    "invited": invited
+                })
+                .to_string(),
+            )
+            .await?;
+            Ok(format!("channel created {channel_id}"))
+        }
+        AgentEvent::ChannelInvite {
+            channel,
+            channel_id,
+            agent_handles,
+        } => {
+            if agent_handles.is_empty() {
+                return Err("channel_invite requires agent_handles".to_owned());
+            }
+            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
+            let mut invited = Vec::new();
+            for handle in agent_handles {
+                let invited_agent_id = resolve_agent_by_handle(pool, &handle).await?;
+                add_agent_to_channel(pool, channel_id, invited_agent_id).await?;
+                invited.push(handle.trim().trim_start_matches('@').to_owned());
+            }
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "membership",
+                "Agents invited",
+                json!({
+                    "channel_id": channel_id,
+                    "invited": invited
+                })
+                .to_string(),
+            )
+            .await?;
+            let _ = notify_ui_refresh(pool, "channel_invite").await;
+            Ok("agents invited".to_owned())
         }
     }
 }
@@ -6384,6 +6909,20 @@ Use one activity event per meaningful phase change, not per log line."#
             .to_owned(),
     );
     lines.push(
+        r#"You can maintain your persistent workspace memory by emitting standalone control lines:
+LOCAL_SLOCK_EVENT {"type":"memory_append","body":"<durable fact, preference, decision, or handoff>"}
+LOCAL_SLOCK_EVENT {"type":"memory_compact","body":"<full compact MEMORY.md replacement>"}
+Use append for small durable facts. Use compact only when memory is too long or repetitive."#
+            .to_owned(),
+    );
+    lines.push(
+        r#"You can create collaboration spaces when the conversation naturally becomes a separate long-lived topic:
+LOCAL_SLOCK_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
+LOCAL_SLOCK_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
+Only create/invite channels with a clear reason; do not create channels for ordinary short replies."#
+            .to_owned(),
+    );
+    lines.push(
         r#"You can manage reminders by emitting a standalone control line:
 LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title":"<title>","note":"<optional note>","recurrence":"none|daily|weekly"}
 LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
@@ -6514,7 +7053,7 @@ fn build_runtime_standing_prompt(
          Before replying, decide whether a visible response is useful; for greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly LOCAL_SLOCK_SILENT_REPLY: <short reason> and nothing else.\n\
          Keep thread messages high-density: do not narrate every intermediate step, tool call, command output, or file edit in chat. Use visible replies for final results, important decisions, blockers, user questions, and handoffs.\n\
          For intermediate progress, emit standalone LOCAL_SLOCK_EVENT activity control lines such as {{\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}}; LocalSlock records them in the agent activity feed and hides the control line from chat.\n\
-         You may print standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines to manage future reminders; LocalSlock consumes and hides those lines. Do not print LOCAL_SLOCK_EVENT message/task lines unless explicitly asked to debug the legacy runtime path.\n\
+         You may print standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel, memory_append/memory_compact, channel_create/channel_invite, and usage control lines; LocalSlock consumes and hides those lines. Do not print LOCAL_SLOCK_EVENT message/task lines unless explicitly asked to debug the legacy runtime path.\n\
          Keep user-visible replies concise and include concrete results or blockers."
     );
     if let Some(memory_context) = memory_context.filter(|context| !context.trim().is_empty()) {
@@ -6531,7 +7070,7 @@ fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
     }
     legacy_prompt.replace(
         "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number.",
-        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. For progress, emit standalone LOCAL_SLOCK_EVENT activity control lines like {\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}; LocalSlock consumes and records them in the activity feed. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines when you need to schedule or cancel reminders; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Codex JSON streaming mode.",
+        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. For progress, emit standalone LOCAL_SLOCK_EVENT activity control lines like {\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}; LocalSlock consumes and records them in the activity feed. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel, memory_append/memory_compact, channel_create/channel_invite, and usage control lines; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Codex JSON streaming mode.",
     )
 }
 
@@ -6773,7 +7312,7 @@ fn build_claude_streaming_prompt(legacy_prompt: &str) -> String {
     }
     legacy_prompt.replace(
         "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number.",
-        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. For progress, emit standalone LOCAL_SLOCK_EVENT activity control lines like {\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}; LocalSlock consumes and records them in the activity feed. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel control lines when you need to schedule or cancel reminders; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Claude stream-json mode.",
+        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. For progress, emit standalone LOCAL_SLOCK_EVENT activity control lines like {\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}; LocalSlock consumes and records them in the activity feed. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel, memory_append/memory_compact, channel_create/channel_invite, and usage control lines; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Claude stream-json mode.",
     )
 }
 
@@ -8415,6 +8954,35 @@ async fn supervisor_start_agent(
         }
     }
 
+    if let Some(reason) = agent_budget_exhausted(pool, agent_id).await? {
+        if let Some(work_item_id) = work_item_id {
+            sqlx::query(
+                r#"
+                update agent_work_items
+                set status = 'failed',
+                    completed_at = now(),
+                    updated_at = now()
+                where id = $1
+                "#,
+            )
+            .bind(work_item_id)
+            .execute(pool)
+            .await
+            .map_err(to_string)?;
+            notify_ui_work_item_changed(pool, work_item_id, "budget_exhausted").await;
+        }
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            None,
+            "usage",
+            "Budget reached",
+            reason,
+        )
+        .await?;
+        return Ok(());
+    }
+
     let row = sqlx::query(
         r#"
         select handle, runtime, model, launch_command, working_directory
@@ -8885,6 +9453,12 @@ async fn handle_claude_warm_stdout_line(
     }
     let value: Value = serde_json::from_str(line).map_err(to_string)?;
 
+    if let (Some(run_id), Some((input_tokens, output_tokens))) =
+        (active_run_id, usage_from_runtime_event(&value))
+    {
+        let _ = record_run_usage(pool, agent_id, run_id, input_tokens, output_tokens, None).await;
+    }
+
     if let Some(session_id) = claude_session_id(&value) {
         {
             let mut state = runtime.state.lock().await;
@@ -9046,6 +9620,12 @@ async fn handle_codex_warm_stdout_line(
     };
     if let Some(run_id) = active_run_id {
         append_run_log(pool, run_id, format!("[codex] {line}\n")).await?;
+    }
+
+    if let (Some(run_id), Some((input_tokens, output_tokens))) =
+        (active_run_id, usage_from_runtime_event(&value))
+    {
+        let _ = record_run_usage(pool, agent_id, run_id, input_tokens, output_tokens, None).await;
     }
 
     if let Some(response_id) = value.get("id").and_then(Value::as_i64) {
@@ -11045,6 +11625,166 @@ mod tests {
         .fetch_one(pool)
         .await
         .map_err(|err| err.to_string())
+    }
+
+    #[tokio::test]
+    async fn usage_event_updates_run_tokens_and_cost() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "usage-agent").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::Usage {
+                    input_tokens: Some(1000),
+                    output_tokens: Some(200),
+                    total_tokens: None,
+                    cost_micros: Some(1234),
+                    cost_usd: None,
+                },
+            )
+            .await?;
+            let row = sqlx::query(
+                "select input_tokens, output_tokens, cost_micros from agent_runs where id = $1",
+            )
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(row.get::<i64, _>("input_tokens"), 1000);
+            assert_eq!(row.get::<i64, _>("output_tokens"), 200);
+            assert_eq!(row.get::<i64, _>("cost_micros"), 1234);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn memory_events_append_and_compact_memory_file() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "memory-agent").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let dir =
+                std::env::temp_dir().join(format!("localslock-memory-write-{}", Uuid::new_v4()));
+            sqlx::query("update agents set working_directory = $2 where id = $1")
+                .bind(agent_id)
+                .bind(dir.to_string_lossy().to_string())
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::MemoryAppend {
+                    body: "Remember: concise replies.".to_owned(),
+                },
+            )
+            .await?;
+            let memory_path = dir.join("MEMORY.md");
+            let memory = std::fs::read_to_string(&memory_path).map_err(|err| err.to_string())?;
+            assert!(memory.contains("Remember: concise replies."));
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::MemoryCompact {
+                    body: "# @memory-agent\n\n## Role\nCompact memory.\n".to_owned(),
+                },
+            )
+            .await?;
+            let memory = std::fs::read_to_string(&memory_path).map_err(|err| err.to_string())?;
+            assert_eq!(memory, "# @memory-agent\n\n## Role\nCompact memory.\n");
+            let _ = std::fs::remove_dir_all(dir);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn channel_events_create_channel_and_invite_agents() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "creator-agent").await?;
+            let reviewer_id = insert_test_agent(&pool, "reviewer-agent").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::ChannelCreate {
+                    name: "Feature Room".to_owned(),
+                    description: Some("long-lived feature coordination".to_owned()),
+                    agent_handles: Some(vec!["@reviewer-agent".to_owned()]),
+                },
+            )
+            .await?;
+            let channel_id: Uuid =
+                sqlx::query_scalar("select id from channels where name = 'feature-room'")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            let members: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from channel_members
+                where channel_id = $1 and agent_id = any($2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(&[agent_id, reviewer_id])
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(members, 2);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[tokio::test]

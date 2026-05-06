@@ -38,6 +38,9 @@ export type AgentPerformance = {
   p50TurnMs: number | null;
   p95TurnMs: number | null;
   errorRate: number;
+  inputTokens: number;
+  outputTokens: number;
+  costMicros: number;
 };
 
 const ACTIVITY_STATUS_LABELS: Record<string, string> = {
@@ -97,6 +100,13 @@ function userFacingActivityCategory(activity: AgentActivity) {
       return "Runtime";
     case "profile":
       return "Profile";
+    case "usage":
+      return "Usage";
+    case "memory":
+      return "Memory";
+    case "channel":
+    case "membership":
+      return "Collaboration";
     default:
       return "Working";
   }
@@ -165,6 +175,16 @@ function formatDuration(value: number | null) {
   if (value === null || Number.isNaN(value)) return "n/a";
   if (value < 1000) return `${Math.round(value)} ms`;
   return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)} s`;
+}
+
+function formatTokenCount(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
+}
+
+function formatCost(value: number) {
+  return `$${(value / 1_000_000).toFixed(value > 10_000 ? 2 : 4)}`;
 }
 
 export function AgentDetailDrawer({
@@ -266,6 +286,20 @@ export function AgentDetailDrawer({
                 <span>Error rate</span>
                 <strong>{Math.round(performance.errorRate * 100)}%</strong>
                 <small>{performance.activeTurns} currently active</small>
+              </div>
+              <div className="performance-card">
+                <span>Tokens</span>
+                <strong>{formatTokenCount(performance.inputTokens + performance.outputTokens)}</strong>
+                <small>{formatTokenCount(performance.inputTokens)} in · {formatTokenCount(performance.outputTokens)} out</small>
+              </div>
+              <div className="performance-card">
+                <span>Cost est.</span>
+                <strong>{formatCost(performance.costMicros)}</strong>
+                <small>
+                  {agent.daily_budget_micros > 0
+                    ? `${formatCost(agent.daily_budget_micros)} daily budget`
+                    : "No daily cap"}
+                </small>
               </div>
             </div>
           </section>

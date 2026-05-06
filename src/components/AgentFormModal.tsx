@@ -81,6 +81,33 @@ export function AgentFormModal({
             </select>
           </label>
         </div>
+        <div className="two-col">
+          <label>
+            <span>Role</span>
+            <input
+              value={form.role}
+              onChange={(event) => onChange({ ...form, role: event.target.value })}
+              placeholder="reviewer, builder, analyst"
+            />
+          </label>
+          <label>
+            <span>Avatar</span>
+            <input
+              value={form.avatar}
+              onChange={(event) => onChange({ ...form, avatar: event.target.value })}
+              placeholder="emoji or 1-2 letters"
+            />
+          </label>
+        </div>
+        <label>
+          <span>Daily budget</span>
+          <input
+            value={form.dailyBudgetUsd}
+            inputMode="decimal"
+            onChange={(event) => onChange({ ...form, dailyBudgetUsd: event.target.value })}
+            placeholder="USD per day, blank = unlimited"
+          />
+        </label>
         <RuntimePreflight check={runtimeChecks[form.runtime]} />
         {showNotes && (
           <label>

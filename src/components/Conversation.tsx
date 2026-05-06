@@ -47,6 +47,12 @@ type ConversationProps = {
   sendRootMessage: (asTask?: boolean) => void;
 };
 
+function wasEdited(message: Message) {
+  const created = new Date(message.created_at).getTime();
+  const updated = new Date(message.updated_at).getTime();
+  return Number.isFinite(created) && Number.isFinite(updated) && updated - created > 1000;
+}
+
 export function Conversation({
   channel,
   agents,
@@ -211,6 +217,7 @@ export function Conversation({
                     <strong>{message.sender_name}</strong>
                     <span>{message.sender_role}</span>
                     <time>{formatTime(message.created_at)}</time>
+                    {wasEdited(message) && <span className="edited-indicator">edited</span>}
                     {linkedTask && (
                       <mark>
                         <CheckCircle2 size={14} /> #{linkedTask.number} · {linkedTask.status.replace("_", " ")}

@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import type { Agent } from "../types";
 
 type AgentAvatarProps = {
-  agent: Pick<Agent, "handle" | "display_name" | "status"> & Partial<Pick<Agent, "id" | "runtime">>;
+  agent: Pick<Agent, "handle" | "display_name" | "status"> & Partial<Pick<Agent, "id" | "runtime" | "avatar">>;
   size?: "sm" | "md" | "lg";
   className?: string;
   title?: string;
@@ -52,6 +52,7 @@ function generateIdenticon(seedText: string) {
 export function AgentAvatar({ agent, size = "md", className = "", title }: AgentAvatarProps) {
   const seedText = agent.id || `${agent.handle}:${agent.display_name}:${agent.runtime ?? ""}`;
   const identicon = generateIdenticon(seedText);
+  const customAvatar = agent.avatar?.trim();
   const style = {
     "--avatar-color": identicon.foreground,
     "--avatar-bg": identicon.background,
@@ -64,11 +65,15 @@ export function AgentAvatar({ agent, size = "md", className = "", title }: Agent
       title={title}
       aria-hidden={!title}
     >
-      <span className="agent-avatar-pixels" aria-hidden="true">
-        {identicon.cells.map((filled, index) => (
-          <span key={index} className={filled ? "filled" : ""} />
-        ))}
-      </span>
+      {customAvatar ? (
+        <span className="agent-avatar-glyph" aria-hidden="true">{customAvatar.slice(0, 2)}</span>
+      ) : (
+        <span className="agent-avatar-pixels" aria-hidden="true">
+          {identicon.cells.map((filled, index) => (
+            <span key={index} className={filled ? "filled" : ""} />
+          ))}
+        </span>
+      )}
     </span>
   );
 }

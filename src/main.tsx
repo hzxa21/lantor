@@ -170,10 +170,24 @@ function messageMentionsOwner(message: Message) {
   return OWNER_MENTION_HANDLES.some((handle) => body.includes(handle.toLowerCase()));
 }
 
-function buildAgentPerformance(activities: AgentActivity[]): AgentPerformance {
+function budgetMicrosFromForm(value: string) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.round(parsed * 1_000_000);
+}
+
+function budgetUsdFromMicros(value: number) {
+  return value > 0 ? (value / 1_000_000).toFixed(2) : "";
+}
+
+function buildAgentPerformance(activities: AgentActivity[], runs: AgentRun[]): AgentPerformance {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
   const recent = activities.filter((activity) => {
     const timestamp = new Date(activity.created_at).getTime();
+    return Number.isNaN(timestamp) || timestamp >= cutoff;
+  });
+  const recentRuns = runs.filter((run) => {
+    const timestamp = new Date(run.started_at).getTime();
     return Number.isNaN(timestamp) || timestamp >= cutoff;
   });
   const firstTokenMs = recent
@@ -194,6 +208,9 @@ function buildAgentPerformance(activities: AgentActivity[]): AgentPerformance {
     activity.status === "active" &&
     (activity.title === "Started working" || activity.summary === "Started working")).length;
   const turns = completedTurns + failedTurns + activeTurns;
+  const inputTokens = recentRuns.reduce((total, run) => total + (run.input_tokens || 0), 0);
+  const outputTokens = recentRuns.reduce((total, run) => total + (run.output_tokens || 0), 0);
+  const costMicros = recentRuns.reduce((total, run) => total + (run.cost_micros || 0), 0);
 
   return {
     windowLabel: "Last 24h",
@@ -206,6 +223,9 @@ function buildAgentPerformance(activities: AgentActivity[]): AgentPerformance {
     p50TurnMs: percentile(turnDurations, 0.5),
     p95TurnMs: percentile(turnDurations, 0.95),
     errorRate: completedTurns + failedTurns === 0 ? 0 : failedTurns / (completedTurns + failedTurns),
+    inputTokens,
+    outputTokens,
+    costMicros,
   };
 }
 
@@ -898,9 +918,14 @@ function App() {
       .slice(0, 80);
   }, [data, selectedAgent]);
 
+  const selectedAgentRuns = useMemo(() => {
+    if (!data || !selectedAgent) return [];
+    return data.agent_runs.filter((run) => run.agent_id === selectedAgent.id);
+  }, [data, selectedAgent]);
+
   const selectedAgentPerformance = useMemo(() => {
-    return buildAgentPerformance(selectedAgentActivities);
-  }, [selectedAgentActivities]);
+    return buildAgentPerformance(selectedAgentActivities, selectedAgentRuns);
+  }, [selectedAgentActivities, selectedAgentRuns]);
 
   const selectedAgentLiveActivity = useMemo(() => {
     return selectedAgentActivities.find((activity) => activity.run_id === selectedAgentRun?.id)
@@ -1177,6 +1202,7 @@ function App() {
       task_status: null,
       attachments: [],
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
     knownMessageIdsRef.current?.add(id);
     setData((current) => current ? {
@@ -1236,10 +1262,14 @@ function App() {
     const agentId = await invoke<string>("create_agent", {
       handle,
       displayName: nextForm.displayName,
+      role: nextForm.role,
       runtime: nextForm.runtime,
       model: nextForm.model,
+      avatar: nextForm.avatar,
+      description: nextForm.description,
       launchCommand: nextForm.launchCommand,
       workingDirectory: nextForm.workingDirectory,
+      dailyBudgetMicros: budgetMicrosFromForm(nextForm.dailyBudgetUsd),
     });
     if (channel) {
       if (channel.kind !== "dm") {
@@ -1288,11 +1318,14 @@ function App() {
     setAgentEdit({
       handle: agent.handle,
       displayName: agent.display_name,
+      role: agent.role || "agent",
+      avatar: agent.avatar || "",
       runtime: agent.runtime,
       model: agent.model,
       description: agent.description,
       launchCommand: agent.launch_command,
       workingDirectory: agent.working_directory,
+      dailyBudgetUsd: budgetUsdFromMicros(agent.daily_budget_micros),
     });
   }
 
@@ -1310,11 +1343,14 @@ function App() {
       agentId: editingAgentId,
       handle: nextForm.handle,
       displayName: nextForm.displayName || nextForm.handle,
+      role: nextForm.role,
       runtime: nextForm.runtime,
       model: nextForm.model,
+      avatar: nextForm.avatar,
       description: nextForm.description,
       launchCommand: nextForm.launchCommand,
       workingDirectory: nextForm.workingDirectory,
+      dailyBudgetMicros: budgetMicrosFromForm(nextForm.dailyBudgetUsd),
     });
     setEditingAgentId(null);
     setAgentEdit(EMPTY_AGENT_FORM);
