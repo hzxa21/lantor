@@ -277,7 +277,6 @@ export function ThreadPanel({
             </div>
           )}
           <div className="reply-composer-actions">
-            <span className="composer-hint">Enter to reply · Shift+Enter for newline</span>
             <div className="reply-composer-buttons">
               <button
                 type="button"

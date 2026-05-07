@@ -377,7 +377,6 @@ export function Conversation({
               <button className={sendAsTask ? "active" : ""} onClick={() => setSendAsTask(true)}>Task</button>
             </div>
           )}
-          <span className="composer-hint">Enter to send · Shift+Enter for newline</span>
           <button
             type="button"
             className="attach-button"
