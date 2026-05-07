@@ -1583,6 +1583,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
+    backfill_agent_run_usage_from_logs(pool).await?;
 
     sqlx::query(
         r#"
@@ -5046,6 +5047,10 @@ fn value_i64_at(value: &Value, path: &str) -> Option<i64> {
 
 fn usage_from_runtime_event(value: &Value) -> Option<(i64, i64)> {
     let input_tokens = [
+        "/params/tokenUsage/last/inputTokens",
+        "/params/tokenUsage/last/input_tokens",
+        "/params/tokenUsage/last/promptTokens",
+        "/params/tokenUsage/last/prompt_tokens",
         "/params/usage/input_tokens",
         "/params/usage/inputTokens",
         "/params/usage/input",
@@ -5056,11 +5061,17 @@ fn usage_from_runtime_event(value: &Value) -> Option<(i64, i64)> {
         "/usage/prompt_tokens",
         "/message/usage/input_tokens",
         "/message/usage/prompt_tokens",
+        "/params/tokenUsage/total/inputTokens",
+        "/params/tokenUsage/total/input_tokens",
     ]
     .iter()
     .find_map(|path| value_i64_at(value, path))
     .unwrap_or_default();
     let output_tokens = [
+        "/params/tokenUsage/last/outputTokens",
+        "/params/tokenUsage/last/output_tokens",
+        "/params/tokenUsage/last/completionTokens",
+        "/params/tokenUsage/last/completion_tokens",
         "/params/usage/output_tokens",
         "/params/usage/outputTokens",
         "/params/usage/output",
@@ -5071,12 +5082,24 @@ fn usage_from_runtime_event(value: &Value) -> Option<(i64, i64)> {
         "/usage/completion_tokens",
         "/message/usage/output_tokens",
         "/message/usage/completion_tokens",
+        "/params/tokenUsage/total/outputTokens",
+        "/params/tokenUsage/total/output_tokens",
     ]
     .iter()
     .find_map(|path| value_i64_at(value, path))
     .unwrap_or_default();
 
     (input_tokens > 0 || output_tokens > 0).then_some((input_tokens.max(0), output_tokens.max(0)))
+}
+
+fn usage_from_run_log(log: &str) -> Option<(i64, i64)> {
+    log.lines()
+        .filter_map(|line| {
+            let json_start = line.find('{')?;
+            let value = serde_json::from_str::<Value>(&line[json_start..]).ok()?;
+            usage_from_runtime_event(&value)
+        })
+        .last()
 }
 
 fn model_cost_micros(runtime: &str, model: &str, input_tokens: i64, output_tokens: i64) -> i64 {
@@ -5136,6 +5159,55 @@ async fn record_run_usage(
     .await
     .map_err(to_string)?;
     notify_ui_agent_run_changed(pool, run_id, "run_usage").await;
+    Ok(())
+}
+
+async fn backfill_agent_run_usage_from_logs(pool: &PgPool) -> sqlx::Result<()> {
+    let rows = sqlx::query(
+        r#"
+        select id, agent_id, log
+        from agent_runs
+        where input_tokens = 0
+          and output_tokens = 0
+          and log like '%tokenUsage%'
+        order by started_at desc
+        limit 200
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for row in rows {
+        let log: String = row.get("log");
+        let Some((input_tokens, output_tokens)) = usage_from_run_log(&log) else {
+            continue;
+        };
+        let run_id: Uuid = row.get("id");
+        let agent_id: Uuid = row.get("agent_id");
+        let agent = sqlx::query("select runtime, model from agents where id = $1")
+            .bind(agent_id)
+            .fetch_one(pool)
+            .await?;
+        let runtime: String = agent.get("runtime");
+        let model: String = agent.get("model");
+        let cost_micros = model_cost_micros(&runtime, &model, input_tokens, output_tokens);
+        sqlx::query(
+            r#"
+            update agent_runs
+            set input_tokens = $2,
+                output_tokens = $3,
+                cost_micros = $4
+            where id = $1
+            "#,
+        )
+        .bind(run_id)
+        .bind(input_tokens.max(0))
+        .bind(output_tokens.max(0))
+        .bind(cost_micros.max(0))
+        .execute(pool)
+        .await?;
+    }
+
     Ok(())
 }
 
@@ -11631,8 +11703,9 @@ mod tests {
         parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
         queue_mentions_as_work_items, record_agent_activity, send_owner_message_in_pool, short_id,
         silent_reply_reason, upsert_agent_thread_subscription, upsert_runtime_thread_id,
-        AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL,
-        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        usage_from_run_log, usage_from_runtime_event, AgentEvent, MentionDispatchOrigin,
+        AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
+        STREAMING_TRUNCATION_MARKER,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::json;
@@ -11860,6 +11933,32 @@ mod tests {
     }
 
     #[test]
+    fn parses_codex_thread_token_usage_events() {
+        let value = json!({
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "tokenUsage": {
+                    "total": {
+                        "inputTokens": 11488567,
+                        "outputTokens": 36332
+                    },
+                    "last": {
+                        "inputTokens": 33569,
+                        "cachedInputTokens": 31616,
+                        "outputTokens": 1278
+                    }
+                }
+            }
+        });
+        assert_eq!(usage_from_runtime_event(&value), Some((33569, 1278)));
+
+        let log = format!(
+            "[codex] {{\"method\":\"item/agentMessage/delta\",\"params\":{{\"delta\":\"hi\"}}}}\n[codex] {value}"
+        );
+        assert_eq!(usage_from_run_log(&log), Some((33569, 1278)));
+    }
+
+    #[test]
     fn parses_claude_stream_json_events() {
         assert_eq!(
             claude_text_delta(
@@ -11942,8 +12041,8 @@ mod tests {
     async fn test_pool_with_connections(max_connections: u32) -> Option<(PgPool, String)> {
         let database_url = std::env::var("LOCAL_SLOCK_TEST_DATABASE_URL")
             .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
-        let pool = match PgPoolOptions::new()
-            .max_connections(max_connections)
+        let bootstrap_pool = match PgPoolOptions::new()
+            .max_connections(1)
             .connect(&database_url)
             .await
         {
@@ -11955,24 +12054,36 @@ mod tests {
         };
         let schema = format!("localslock_test_{}", Uuid::new_v4().simple());
         if let Err(err) = sqlx::query(&format!(r#"create schema "{schema}""#))
-            .execute(&pool)
+            .execute(&bootstrap_pool)
             .await
         {
             eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
-            pool.close().await;
+            bootstrap_pool.close().await;
             return None;
         }
-        if let Err(err) = sqlx::query(&format!(r#"set search_path to "{schema}", public"#))
-            .execute(&pool)
+        bootstrap_pool.close().await;
+
+        let schema_for_hook = schema.clone();
+        let pool = match PgPoolOptions::new()
+            .max_connections(max_connections)
+            .after_connect(move |conn, _meta| {
+                let schema = schema_for_hook.clone();
+                Box::pin(async move {
+                    sqlx::query(&format!(r#"set search_path to "{schema}", public"#))
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
             .await
         {
-            eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
-            let _ = sqlx::query(&format!(r#"drop schema if exists "{schema}" cascade"#))
-                .execute(&pool)
-                .await;
-            pool.close().await;
-            return None;
-        }
+            Ok(pool) => pool,
+            Err(err) => {
+                eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
+                return None;
+            }
+        };
         if let Err(err) = migrate(&pool).await {
             eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
             let _ = sqlx::query(&format!(r#"drop schema if exists "{schema}" cascade"#))

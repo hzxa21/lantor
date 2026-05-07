@@ -191,7 +191,6 @@ function buildAgentPerformance(activities: AgentActivity[], runs: AgentRun[]): A
     return Number.isNaN(timestamp) || timestamp >= cutoff;
   });
   const firstTokenMs = recent
-    .filter((activity) => activity.title === "Responding" || activity.summary === "Responding")
     .map((activity) => numericMetadata(activity.metadata.first_token_ms))
     .filter((value): value is number => value !== null);
   const finishedTurns = recent.filter((activity) =>
