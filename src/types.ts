@@ -44,6 +44,7 @@ export type Message = {
   task_number: number | null;
   task_status: string | null;
   attachments: MessageAttachment[];
+  artifacts: Artifact[];
   created_at: string;
   updated_at: string;
 };
@@ -64,6 +65,22 @@ export type DraftAttachment = {
   original_name: string;
   mime_type: string;
   size_bytes: number;
+};
+
+export type Artifact = {
+  id: string;
+  message_id: string;
+  channel_id: string;
+  thread_root_id: string | null;
+  creator_agent_id: string | null;
+  creator_agent_handle: string | null;
+  kind: string;
+  title: string;
+  summary: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Task = {
@@ -197,6 +214,7 @@ export type Bootstrap = {
   channel_members: ChannelMember[];
   agents: Agent[];
   messages: Message[];
+  artifacts: Artifact[];
   tasks: Task[];
   reminders: Reminder[];
   agent_schedules: AgentSchedule[];
@@ -207,7 +225,7 @@ export type Bootstrap = {
   launch_agent: LaunchAgentStatus;
 };
 
-export type SearchScope = "all" | "messages" | "channels" | "tasks" | "agents" | "activity";
+export type SearchScope = "all" | "messages" | "channels" | "tasks" | "agents" | "activity" | "artifacts";
 
 export type SearchTimeRange = "any" | "today" | "7d" | "30d";
 

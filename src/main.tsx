@@ -22,6 +22,7 @@ import {
   AgentForm,
   AgentRun,
   AgentWorkItem,
+  Artifact,
   Bootstrap,
   DraftAttachment,
   EMPTY_AGENT_FORM,
@@ -73,7 +74,8 @@ type UiBackendEvent =
   | { type: "message_delete"; reason?: string; message_id: string }
   | { type: "activity_upsert"; reason?: string; activity: AgentActivity }
   | { type: "agent_run_upsert"; reason?: string; run: Omit<AgentRun, "log"> & { log?: string } }
-  | { type: "work_item_upsert"; reason?: string; work_item: Omit<AgentWorkItem, "context"> & { context?: string } };
+  | { type: "work_item_upsert"; reason?: string; work_item: Omit<AgentWorkItem, "context"> & { context?: string } }
+  | { type: "artifact_upsert"; reason?: string; artifact: Artifact };
 
 type ConfirmRequest = {
   title: string;
@@ -441,6 +443,40 @@ function App() {
     });
   }
 
+  function applyArtifactUpsert(artifact: Artifact) {
+    setData((current) => {
+      if (!current) {
+        requestRefresh("Failed to refresh LocalSlock state after artifact update");
+        return current;
+      }
+      const existingIndex = current.artifacts.findIndex((item) => item.id === artifact.id);
+      const artifacts = existingIndex >= 0
+        ? current.artifacts.map((item) => item.id === artifact.id ? artifact : item)
+        : [...current.artifacts, artifact];
+      const messages = current.messages.map((message) => {
+        if (message.id !== artifact.message_id) return message;
+        const existingArtifactIndex = message.artifacts.findIndex((item) => item.id === artifact.id);
+        const messageArtifacts = existingArtifactIndex >= 0
+          ? message.artifacts.map((item) => item.id === artifact.id ? artifact : item)
+          : [...message.artifacts, artifact];
+        return { ...message, artifacts: messageArtifacts };
+      });
+      return { ...current, artifacts, messages };
+    });
+  }
+
+  async function openArtifact(artifact: Artifact) {
+    try {
+      const fullArtifact = await invoke<Artifact>("artifact_read", { artifactId: artifact.id });
+      const blob = new Blob([fullArtifact.content], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } catch (err) {
+      setAppError(errorMessage(err, "Failed to open artifact"));
+    }
+  }
+
   function handleBackendEvent(payload: unknown) {
     if (typeof payload !== "string") {
       requestRefresh("Failed to refresh LocalSlock state after backend update");
@@ -475,6 +511,10 @@ function App() {
     }
     if (parsed.type === "work_item_upsert") {
       applyWorkItemUpsert(parsed.work_item);
+      return;
+    }
+    if (parsed.type === "artifact_upsert") {
+      applyArtifactUpsert(parsed.artifact);
       return;
     }
     requestRefresh("Failed to refresh LocalSlock state after backend update");
@@ -1029,6 +1069,25 @@ function App() {
       })).slice(0, 40));
     }
 
+    if (searchScopeAllows(searchScope, "artifacts")) {
+      results.push(...data.artifacts
+        .filter((item) =>
+          matchesSearchTime(item.created_at, searchTimeRange) &&
+          includes(`${item.title} ${item.summary} ${item.content} ${item.kind} ${channelLabel(item.channel_id)}`))
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .map((item) => ({
+        id: item.id,
+        kind: "artifact",
+        title: item.title,
+        detail: `${item.kind} · ${channelLabel(item.channel_id)} · ${formatTime(item.created_at)}`,
+        excerpt: firstLines(item.summary || item.content, 2),
+        createdAt: item.created_at,
+        channelId: item.channel_id,
+        threadId: item.thread_root_id ?? item.message_id,
+        agentId: item.creator_agent_id,
+      })).slice(0, 20));
+    }
+
     if (searchScopeAllows(searchScope, "agents")) {
       results.push(...data.agents
         .filter((item) => includes(`${item.handle} ${item.display_name} ${item.runtime} ${item.model} ${item.description}`))
@@ -1200,6 +1259,7 @@ function App() {
       task_number: null,
       task_status: null,
       attachments: [],
+      artifacts: [],
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -1797,6 +1857,7 @@ function App() {
         addDraftAttachments={(files) => appendDraftAttachments(files, "root")}
         removeDraftAttachment={(id) => setDraftAttachments((current) => current.filter((item) => item.id !== id))}
         sendRootMessage={sendRootMessage}
+        openArtifact={openArtifact}
       />
 
       {selectedAgent ? (
@@ -1846,6 +1907,7 @@ function App() {
           addReplyAttachments={(files) => appendDraftAttachments(files, "reply")}
           removeReplyAttachment={(id) => setReplyAttachments((current) => current.filter((item) => item.id !== id))}
           sendReply={sendReply}
+          openArtifact={openArtifact}
           onResizeStart={startThreadResize}
         />
       )}

@@ -177,6 +177,7 @@ struct Message {
     task_number: Option<i64>,
     task_status: Option<String>,
     attachments: Vec<MessageAttachment>,
+    artifacts: Vec<Artifact>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -190,6 +191,23 @@ struct MessageAttachment {
     size_bytes: i64,
     storage_path: String,
     created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct Artifact {
+    id: Uuid,
+    message_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    creator_agent_id: Option<Uuid>,
+    creator_agent_handle: Option<String>,
+    kind: String,
+    title: String,
+    summary: String,
+    content: String,
+    metadata: Value,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -457,6 +475,16 @@ enum AgentEvent {
         avatar: Option<String>,
         description: Option<String>,
     },
+    ArtifactCreate {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        thread_root_id: Option<Uuid>,
+        kind: String,
+        title: String,
+        summary: Option<String>,
+        content: String,
+        metadata: Option<Value>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -466,6 +494,7 @@ struct Bootstrap {
     channel_members: Vec<ChannelMember>,
     agents: Vec<Agent>,
     messages: Vec<Message>,
+    artifacts: Vec<Artifact>,
     tasks: Vec<Task>,
     reminders: Vec<Reminder>,
     agent_schedules: Vec<AgentSchedule>,
@@ -706,6 +735,19 @@ async fn notify_ui_work_item_upsert(
         UI_REFRESH_CHANNEL,
         &json!({ "type": "work_item_upsert", "reason": reason, "work_item": work_item })
             .to_string(),
+    )
+    .await
+}
+
+async fn notify_ui_artifact_upsert(
+    pool: &PgPool,
+    artifact: &Artifact,
+    reason: &str,
+) -> CommandResult<()> {
+    notify_postgres(
+        pool,
+        UI_REFRESH_CHANNEL,
+        &json!({ "type": "artifact_upsert", "reason": reason, "artifact": artifact }).to_string(),
     )
     .await
 }
@@ -1323,6 +1365,33 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         r#"
+        create table if not exists artifacts (
+            id uuid primary key default gen_random_uuid(),
+            message_id uuid not null references messages(id) on delete cascade,
+            channel_id uuid not null references channels(id) on delete cascade,
+            thread_root_id uuid references messages(id) on delete set null,
+            creator_agent_id uuid references agents(id) on delete set null,
+            kind text not null,
+            title text not null,
+            summary text not null default '',
+            content text not null,
+            metadata jsonb not null default '{}'::jsonb,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("create index if not exists artifacts_message_id_idx on artifacts(message_id)")
+        .execute(pool)
+        .await?;
+    sqlx::query("create index if not exists artifacts_channel_id_idx on artifacts(channel_id)")
+        .execute(pool)
+        .await?;
+
+    sqlx::query(
+        r#"
         create table if not exists runtime_sessions (
             id uuid primary key default gen_random_uuid(),
             agent_id uuid not null references agents(id) on delete cascade,
@@ -1668,6 +1737,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let channel_members = load_channel_members(&state.pool).await?;
     let agents = load_agents(&state.pool).await?;
     let messages = load_messages(&state.pool).await?;
+    let artifacts = load_artifacts(&state.pool).await?;
     let tasks = load_tasks(&state.pool).await?;
     let reminders = load_reminders(&state.pool).await?;
     let agent_schedules = load_agent_schedules(&state.pool).await?;
@@ -1683,6 +1753,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         channel_members,
         agents,
         messages,
+        artifacts,
         tasks,
         reminders,
         agent_schedules,
@@ -1897,6 +1968,11 @@ async fn delete_channel_in_pool(pool: &PgPool, channel_id: Uuid) -> CommandResul
 #[tauri::command]
 async fn open_dm_with_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<String> {
     open_dm_with_agent_in_pool(&state.pool, agent_id).await
+}
+
+#[tauri::command]
+async fn artifact_read(artifact_id: Uuid, state: State<'_, AppState>) -> CommandResult<Artifact> {
+    load_artifact(&state.pool, artifact_id).await
 }
 
 async fn open_dm_with_agent_in_pool(pool: &PgPool, agent_id: Uuid) -> CommandResult<String> {
@@ -4302,11 +4378,13 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
             task_number: row.get("task_number"),
             task_status: row.get("task_status"),
             attachments: Vec::new(),
+            artifacts: Vec::new(),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
         .collect();
     attach_message_attachments(pool, &mut messages).await?;
+    attach_message_artifacts(pool, &mut messages).await?;
     Ok(messages)
 }
 
@@ -4352,10 +4430,12 @@ async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message>
         task_number: row.get("task_number"),
         task_status: row.get("task_status"),
         attachments: Vec::new(),
+        artifacts: Vec::new(),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     };
     attach_message_attachments(pool, std::slice::from_mut(&mut message)).await?;
+    attach_message_artifacts(pool, std::slice::from_mut(&mut message)).await?;
     Ok(message)
 }
 
@@ -4396,6 +4476,126 @@ async fn attach_message_attachments(pool: &PgPool, messages: &mut [Message]) -> 
         message.attachments = attachments_by_message
             .remove(&message.id)
             .unwrap_or_default();
+    }
+    Ok(())
+}
+
+fn artifact_from_row(row: &sqlx::postgres::PgRow) -> Artifact {
+    Artifact {
+        id: row.get("id"),
+        message_id: row.get("message_id"),
+        channel_id: row.get("channel_id"),
+        thread_root_id: row.get("thread_root_id"),
+        creator_agent_id: row.get("creator_agent_id"),
+        creator_agent_handle: row.get("creator_agent_handle"),
+        kind: row.get("kind"),
+        title: row.get("title"),
+        summary: row.get("summary"),
+        content: row.get("content"),
+        metadata: row.get("metadata"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+async fn load_artifacts(pool: &PgPool) -> CommandResult<Vec<Artifact>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            ar.id,
+            ar.message_id,
+            ar.channel_id,
+            ar.thread_root_id,
+            ar.creator_agent_id,
+            a.handle as creator_agent_handle,
+            ar.kind,
+            ar.title,
+            ar.summary,
+            ar.content,
+            ar.metadata,
+            ar.created_at,
+            ar.updated_at
+        from artifacts ar
+        left join agents a on a.id = ar.creator_agent_id
+        order by ar.created_at asc
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    Ok(rows.iter().map(artifact_from_row).collect())
+}
+
+async fn load_artifact(pool: &PgPool, artifact_id: Uuid) -> CommandResult<Artifact> {
+    let row = sqlx::query(
+        r#"
+        select
+            ar.id,
+            ar.message_id,
+            ar.channel_id,
+            ar.thread_root_id,
+            ar.creator_agent_id,
+            a.handle as creator_agent_handle,
+            ar.kind,
+            ar.title,
+            ar.summary,
+            ar.content,
+            ar.metadata,
+            ar.created_at,
+            ar.updated_at
+        from artifacts ar
+        left join agents a on a.id = ar.creator_agent_id
+        where ar.id = $1
+        "#,
+    )
+    .bind(artifact_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    Ok(artifact_from_row(&row))
+}
+
+async fn attach_message_artifacts(pool: &PgPool, messages: &mut [Message]) -> CommandResult<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = messages.iter().map(|message| message.id).collect();
+    let rows = sqlx::query(
+        r#"
+        select
+            ar.id,
+            ar.message_id,
+            ar.channel_id,
+            ar.thread_root_id,
+            ar.creator_agent_id,
+            a.handle as creator_agent_handle,
+            ar.kind,
+            ar.title,
+            ar.summary,
+            ar.content,
+            ar.metadata,
+            ar.created_at,
+            ar.updated_at
+        from artifacts ar
+        left join agents a on a.id = ar.creator_agent_id
+        where ar.message_id = any($1)
+        order by ar.created_at asc
+        "#,
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    let mut artifacts_by_message: HashMap<Uuid, Vec<Artifact>> = HashMap::new();
+    for row in rows {
+        let artifact = artifact_from_row(&row);
+        artifacts_by_message
+            .entry(artifact.message_id)
+            .or_default()
+            .push(artifact);
+    }
+    for message in messages {
+        message.artifacts = artifacts_by_message.remove(&message.id).unwrap_or_default();
     }
     Ok(())
 }
@@ -6234,6 +6434,46 @@ async fn handle_agent_event(
             let _ = notify_ui_refresh(pool, "profile_update").await;
             Ok("profile updated".to_owned())
         }
+        AgentEvent::ArtifactCreate {
+            channel,
+            channel_id,
+            thread_root_id,
+            kind,
+            title,
+            summary,
+            content,
+            metadata,
+        } => {
+            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
+            let (artifact_id, message_id) = create_agent_artifact(
+                pool,
+                agent_id,
+                channel_id,
+                thread_root_id,
+                &kind,
+                &title,
+                summary.as_deref(),
+                &content,
+                metadata,
+            )
+            .await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "artifact",
+                "Artifact created",
+                json!({
+                    "artifact_id": artifact_id,
+                    "message_id": message_id,
+                    "kind": kind,
+                    "title": title
+                })
+                .to_string(),
+            )
+            .await?;
+            Ok(format!("artifact created: {artifact_id}"))
+        }
     }
 }
 
@@ -6476,6 +6716,91 @@ async fn create_agent_task_thread(
     };
     let _ = notify_ui_refresh(pool, "task_create").await;
     Ok((task_number, root_message_id, thread_reply_id))
+}
+
+fn normalize_artifact_kind(kind: &str) -> CommandResult<String> {
+    let normalized = kind.trim().to_lowercase().replace('_', "-");
+    let normalized = match normalized.as_str() {
+        "md" | "markdown" => "markdown",
+        "json" => "json",
+        "table" | "csv" => "table",
+        "diff" | "patch" => "diff",
+        "mermaid" | "diagram" => "mermaid",
+        "html" => "html",
+        "text" | "plain" => "text",
+        other => {
+            return Err(format!(
+                "unsupported artifact kind: {other}; supported: markdown, json, table, diff, mermaid, html, text"
+            ))
+        }
+    };
+    Ok(normalized.to_owned())
+}
+
+async fn create_agent_artifact(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    kind: &str,
+    title: &str,
+    summary: Option<&str>,
+    content: &str,
+    metadata: Option<Value>,
+) -> CommandResult<(Uuid, Uuid)> {
+    let kind = normalize_artifact_kind(kind)?;
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("artifact_create title is required".to_owned());
+    }
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("artifact_create content is required".to_owned());
+    }
+    let summary = summary
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| content.lines().next().unwrap_or(""))
+        .to_owned();
+    let summary = compact_chars_middle(&summary, 320).replace('\n', " ");
+    let body = if summary.is_empty() {
+        format!("Created artifact: {title}")
+    } else {
+        format!("Created artifact: {title}\n\n{summary}")
+    };
+    let message_id =
+        insert_agent_message(pool, agent_id, channel_id, thread_root_id, &body, false).await?;
+    let artifact_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into artifacts (
+            message_id, channel_id, thread_root_id, creator_agent_id,
+            kind, title, summary, content, metadata
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        returning id
+        "#,
+    )
+    .bind(message_id)
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(agent_id)
+    .bind(&kind)
+    .bind(title)
+    .bind(&summary)
+    .bind(content)
+    .bind(metadata.unwrap_or_else(|| json!({})))
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    if let Ok(artifact) = load_artifact(pool, artifact_id).await {
+        let _ = notify_ui_artifact_upsert(pool, &artifact, "artifact_created").await;
+    }
+    if let Ok(message) = load_message(pool, message_id).await {
+        let _ = notify_ui_message_upsert(pool, &message, "artifact_created").await;
+    } else {
+        let _ = notify_ui_refresh(pool, "artifact_created").await;
+    }
+    Ok((artifact_id, message_id))
 }
 
 fn capped_stream_delta(delta: &str, current_len: usize) -> (String, bool) {
@@ -7180,6 +7505,12 @@ This creates a root task message in the channel and opens its execution thread w
             .to_owned(),
     );
     lines.push(
+        r#"You can create structured artifacts for dense data or long outputs:
+LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|diff|mermaid|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
+Use artifacts for reports, tables, diffs, diagrams, JSON, and long analysis. Keep the visible chat summary short; put the detailed content in the artifact."#
+            .to_owned(),
+    );
+    lines.push(
         "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number."
             .to_owned(),
     );
@@ -7296,10 +7627,11 @@ fn build_runtime_standing_prompt(
          For read-only message search, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool message-search --query \"text\" --target \"#channel\" --limit 20`. Omit --target to search all local messages.\n\
          For attachment details, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool attachment-info --attachment-id \"<uuid>\"`; image attachments expose a local_path you can inspect with your runtime's file/vision support.\n\
          For cross-agent introspection, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool agent-inspect --target \"@handle\"` to see an agent profile, recent runs, requests, and activity.\n\
+         For structured outputs, emit LOCAL_SLOCK_EVENT artifact_create with kind markdown/json/table/diff/mermaid/html/text; keep chat concise and put long data in the artifact.\n\
          Before replying, decide whether a visible response is useful; for greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly LOCAL_SLOCK_SILENT_REPLY: <short reason> and nothing else.\n\
          Keep thread messages high-density: do not narrate every intermediate step, tool call, command output, or file edit in chat. Use visible replies for final results, important decisions, blockers, user questions, and handoffs.\n\
          For intermediate progress, emit standalone LOCAL_SLOCK_EVENT activity control lines such as {{\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}}; LocalSlock records them in the agent activity feed and hides the control line from chat.\n\
-         You may print standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel, memory_append/memory_compact, profile_update, channel_create/channel_invite, and usage control lines; LocalSlock consumes and hides those lines. Do not print LOCAL_SLOCK_EVENT message/task lines unless explicitly asked to debug the legacy runtime path.\n\
+         You may print standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel, memory_append/memory_compact, profile_update, channel_create/channel_invite, artifact_create, and usage control lines; LocalSlock consumes and hides those lines. Do not print LOCAL_SLOCK_EVENT message/task lines unless explicitly asked to debug the legacy runtime path.\n\
          Keep user-visible replies concise and include concrete results or blockers."
     );
     if let Some(memory_context) = memory_context.filter(|context| !context.trim().is_empty()) {
@@ -11566,10 +11898,38 @@ async fn agent_context_agent_inspect(pool: &PgPool, args: &[String]) -> CommandR
     Ok(output.join("\n"))
 }
 
+async fn agent_context_artifact_read_in_pool(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let raw_id = arg_value(args, "--artifact-id")
+        .or_else(|| arg_value(args, "--id"))
+        .ok_or_else(|| "artifact-read requires --artifact-id <uuid>".to_owned())?;
+    let artifact_id =
+        Uuid::parse_str(raw_id.trim()).map_err(|err| format!("invalid artifact id: {err}"))?;
+    let artifact = load_artifact(pool, artifact_id).await?;
+    Ok(format!(
+        "LocalSlock artifact {}\nkind={}\ntitle={}\nsummary={}\nmessage_id={}\nchannel_id={}\nthread_root_id={}\ncreator=@{}\nmetadata={}\n\n{}",
+        artifact.id,
+        artifact.kind,
+        artifact.title,
+        artifact.summary,
+        artifact.message_id,
+        artifact.channel_id,
+        artifact
+            .thread_root_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_owned()),
+        artifact.creator_agent_handle.unwrap_or_else(|| "unknown".to_owned()),
+        artifact.metadata,
+        artifact.content
+    ))
+}
+
 async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
     if args.is_empty() || has_arg(args, "--help") || has_arg(args, "-h") {
         return Ok(
-            "LocalSlock agent context tool\n\nCommands:\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID."
+            "LocalSlock agent context tool\n\nCommands:\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID."
                 .to_owned(),
         );
     }
@@ -11589,6 +11949,9 @@ async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
         }
         "agent-inspect" | "inspect-agent" | "agent-query" => {
             agent_context_agent_inspect(&pool, args).await
+        }
+        "artifact-read" | "artifact" | "artifact-view" => {
+            agent_context_artifact_read_in_pool(&pool, args).await
         }
         other => Err(format!("unknown agent context tool command: {other}")),
     }
@@ -11624,6 +11987,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            artifact_read,
             cancel_agent_work,
             cancel_reminder,
             check_runtime,
@@ -11690,22 +12054,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_context_agent_inspect, agent_context_attachment_info, agent_context_history_read,
-        agent_context_message_search, append_streaming_agent_message, capped_stream_delta,
-        claim_next_supervisor_command, claude_message_text, claude_result_error,
-        claude_stream_event_activity, claude_system_prompt, claude_text_delta,
-        codex_item_started_activity, codex_turn_id_from_value,
-        consume_streaming_agent_control_lines, delete_agent_in_pool, delete_channel_in_pool,
-        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
-        handle_agent_event, insert_agent_message, load_agent_memory_context,
-        load_channel_agent_roster, load_messages, load_reminders, load_runtime_thread_id,
-        maybe_hide_silent_streaming_reply, migrate, open_dm_with_agent_in_pool,
-        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
-        queue_mentions_as_work_items, record_agent_activity, send_owner_message_in_pool, short_id,
-        silent_reply_reason, upsert_agent_thread_subscription, upsert_runtime_thread_id,
-        usage_from_run_log, usage_from_runtime_event, AgentEvent, MentionDispatchOrigin,
-        AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
-        STREAMING_TRUNCATION_MARKER,
+        agent_context_agent_inspect, agent_context_artifact_read_in_pool,
+        agent_context_attachment_info, agent_context_history_read, agent_context_message_search,
+        append_streaming_agent_message, capped_stream_delta, claim_next_supervisor_command,
+        claude_message_text, claude_result_error, claude_stream_event_activity,
+        claude_system_prompt, claude_text_delta, codex_item_started_activity,
+        codex_turn_id_from_value, consume_streaming_agent_control_lines, delete_agent_in_pool,
+        delete_channel_in_pool, extract_agent_event_json, extract_agent_mentions,
+        finish_streaming_agent_message, handle_agent_event, insert_agent_message,
+        load_agent_memory_context, load_channel_agent_roster, load_messages, load_reminders,
+        load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
+        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
+        process_due_reminders, queue_mentions_as_work_items, record_agent_activity,
+        send_owner_message_in_pool, short_id, silent_reply_reason,
+        upsert_agent_thread_subscription, upsert_runtime_thread_id, usage_from_run_log,
+        usage_from_runtime_event, AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
+        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::json;
@@ -11807,6 +12171,90 @@ mod tests {
             let search = agent_context_message_search(&pool, &search_args).await?;
             assert!(search.contains("root message with needle"));
             assert!(search.contains("surface=#context-tools"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn artifact_create_event_persists_artifact_and_message_card() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "artifact-agent").await?;
+            let channel_id = insert_test_channel(&pool, "artifacts").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::ArtifactCreate {
+                    channel: None,
+                    channel_id: Some(channel_id),
+                    thread_root_id: None,
+                    kind: "markdown".to_owned(),
+                    title: "Review report".to_owned(),
+                    summary: Some("Two findings and one follow-up.".to_owned()),
+                    content: "# Review report\n\n- finding".to_owned(),
+                    metadata: Some(json!({"source": "test"})),
+                },
+            )
+            .await?;
+
+            let artifact = sqlx::query(
+                r#"
+                select id, message_id, kind, title, summary, content, metadata
+                from artifacts
+                where channel_id = $1
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let artifact_id: Uuid = artifact.get("id");
+            let message_id: Uuid = artifact.get("message_id");
+            assert_eq!(artifact.get::<String, _>("kind"), "markdown");
+            assert_eq!(artifact.get::<String, _>("title"), "Review report");
+            assert_eq!(
+                artifact.get::<String, _>("summary"),
+                "Two findings and one follow-up."
+            );
+
+            let messages = load_messages(&pool).await?;
+            let message = messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .expect("artifact message should be loaded");
+            assert!(message.body.contains("Created artifact: Review report"));
+            assert_eq!(message.artifacts.len(), 1);
+            assert_eq!(message.artifacts[0].id, artifact_id);
+
+            let tool_output = agent_context_artifact_read_in_pool(
+                &pool,
+                &[
+                    "artifact-read".to_owned(),
+                    "--artifact-id".to_owned(),
+                    artifact_id.to_string(),
+                ],
+            )
+            .await?;
+            assert!(tool_output.contains("kind=markdown"));
+            assert!(tool_output.contains("# Review report"));
             Ok(())
         }
         .await;

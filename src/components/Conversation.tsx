@@ -11,10 +11,11 @@ import {
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
-import { Agent, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
+import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { MessageAttachments } from "./MessageAttachments";
+import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
 
 type ConversationProps = {
@@ -45,6 +46,7 @@ type ConversationProps = {
   addDraftAttachments: (files: FileList | File[]) => void;
   removeDraftAttachment: (id: string) => void;
   sendRootMessage: (asTask?: boolean) => void;
+  openArtifact: (artifact: Artifact) => void;
 };
 
 function wasEdited(message: Message) {
@@ -81,6 +83,7 @@ export function Conversation({
   addDraftAttachments,
   removeDraftAttachment,
   sendRootMessage,
+  openArtifact,
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -226,6 +229,7 @@ export function Conversation({
                   </div>
                   <MessageMarkdown body={firstLines(message.body)} />
                   <MessageAttachments attachments={message.attachments} />
+                  <MessageArtifacts artifacts={message.artifacts} onOpenArtifact={openArtifact} />
                   {message.delivery_state === "streaming" && (
                     <div className="message-stream-state">Streaming response...</div>
                   )}

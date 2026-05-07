@@ -1,4 +1,4 @@
-import { Activity, Bot, CalendarDays, Hash, LayoutList, MessageSquare, Search, X } from "lucide-react";
+import { Activity, Bot, CalendarDays, FileText, Hash, LayoutList, MessageSquare, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { SearchResult, SearchScope, SearchTimeRange } from "../types";
 
@@ -23,6 +23,7 @@ const SCOPE_OPTIONS: Array<{ value: SearchScope; label: string }> = [
   { value: "tasks", label: "Tasks" },
   { value: "agents", label: "Agents" },
   { value: "activity", label: "Activity" },
+  { value: "artifacts", label: "Artifacts" },
 ];
 
 const TIME_OPTIONS: Array<{ value: SearchTimeRange; label: string }> = [
@@ -38,6 +39,7 @@ const GROUPS = [
   { key: "tasks", title: "Tasks", kinds: new Set(["task"]), icon: LayoutList },
   { key: "agents", title: "Agents", kinds: new Set(["agent"]), icon: Bot },
   { key: "activity", title: "Activity & agent turns", kinds: new Set(["activity", "request"]), icon: Activity },
+  { key: "artifacts", title: "Artifacts", kinds: new Set(["artifact"]), icon: FileText },
 ];
 
 function escapeRegExp(value: string) {
@@ -48,6 +50,7 @@ function resultLabel(kind: string) {
   if (kind === "dm") return "DM";
   if (kind === "reply") return "Thread";
   if (kind === "request") return "Agent turn";
+  if (kind === "artifact") return "Artifact";
   return kind;
 }
 

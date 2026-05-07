@@ -2,9 +2,10 @@ import { MessageSquare, Paperclip, Reply, X } from "lucide-react";
 import { useRef, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
-import { Agent, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
+import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
 import { MessageAttachments } from "./MessageAttachments";
+import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
 
 type ThreadPanelProps = {
@@ -26,6 +27,7 @@ type ThreadPanelProps = {
   addReplyAttachments: (files: FileList | File[]) => void;
   removeReplyAttachment: (id: string) => void;
   sendReply: () => void;
+  openArtifact: (artifact: Artifact) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
@@ -54,6 +56,7 @@ export function ThreadPanel({
   addReplyAttachments,
   removeReplyAttachment,
   sendReply,
+  openArtifact,
   onResizeStart,
 }: ThreadPanelProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -124,6 +127,7 @@ export function ThreadPanel({
                 </div>
                 <MessageMarkdown body={activeRoot.body} />
                 <MessageAttachments attachments={activeRoot.attachments} />
+                <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
                 {activeRoot.delivery_state === "streaming" && (
                   <div className="message-stream-state">Streaming response...</div>
                 )}
@@ -203,6 +207,7 @@ export function ThreadPanel({
                   </div>
                   <MessageMarkdown body={reply.body} />
                   <MessageAttachments attachments={reply.attachments} />
+                  <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
                   {reply.delivery_state === "streaming" && (
                     <div className="message-stream-state">Streaming response...</div>
                   )}
