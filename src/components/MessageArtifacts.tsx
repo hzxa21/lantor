@@ -1,5 +1,6 @@
 import { Braces, Code2, FileText, GitBranch, Table2, Workflow } from "lucide-react";
 import { Artifact } from "../types";
+import { MessageMarkdown } from "./MessageMarkdown";
 
 type MessageArtifactsProps = {
   artifacts: Artifact[];
@@ -30,6 +31,18 @@ function previewContent(artifact: Artifact) {
   return compact.length > 140 ? `${compact.slice(0, 140)}...` : compact;
 }
 
+function ArtifactContent({ artifact }: { artifact: Artifact }) {
+  if (artifact.kind === "markdown") {
+    return (
+      <div className="artifact-markdown-content">
+        <MessageMarkdown body={artifact.content || previewContent(artifact)} />
+      </div>
+    );
+  }
+
+  return <pre>{artifact.content || previewContent(artifact)}</pre>;
+}
+
 export function MessageArtifacts({ artifacts, onOpenArtifact }: MessageArtifactsProps) {
   if (artifacts.length === 0) return null;
 
@@ -52,7 +65,7 @@ export function MessageArtifacts({ artifacts, onOpenArtifact }: MessageArtifacts
               </div>
             )}
             {artifact.summary && <p>{artifact.summary}</p>}
-            <pre>{artifact.content || previewContent(artifact)}</pre>
+            <ArtifactContent artifact={artifact} />
           </details>
         );
       })}
