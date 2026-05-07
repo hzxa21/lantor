@@ -31,11 +31,38 @@ function previewContent(artifact: Artifact) {
   return compact.length > 140 ? `${compact.slice(0, 140)}...` : compact;
 }
 
+function htmlPreviewDocument(content: string) {
+  const policy = [
+    "default-src 'none'",
+    "img-src data: blob:",
+    "style-src 'unsafe-inline'",
+    "font-src data:",
+  ].join("; ");
+  const headPrefix = `<meta http-equiv="Content-Security-Policy" content="${policy}"><base target="_blank">`;
+  if (/<head[\s>]/i.test(content)) {
+    return content.replace(/<head([^>]*)>/i, `<head$1>${headPrefix}`);
+  }
+  return `<!doctype html><html><head>${headPrefix}</head><body>${content}</body></html>`;
+}
+
 function ArtifactContent({ artifact }: { artifact: Artifact }) {
   if (artifact.kind === "markdown") {
     return (
       <div className="artifact-markdown-content">
         <MessageMarkdown body={artifact.content || previewContent(artifact)} />
+      </div>
+    );
+  }
+
+  if (artifact.kind === "html") {
+    return (
+      <div className="artifact-html-content">
+        <iframe
+          title={`Artifact preview: ${artifact.title}`}
+          srcDoc={htmlPreviewDocument(artifact.content || previewContent(artifact))}
+          sandbox=""
+        />
+        <small>Sandboxed HTML preview. Scripts and same-origin access are disabled.</small>
       </div>
     );
   }
