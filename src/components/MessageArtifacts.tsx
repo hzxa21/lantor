@@ -49,44 +49,6 @@ function staticHtmlPreviewDocument(content: string) {
   return `<!doctype html><html><head>${headPrefix}</head><body>${content}</body></html>`;
 }
 
-function mermaidPreviewDocument(content: string) {
-  const policy = [
-    "default-src 'none'",
-    "script-src 'unsafe-inline' https://cdn.jsdelivr.net",
-    "style-src 'unsafe-inline'",
-    "img-src data: blob:",
-    "font-src data:",
-  ].join("; ");
-  const diagram = JSON.stringify(content);
-  return `<!doctype html>
-<html>
-<head>
-  <meta http-equiv="Content-Security-Policy" content="${policy}">
-  <style>
-    body { margin: 0; padding: 16px; background: #fff; color: #111827; font-family: ui-sans-serif, system-ui, sans-serif; }
-    #diagram { display: grid; place-items: start center; min-height: 180px; }
-    .error { white-space: pre-wrap; color: #b42318; font: 12px ui-monospace, monospace; }
-  </style>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-</head>
-<body>
-  <div id="diagram"></div>
-  <script>
-    const source = ${diagram};
-    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "default" });
-    mermaid.render("artifact-mermaid", source)
-      .then(({ svg }) => { document.getElementById("diagram").innerHTML = svg; })
-      .catch((error) => {
-        const errorNode = document.createElement("div");
-        errorNode.className = "error";
-        errorNode.textContent = ${JSON.stringify("Mermaid render failed:\n")} + String(error) + "\\n\\n" + ${JSON.stringify("Source:\n")} + source;
-        document.getElementById("diagram").replaceChildren(errorNode);
-      });
-  </script>
-</body>
-</html>`;
-}
-
 function parseChartRows(content: string): Array<{ label: string; value: number }> {
   try {
     const parsed = JSON.parse(content);
@@ -148,16 +110,7 @@ function ArtifactContent({ artifact }: { artifact: Artifact }) {
   }
 
   if (artifact.kind === "mermaid") {
-    return (
-      <div className="artifact-html-content">
-        <iframe
-          title={`Mermaid artifact preview: ${artifact.title}`}
-          srcDoc={mermaidPreviewDocument(artifact.content || previewContent(artifact))}
-          sandbox="allow-scripts"
-        />
-        <small>Sandboxed Mermaid preview. Scripts are limited to the Mermaid renderer and cannot access LocalSlock.</small>
-      </div>
-    );
+    return <pre>{artifact.content || previewContent(artifact)}</pre>;
   }
 
   if (artifact.kind === "svg") {
