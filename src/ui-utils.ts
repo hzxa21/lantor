@@ -25,7 +25,7 @@ export function presetPrompt(form: AgentForm) {
     '{"type":"memory_append","body":"Durable fact or handoff to remember"}',
     '{"type":"memory_compact","body":"Full compact MEMORY.md replacement"}',
     '{"type":"profile_update","display_name":"Name","role":"specialist role","avatar":"H","description":"What this agent is good at"}',
-    '{"type":"artifact_create","channel_id":"uuid","thread_root_id":"uuid","kind":"markdown","title":"Report","summary":"Short chat summary","content":"Full artifact content"}',
+    '{"type":"artifact_create","channel_id":"uuid","thread_root_id":"uuid","kind":"markdown|chart|mermaid|svg|html","title":"Report","summary":"Short chat summary","content":"Full artifact content"}',
     '{"type":"channel_create","name":"short-topic","description":"why this channel exists","agent_handles":["@Hancock"]}',
     '{"type":"channel_invite","channel":"local-slock","agent_handles":["@Vegapunk"]}',
     "Use $LOCAL_SLOCK_CONTEXT_TOOL with --agent-context-tool attachment-info to inspect attachments and agent-inspect to inspect other agents.",

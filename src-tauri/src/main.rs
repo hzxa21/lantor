@@ -6724,13 +6724,15 @@ fn normalize_artifact_kind(kind: &str) -> CommandResult<String> {
         "md" | "markdown" => "markdown",
         "json" => "json",
         "table" | "csv" => "table",
+        "chart" | "bar-chart" | "bar_chart" => "chart",
         "diff" | "patch" => "diff",
         "mermaid" | "diagram" => "mermaid",
+        "svg" => "svg",
         "html" => "html",
         "text" | "plain" => "text",
         other => {
             return Err(format!(
-                "unsupported artifact kind: {other}; supported: markdown, json, table, diff, mermaid, html, text"
+                "unsupported artifact kind: {other}; supported: markdown, json, table, chart, diff, mermaid, svg, html, text"
             ))
         }
     };
@@ -7506,7 +7508,7 @@ This creates a root task message in the channel and opens its execution thread w
     );
     lines.push(
         r#"You can create structured artifacts for dense data or long outputs:
-LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|diff|mermaid|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
+LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|chart|diff|mermaid|svg|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
 Use artifacts for reports, tables, diffs, diagrams, JSON, and long analysis. Keep the visible chat summary short; put the detailed content in the artifact."#
             .to_owned(),
     );
@@ -7627,7 +7629,7 @@ fn build_runtime_standing_prompt(
          For read-only message search, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool message-search --query \"text\" --target \"#channel\" --limit 20`. Omit --target to search all local messages.\n\
          For attachment details, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool attachment-info --attachment-id \"<uuid>\"`; image attachments expose a local_path you can inspect with your runtime's file/vision support.\n\
          For cross-agent introspection, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool agent-inspect --target \"@handle\"` to see an agent profile, recent runs, requests, and activity.\n\
-         For structured outputs, emit LOCAL_SLOCK_EVENT artifact_create with kind markdown/json/table/diff/mermaid/html/text; keep chat concise and put long data in the artifact.\n\
+         For structured outputs, emit LOCAL_SLOCK_EVENT artifact_create with kind markdown/json/table/chart/diff/mermaid/svg/html/text; keep chat concise and put long data in the artifact.\n\
          Before replying, decide whether a visible response is useful; for greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly LOCAL_SLOCK_SILENT_REPLY: <short reason> and nothing else.\n\
          Keep thread messages high-density: do not narrate every intermediate step, tool call, command output, or file edit in chat. Use visible replies for final results, important decisions, blockers, user questions, and handoffs.\n\
          For intermediate progress, emit standalone LOCAL_SLOCK_EVENT activity control lines such as {{\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}}; LocalSlock records them in the agent activity feed and hides the control line from chat.\n\

@@ -61,7 +61,7 @@ const MIN_THREAD_PANEL_WIDTH = 320;
 const DEFAULT_SIDEBAR_WIDTH = 292;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 460;
-const MIN_CONVERSATION_WIDTH = 420;
+const MIN_CONVERSATION_WIDTH = 280;
 const UI_REFRESH_EVENT = "localslock://refresh";
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -100,7 +100,7 @@ function errorMessage(err: unknown, fallback: string) {
 }
 
 function maxThreadPanelWidth() {
-  return Math.max(MIN_THREAD_PANEL_WIDTH, Math.floor(window.innerWidth * 0.66));
+  return Math.max(MIN_THREAD_PANEL_WIDTH, Math.floor(window.innerWidth * (2 / 3)));
 }
 
 function matchesSearchTime(value: string | null, range: SearchTimeRange) {

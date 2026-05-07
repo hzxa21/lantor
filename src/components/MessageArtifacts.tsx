@@ -1,4 +1,4 @@
-import { Braces, Code2, FileText, GitBranch, Table2, Workflow } from "lucide-react";
+import { BarChart3, Braces, Code2, FileImage, FileText, GitBranch, Table2, Workflow } from "lucide-react";
 import { Artifact } from "../types";
 import { MessageMarkdown } from "./MessageMarkdown";
 
@@ -13,10 +13,14 @@ function artifactIcon(kind: string) {
       return Braces;
     case "table":
       return Table2;
+    case "chart":
+      return BarChart3;
     case "diff":
       return GitBranch;
     case "mermaid":
       return Workflow;
+    case "svg":
+      return FileImage;
     case "html":
     case "text":
       return Code2;
@@ -31,7 +35,7 @@ function previewContent(artifact: Artifact) {
   return compact.length > 140 ? `${compact.slice(0, 140)}...` : compact;
 }
 
-function htmlPreviewDocument(content: string) {
+function staticHtmlPreviewDocument(content: string) {
   const policy = [
     "default-src 'none'",
     "img-src data: blob:",
@@ -45,6 +49,91 @@ function htmlPreviewDocument(content: string) {
   return `<!doctype html><html><head>${headPrefix}</head><body>${content}</body></html>`;
 }
 
+function mermaidPreviewDocument(content: string) {
+  const policy = [
+    "default-src 'none'",
+    "script-src 'unsafe-inline' https://cdn.jsdelivr.net",
+    "style-src 'unsafe-inline'",
+    "img-src data: blob:",
+    "font-src data:",
+  ].join("; ");
+  const diagram = JSON.stringify(content);
+  return `<!doctype html>
+<html>
+<head>
+  <meta http-equiv="Content-Security-Policy" content="${policy}">
+  <style>
+    body { margin: 0; padding: 16px; background: #fff; color: #111827; font-family: ui-sans-serif, system-ui, sans-serif; }
+    #diagram { display: grid; place-items: start center; min-height: 180px; }
+    .error { white-space: pre-wrap; color: #b42318; font: 12px ui-monospace, monospace; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <div id="diagram"></div>
+  <script>
+    const source = ${diagram};
+    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "default" });
+    mermaid.render("artifact-mermaid", source)
+      .then(({ svg }) => { document.getElementById("diagram").innerHTML = svg; })
+      .catch((error) => {
+        const errorNode = document.createElement("div");
+        errorNode.className = "error";
+        errorNode.textContent = ${JSON.stringify("Mermaid render failed:\n")} + String(error) + "\\n\\n" + ${JSON.stringify("Source:\n")} + source;
+        document.getElementById("diagram").replaceChildren(errorNode);
+      });
+  </script>
+</body>
+</html>`;
+}
+
+function parseChartRows(content: string): Array<{ label: string; value: number }> {
+  try {
+    const parsed = JSON.parse(content);
+    const rows: unknown[] = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed.data)
+        ? parsed.data
+        : Array.isArray(parsed.labels) && Array.isArray(parsed.values)
+          ? parsed.labels.map((label: unknown, index: number) => ({ label, value: parsed.values[index] }))
+          : Array.isArray(parsed.labels) && Array.isArray(parsed.datasets?.[0]?.data)
+            ? parsed.labels.map((label: unknown, index: number) => ({ label, value: parsed.datasets[0].data[index] }))
+            : [];
+    return rows
+      .map((row: unknown, index: number) => {
+        if (typeof row === "number") return { label: String(index + 1), value: row };
+        if (!row || typeof row !== "object") return null;
+        const record = row as Record<string, unknown>;
+        const label = record.label ?? record.name ?? record.key ?? String(index + 1);
+        const value = Number(record.value ?? record.count ?? record.y ?? record.total);
+        return Number.isFinite(value) ? { label: String(label), value } : null;
+      })
+      .filter((row): row is { label: string; value: number } => Boolean(row))
+      .slice(0, 16);
+  } catch {
+    return [];
+  }
+}
+
+function ChartArtifact({ artifact }: { artifact: Artifact }) {
+  const rows = parseChartRows(artifact.content);
+  if (rows.length === 0) {
+    return <pre>{artifact.content || previewContent(artifact)}</pre>;
+  }
+  const maxValue = Math.max(...rows.map((row) => Math.abs(row.value)), 1);
+  return (
+    <div className="artifact-chart-content">
+      {rows.map((row, index) => (
+        <div key={`${row.label}-${index}`} className="artifact-chart-row">
+          <span>{row.label}</span>
+          <div><i style={{ width: `${Math.max(4, (Math.abs(row.value) / maxValue) * 100)}%` }} /></div>
+          <strong>{row.value.toLocaleString()}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ArtifactContent({ artifact }: { artifact: Artifact }) {
   if (artifact.kind === "markdown") {
     return (
@@ -54,12 +143,42 @@ function ArtifactContent({ artifact }: { artifact: Artifact }) {
     );
   }
 
+  if (artifact.kind === "chart") {
+    return <ChartArtifact artifact={artifact} />;
+  }
+
+  if (artifact.kind === "mermaid") {
+    return (
+      <div className="artifact-html-content">
+        <iframe
+          title={`Mermaid artifact preview: ${artifact.title}`}
+          srcDoc={mermaidPreviewDocument(artifact.content || previewContent(artifact))}
+          sandbox="allow-scripts"
+        />
+        <small>Sandboxed Mermaid preview. Scripts are limited to the Mermaid renderer and cannot access LocalSlock.</small>
+      </div>
+    );
+  }
+
+  if (artifact.kind === "svg") {
+    return (
+      <div className="artifact-html-content">
+        <iframe
+          title={`SVG artifact preview: ${artifact.title}`}
+          srcDoc={staticHtmlPreviewDocument(artifact.content || previewContent(artifact))}
+          sandbox=""
+        />
+        <small>Sandboxed SVG preview. Scripts and network access are disabled.</small>
+      </div>
+    );
+  }
+
   if (artifact.kind === "html") {
     return (
       <div className="artifact-html-content">
         <iframe
           title={`Artifact preview: ${artifact.title}`}
-          srcDoc={htmlPreviewDocument(artifact.content || previewContent(artifact))}
+          srcDoc={staticHtmlPreviewDocument(artifact.content || previewContent(artifact))}
           sandbox=""
         />
         <small>Sandboxed HTML preview. Scripts and same-origin access are disabled.</small>

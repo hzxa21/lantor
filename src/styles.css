@@ -66,7 +66,7 @@ button,
   --sidebar-width: 292px;
   --thread-width: 420px;
   display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(420px, 1fr) var(--thread-width);
+  grid-template-columns: var(--sidebar-width) minmax(280px, 1fr) var(--thread-width);
   height: 100vh;
   background:
     radial-gradient(circle at 14% 8%, rgba(255, 255, 255, 0.92), transparent 24%),
@@ -1003,6 +1003,47 @@ mark {
 .artifact-html-content small {
   color: var(--muted);
   font-size: 12px;
+}
+
+.artifact-chart-content {
+  display: grid;
+  gap: 10px;
+  padding: 2px 12px 14px 56px;
+}
+
+.artifact-chart-row {
+  display: grid;
+  grid-template-columns: minmax(76px, 0.24fr) minmax(120px, 1fr) minmax(52px, auto);
+  gap: 10px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.artifact-chart-row span {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-chart-row div {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(28, 31, 37, 0.08);
+}
+
+.artifact-chart-row i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0a84ff, #10b981);
+}
+
+.artifact-chart-row strong {
+  font-size: 12px;
+  text-align: right;
 }
 
 .artifact-actions {
