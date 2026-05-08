@@ -1005,6 +1005,16 @@ mark {
   font-size: 12px;
 }
 
+.artifact-render-error {
+  margin: 0 12px 12px 56px;
+  padding: 10px 12px;
+  border: 1px solid rgba(185, 28, 28, 0.16);
+  border-radius: 12px;
+  background: rgba(254, 242, 242, 0.82);
+  color: #991b1b;
+  font-size: 13px;
+}
+
 .artifact-chart-content {
   display: grid;
   gap: 10px;

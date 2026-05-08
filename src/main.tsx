@@ -532,21 +532,27 @@ function App() {
   }
 
   function applyArtifactUpsert(artifact: Artifact) {
+    if (!artifact || typeof artifact.id !== "string" || typeof artifact.message_id !== "string") {
+      requestRefresh("Failed to refresh LocalSlock state after artifact update");
+      return;
+    }
     setData((current) => {
       if (!current) {
         requestRefresh("Failed to refresh LocalSlock state after artifact update");
         return current;
       }
-      const existingIndex = current.artifacts.findIndex((item) => item.id === artifact.id);
+      const currentArtifacts = Array.isArray(current.artifacts) ? current.artifacts : [];
+      const existingIndex = currentArtifacts.findIndex((item) => item.id === artifact.id);
       const artifacts = existingIndex >= 0
-        ? current.artifacts.map((item) => item.id === artifact.id ? artifact : item)
-        : [...current.artifacts, artifact];
+        ? currentArtifacts.map((item) => item.id === artifact.id ? artifact : item)
+        : [...currentArtifacts, artifact];
       const messages = current.messages.map((message) => {
         if (message.id !== artifact.message_id) return message;
-        const existingArtifactIndex = message.artifacts.findIndex((item) => item.id === artifact.id);
+        const currentMessageArtifacts = Array.isArray(message.artifacts) ? message.artifacts : [];
+        const existingArtifactIndex = currentMessageArtifacts.findIndex((item) => item.id === artifact.id);
         const messageArtifacts = existingArtifactIndex >= 0
-          ? message.artifacts.map((item) => item.id === artifact.id ? artifact : item)
-          : [...message.artifacts, artifact];
+          ? currentMessageArtifacts.map((item) => item.id === artifact.id ? artifact : item)
+          : [...currentMessageArtifacts, artifact];
         return { ...message, artifacts: messageArtifacts };
       });
       return { ...current, artifacts, messages };

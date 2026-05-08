@@ -6770,12 +6770,12 @@ fn normalize_artifact_kind(kind: &str) -> CommandResult<String> {
         "chart" | "bar-chart" | "bar_chart" => "chart",
         "diff" | "patch" => "diff",
         "mermaid" | "diagram" => "mermaid",
-        "svg" => "svg",
+        "svg" => "text",
         "html" => "html",
         "text" | "plain" => "text",
         other => {
             return Err(format!(
-                "unsupported artifact kind: {other}; supported: markdown, json, table, chart, diff, mermaid, svg, html, text"
+                "unsupported artifact kind: {other}; supported: markdown, json, table, chart, diff, mermaid, html, text"
             ))
         }
     };
@@ -7493,10 +7493,10 @@ LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title"
 LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
 LOCAL_SLOCK_EVENT {"type":"task_create","channel_id":"<channel uuid>","title":"<short task title>","body":"<root task message>","thread_body":"<first execution update in the task thread>","assign_self":true,"status":"in_progress"}
 LOCAL_SLOCK_EVENT {"type":"task_status","task_number":1,"status":"in_review"}
-LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|chart|diff|svg|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
+LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|chart|diff|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
 LOCAL_SLOCK_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
 LOCAL_SLOCK_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
-Use task_create only for durable globally tracked work. Use artifact_create for reports, tables, diffs, SVG/HTML diagrams, JSON, and long analysis; keep the visible chat summary short. For architecture diagrams, use artifact_create with kind=svg or kind=html. Do not output Mermaid/flowchart DSL; LocalSlock stores it as source text only."#
+Use task_create only for durable globally tracked work. Use artifact_create for reports, tables, diffs, HTML diagrams, JSON, and long analysis; keep the visible chat summary short. For architecture diagrams, use artifact_create with kind=html. Do not output SVG, Mermaid, or flowchart DSL for auto-rendering; LocalSlock stores Mermaid/flowchart source as text only."#
 }
 
 fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
@@ -12336,16 +12336,16 @@ mod tests {
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
-            let svg = format!(
-                "<svg xmlns=\"http://www.w3.org/2000/svg\">{}</svg>",
-                "<text>large artifact payload</text>".repeat(400)
+            let html = format!(
+                "<section>{}</section>",
+                "<p>large artifact payload</p>".repeat(400)
             );
             let event = json!({
                 "type": "artifact_create",
                 "channel_id": Uuid::new_v4(),
-                "kind": "svg",
-                "title": "Large SVG",
-                "content": svg
+                "kind": "html",
+                "title": "Large HTML artifact",
+                "content": html
             })
             .to_string();
 
