@@ -28,6 +28,7 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
   const [state, setState] = useState<MermaidRenderState>(() => (
     mermaidRenderCache.get(cacheKey) ?? { status: "loading" }
   ));
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,9 +72,29 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
 
   if (state.status === "ready") {
     return (
-      <figure className="mermaid-diagram">
-        <div aria-label={title} dangerouslySetInnerHTML={{ __html: state.svg }} />
-      </figure>
+      <>
+        <figure className="mermaid-diagram">
+          <button type="button" className="mermaid-expand" onClick={() => setExpanded(true)}>
+            Expand
+          </button>
+          <div aria-label={title} dangerouslySetInnerHTML={{ __html: state.svg }} />
+        </figure>
+        {expanded && (
+          <div className="mermaid-lightbox" role="dialog" aria-modal="true" aria-label={title}>
+            <div className="mermaid-lightbox-card">
+              <header>
+                <strong>{title}</strong>
+                <button type="button" onClick={() => setExpanded(false)}>Close</button>
+              </header>
+              <div className="mermaid-lightbox-canvas" dangerouslySetInnerHTML={{ __html: state.svg }} />
+              <details>
+                <summary>Source</summary>
+                <pre>{normalizedSource}</pre>
+              </details>
+            </div>
+          </div>
+        )}
+      </>
     );
   }
 

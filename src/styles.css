@@ -1015,6 +1015,7 @@ mark {
 }
 
 .mermaid-diagram {
+  position: relative;
   overflow: auto;
   padding: 14px;
 }
@@ -1027,6 +1028,111 @@ mark {
   display: block;
   max-width: 100%;
   height: auto;
+}
+
+.mermaid-expand {
+  position: sticky;
+  top: 8px;
+  left: calc(100% - 82px);
+  z-index: 1;
+  float: right;
+  border: 1px solid rgba(28, 31, 37, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 820;
+  box-shadow: 0 8px 18px rgba(20, 23, 31, 0.08);
+}
+
+.mermaid-expand:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.mermaid-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(8, 10, 14, 0.56);
+  backdrop-filter: blur(10px);
+}
+
+.mermaid-lightbox-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(1180px, calc(100vw - 56px));
+  height: min(860px, calc(100vh - 56px));
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.28);
+}
+
+.mermaid-lightbox-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(28, 31, 37, 0.1);
+}
+
+.mermaid-lightbox-card header strong {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.mermaid-lightbox-card header button {
+  border: 0;
+  border-radius: 999px;
+  background: #15171d;
+  color: #fff;
+  padding: 8px 13px;
+  font-weight: 800;
+}
+
+.mermaid-lightbox-canvas {
+  overflow: auto;
+  padding: 24px;
+}
+
+.mermaid-lightbox-canvas svg {
+  display: block;
+  min-width: 720px;
+  max-width: none;
+  height: auto;
+  margin: 0 auto;
+}
+
+.mermaid-lightbox-card details {
+  border-top: 1px solid rgba(28, 31, 37, 0.1);
+  background: #f8f9fb;
+}
+
+.mermaid-lightbox-card summary {
+  cursor: pointer;
+  padding: 10px 18px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.mermaid-lightbox-card pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0 18px 18px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #101318;
+  color: #f7f7f8;
+  font-size: 12px;
+  white-space: pre;
 }
 
 .message-artifact .mermaid-diagram,
