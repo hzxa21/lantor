@@ -5093,6 +5093,8 @@ fn load_launch_agent_status() -> CommandResult<LaunchAgentStatus> {
             StdCommand::new("launchctl")
                 .arg("print")
                 .arg(launch_agent_service_target(&domain))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 .map(|status| status.success())
                 .unwrap_or(false)
