@@ -1687,13 +1687,24 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         create table if not exists agent_event_receipts (
             run_id uuid not null references agent_runs(id) on delete cascade,
             event_json text not null,
+            event_hash text not null,
             created_at timestamptz not null default now(),
-            primary key (run_id, event_json)
+            primary key (run_id, event_hash)
         )
         "#,
     )
     .execute(pool)
     .await?;
+
+    for statement in [
+        "alter table agent_event_receipts add column if not exists event_hash text",
+        "update agent_event_receipts set event_hash = encode(digest(event_json, 'sha256'), 'hex') where event_hash is null",
+        "alter table agent_event_receipts alter column event_hash set not null",
+        "alter table agent_event_receipts drop constraint if exists agent_event_receipts_pkey",
+        "alter table agent_event_receipts add constraint agent_event_receipts_pkey primary key (run_id, event_hash)",
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
 
     sqlx::query(
         r#"
@@ -5872,9 +5883,9 @@ async fn ingest_agent_event_line(
 async fn claim_agent_event(pool: &PgPool, run_id: Uuid, json: &str) -> CommandResult<bool> {
     let inserted: Option<bool> = sqlx::query_scalar(
         r#"
-        insert into agent_event_receipts (run_id, event_json)
-        values ($1, $2)
-        on conflict (run_id, event_json) do nothing
+        insert into agent_event_receipts (run_id, event_json, event_hash)
+        values ($1, $2, encode(digest($2, 'sha256'), 'hex'))
+        on conflict (run_id, event_hash) do nothing
         returning true
         "#,
     )
@@ -12079,7 +12090,7 @@ mod tests {
         agent_context_agent_inspect, agent_context_artifact_read_in_pool,
         agent_context_attachment_info, agent_context_history_read, agent_context_message_search,
         append_streaming_agent_message, build_codex_streaming_prompt, build_work_item_prompt,
-        capped_stream_delta, claim_next_supervisor_command, claude_message_text,
+        capped_stream_delta, claim_agent_event, claim_next_supervisor_command, claude_message_text,
         claude_result_error, claude_stream_event_activity, claude_system_prompt, claude_text_delta,
         codex_item_started_activity, codex_turn_id_from_value,
         consume_streaming_agent_control_lines, delete_agent_in_pool, delete_channel_in_pool,
@@ -12300,6 +12311,55 @@ mod tests {
             .await?;
             assert!(tool_output.contains("kind=markdown"));
             assert!(tool_output.contains("# Review report"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn agent_event_receipts_hash_large_control_events() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "large-event-agent").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let svg = format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\">{}</svg>",
+                "<text>large artifact payload</text>".repeat(400)
+            );
+            let event = json!({
+                "type": "artifact_create",
+                "channel_id": Uuid::new_v4(),
+                "kind": "svg",
+                "title": "Large SVG",
+                "content": svg
+            })
+            .to_string();
+
+            assert!(claim_agent_event(&pool, run_id, &event).await?);
+            assert!(!claim_agent_event(&pool, run_id, &event).await?);
+            let (count, max_len): (i64, i64) = sqlx::query_as(
+                "select count(*)::bigint, max(length(event_json))::bigint from agent_event_receipts where run_id = $1",
+            )
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(count, 1);
+            assert!(max_len > 2704);
             Ok(())
         }
         .await;
