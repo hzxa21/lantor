@@ -6765,17 +6765,9 @@ fn normalize_artifact_kind(kind: &str) -> CommandResult<String> {
     let normalized = kind.trim().to_lowercase().replace('_', "-");
     let normalized = match normalized.as_str() {
         "md" | "markdown" => "markdown",
-        "json" => "json",
-        "table" | "csv" => "table",
-        "chart" | "bar-chart" | "bar_chart" => "chart",
-        "diff" | "patch" => "diff",
-        "mermaid" | "diagram" => "mermaid",
-        "svg" => "text",
-        "html" => "html",
-        "text" | "plain" => "text",
         other => {
             return Err(format!(
-                "unsupported artifact kind: {other}; supported: markdown, json, table, chart, diff, mermaid, html, text"
+                "unsupported artifact kind: {other}; supported: markdown"
             ))
         }
     };
@@ -7493,10 +7485,10 @@ LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title"
 LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
 LOCAL_SLOCK_EVENT {"type":"task_create","channel_id":"<channel uuid>","title":"<short task title>","body":"<root task message>","thread_body":"<first execution update in the task thread>","assign_self":true,"status":"in_progress"}
 LOCAL_SLOCK_EVENT {"type":"task_status","task_number":1,"status":"in_review"}
-LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|chart|diff|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
+LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown","title":"<short title>","summary":"<short chat summary>","content":"<full markdown content>","metadata":{}}
 LOCAL_SLOCK_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
 LOCAL_SLOCK_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
-Use task_create only for durable globally tracked work. Use artifact_create for reports, tables, diffs, HTML diagrams, JSON, and long analysis; keep the visible chat summary short. For architecture diagrams, use artifact_create with kind=html. Do not output SVG, Mermaid, or flowchart DSL for auto-rendering; LocalSlock stores Mermaid/flowchart source as text only."#
+Use task_create only for durable globally tracked work. Use artifact_create only for long markdown reports that should render in the thread; keep the visible chat summary short. Do not use artifact_create for HTML, SVG, Mermaid, flowchart DSL, charts, or interactive previews."#
 }
 
 fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
@@ -12338,16 +12330,16 @@ mod tests {
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
-            let html = format!(
-                "<section>{}</section>",
-                "<p>large artifact payload</p>".repeat(400)
+            let markdown = format!(
+                "# Large report\n\n{}",
+                "- large artifact payload\n".repeat(400)
             );
             let event = json!({
                 "type": "artifact_create",
                 "channel_id": Uuid::new_v4(),
-                "kind": "html",
-                "title": "Large HTML artifact",
-                "content": html
+                "kind": "markdown",
+                "title": "Large markdown artifact",
+                "content": markdown
             })
             .to_string();
 
@@ -13309,10 +13301,10 @@ mod tests {
                 "type": "artifact_create",
                 "channel_id": channel_id,
                 "thread_root_id": root_id,
-                "kind": "html",
-                "title": "Architecture diagram",
-                "summary": "Interactive architecture diagram.",
-                "content": "<!doctype html><main><h1>Architecture</h1></main>"
+                "kind": "markdown",
+                "title": "Architecture report",
+                "summary": "Markdown architecture summary.",
+                "content": "# Architecture\n\n- UI\n- Backend\n- Postgres"
             });
             let stream_key = "artifact-run:item-1";
             let raw_control_message_id = append_streaming_agent_message(
@@ -13355,11 +13347,11 @@ mod tests {
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
-            assert_eq!(artifact.get::<String, _>("kind"), "html");
-            assert_eq!(artifact.get::<String, _>("title"), "Architecture diagram");
+            assert_eq!(artifact.get::<String, _>("kind"), "markdown");
+            assert_eq!(artifact.get::<String, _>("title"), "Architecture report");
             assert!(artifact
                 .get::<String, _>("content")
-                .contains("<h1>Architecture</h1>"));
+                .contains("# Architecture"));
 
             let visible_messages = load_messages(&pool).await?;
             assert!(!visible_messages
@@ -13367,7 +13359,71 @@ mod tests {
                 .any(|message| message.body.contains("LOCAL_SLOCK_EVENT")));
             assert!(visible_messages.iter().any(|message| message
                 .body
-                .contains("Created artifact: Architecture diagram")));
+                .contains("Created artifact: Architecture report")));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn streaming_unsupported_artifact_control_line_is_hidden() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "unsupported-artifact-agent").await?;
+            let channel_id = insert_test_channel(&pool, "unsupported-artifact-control").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let event = json!({
+                "type": "artifact_create",
+                "channel_id": channel_id,
+                "kind": "html",
+                "title": "Unsupported HTML",
+                "content": "<main>not supported</main>"
+            });
+            let stream_key = "unsupported-artifact-run:item-1";
+            let raw_control_message_id = append_streaming_agent_message(
+                &pool,
+                agent_id,
+                channel_id,
+                None,
+                stream_key,
+                &format!("LOCAL_SLOCK_EVENT {event}"),
+            )
+            .await?;
+
+            let hidden =
+                consume_streaming_agent_control_lines(&pool, agent_id, run_id, None, stream_key)
+                    .await?;
+            assert!(hidden);
+
+            let raw_remaining: i64 =
+                sqlx::query_scalar("select count(*)::bigint from messages where id = $1")
+                    .bind(raw_control_message_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(raw_remaining, 0);
+
+            let artifact_count: i64 =
+                sqlx::query_scalar("select count(*)::bigint from artifacts where channel_id = $1")
+                    .bind(channel_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(artifact_count, 0);
             Ok(())
         }
         .await;
