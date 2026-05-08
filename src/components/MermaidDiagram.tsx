@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { type WheelEvent, useEffect, useId, useState } from "react";
 
 type MermaidDiagramProps = {
   source: string;
@@ -12,7 +12,13 @@ type MermaidRenderState =
 
 const MERMAID_START = /^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|gitGraph|mindmap|timeline|sankey-beta|xychart-beta|block-beta|packet-beta|architecture-beta)\b/i;
 const MERMAID_SOURCE_LIMIT = 80_000;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 3;
 const mermaidRenderCache = new Map<string, MermaidRenderState>();
+
+function clampZoom(value: number) {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+}
 
 export function looksLikeMermaid(value: string) {
   const source = value.trim();
@@ -30,6 +36,37 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
   ));
   const [expanded, setExpanded] = useState(false);
   const [zoom, setZoom] = useState(1);
+
+  function changeZoom(nextZoom: number, canvas?: HTMLElement | null, anchor?: { x: number; y: number }) {
+    setZoom((currentZoom) => {
+      const clamped = clampZoom(nextZoom);
+      if (!canvas || !anchor || clamped === currentZoom) return clamped;
+      const rect = canvas.getBoundingClientRect();
+      const offsetX = anchor.x - rect.left;
+      const offsetY = anchor.y - rect.top;
+      const contentX = (canvas.scrollLeft + offsetX) / currentZoom;
+      const contentY = (canvas.scrollTop + offsetY) / currentZoom;
+      window.requestAnimationFrame(() => {
+        canvas.scrollLeft = contentX * clamped - offsetX;
+        canvas.scrollTop = contentY * clamped - offsetY;
+      });
+      return clamped;
+    });
+  }
+
+  function handleLightboxWheel(event: WheelEvent<HTMLDivElement>) {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const direction = event.deltaY > 0 ? -1 : 1;
+    const factor = direction > 0 ? 1.08 : 1 / 1.08;
+    changeZoom(zoom * factor, event.currentTarget, { x: event.clientX, y: event.clientY });
+  }
+
+  useEffect(() => {
+    if (!expanded) {
+      setZoom(1);
+    }
+  }, [expanded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,14 +123,14 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
               <header>
                 <strong>{title}</strong>
                 <div className="mermaid-lightbox-actions">
-                  <button type="button" onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}>-</button>
+                  <button type="button" onClick={() => changeZoom(zoom - 0.25)}>-</button>
                   <span>{Math.round(zoom * 100)}%</span>
-                  <button type="button" onClick={() => setZoom((value) => Math.min(3, value + 0.25))}>+</button>
-                  <button type="button" onClick={() => setZoom(1)}>Reset</button>
+                  <button type="button" onClick={() => changeZoom(zoom + 0.25)}>+</button>
+                  <button type="button" onClick={() => changeZoom(1)}>Reset</button>
                   <button type="button" onClick={() => setExpanded(false)}>Close</button>
                 </div>
               </header>
-              <div className="mermaid-lightbox-canvas">
+              <div className="mermaid-lightbox-canvas" onWheel={handleLightboxWheel}>
                 <div
                   className="mermaid-lightbox-zoom"
                   style={{ transform: `scale(${zoom})` }}

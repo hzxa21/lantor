@@ -1114,6 +1114,7 @@ mark {
 .mermaid-lightbox-canvas {
   overflow: auto;
   padding: 24px;
+  overscroll-behavior: contain;
 }
 
 .mermaid-lightbox-zoom {
