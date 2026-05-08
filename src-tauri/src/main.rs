@@ -3346,16 +3346,18 @@ async fn build_dispatch_work_context(
     }
 
     if let Some(thread_root_id) = thread_root_id {
+        lines.push("Reply target: same thread.".to_owned());
         lines.push(format!(
-            "Reply in the same thread with: LOCAL_SLOCK_EVENT {{\"type\":\"message\",\"channel_id\":\"{channel_id}\",\"thread_root_id\":\"{thread_root_id}\",\"body\":\"...\"}}"
+            "Legacy stdout reply event, only if you are not running in warm streaming mode: LOCAL_SLOCK_EVENT {{\"type\":\"message\",\"channel_id\":\"{channel_id}\",\"thread_root_id\":\"{thread_root_id}\",\"body\":\"...\"}}"
         ));
     } else {
+        lines.push("Reply target: channel root.".to_owned());
         lines.push(format!(
-            "Reply in the channel with: LOCAL_SLOCK_EVENT {{\"type\":\"message\",\"channel_id\":\"{channel_id}\",\"body\":\"...\"}}"
+            "Legacy stdout reply event, only if you are not running in warm streaming mode: LOCAL_SLOCK_EVENT {{\"type\":\"message\",\"channel_id\":\"{channel_id}\",\"body\":\"...\"}}"
         ));
     }
     lines.push(
-        "Use normal stdout for private logs; only LOCAL_SLOCK_EVENT creates visible chat messages."
+        "Warm Codex/Claude streaming runtimes should reply with normal assistant text; LocalSlock routes that text to the target automatically. Do not emit legacy message events in warm streaming mode."
             .to_owned(),
     );
 
@@ -7420,6 +7422,50 @@ fn compact_chars_middle(value: &str, limit: usize) -> String {
     format!("{head}\n\n[... LocalSlock omitted {omitted} chars to keep agent context bounded ...]\n\n{tail}")
 }
 
+const WORK_ITEM_FINISH_PROMPT: &str = "Finish behavior: warm streaming runtimes should answer with normal assistant text; legacy stdout command runtimes should use the visible reply event template from the turn context. Only update task status when this request is tied to an explicit task number.";
+
+fn local_slock_operating_policy_prompt() -> &'static str {
+    r#"Operating policy:
+- Treat messages as conversation. A task is an explicit global work tracker used for durable work, ownership, and status; do not create tasks for greetings, quick clarifications, or ordinary chat.
+- Preserve the current surface. If this request has a thread_root_id, keep the visible reply in that thread unless you intentionally create a new tracked task or channel with a clear reason.
+- Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else.
+- Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.
+- Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.
+- MEMORY.md is durable recovery context. Append small facts; compact only when memory is long or repetitive."#
+}
+
+fn local_slock_context_tools_prompt() -> &'static str {
+    r##"Read-only context tools:
+- history: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20
+- search: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool message-search --query "text" --target "#channel" --limit 20
+- attachment: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"
+- artifact: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
+- agent introspection: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle""##
+}
+
+fn local_slock_control_api_prompt() -> &'static str {
+    r#"Standalone LOCAL_SLOCK_EVENT control lines:
+LOCAL_SLOCK_EVENT {"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"<short user-facing status>","detail":"<optional compact detail>"}
+LOCAL_SLOCK_EVENT {"type":"usage","input_tokens":1234,"output_tokens":567,"cost_usd":0.0123}
+LOCAL_SLOCK_EVENT {"type":"memory_append","body":"<durable fact, preference, decision, or handoff>"}
+LOCAL_SLOCK_EVENT {"type":"memory_compact","body":"<full compact MEMORY.md replacement>"}
+LOCAL_SLOCK_EVENT {"type":"profile_update","display_name":"<optional>","role":"<optional concise role>","avatar":"<optional short avatar>","description":"<optional capability summary>"}
+LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title":"<title>","note":"<optional note>","recurrence":"none|daily|weekly"}
+LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
+LOCAL_SLOCK_EVENT {"type":"task_create","channel_id":"<channel uuid>","title":"<short task title>","body":"<root task message>","thread_body":"<first execution update in the task thread>","assign_self":true,"status":"in_progress"}
+LOCAL_SLOCK_EVENT {"type":"task_status","task_number":1,"status":"in_review"}
+LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|chart|diff|svg|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
+LOCAL_SLOCK_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
+LOCAL_SLOCK_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
+Use task_create only for durable globally tracked work. Use artifact_create for reports, tables, diffs, SVG diagrams, JSON, and long analysis; keep the visible chat summary short. Prefer SVG for architecture diagrams because Mermaid is stored as source text only."#
+}
+
+fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
+    format!(
+        "Reply normally only when a visible response is useful. LocalSlock will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. Emit standalone LOCAL_SLOCK_EVENT control lines for activity, reminders, memory, profile, channel, artifact, usage, durable task_create, or task_status for explicit tasks. Do not emit legacy LOCAL_SLOCK_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
+    )
+}
+
 fn build_work_item_prompt(
     work_item_id: Uuid,
     title: &str,
@@ -7453,71 +7499,14 @@ fn build_work_item_prompt(
                 .to_owned(),
         );
     }
+    lines.push(local_slock_operating_policy_prompt().to_owned());
     if !context.trim().is_empty() {
         lines.push("context:".to_owned());
         lines.push(context.trim().to_owned());
     }
-    lines.push(
-        "Before producing a visible reply, decide whether the latest user message actually needs an agent response. If it is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, do not write a normal answer. Instead output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Visible replies are for questions, requests, reviews, code/task work, decisions, useful status, or meaningful collaboration."
-            .to_owned(),
-    );
-    lines.push(
-        r#"Visible reply policy: keep thread messages high-density. Do not narrate every intermediate step, tool call, command output, or file edit in chat. Use visible replies for final results, important decisions, blockers, user questions, and handoffs. Put intermediate progress in activity instead:
-LOCAL_SLOCK_EVENT {"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"<short user-facing status>","detail":"<optional compact detail>"}
-Use one activity event per meaningful phase change, not per log line."#
-            .to_owned(),
-    );
-    lines.push(
-        r#"You can maintain your persistent workspace memory by emitting standalone control lines:
-LOCAL_SLOCK_EVENT {"type":"memory_append","body":"<durable fact, preference, decision, or handoff>"}
-LOCAL_SLOCK_EVENT {"type":"memory_compact","body":"<full compact MEMORY.md replacement>"}
-Use append for small durable facts. Use compact only when memory is too long or repetitive."#
-            .to_owned(),
-    );
-    lines.push(
-        r#"You can update your own public agent profile when your role, specialty, or display identity has genuinely changed:
-LOCAL_SLOCK_EVENT {"type":"profile_update","display_name":"<optional>","role":"<optional concise role>","avatar":"<optional short avatar>","description":"<optional capability summary>"}
-Use this sparingly. Other agents use your profile when deciding who to collaborate with."#
-            .to_owned(),
-    );
-    lines.push(
-        r#"You can create collaboration spaces when the conversation naturally becomes a separate long-lived topic:
-LOCAL_SLOCK_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
-LOCAL_SLOCK_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
-Only create/invite channels with a clear reason; do not create channels for ordinary short replies."#
-            .to_owned(),
-    );
-    lines.push(
-        r#"You can manage reminders by emitting a standalone control line:
-LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title":"<title>","note":"<optional note>","recurrence":"none|daily|weekly"}
-LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
-Use reminders when the user asks for a future follow-up or when you need to re-check state later. Reminders you create are anchored to this channel/thread by default and will wake you again when due."#
-            .to_owned(),
-    );
-    lines.push(
-        r#"You can create explicit tracked tasks only when the conversation is durable work that should be tracked globally:
-LOCAL_SLOCK_EVENT {"type":"task_create","channel_id":"<channel uuid>","title":"<short task title>","body":"<root task message>","thread_body":"<first execution update in the task thread>","assign_self":true,"status":"in_progress"}
-This creates a root task message in the channel and opens its execution thread with thread_body. Do not create tasks for greetings, small clarifications, or ordinary chat. For normal follow-up, reply in the current thread with a message event instead."#
-            .to_owned(),
-    );
-    lines.push(
-        "If a message includes attachments, use the attachment_id/local_path shown in context. For image attachments, inspect local_path with your runtime's file or vision support before answering visual UI questions. You can also run the read-only context tool: attachment-info --attachment-id <uuid>."
-            .to_owned(),
-    );
-    lines.push(
-        "For cross-agent context, run the read-only context tool: agent-inspect --target @handle. Use it before delegating when you need another agent's role, recent runs, recent requests, or current activity."
-            .to_owned(),
-    );
-    lines.push(
-        r#"You can create structured artifacts for dense data or long outputs:
-LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|chart|diff|svg|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
-Use artifacts for reports, tables, diffs, SVG diagrams, JSON, and long analysis. Keep the visible chat summary short; put the detailed content in the artifact. Prefer SVG for architecture diagrams because Mermaid is stored as source text only."#
-            .to_owned(),
-    );
-    lines.push(
-        "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number."
-            .to_owned(),
-    );
+    lines.push(local_slock_context_tools_prompt().to_owned());
+    lines.push(local_slock_control_api_prompt().to_owned());
+    lines.push(WORK_ITEM_FINISH_PROMPT.to_owned());
     lines.join("\n")
 }
 
@@ -7627,16 +7616,17 @@ fn build_runtime_standing_prompt(
          {transport_note}\n\
          LocalSlock keeps one warm runtime session per agent so previous turns remain in provider context; channel and thread are delivered as message envelope fields, not as separate runtime sessions.\n\
          Each new turn contains the latest inbox item plus a bounded context snapshot. Do not assume it is an exhaustive transcript; rely on the active runtime session and use the history/search tool when older context is needed.\n\
-         For read-only LocalSlock history lookup, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool history-read --target \"#channel[:thread_id]\" --limit 20`.\n\
-         For read-only message search, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool message-search --query \"text\" --target \"#channel\" --limit 20`. Omit --target to search all local messages.\n\
-         For attachment details, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool attachment-info --attachment-id \"<uuid>\"`; image attachments expose a local_path you can inspect with your runtime's file/vision support.\n\
-         For cross-agent introspection, run: `\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool agent-inspect --target \"@handle\"` to see an agent profile, recent runs, requests, and activity.\n\
-         For structured outputs, emit LOCAL_SLOCK_EVENT artifact_create with kind markdown/json/table/chart/diff/svg/html/text; keep chat concise and put long data in the artifact. Prefer SVG for architecture diagrams; mermaid is stored as source text only.\n\
-         Before replying, decide whether a visible response is useful; for greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly LOCAL_SLOCK_SILENT_REPLY: <short reason> and nothing else.\n\
-         Keep thread messages high-density: do not narrate every intermediate step, tool call, command output, or file edit in chat. Use visible replies for final results, important decisions, blockers, user questions, and handoffs.\n\
-         For intermediate progress, emit standalone LOCAL_SLOCK_EVENT activity control lines such as {{\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}}; LocalSlock records them in the agent activity feed and hides the control line from chat.\n\
-         You may print standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel, memory_append/memory_compact, profile_update, channel_create/channel_invite, artifact_create, and usage control lines; LocalSlock consumes and hides those lines. Do not print LOCAL_SLOCK_EVENT message/task lines unless explicitly asked to debug the legacy runtime path.\n\
-         Keep user-visible replies concise and include concrete results or blockers."
+         \n\
+         {}\n\
+         \n\
+         {}\n\
+         \n\
+         {}\n\
+         \n\
+         Keep user-visible replies concise and include concrete results or blockers. Do not print legacy LOCAL_SLOCK_EVENT message/task_claim lines unless explicitly asked to debug the legacy runtime path.",
+        local_slock_operating_policy_prompt(),
+        local_slock_context_tools_prompt(),
+        local_slock_control_api_prompt(),
     );
     if let Some(memory_context) = memory_context.filter(|context| !context.trim().is_empty()) {
         prompt.push_str("\n\n");
@@ -7651,8 +7641,8 @@ fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
             .to_owned();
     }
     legacy_prompt.replace(
-        "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number.",
-        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. For progress, emit standalone LOCAL_SLOCK_EVENT activity control lines like {\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}; LocalSlock consumes and records them in the activity feed. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel, memory_append/memory_compact, channel_create/channel_invite, and usage control lines; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Codex JSON streaming mode.",
+        WORK_ITEM_FINISH_PROMPT,
+        &streaming_reply_contract_prompt("Codex"),
     )
 }
 
@@ -7893,8 +7883,8 @@ fn build_claude_streaming_prompt(legacy_prompt: &str) -> String {
             .to_owned();
     }
     legacy_prompt.replace(
-        "When you finish, write results back with LOCAL_SLOCK_EVENT lines. Only update task status when this request is tied to an explicit task number.",
-        "Reply normally only when a visible response is useful. LocalSlock will stream your assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. For progress, emit standalone LOCAL_SLOCK_EVENT activity control lines like {\"type\":\"activity\",\"kind\":\"command\",\"title\":\"Running tests\",\"detail\":\"cargo test\"}; LocalSlock consumes and records them in the activity feed. You may emit standalone LOCAL_SLOCK_EVENT reminder_create/reminder_cancel, memory_append/memory_compact, channel_create/channel_invite, and usage control lines; LocalSlock will consume and hide those control lines. Do not emit LOCAL_SLOCK_EVENT message/task lines in this Claude stream-json mode.",
+        WORK_ITEM_FINISH_PROMPT,
+        &streaming_reply_contract_prompt("Claude"),
     )
 }
 
@@ -12060,20 +12050,21 @@ mod tests {
     use super::{
         agent_context_agent_inspect, agent_context_artifact_read_in_pool,
         agent_context_attachment_info, agent_context_history_read, agent_context_message_search,
-        append_streaming_agent_message, capped_stream_delta, claim_next_supervisor_command,
-        claude_message_text, claude_result_error, claude_stream_event_activity,
-        claude_system_prompt, claude_text_delta, codex_item_started_activity,
-        codex_turn_id_from_value, consume_streaming_agent_control_lines, delete_agent_in_pool,
-        delete_channel_in_pool, extract_agent_event_json, extract_agent_mentions,
-        finish_streaming_agent_message, handle_agent_event, insert_agent_message,
-        load_agent_memory_context, load_channel_agent_roster, load_messages, load_reminders,
-        load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
-        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
-        process_due_reminders, queue_mentions_as_work_items, record_agent_activity,
-        send_owner_message_in_pool, short_id, silent_reply_reason,
-        upsert_agent_thread_subscription, upsert_runtime_thread_id, usage_from_run_log,
-        usage_from_runtime_event, AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
-        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        append_streaming_agent_message, build_codex_streaming_prompt, build_work_item_prompt,
+        capped_stream_delta, claim_next_supervisor_command, claude_message_text,
+        claude_result_error, claude_stream_event_activity, claude_system_prompt, claude_text_delta,
+        codex_item_started_activity, codex_turn_id_from_value,
+        consume_streaming_agent_control_lines, delete_agent_in_pool, delete_channel_in_pool,
+        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
+        handle_agent_event, insert_agent_message, load_agent_memory_context,
+        load_channel_agent_roster, load_messages, load_reminders, load_runtime_thread_id,
+        maybe_hide_silent_streaming_reply, migrate, open_dm_with_agent_in_pool,
+        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
+        queue_mentions_as_work_items, record_agent_activity, send_owner_message_in_pool, short_id,
+        silent_reply_reason, upsert_agent_thread_subscription, upsert_runtime_thread_id,
+        usage_from_run_log, usage_from_runtime_event, AgentEvent, MentionDispatchOrigin,
+        AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
+        STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::json;
@@ -12119,7 +12110,29 @@ mod tests {
             claude_system_prompt("tester", Some("Persistent memory: prefer concise replies"));
         assert!(prompt.contains("one warm runtime session per agent"));
         assert!(prompt.contains("channel and thread are delivered as message envelope fields"));
+        assert!(prompt.contains("Treat messages as conversation"));
+        assert!(prompt.contains("Read-only context tools"));
         assert!(prompt.contains("Persistent memory: prefer concise replies"));
+    }
+
+    #[test]
+    fn streaming_prompt_replaces_legacy_finish_contract() {
+        let prompt = build_work_item_prompt(
+            Uuid::nil(),
+            "Review the change",
+            "Latest user message: please review",
+            Some("local-slock"),
+            None,
+            Some(Uuid::nil()),
+            &[],
+        );
+        assert!(prompt.contains("Treat messages as conversation"));
+        assert!(prompt.contains(WORK_ITEM_FINISH_PROMPT));
+
+        let streaming = build_codex_streaming_prompt(&prompt);
+        assert!(streaming.contains("will stream your Codex assistant text"));
+        assert!(streaming.contains("Do not emit legacy LOCAL_SLOCK_EVENT message"));
+        assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
     }
 
     #[tokio::test]
