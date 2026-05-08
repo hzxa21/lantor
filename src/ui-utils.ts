@@ -30,7 +30,7 @@ const LOCAL_SLOCK_CONTROL_EVENTS = [
   '{"type":"reminder_cancel","reminder_id":"uuid"}',
   '{"type":"task_create","channel_id":"uuid","title":"Short task title","body":"Root task message","thread_body":"First execution update","assign_self":true,"status":"in_progress"}',
   '{"type":"task_status","task_number":1,"status":"in_review"}',
-  '{"type":"artifact_create","channel_id":"uuid","thread_root_id":"optional uuid","kind":"markdown|json|table|chart|diff|svg|html|text","title":"Report","summary":"Short chat summary","content":"Full artifact content","metadata":{}}',
+  '{"type":"artifact_create","channel_id":"uuid","thread_root_id":"optional uuid","kind":"markdown|json|table|chart|diff|mermaid|svg|html|text","title":"Report","summary":"Short chat summary","content":"Full artifact content","metadata":{}}',
   '{"type":"channel_create","name":"short-topic","description":"why this channel exists","agent_handles":["@Hancock"]}',
   '{"type":"channel_invite","channel":"local-slock","agent_handles":["@Vegapunk"]}',
 ].join("\n");

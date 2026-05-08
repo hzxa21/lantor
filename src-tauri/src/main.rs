@@ -7482,10 +7482,10 @@ LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title"
 LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
 LOCAL_SLOCK_EVENT {"type":"task_create","channel_id":"<channel uuid>","title":"<short task title>","body":"<root task message>","thread_body":"<first execution update in the task thread>","assign_self":true,"status":"in_progress"}
 LOCAL_SLOCK_EVENT {"type":"task_status","task_number":1,"status":"in_review"}
-LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|chart|diff|svg|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
+LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown|json|table|chart|diff|mermaid|svg|html|text","title":"<short title>","summary":"<short chat summary>","content":"<full artifact content>","metadata":{}}
 LOCAL_SLOCK_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
 LOCAL_SLOCK_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
-Use task_create only for durable globally tracked work. Use artifact_create for reports, tables, diffs, SVG diagrams, JSON, and long analysis; keep the visible chat summary short. Prefer SVG for architecture diagrams because Mermaid is stored as source text only."#
+Use task_create only for durable globally tracked work. Use artifact_create for reports, tables, diffs, Mermaid/SVG/HTML diagrams, JSON, and long analysis; keep the visible chat summary short. For architecture diagrams, prefer artifact_create with kind=mermaid or kind=svg instead of pasting raw diagram DSL in chat."#
 }
 
 fn streaming_reply_contract_prompt(runtime_name: &str) -> String {

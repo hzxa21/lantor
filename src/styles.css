@@ -1005,6 +1005,69 @@ mark {
   font-size: 12px;
 }
 
+.mermaid-diagram,
+.mermaid-fallback,
+.mermaid-loading {
+  margin: 4px 0;
+  border: 1px solid rgba(28, 31, 37, 0.12);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.mermaid-diagram {
+  overflow: auto;
+  padding: 14px;
+}
+
+.mermaid-diagram > div {
+  min-width: min-content;
+}
+
+.mermaid-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.message-artifact .mermaid-diagram,
+.message-artifact .mermaid-fallback,
+.message-artifact .mermaid-loading {
+  margin: 0 12px 12px 56px;
+}
+
+.mermaid-loading {
+  padding: 14px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.mermaid-fallback {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.mermaid-fallback strong {
+  color: #a34828;
+  font-size: 13px;
+}
+
+.mermaid-fallback small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mermaid-fallback pre {
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #101318;
+  color: #f7f7f8;
+  white-space: pre;
+}
+
 .artifact-chart-content {
   display: grid;
   gap: 10px;
@@ -1170,6 +1233,15 @@ mark {
 
 .markdown-body pre code {
   padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.markdown-body pre:has(.mermaid-diagram),
+.markdown-body pre:has(.mermaid-fallback),
+.markdown-body pre:has(.mermaid-loading) {
+  padding: 0;
+  border: 0;
   background: transparent;
   color: inherit;
 }
