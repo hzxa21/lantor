@@ -1,4 +1,4 @@
-import { type WheelEvent, useEffect, useId, useState } from "react";
+import { memo, type WheelEvent, useEffect, useId, useRef, useState } from "react";
 
 type MermaidDiagramProps = {
   source: string;
@@ -20,6 +20,10 @@ function clampZoom(value: number) {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 }
 
+const MermaidSvg = memo(function MermaidSvg({ svg, title }: { svg: string; title: string }) {
+  return <div aria-label={title} dangerouslySetInnerHTML={{ __html: svg }} />;
+});
+
 export function looksLikeMermaid(value: string) {
   const source = value.trim();
   if (!source || source.length > MERMAID_SOURCE_LIMIT) return false;
@@ -35,12 +39,26 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
     mermaidRenderCache.get(cacheKey) ?? { status: "loading" }
   ));
   const [expanded, setExpanded] = useState(false);
-  const [zoom, setZoom] = useState(1);
+  const [zoomLabel, setZoomLabel] = useState(100);
+  const zoomRef = useRef(1);
+  const zoomNodeRef = useRef<HTMLDivElement | null>(null);
+  const zoomLabelFrameRef = useRef<number | null>(null);
 
   function changeZoom(nextZoom: number, canvas?: HTMLElement | null, anchor?: { x: number; y: number }) {
-    setZoom((currentZoom) => {
-      const clamped = clampZoom(nextZoom);
-      if (!canvas || !anchor || clamped === currentZoom) return clamped;
+    const currentZoom = zoomRef.current;
+    const clamped = clampZoom(nextZoom);
+    if (clamped === currentZoom) return;
+    zoomRef.current = clamped;
+    if (zoomNodeRef.current) {
+      zoomNodeRef.current.style.transform = `scale(${clamped})`;
+    }
+    if (zoomLabelFrameRef.current === null) {
+      zoomLabelFrameRef.current = window.requestAnimationFrame(() => {
+        zoomLabelFrameRef.current = null;
+        setZoomLabel(Math.round(zoomRef.current * 100));
+      });
+    }
+    if (canvas && anchor) {
       const rect = canvas.getBoundingClientRect();
       const offsetX = anchor.x - rect.left;
       const offsetY = anchor.y - rect.top;
@@ -50,8 +68,7 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
         canvas.scrollLeft = contentX * clamped - offsetX;
         canvas.scrollTop = contentY * clamped - offsetY;
       });
-      return clamped;
-    });
+    }
   }
 
   function handleLightboxWheel(event: WheelEvent<HTMLDivElement>) {
@@ -59,14 +76,24 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
     event.preventDefault();
     const direction = event.deltaY > 0 ? -1 : 1;
     const factor = direction > 0 ? 1.08 : 1 / 1.08;
-    changeZoom(zoom * factor, event.currentTarget, { x: event.clientX, y: event.clientY });
+    changeZoom(zoomRef.current * factor, event.currentTarget, { x: event.clientX, y: event.clientY });
   }
 
   useEffect(() => {
     if (!expanded) {
-      setZoom(1);
+      zoomRef.current = 1;
+      setZoomLabel(100);
+      if (zoomNodeRef.current) {
+        zoomNodeRef.current.style.transform = "scale(1)";
+      }
     }
   }, [expanded]);
+
+  useEffect(() => () => {
+    if (zoomLabelFrameRef.current !== null) {
+      window.cancelAnimationFrame(zoomLabelFrameRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,7 +142,7 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
           <button type="button" className="mermaid-expand" onClick={() => setExpanded(true)}>
             Expand
           </button>
-          <div aria-label={title} dangerouslySetInnerHTML={{ __html: state.svg }} />
+          <MermaidSvg svg={state.svg} title={title} />
         </figure>
         {expanded && (
           <div className="mermaid-lightbox" role="dialog" aria-modal="true" aria-label={title}>
@@ -123,19 +150,20 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
               <header>
                 <strong>{title}</strong>
                 <div className="mermaid-lightbox-actions">
-                  <button type="button" onClick={() => changeZoom(zoom - 0.25)}>-</button>
-                  <span>{Math.round(zoom * 100)}%</span>
-                  <button type="button" onClick={() => changeZoom(zoom + 0.25)}>+</button>
+                  <button type="button" onClick={() => changeZoom(zoomRef.current - 0.25)}>-</button>
+                  <span>{zoomLabel}%</span>
+                  <button type="button" onClick={() => changeZoom(zoomRef.current + 0.25)}>+</button>
                   <button type="button" onClick={() => changeZoom(1)}>Reset</button>
                   <button type="button" onClick={() => setExpanded(false)}>Close</button>
                 </div>
               </header>
               <div className="mermaid-lightbox-canvas" onWheel={handleLightboxWheel}>
                 <div
+                  ref={zoomNodeRef}
                   className="mermaid-lightbox-zoom"
-                  style={{ transform: `scale(${zoom})` }}
-                  dangerouslySetInnerHTML={{ __html: state.svg }}
-                />
+                >
+                  <MermaidSvg svg={state.svg} title={title} />
+                </div>
               </div>
               <details>
                 <summary>Source</summary>
