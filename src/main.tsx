@@ -1,4 +1,15 @@
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  type CSSProperties,
+  type ErrorInfo,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -69,6 +80,7 @@ const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
 
 type UiBackendEvent =
   | { type: "refresh"; reason?: string }
+  | { type: "batch"; events: string[] }
   | { type: "message_upsert"; reason?: string; message: Message }
   | { type: "message_delta"; reason?: string; message_id: string; append: string; delivery_state: Message["delivery_state"] }
   | { type: "message_delete"; reason?: string; message_id: string }
@@ -84,6 +96,11 @@ type ConfirmRequest = {
   onConfirm: () => Promise<void> | void;
 };
 
+type AppErrorBoundaryState = {
+  error: Error | null;
+  info: ErrorInfo | null;
+};
+
 function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
 }
@@ -97,6 +114,44 @@ function errorMessage(err: unknown, fallback: string) {
   if (err instanceof Error && err.message) return err.message;
   if (typeof err === "string" && err.trim()) return err;
   return fallback;
+}
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
+  state: AppErrorBoundaryState = { error: null, info: null };
+
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    return { error, info: null };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("LocalSlock UI crashed", error, info);
+    this.setState({ info });
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    const details = [
+      this.state.error.stack || this.state.error.message,
+      this.state.info?.componentStack,
+    ].filter(Boolean).join("\n\n");
+
+    return (
+      <main className="fatal-shell">
+        <section className="fatal-card" role="alert">
+          <p className="eyebrow">LocalSlock UI crashed</p>
+          <h1>Frontend render failed</h1>
+          <p>
+            The backend is still running. Reload the app to recover; the details below are kept
+            visible so this does not become a blank window.
+          </p>
+          <div className="fatal-actions">
+            <button type="button" onClick={() => window.location.reload()}>Reload LocalSlock</button>
+          </div>
+          <pre>{details}</pre>
+        </section>
+      </main>
+    );
+  }
 }
 
 function maxThreadPanelWidth() {
@@ -293,6 +348,8 @@ function App() {
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
+  const messageDeltaBufferRef = useRef<Map<string, { append: string; deliveryState: Message["delivery_state"] }>>(new Map());
+  const messageDeltaFlushTimerRef = useRef<number | null>(null);
 
   async function refreshRuntimeChecks() {
     const entries = await Promise.all(
@@ -347,6 +404,7 @@ function App() {
   }
 
   function applyMessageUpsert(message: Message) {
+    messageDeltaBufferRef.current.delete(message.id);
     setData((current) => {
       if (!current) {
         requestRefresh("Failed to refresh LocalSlock state after message update");
@@ -361,25 +419,55 @@ function App() {
     });
   }
 
-  function applyMessageDelta(messageId: string, append: string, deliveryState: Message["delivery_state"]) {
+  function flushMessageDeltas() {
+    if (messageDeltaFlushTimerRef.current !== null) {
+      window.clearTimeout(messageDeltaFlushTimerRef.current);
+      messageDeltaFlushTimerRef.current = null;
+    }
+    if (messageDeltaBufferRef.current.size === 0) return;
+    const deltas = messageDeltaBufferRef.current;
+    messageDeltaBufferRef.current = new Map();
     setData((current) => {
       if (!current) {
         requestRefresh("Failed to refresh LocalSlock state after message delta");
         return current;
       }
-      const existingIndex = current.messages.findIndex((item) => item.id === messageId);
-      if (existingIndex < 0) {
-        requestRefresh("Failed to refresh LocalSlock state after message delta");
-        return current;
+      let missing = false;
+      let changed = false;
+      const messages = current.messages.map((item) => {
+        const delta = deltas.get(item.id);
+        if (!delta) return item;
+        changed = true;
+        return { ...item, body: `${item.body}${delta.append}`, delivery_state: delta.deliveryState };
+      });
+      for (const messageId of deltas.keys()) {
+        if (!current.messages.some((item) => item.id === messageId)) {
+          missing = true;
+          break;
+        }
       }
-      const messages = current.messages.map((item) => item.id === messageId
-        ? { ...item, body: `${item.body}${append}`, delivery_state: deliveryState }
-        : item);
+      if (missing) {
+        requestRefresh("Failed to refresh LocalSlock state after message delta");
+      }
+      if (!changed) return current;
       return { ...current, messages };
     });
   }
 
+  function queueMessageDelta(messageId: string, append: string, deliveryState: Message["delivery_state"]) {
+    const existing = messageDeltaBufferRef.current.get(messageId);
+    messageDeltaBufferRef.current.set(messageId, {
+      append: `${existing?.append ?? ""}${append}`,
+      deliveryState,
+    });
+    if (messageDeltaFlushTimerRef.current !== null) return;
+    messageDeltaFlushTimerRef.current = window.setTimeout(() => {
+      flushMessageDeltas();
+    }, 50);
+  }
+
   function applyMessageDelete(messageId: string) {
+    messageDeltaBufferRef.current.delete(messageId);
     setData((current) => {
       if (!current) {
         requestRefresh("Failed to refresh LocalSlock state after message deletion");
@@ -478,46 +566,52 @@ function App() {
   }
 
   function handleBackendEvent(payload: unknown) {
-    if (typeof payload !== "string") {
-      requestRefresh("Failed to refresh LocalSlock state after backend update");
-      return;
-    }
-    let parsed: UiBackendEvent | null = null;
     try {
-      parsed = JSON.parse(payload) as UiBackendEvent;
-    } catch {
+      if (typeof payload !== "string") {
+        requestRefresh("Failed to refresh LocalSlock state after backend update");
+        return;
+      }
+      const parsed = JSON.parse(payload) as UiBackendEvent;
+      if (parsed.type === "batch") {
+        for (const eventPayload of parsed.events) {
+          handleBackendEvent(eventPayload);
+        }
+        return;
+      }
+      if (parsed.type === "message_upsert") {
+        applyMessageUpsert(parsed.message);
+        return;
+      }
+      if (parsed.type === "message_delta") {
+        queueMessageDelta(parsed.message_id, parsed.append, parsed.delivery_state);
+        return;
+      }
+      if (parsed.type === "message_delete") {
+        applyMessageDelete(parsed.message_id);
+        return;
+      }
+      if (parsed.type === "activity_upsert") {
+        applyActivityUpsert(parsed.activity);
+        return;
+      }
+      if (parsed.type === "agent_run_upsert") {
+        applyAgentRunUpsert(parsed.run);
+        return;
+      }
+      if (parsed.type === "work_item_upsert") {
+        applyWorkItemUpsert(parsed.work_item);
+        return;
+      }
+      if (parsed.type === "artifact_upsert") {
+        applyArtifactUpsert(parsed.artifact);
+        return;
+      }
       requestRefresh("Failed to refresh LocalSlock state after backend update");
-      return;
+    } catch (err) {
+      setAppError(errorMessage(err, "Failed to apply LocalSlock backend update"));
+      console.error("Failed to apply LocalSlock backend update", err, payload);
+      requestRefresh("Failed to refresh LocalSlock state after backend update");
     }
-    if (parsed.type === "message_upsert") {
-      applyMessageUpsert(parsed.message);
-      return;
-    }
-    if (parsed.type === "message_delta") {
-      applyMessageDelta(parsed.message_id, parsed.append, parsed.delivery_state);
-      return;
-    }
-    if (parsed.type === "message_delete") {
-      applyMessageDelete(parsed.message_id);
-      return;
-    }
-    if (parsed.type === "activity_upsert") {
-      applyActivityUpsert(parsed.activity);
-      return;
-    }
-    if (parsed.type === "agent_run_upsert") {
-      applyAgentRunUpsert(parsed.run);
-      return;
-    }
-    if (parsed.type === "work_item_upsert") {
-      applyWorkItemUpsert(parsed.work_item);
-      return;
-    }
-    if (parsed.type === "artifact_upsert") {
-      applyArtifactUpsert(parsed.artifact);
-      return;
-    }
-    requestRefresh("Failed to refresh LocalSlock state after backend update");
   }
 
   async function mutate(command: string, args: Record<string, unknown> = {}) {
@@ -558,6 +652,9 @@ function App() {
     return () => {
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
+      }
+      if (messageDeltaFlushTimerRef.current !== null) {
+        window.clearTimeout(messageDeltaFlushTimerRef.current);
       }
       unlisten?.();
     };
@@ -1993,4 +2090,8 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <AppErrorBoundary>
+    <App />
+  </AppErrorBoundary>,
+);

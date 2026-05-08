@@ -21,7 +21,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     process::Command,
     sync::Mutex as AsyncMutex,
-    time::sleep,
+    time::{sleep, timeout},
 };
 use uuid::Uuid;
 
@@ -1200,14 +1200,42 @@ fn spawn_ui_refresh_listener(app: tauri::AppHandle, database_url: String) {
                         eprintln!("LocalSlock UI refresh listener failed to listen: {err}");
                     } else {
                         loop {
-                            match listener.recv().await {
-                                Ok(notification) => {
-                                    let _ = app.emit(UI_REFRESH_EVENT, notification.payload());
-                                }
+                            let first_payload = match listener.recv().await {
+                                Ok(notification) => notification.payload().to_owned(),
                                 Err(err) => {
                                     eprintln!("LocalSlock UI refresh listener disconnected: {err}");
                                     break;
                                 }
+                            };
+                            let mut payloads = vec![first_payload];
+                            let mut disconnected = false;
+                            while payloads.len() < 80 {
+                                match timeout(Duration::from_millis(25), listener.recv()).await {
+                                    Ok(Ok(notification)) => {
+                                        payloads.push(notification.payload().to_owned());
+                                    }
+                                    Ok(Err(err)) => {
+                                        eprintln!(
+                                            "LocalSlock UI refresh listener disconnected: {err}"
+                                        );
+                                        disconnected = true;
+                                        break;
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            if payloads.len() == 1 {
+                                if let Some(payload) = payloads.pop() {
+                                    let _ = app.emit(UI_REFRESH_EVENT, payload);
+                                }
+                            } else {
+                                let _ = app.emit(
+                                    UI_REFRESH_EVENT,
+                                    json!({ "type": "batch", "events": payloads }).to_string(),
+                                );
+                            }
+                            if disconnected {
+                                break;
                             }
                         }
                     }
