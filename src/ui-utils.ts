@@ -38,6 +38,7 @@ const LOCAL_SLOCK_CONTROL_EVENTS = [
 const LOCAL_SLOCK_LEGACY_VISIBLE_EVENTS = [
   "Visible reply transport:",
   "- Warm Codex/Claude streaming runtimes should answer with normal assistant text; LocalSlock routes it to the current channel/thread automatically.",
+  "- Warm streaming runtimes may still emit non-message LOCAL_SLOCK_EVENT control lines above, including artifact_create; LocalSlock consumes and hides those lines.",
   "- Legacy stdout command runtimes should create visible chat by printing exactly one LOCAL_SLOCK_EVENT message line.",
   '{"type":"message","channel_id":"uuid","body":"..."}',
   '{"type":"message","channel_id":"uuid","thread_root_id":"uuid","body":"..."}',

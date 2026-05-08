@@ -3396,7 +3396,7 @@ async fn build_dispatch_work_context(
         ));
     }
     lines.push(
-        "Warm Codex/Claude streaming runtimes should reply with normal assistant text; LocalSlock routes that text to the target automatically. Do not emit legacy message events in warm streaming mode."
+        "Warm Codex/Claude streaming runtimes should reply with normal assistant text; LocalSlock routes that text to the target automatically. Non-message LOCAL_SLOCK_EVENT control lines such as artifact_create are allowed as standalone lines. Do not emit legacy message events in warm streaming mode."
             .to_owned(),
     );
 
@@ -7501,7 +7501,7 @@ Use task_create only for durable globally tracked work. Use artifact_create for 
 
 fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
     format!(
-        "Reply normally only when a visible response is useful. LocalSlock will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. Emit standalone LOCAL_SLOCK_EVENT control lines for activity, reminders, memory, profile, channel, artifact, usage, durable task_create, or task_status for explicit tasks. Do not emit legacy LOCAL_SLOCK_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
+        "Reply normally only when a visible response is useful. LocalSlock will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. In warm streaming mode you may emit standalone LOCAL_SLOCK_EVENT control lines for activity, reminders, memory, profile, channel, artifact_create, usage, durable task_create, or task_status; LocalSlock consumes those control lines and hides them from chat. Do not emit legacy LOCAL_SLOCK_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
     )
 }
 
@@ -7662,7 +7662,7 @@ fn build_runtime_standing_prompt(
          \n\
          {}\n\
          \n\
-         Keep user-visible replies concise and include concrete results or blockers. Do not print legacy LOCAL_SLOCK_EVENT message/task_claim lines unless explicitly asked to debug the legacy runtime path.",
+         Keep user-visible replies concise and include concrete results or blockers. Non-message LOCAL_SLOCK_EVENT control lines are allowed as standalone lines. Do not print legacy LOCAL_SLOCK_EVENT message/task_claim lines unless explicitly asked to debug the legacy runtime path.",
         local_slock_operating_policy_prompt(),
         local_slock_context_tools_prompt(),
         local_slock_control_api_prompt(),
@@ -12170,6 +12170,8 @@ mod tests {
 
         let streaming = build_codex_streaming_prompt(&prompt);
         assert!(streaming.contains("will stream your Codex assistant text"));
+        assert!(streaming.contains("you may emit standalone LOCAL_SLOCK_EVENT control lines"));
+        assert!(streaming.contains("artifact_create"));
         assert!(streaming.contains("Do not emit legacy LOCAL_SLOCK_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
     }
@@ -13250,6 +13252,122 @@ mod tests {
             assert_eq!(reminders[0].channel_id, Some(channel_id));
             assert_eq!(reminders[0].thread_root_id, Some(root_id));
             assert_eq!(reminders[0].message_id, Some(root_id));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn streaming_artifact_control_line_is_consumed_and_hidden() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "artifact-stream-agent").await?;
+            let channel_id = insert_test_channel(&pool, "artifact-stream-control").await?;
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'make an architecture artifact', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let work_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_work_items (
+                    agent_id, channel_id, thread_root_id, source_message_id, title, context, status
+                )
+                values ($1, $2, $3, $3, 'create artifact', 'make an architecture artifact', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, work_item_id, command, status)
+                values ($1, $2, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(work_item_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let event = json!({
+                "type": "artifact_create",
+                "channel_id": channel_id,
+                "thread_root_id": root_id,
+                "kind": "html",
+                "title": "Architecture diagram",
+                "summary": "Interactive architecture diagram.",
+                "content": "<!doctype html><main><h1>Architecture</h1></main>"
+            });
+            let stream_key = "artifact-run:item-1";
+            let raw_control_message_id = append_streaming_agent_message(
+                &pool,
+                agent_id,
+                channel_id,
+                Some(root_id),
+                stream_key,
+                &format!("LOCAL_SLOCK_EVENT {event}"),
+            )
+            .await?;
+
+            let hidden = consume_streaming_agent_control_lines(
+                &pool,
+                agent_id,
+                run_id,
+                Some(work_item_id),
+                stream_key,
+            )
+            .await?;
+            assert!(hidden);
+
+            let raw_remaining: i64 =
+                sqlx::query_scalar("select count(*)::bigint from messages where id = $1")
+                    .bind(raw_control_message_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(raw_remaining, 0);
+
+            let artifact = sqlx::query(
+                r#"
+                select kind, title, content
+                from artifacts
+                where channel_id = $1 and thread_root_id = $2
+                "#,
+            )
+            .bind(channel_id)
+            .bind(root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(artifact.get::<String, _>("kind"), "html");
+            assert_eq!(artifact.get::<String, _>("title"), "Architecture diagram");
+            assert!(artifact
+                .get::<String, _>("content")
+                .contains("<h1>Architecture</h1>"));
+
+            let visible_messages = load_messages(&pool).await?;
+            assert!(!visible_messages
+                .iter()
+                .any(|message| message.body.contains("LOCAL_SLOCK_EVENT")));
+            assert!(visible_messages.iter().any(|message| message
+                .body
+                .contains("Created artifact: Architecture diagram")));
             Ok(())
         }
         .await;
