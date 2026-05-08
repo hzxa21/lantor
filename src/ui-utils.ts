@@ -3,7 +3,7 @@ import { AgentForm, RUNTIME_PRESETS } from "./types";
 const LOCAL_SLOCK_OPERATING_POLICY = [
   "Operating policy:",
   "- Treat messages as conversation. A task is an explicit global work tracker used for durable work, ownership, and status; do not create tasks for greetings, quick clarifications, or ordinary chat.",
-  "- Preserve the current surface. If the request is in a thread, keep the visible reply in that thread unless you intentionally create a new tracked task or channel with a clear reason.",
+  "- Prefer the smallest useful surface. Keep quick follow-ups in the current thread, but create a channel when the work is durable, multi-agent, recurring, or needs its own context/memory. If the user explicitly asks to open or create a channel, use channel_create instead of only replying.",
   "- Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output LOCAL_SLOCK_SILENT_REPLY with a short reason instead of a chat reply.",
   "- Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.",
   "- Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.",
@@ -33,6 +33,7 @@ const LOCAL_SLOCK_CONTROL_EVENTS = [
   '{"type":"artifact_create","channel_id":"uuid","thread_root_id":"optional uuid","kind":"markdown","title":"Report","summary":"Short chat summary","content":"Full markdown content","metadata":{}}',
   '{"type":"channel_create","name":"short-topic","description":"why this channel exists","agent_handles":["@Hancock"]}',
   '{"type":"channel_invite","channel":"local-slock","agent_handles":["@Vegapunk"]}',
+  "Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents.",
 ].join("\n");
 
 const LOCAL_SLOCK_LEGACY_VISIBLE_EVENTS = [

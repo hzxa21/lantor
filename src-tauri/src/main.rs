@@ -7402,7 +7402,7 @@ const WORK_ITEM_FINISH_PROMPT: &str = "Finish behavior: warm streaming runtimes 
 fn local_slock_operating_policy_prompt() -> &'static str {
     r#"Operating policy:
 - Treat messages as conversation. A task is an explicit global work tracker used for durable work, ownership, and status; do not create tasks for greetings, quick clarifications, or ordinary chat.
-- Preserve the current surface. If this request has a thread_root_id, keep the visible reply in that thread unless you intentionally create a new tracked task or channel with a clear reason.
+- Prefer the smallest useful surface. Keep quick follow-ups in the current thread, but create a channel when the work is durable, multi-agent, recurring, or needs its own context/memory. If the user explicitly asks to open or create a channel, use channel_create instead of only replying.
 - Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else.
 - Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.
 - Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.
@@ -7432,12 +7432,12 @@ LOCAL_SLOCK_EVENT {"type":"task_status","task_number":1,"status":"in_review"}
 LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown","title":"<short title>","summary":"<short chat summary>","content":"<full markdown content>","metadata":{}}
 LOCAL_SLOCK_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
 LOCAL_SLOCK_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
-Use task_create only for durable globally tracked work. Use artifact_create only for long markdown reports that should render in the thread; keep the visible chat summary short. Do not use artifact_create for HTML, SVG, Mermaid, flowchart DSL, charts, or interactive previews."#
+Use task_create only for durable globally tracked work. Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents. Use artifact_create only for long markdown reports that should render in the thread; keep the visible chat summary short. Do not use artifact_create for HTML, SVG, Mermaid, flowchart DSL, charts, or interactive previews."#
 }
 
 fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
     format!(
-        "Reply normally only when a visible response is useful. LocalSlock will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. In warm streaming mode you may emit standalone LOCAL_SLOCK_EVENT control lines for activity, reminders, memory, profile, channel, artifact_create, usage, durable task_create, or task_status; LocalSlock consumes those control lines and hides them from chat. Do not emit legacy LOCAL_SLOCK_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
+        "Reply normally only when a visible response is useful. LocalSlock will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. In warm streaming mode you may emit standalone LOCAL_SLOCK_EVENT control lines for activity, reminders, memory, profile, channel, artifact_create, usage, durable task_create, or task_status; LocalSlock consumes those control lines and hides them from chat. Treat channel_create as a normal tool for durable topics, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel. Do not emit legacy LOCAL_SLOCK_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
     )
 }
 
