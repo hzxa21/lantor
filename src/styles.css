@@ -1365,6 +1365,12 @@ mark {
   background: rgba(248, 249, 251, 0.96);
 }
 
+.composer.drag-over,
+.reply-composer.drag-over {
+  background: rgba(10, 132, 255, 0.08);
+  box-shadow: inset 0 0 0 2px rgba(10, 132, 255, 0.22);
+}
+
 .composer textarea {
   width: 100%;
   min-height: 74px;
@@ -1375,6 +1381,12 @@ mark {
   border-radius: 18px;
   background: #fff;
   outline: none;
+}
+
+.composer.drag-over textarea,
+.reply-composer.drag-over textarea {
+  border-color: rgba(10, 132, 255, 0.5);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .composer textarea:focus {

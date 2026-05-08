@@ -644,6 +644,24 @@ function App() {
   }, []);
 
   useEffect(() => {
+    function isFileDrag(event: DragEvent) {
+      return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    }
+
+    function preventFileNavigation(event: DragEvent) {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+    }
+
+    window.addEventListener("dragover", preventFileNavigation);
+    window.addEventListener("drop", preventFileNavigation);
+    return () => {
+      window.removeEventListener("dragover", preventFileNavigation);
+      window.removeEventListener("drop", preventFileNavigation);
+    };
+  }, []);
+
+  useEffect(() => {
     let unlisten: UnlistenFn | null = null;
     listen<string>(UI_REFRESH_EVENT, (event) => {
       handleBackendEvent(event.payload);

@@ -1,5 +1,5 @@
 import { MessageSquare, Paperclip, Reply, X } from "lucide-react";
-import { useRef, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
@@ -59,6 +59,8 @@ export function ThreadPanel({
   openArtifact,
   onResizeStart,
 }: ThreadPanelProps) {
+  const [isReplyDragOver, setIsReplyDragOver] = useState(false);
+  const replyDragDepthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isDm = channel?.kind === "dm";
@@ -89,6 +91,51 @@ export function ThreadPanel({
     closeMentionPicker();
     focusComposer();
   }
+
+  function hasDraggedFiles(event: DragEvent<HTMLElement>) {
+    return Array.from(event.dataTransfer.types).includes("Files");
+  }
+
+  function handleReplyDragEnter(event: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    replyDragDepthRef.current += 1;
+    event.dataTransfer.dropEffect = activeRoot ? "copy" : "none";
+    if (activeRoot) setIsReplyDragOver(true);
+  }
+
+  function handleReplyDragOver(event: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = activeRoot ? "copy" : "none";
+    if (activeRoot) setIsReplyDragOver(true);
+  }
+
+  function handleReplyDragLeave(event: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    replyDragDepthRef.current = Math.max(0, replyDragDepthRef.current - 1);
+    if (replyDragDepthRef.current === 0) setIsReplyDragOver(false);
+  }
+
+  function handleReplyDrop(event: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    replyDragDepthRef.current = 0;
+    setIsReplyDragOver(false);
+    if (!activeRoot || event.dataTransfer.files.length === 0) return;
+    addReplyAttachments(event.dataTransfer.files);
+    focusComposer();
+  }
+
+  useEffect(() => {
+    replyDragDepthRef.current = 0;
+    setIsReplyDragOver(false);
+  }, [activeRoot?.id]);
 
   return (
     <aside className="thread">
@@ -220,7 +267,13 @@ export function ThreadPanel({
           })}
         </section>
 
-        <section className="reply-composer">
+        <section
+          className={`reply-composer ${isReplyDragOver ? "drag-over" : ""}`}
+          onDragEnter={handleReplyDragEnter}
+          onDragOver={handleReplyDragOver}
+          onDragLeave={handleReplyDragLeave}
+          onDrop={handleReplyDrop}
+        >
           {mentionState && mentionCandidates.length > 0 && (
             <div className="mention-picker">
               {mentionCandidates.map((agent, index) => (

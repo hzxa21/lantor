@@ -8,7 +8,7 @@ import {
   Send,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
@@ -86,6 +86,8 @@ export function Conversation({
   openArtifact,
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
+  const [isComposerDragOver, setIsComposerDragOver] = useState(false);
+  const composerDragDepthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isDm = channel?.kind === "dm";
@@ -117,11 +119,56 @@ export function Conversation({
     focusComposer();
   }
 
+  function hasDraggedFiles(event: DragEvent<HTMLElement>) {
+    return Array.from(event.dataTransfer.types).includes("Files");
+  }
+
+  function handleComposerDragEnter(event: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    composerDragDepthRef.current += 1;
+    event.dataTransfer.dropEffect = channel ? "copy" : "none";
+    if (channel) setIsComposerDragOver(true);
+  }
+
+  function handleComposerDragOver(event: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = channel ? "copy" : "none";
+    if (channel) setIsComposerDragOver(true);
+  }
+
+  function handleComposerDragLeave(event: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    composerDragDepthRef.current = Math.max(0, composerDragDepthRef.current - 1);
+    if (composerDragDepthRef.current === 0) setIsComposerDragOver(false);
+  }
+
+  function handleComposerDrop(event: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    composerDragDepthRef.current = 0;
+    setIsComposerDragOver(false);
+    if (!channel || event.dataTransfer.files.length === 0) return;
+    addDraftAttachments(event.dataTransfer.files);
+    focusComposer();
+  }
+
   useEffect(() => {
     if (!isDm) return;
     setSendAsTask(false);
     if (activeTab === "tasks") setActiveTab("chat");
   }, [activeTab, isDm, setActiveTab]);
+
+  useEffect(() => {
+    composerDragDepthRef.current = 0;
+    setIsComposerDragOver(false);
+  }, [channel?.id]);
 
   return (
     <section className="conversation">
@@ -308,7 +355,13 @@ export function Conversation({
         </div>
       )}
 
-      <footer className="composer">
+      <footer
+        className={`composer ${isComposerDragOver ? "drag-over" : ""}`}
+        onDragEnter={handleComposerDragEnter}
+        onDragOver={handleComposerDragOver}
+        onDragLeave={handleComposerDragLeave}
+        onDrop={handleComposerDrop}
+      >
         {mentionState && mentionCandidates.length > 0 && (
           <div className="mention-picker">
             {mentionCandidates.map((agent, index) => (
