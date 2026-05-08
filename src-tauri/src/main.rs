@@ -3,8 +3,11 @@
 mod agent_event;
 mod attachments;
 mod context_tool;
+mod launch_agent;
+mod models;
 mod prompts;
 mod text;
+mod usage;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -16,7 +19,6 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{
     postgres::{PgListener, PgPoolOptions},
@@ -34,6 +36,12 @@ use uuid::Uuid;
 use agent_event::AgentEvent;
 use attachments::{load_message_attachment_lines, write_attachment_file, ATTACHMENT_SIZE_LIMIT};
 use context_tool::run_agent_context_tool;
+use models::{
+    Agent, AgentActivity, AgentRun, AgentRunPatch, AgentSchedule, AgentWorkItem,
+    AgentWorkItemPatch, Artifact, AttachmentUpload, Bootstrap, Channel, ChannelMember,
+    LaunchAgentStatus, Message, MessageAttachment, Reminder, RuntimeCheck, SupervisorCommand,
+    SupervisorStatus, Task,
+};
 use prompts::{
     build_claude_streaming_prompt, build_codex_streaming_prompt, build_work_item_prompt,
     claude_system_prompt, codex_developer_instructions, ensure_agent_workspace,
@@ -41,10 +49,13 @@ use prompts::{
     WORK_ITEM_FINISH_PROMPT,
 };
 use text::compact_chars_middle;
+use usage::{
+    agent_budget_exhausted, backfill_agent_run_usage_from_logs, record_run_usage,
+    usage_from_runtime_event,
+};
 
 const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/localslock";
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
-const LAUNCH_AGENT_LABEL: &str = "local.localslock.supervisor";
 const AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
 const SILENT_REPLY_PREFIX: &str = "LOCAL_SLOCK_SILENT_REPLY";
 const UI_REFRESH_CHANNEL: &str = "localslock_ui_refresh";
@@ -132,296 +143,6 @@ struct ClaudeActiveTurn {
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
     stream_key: String,
-}
-
-#[derive(Debug, Serialize)]
-struct RuntimeCheck {
-    runtime: String,
-    command: String,
-    available: bool,
-    detail: String,
-}
-
-#[derive(Debug, Serialize)]
-struct Agent {
-    id: Uuid,
-    handle: String,
-    display_name: String,
-    role: String,
-    status: String,
-    runtime: String,
-    model: String,
-    avatar: String,
-    description: String,
-    launch_command: String,
-    working_directory: String,
-    daily_budget_micros: i64,
-}
-
-#[derive(Debug, Serialize)]
-struct Channel {
-    id: Uuid,
-    name: String,
-    description: String,
-    kind: String,
-    dm_agent_id: Option<Uuid>,
-    unread_count: i32,
-}
-
-#[derive(Debug, Serialize)]
-struct ChannelMember {
-    channel_id: Uuid,
-    agent_id: Uuid,
-    agent_handle: String,
-    agent_display_name: String,
-    created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-struct Message {
-    id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    sender_name: String,
-    sender_role: String,
-    body: String,
-    is_task: bool,
-    thread_followed: bool,
-    delivery_state: String,
-    stream_key: String,
-    task_number: Option<i64>,
-    task_status: Option<String>,
-    attachments: Vec<MessageAttachment>,
-    artifacts: Vec<Artifact>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-struct MessageAttachment {
-    id: Uuid,
-    message_id: Uuid,
-    original_name: String,
-    mime_type: String,
-    size_bytes: i64,
-    storage_path: String,
-    created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-struct Artifact {
-    id: Uuid,
-    message_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    creator_agent_id: Option<Uuid>,
-    creator_agent_handle: Option<String>,
-    kind: String,
-    title: String,
-    summary: String,
-    content: String,
-    metadata: Value,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachmentUpload {
-    original_name: String,
-    mime_type: String,
-    bytes: Vec<u8>,
-}
-
-#[derive(Debug, Serialize)]
-struct Task {
-    id: Uuid,
-    number: i64,
-    message_id: Uuid,
-    channel_id: Uuid,
-    title: String,
-    status: String,
-    channel_name: String,
-    assignee_id: Option<Uuid>,
-    assignee_name: Option<String>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-struct Reminder {
-    id: Uuid,
-    channel_id: Option<Uuid>,
-    channel_name: Option<String>,
-    creator_agent_id: Option<Uuid>,
-    creator_agent_handle: Option<String>,
-    thread_root_id: Option<Uuid>,
-    message_id: Option<Uuid>,
-    title: String,
-    note: String,
-    status: String,
-    recurrence: String,
-    due_at: DateTime<Utc>,
-    fired_at: Option<DateTime<Utc>>,
-    completed_at: Option<DateTime<Utc>>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-struct AgentSchedule {
-    id: Uuid,
-    agent_id: Uuid,
-    agent_handle: String,
-    channel_id: Uuid,
-    channel_name: String,
-    channel_kind: String,
-    thread_root_id: Option<Uuid>,
-    title: String,
-    prompt: String,
-    cadence: String,
-    status: String,
-    next_run_at: DateTime<Utc>,
-    last_run_at: Option<DateTime<Utc>>,
-    last_work_item_id: Option<Uuid>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-struct AgentRun {
-    id: Uuid,
-    agent_id: Uuid,
-    agent_handle: String,
-    work_item_id: Option<Uuid>,
-    command: String,
-    working_directory: String,
-    status: String,
-    pid: Option<i32>,
-    exit_code: Option<i32>,
-    log: String,
-    input_tokens: i64,
-    output_tokens: i64,
-    cost_micros: i64,
-    started_at: DateTime<Utc>,
-    stopped_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Serialize)]
-struct AgentRunPatch {
-    id: Uuid,
-    agent_id: Uuid,
-    agent_handle: String,
-    work_item_id: Option<Uuid>,
-    command: String,
-    working_directory: String,
-    status: String,
-    pid: Option<i32>,
-    exit_code: Option<i32>,
-    input_tokens: i64,
-    output_tokens: i64,
-    cost_micros: i64,
-    started_at: DateTime<Utc>,
-    stopped_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Serialize)]
-struct AgentActivity {
-    id: Uuid,
-    agent_id: Option<Uuid>,
-    agent_handle: String,
-    run_id: Option<Uuid>,
-    kind: String,
-    phase: String,
-    status: String,
-    title: String,
-    summary: String,
-    detail: String,
-    metadata: Value,
-    created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-struct AgentWorkItem {
-    id: Uuid,
-    agent_id: Uuid,
-    agent_handle: String,
-    channel_id: Option<Uuid>,
-    channel_name: Option<String>,
-    thread_root_id: Option<Uuid>,
-    source_message_id: Option<Uuid>,
-    task_id: Option<Uuid>,
-    task_number: Option<i64>,
-    source_kind: String,
-    title: String,
-    context: String,
-    status: String,
-    run_id: Option<Uuid>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    completed_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Serialize)]
-struct AgentWorkItemPatch {
-    id: Uuid,
-    agent_id: Uuid,
-    agent_handle: String,
-    channel_id: Option<Uuid>,
-    channel_name: Option<String>,
-    thread_root_id: Option<Uuid>,
-    source_message_id: Option<Uuid>,
-    task_id: Option<Uuid>,
-    task_number: Option<i64>,
-    source_kind: String,
-    title: String,
-    status: String,
-    run_id: Option<Uuid>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    completed_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Serialize)]
-struct SupervisorStatus {
-    pid: Option<i32>,
-    status: String,
-    updated_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Serialize)]
-struct LaunchAgentStatus {
-    label: String,
-    plist_path: String,
-    installed: bool,
-    loaded: bool,
-}
-
-#[derive(Debug)]
-struct SupervisorCommand {
-    id: Uuid,
-    command_type: String,
-    agent_id: Option<Uuid>,
-    run_id: Option<Uuid>,
-    work_item_id: Option<Uuid>,
-}
-
-#[derive(Debug, Serialize)]
-struct Bootstrap {
-    db_url: String,
-    channels: Vec<Channel>,
-    channel_members: Vec<ChannelMember>,
-    agents: Vec<Agent>,
-    messages: Vec<Message>,
-    artifacts: Vec<Artifact>,
-    tasks: Vec<Task>,
-    reminders: Vec<Reminder>,
-    agent_schedules: Vec<AgentSchedule>,
-    agent_runs: Vec<AgentRun>,
-    agent_work_items: Vec<AgentWorkItem>,
-    agent_activities: Vec<AgentActivity>,
-    supervisor: SupervisorStatus,
-    launch_agent: LaunchAgentStatus,
 }
 
 type CommandResult<T> = Result<T, String>;
@@ -1582,7 +1303,7 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     let agent_work_items = load_agent_work_items(&state.pool).await?;
     let agent_activities = load_agent_activities(&state.pool).await?;
     let supervisor = load_supervisor_status(&state.pool).await?;
-    let launch_agent = load_launch_agent_status()?;
+    let launch_agent = launch_agent::load_launch_agent_status()?;
 
     Ok(Bootstrap {
         db_url: state.db_url.clone(),
@@ -3260,52 +2981,21 @@ async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<(
 async fn install_supervisor_service(
     state: State<'_, AppState>,
 ) -> CommandResult<LaunchAgentStatus> {
-    let plist_path = launch_agent_plist_path()?;
-    let exe_path = env::current_exe().map_err(to_string)?;
-    let plist = render_launch_agent_plist(&exe_path, &state.db_url);
-
-    if let Some(parent) = plist_path.parent() {
-        fs::create_dir_all(parent).map_err(to_string)?;
-    }
-    fs::write(&plist_path, plist).map_err(to_string)?;
-
-    let domain = launch_agent_domain()?;
-    let service = launch_agent_service_target(&domain);
-    let _ = StdCommand::new("launchctl")
-        .arg("bootout")
-        .arg(&service)
-        .output();
-
-    run_launchctl(&["bootstrap", &domain, &plist_path.to_string_lossy()])?;
-    run_launchctl(&["kickstart", "-k", &service])?;
-
-    load_launch_agent_status()
+    launch_agent::install_supervisor_service(&state.db_url)
 }
 
 #[tauri::command]
 async fn uninstall_supervisor_service(
     state: State<'_, AppState>,
 ) -> CommandResult<LaunchAgentStatus> {
-    let domain = launch_agent_domain()?;
-    let service = launch_agent_service_target(&domain);
-    let _ = StdCommand::new("launchctl")
-        .arg("bootout")
-        .arg(&service)
-        .output();
-
-    let plist_path = launch_agent_plist_path()?;
-    match fs::remove_file(&plist_path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err.to_string()),
-    }
+    let status = launch_agent::uninstall_supervisor_service()?;
 
     sqlx::query("update supervisor_state set status = 'offline', updated_at = now() where id = 1")
         .execute(&state.pool)
         .await
         .map_err(to_string)?;
 
-    load_launch_agent_status()
+    Ok(status)
 }
 
 #[tauri::command]
@@ -4896,30 +4586,6 @@ async fn load_supervisor_status(pool: &PgPool) -> CommandResult<SupervisorStatus
     })
 }
 
-fn load_launch_agent_status() -> CommandResult<LaunchAgentStatus> {
-    let plist_path = launch_agent_plist_path()?;
-    let installed = plist_path.exists();
-    let loaded = launch_agent_domain()
-        .map(|domain| {
-            StdCommand::new("launchctl")
-                .arg("print")
-                .arg(launch_agent_service_target(&domain))
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|status| status.success())
-                .unwrap_or(false)
-        })
-        .unwrap_or(false);
-
-    Ok(LaunchAgentStatus {
-        label: LAUNCH_AGENT_LABEL.to_owned(),
-        plist_path: plist_path.to_string_lossy().to_string(),
-        installed,
-        loaded,
-    })
-}
-
 fn parse_json_value(raw: String) -> Value {
     serde_json::from_str(&raw).unwrap_or_else(|_| json!({}))
 }
@@ -5047,214 +4713,6 @@ fn parse_activity_metadata(detail: &str) -> Value {
     }
 
     Value::Object(metadata)
-}
-
-fn value_i64_at(value: &Value, path: &str) -> Option<i64> {
-    value.pointer(path).and_then(|value| {
-        value
-            .as_i64()
-            .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-            .or_else(|| value.as_f64().map(|value| value.round() as i64))
-    })
-}
-
-fn usage_from_runtime_event(value: &Value) -> Option<(i64, i64)> {
-    let input_tokens = [
-        "/params/tokenUsage/last/inputTokens",
-        "/params/tokenUsage/last/input_tokens",
-        "/params/tokenUsage/last/promptTokens",
-        "/params/tokenUsage/last/prompt_tokens",
-        "/params/usage/input_tokens",
-        "/params/usage/inputTokens",
-        "/params/usage/input",
-        "/params/usage/prompt_tokens",
-        "/params/usage/promptTokens",
-        "/usage/input_tokens",
-        "/usage/inputTokens",
-        "/usage/prompt_tokens",
-        "/message/usage/input_tokens",
-        "/message/usage/prompt_tokens",
-        "/params/tokenUsage/total/inputTokens",
-        "/params/tokenUsage/total/input_tokens",
-    ]
-    .iter()
-    .find_map(|path| value_i64_at(value, path))
-    .unwrap_or_default();
-    let output_tokens = [
-        "/params/tokenUsage/last/outputTokens",
-        "/params/tokenUsage/last/output_tokens",
-        "/params/tokenUsage/last/completionTokens",
-        "/params/tokenUsage/last/completion_tokens",
-        "/params/usage/output_tokens",
-        "/params/usage/outputTokens",
-        "/params/usage/output",
-        "/params/usage/completion_tokens",
-        "/params/usage/completionTokens",
-        "/usage/output_tokens",
-        "/usage/outputTokens",
-        "/usage/completion_tokens",
-        "/message/usage/output_tokens",
-        "/message/usage/completion_tokens",
-        "/params/tokenUsage/total/outputTokens",
-        "/params/tokenUsage/total/output_tokens",
-    ]
-    .iter()
-    .find_map(|path| value_i64_at(value, path))
-    .unwrap_or_default();
-
-    (input_tokens > 0 || output_tokens > 0).then_some((input_tokens.max(0), output_tokens.max(0)))
-}
-
-fn usage_from_run_log(log: &str) -> Option<(i64, i64)> {
-    log.lines()
-        .filter_map(|line| {
-            let json_start = line.find('{')?;
-            let value = serde_json::from_str::<Value>(&line[json_start..]).ok()?;
-            usage_from_runtime_event(&value)
-        })
-        .last()
-}
-
-fn model_cost_micros(runtime: &str, model: &str, input_tokens: i64, output_tokens: i64) -> i64 {
-    let model = model.to_lowercase();
-    let runtime = runtime.to_lowercase();
-    let (input_per_million, output_per_million) = if runtime == "claude" {
-        if model.contains("opus") {
-            (15_000_000_i64, 75_000_000_i64)
-        } else if model.contains("haiku") {
-            (250_000_i64, 1_250_000_i64)
-        } else {
-            (3_000_000_i64, 15_000_000_i64)
-        }
-    } else if model.contains("mini") {
-        (150_000_i64, 600_000_i64)
-    } else if model.contains("codex") {
-        (1_500_000_i64, 6_000_000_i64)
-    } else {
-        (1_000_000_i64, 5_000_000_i64)
-    };
-    ((input_tokens.max(0) * input_per_million) + (output_tokens.max(0) * output_per_million))
-        / 1_000_000
-}
-
-async fn record_run_usage(
-    pool: &PgPool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    input_tokens: i64,
-    output_tokens: i64,
-    cost_micros: Option<i64>,
-) -> CommandResult<()> {
-    let row = sqlx::query("select runtime, model from agents where id = $1")
-        .bind(agent_id)
-        .fetch_one(pool)
-        .await
-        .map_err(to_string)?;
-    let runtime: String = row.get("runtime");
-    let model: String = row.get("model");
-    let estimated_cost = cost_micros
-        .unwrap_or_else(|| model_cost_micros(&runtime, &model, input_tokens, output_tokens))
-        .max(0);
-    sqlx::query(
-        r#"
-        update agent_runs
-        set input_tokens = greatest(input_tokens, $2),
-            output_tokens = greatest(output_tokens, $3),
-            cost_micros = greatest(cost_micros, $4)
-        where id = $1
-        "#,
-    )
-    .bind(run_id)
-    .bind(input_tokens.max(0))
-    .bind(output_tokens.max(0))
-    .bind(estimated_cost)
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-    notify_ui_agent_run_changed(pool, run_id, "run_usage").await;
-    Ok(())
-}
-
-async fn backfill_agent_run_usage_from_logs(pool: &PgPool) -> sqlx::Result<()> {
-    let rows = sqlx::query(
-        r#"
-        select id, agent_id, log
-        from agent_runs
-        where input_tokens = 0
-          and output_tokens = 0
-          and log like '%tokenUsage%'
-        order by started_at desc
-        limit 200
-        "#,
-    )
-    .fetch_all(pool)
-    .await?;
-
-    for row in rows {
-        let log: String = row.get("log");
-        let Some((input_tokens, output_tokens)) = usage_from_run_log(&log) else {
-            continue;
-        };
-        let run_id: Uuid = row.get("id");
-        let agent_id: Uuid = row.get("agent_id");
-        let agent = sqlx::query("select runtime, model from agents where id = $1")
-            .bind(agent_id)
-            .fetch_one(pool)
-            .await?;
-        let runtime: String = agent.get("runtime");
-        let model: String = agent.get("model");
-        let cost_micros = model_cost_micros(&runtime, &model, input_tokens, output_tokens);
-        sqlx::query(
-            r#"
-            update agent_runs
-            set input_tokens = $2,
-                output_tokens = $3,
-                cost_micros = $4
-            where id = $1
-            "#,
-        )
-        .bind(run_id)
-        .bind(input_tokens.max(0))
-        .bind(output_tokens.max(0))
-        .bind(cost_micros.max(0))
-        .execute(pool)
-        .await?;
-    }
-
-    Ok(())
-}
-
-async fn agent_budget_exhausted(pool: &PgPool, agent_id: Uuid) -> CommandResult<Option<String>> {
-    let daily_budget_micros: i64 =
-        sqlx::query_scalar("select daily_budget_micros from agents where id = $1")
-            .bind(agent_id)
-            .fetch_one(pool)
-            .await
-            .map_err(to_string)?;
-    if daily_budget_micros <= 0 {
-        return Ok(None);
-    }
-    let spent: i64 = sqlx::query_scalar(
-        r#"
-        select coalesce(sum(cost_micros), 0)::bigint
-        from agent_runs
-        where agent_id = $1
-          and started_at >= date_trunc('day', now())
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_one(pool)
-    .await
-    .map_err(to_string)?;
-    if spent >= daily_budget_micros {
-        Ok(Some(format!(
-            "daily budget reached: spent ${:.4} / ${:.4}",
-            spent as f64 / 1_000_000.0,
-            daily_budget_micros as f64 / 1_000_000.0
-        )))
-    } else {
-        Ok(None)
-    }
 }
 
 fn memory_path_for_workspace(working_directory: &str) -> CommandResult<PathBuf> {
@@ -10798,120 +10256,6 @@ async fn supervisor_stop_run(
     Ok(())
 }
 
-fn spawn_supervisor_process(database_url: &str) {
-    let Ok(exe) = env::current_exe() else {
-        eprintln!("failed to resolve current executable for LocalSlock supervisor");
-        return;
-    };
-
-    if let Err(err) = StdCommand::new(exe)
-        .arg("--supervisor")
-        .env("LOCAL_SLOCK_DATABASE_URL", database_url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        eprintln!("failed to spawn LocalSlock supervisor: {err}");
-    }
-}
-
-fn launch_agent_plist_path() -> CommandResult<PathBuf> {
-    let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
-    Ok(PathBuf::from(home)
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{LAUNCH_AGENT_LABEL}.plist")))
-}
-
-fn launch_agent_domain() -> CommandResult<String> {
-    let output = StdCommand::new("id")
-        .arg("-u")
-        .output()
-        .map_err(to_string)?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
-    }
-    let uid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if uid.is_empty() {
-        return Err("failed to resolve current uid".to_owned());
-    }
-    Ok(format!("gui/{uid}"))
-}
-
-fn launch_agent_service_target(domain: &str) -> String {
-    format!("{domain}/{LAUNCH_AGENT_LABEL}")
-}
-
-fn run_launchctl(args: &[&str]) -> CommandResult<()> {
-    let output = StdCommand::new("launchctl")
-        .args(args)
-        .output()
-        .map_err(to_string)?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Err(format!(
-        "launchctl {} failed: {}{}",
-        args.join(" "),
-        stderr.trim(),
-        if stdout.trim().is_empty() {
-            String::new()
-        } else {
-            format!(" {}", stdout.trim())
-        }
-    ))
-}
-
-fn render_launch_agent_plist(exe_path: &std::path::Path, database_url: &str) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{}</string>
-    <string>--supervisor</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>LOCAL_SLOCK_DATABASE_URL</key>
-    <string>{}</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>{}</string>
-  <key>StandardErrorPath</key>
-  <string>{}</string>
-</dict>
-</plist>
-"#,
-        xml_escape(LAUNCH_AGENT_LABEL),
-        xml_escape(&exe_path.to_string_lossy()),
-        xml_escape(database_url),
-        xml_escape("/tmp/localslock-supervisor.out.log"),
-        xml_escape("/tmp/localslock-supervisor.err.log"),
-    )
-}
-
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
 fn normalize_channel_name(name: &str) -> String {
     name.trim()
         .trim_start_matches('#')
@@ -10934,7 +10278,7 @@ pub fn run() {
     .expect("failed to connect LocalSlock Postgres database");
 
     tauri::async_runtime::block_on(migrate(&pool)).expect("failed to initialize LocalSlock schema");
-    spawn_supervisor_process(&database_url);
+    launch_agent::spawn_supervisor_process(&database_url);
     let state_db_url = database_url.clone();
     let reminder_pool = pool.clone();
 
@@ -11037,8 +10381,9 @@ mod tests {
         open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
         process_due_reminders, queue_mentions_as_work_items, record_agent_activity,
         send_owner_message_in_pool, silent_reply_reason, upsert_agent_thread_subscription,
-        upsert_runtime_thread_id, usage_from_run_log, usage_from_runtime_event, AgentEvent,
-        MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL,
+        upsert_runtime_thread_id,
+        usage::{usage_from_run_log, usage_from_runtime_event},
+        AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL,
         STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
