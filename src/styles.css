@@ -1120,7 +1120,6 @@ mark {
 .mermaid-lightbox-zoom {
   width: max-content;
   min-width: 100%;
-  transform-origin: top center;
 }
 
 .mermaid-lightbox-zoom svg {

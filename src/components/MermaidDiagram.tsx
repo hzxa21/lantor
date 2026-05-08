@@ -1,4 +1,4 @@
-import { memo, type WheelEvent, useEffect, useId, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 
 type MermaidDiagramProps = {
   source: string;
@@ -44,13 +44,13 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
   const zoomNodeRef = useRef<HTMLDivElement | null>(null);
   const zoomLabelFrameRef = useRef<number | null>(null);
 
-  function changeZoom(nextZoom: number, canvas?: HTMLElement | null, anchor?: { x: number; y: number }) {
+  function changeZoom(nextZoom: number) {
     const currentZoom = zoomRef.current;
     const clamped = clampZoom(nextZoom);
     if (clamped === currentZoom) return;
     zoomRef.current = clamped;
     if (zoomNodeRef.current) {
-      zoomNodeRef.current.style.transform = `scale(${clamped})`;
+      zoomNodeRef.current.style.zoom = String(clamped);
     }
     if (zoomLabelFrameRef.current === null) {
       zoomLabelFrameRef.current = window.requestAnimationFrame(() => {
@@ -58,25 +58,6 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
         setZoomLabel(Math.round(zoomRef.current * 100));
       });
     }
-    if (canvas && anchor) {
-      const rect = canvas.getBoundingClientRect();
-      const offsetX = anchor.x - rect.left;
-      const offsetY = anchor.y - rect.top;
-      const contentX = (canvas.scrollLeft + offsetX) / currentZoom;
-      const contentY = (canvas.scrollTop + offsetY) / currentZoom;
-      window.requestAnimationFrame(() => {
-        canvas.scrollLeft = contentX * clamped - offsetX;
-        canvas.scrollTop = contentY * clamped - offsetY;
-      });
-    }
-  }
-
-  function handleLightboxWheel(event: WheelEvent<HTMLDivElement>) {
-    if (!event.ctrlKey && !event.metaKey) return;
-    event.preventDefault();
-    const direction = event.deltaY > 0 ? -1 : 1;
-    const factor = direction > 0 ? 1.08 : 1 / 1.08;
-    changeZoom(zoomRef.current * factor, event.currentTarget, { x: event.clientX, y: event.clientY });
   }
 
   useEffect(() => {
@@ -84,7 +65,7 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
       zoomRef.current = 1;
       setZoomLabel(100);
       if (zoomNodeRef.current) {
-        zoomNodeRef.current.style.transform = "scale(1)";
+        zoomNodeRef.current.style.zoom = "1";
       }
     }
   }, [expanded]);
@@ -157,7 +138,7 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
                   <button type="button" onClick={() => setExpanded(false)}>Close</button>
                 </div>
               </header>
-              <div className="mermaid-lightbox-canvas" onWheel={handleLightboxWheel}>
+              <div className="mermaid-lightbox-canvas">
                 <div
                   ref={zoomNodeRef}
                   className="mermaid-lightbox-zoom"
