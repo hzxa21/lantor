@@ -769,10 +769,6 @@ async fn notify_ui_work_item_changed(pool: &PgPool, work_item_id: Uuid, reason: 
     }
 }
 
-fn status_label(status: &str) -> String {
-    status.replace('_', " ")
-}
-
 async fn insert_system_message(
     pool: &PgPool,
     channel_id: Uuid,
@@ -3711,23 +3707,14 @@ async fn claim_task(
     agent_id: Option<Uuid>,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
-    let row = sqlx::query(
+    sqlx::query_scalar::<_, Uuid>(
         r#"
-        with updated as (
-            update tasks
-            set assignee_agent_id = $2,
-                status = case when $2 is null then status else 'in_progress' end,
-                updated_at = now()
-            where id = $1
-            returning channel_id, number, title, assignee_agent_id
-        )
-        select
-            u.channel_id,
-            u.number,
-            u.title,
-            a.handle as assignee_handle
-        from updated u
-        left join agents a on a.id = u.assignee_agent_id
+        update tasks
+        set assignee_agent_id = $2,
+            status = case when $2 is null then status else 'in_progress' end,
+            updated_at = now()
+        where id = $1
+        returning id
         "#,
     )
     .bind(task_id)
@@ -3736,16 +3723,6 @@ async fn claim_task(
     .await
     .map_err(to_string)?
     .ok_or_else(|| "task does not exist".to_owned())?;
-
-    let channel_id: Uuid = row.get("channel_id");
-    let number: i64 = row.get("number");
-    let title: String = row.get("title");
-    let body = if let Some(handle) = row.get::<Option<String>, _>("assignee_handle") {
-        format!("@{handle} claimed task #{number}: {title}")
-    } else {
-        format!("Task #{number} was unassigned: {title}")
-    };
-    insert_system_message(&state.pool, channel_id, None, body).await?;
 
     Ok(())
 }
@@ -3761,31 +3738,22 @@ async fn update_task_status(
         return Err(format!("unsupported task status: {status}"));
     }
 
-    let row = sqlx::query(
+    let affected = sqlx::query(
         r#"
         update tasks
         set status = $2, updated_at = now()
         where id = $1
-        returning channel_id, number, title
         "#,
     )
     .bind(task_id)
     .bind(status)
-    .fetch_optional(&state.pool)
+    .execute(&state.pool)
     .await
     .map_err(to_string)?
-    .ok_or_else(|| "task does not exist".to_owned())?;
-
-    let channel_id: Uuid = row.get("channel_id");
-    let number: i64 = row.get("number");
-    let title: String = row.get("title");
-    insert_system_message(
-        &state.pool,
-        channel_id,
-        None,
-        format!("Task #{number} moved to {}: {title}", status_label(status)),
-    )
-    .await?;
+    .rows_affected();
+    if affected == 0 {
+        return Err("task does not exist".to_owned());
+    }
 
     Ok(())
 }
@@ -6100,32 +6068,22 @@ async fn handle_agent_event(
             if !matches!(status, "todo" | "in_progress" | "in_review" | "done") {
                 return Err(format!("unsupported task status: {status}"));
             }
-            let row = sqlx::query(
+            let affected = sqlx::query(
                 r#"
                 update tasks
                 set status = $2, updated_at = now()
                 where number = $1
-                returning channel_id, title
                 "#,
             )
             .bind(task_number)
             .bind(status)
-            .fetch_optional(pool)
+            .execute(pool)
             .await
             .map_err(to_string)?
-            .ok_or_else(|| format!("task #{task_number} does not exist"))?;
-            let channel_id: Uuid = row.get("channel_id");
-            let title: String = row.get("title");
-            insert_system_message(
-                pool,
-                channel_id,
-                None,
-                format!(
-                    "Task #{task_number} moved to {}: {title}",
-                    status_label(status)
-                ),
-            )
-            .await?;
+            .rows_affected();
+            if affected == 0 {
+                return Err(format!("task #{task_number} does not exist"));
+            }
             record_agent_activity(
                 pool,
                 Some(agent_id),
@@ -6146,38 +6104,24 @@ async fn handle_agent_event(
                 Some(handle) => Some(resolve_agent_by_handle(pool, handle).await?),
                 None => Some(agent_id),
             };
-            let row = sqlx::query(
+            let affected = sqlx::query(
                 r#"
-                with updated as (
-                    update tasks
-                    set assignee_agent_id = $2,
-                        status = case when $2 is null then status else 'in_progress' end,
-                        updated_at = now()
-                    where number = $1
-                    returning channel_id, title, assignee_agent_id
-                )
-                select
-                    u.channel_id,
-                    u.title,
-                    a.handle as assignee_handle
-                from updated u
-                left join agents a on a.id = u.assignee_agent_id
+                update tasks
+                set assignee_agent_id = $2,
+                    status = case when $2 is null then status else 'in_progress' end,
+                    updated_at = now()
+                where number = $1
                 "#,
             )
             .bind(task_number)
             .bind(assignee)
-            .fetch_optional(pool)
+            .execute(pool)
             .await
             .map_err(to_string)?
-            .ok_or_else(|| format!("task #{task_number} does not exist"))?;
-            let channel_id: Uuid = row.get("channel_id");
-            let title: String = row.get("title");
-            let body = if let Some(handle) = row.get::<Option<String>, _>("assignee_handle") {
-                format!("@{handle} claimed task #{task_number}: {title}")
-            } else {
-                format!("Task #{task_number} was unassigned: {title}")
-            };
-            insert_system_message(pool, channel_id, None, body).await?;
+            .rows_affected();
+            if affected == 0 {
+                return Err(format!("task #{task_number} does not exist"));
+            }
             record_agent_activity(
                 pool,
                 Some(agent_id),
@@ -13921,6 +13865,102 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(task_source_kind, "task");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn task_status_and_claim_events_do_not_insert_system_messages() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "task-noise-agent").await?;
+            let channel_id = insert_test_channel(&pool, "task-noise").await?;
+            let message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Track this task', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_number: i64 = sqlx::query_scalar(
+                r#"
+                insert into tasks (message_id, channel_id, title, status)
+                values ($1, $2, 'Track this task', 'todo')
+                returning number
+                "#,
+            )
+            .bind(message_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::TaskClaim {
+                    task_number,
+                    assignee_handle: None,
+                },
+            )
+            .await?;
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::TaskStatus {
+                    task_number,
+                    status: "done".to_owned(),
+                },
+            )
+            .await?;
+
+            let task = sqlx::query("select status, assignee_agent_id from tasks where number = $1")
+                .bind(task_number)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(task.get::<String, _>("status"), "done");
+            assert_eq!(
+                task.get::<Option<Uuid>, _>("assignee_agent_id"),
+                Some(agent_id)
+            );
+
+            let system_messages: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from messages
+                where channel_id = $1
+                  and sender_role = 'system'
+                  and (body like '%claimed task%' or body like 'Task #%moved%')
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(system_messages, 0);
             Ok(())
         }
         .await;

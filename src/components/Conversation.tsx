@@ -321,7 +321,8 @@ export function Conversation({
                 }}
               >
                 <span>@{agent.handle}</span>
-                <small>{agent.display_name} · {agent.runtime} · {agent.status}</small>
+                <small>{agent.display_name} · {agent.role || "agent"} · {agent.runtime} · {agent.status}</small>
+                {agent.description && <em>{agent.description}</em>}
               </button>
             ))}
           </div>

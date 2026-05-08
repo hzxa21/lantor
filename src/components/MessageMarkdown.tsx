@@ -1,3 +1,4 @@
+import { Children, ReactNode, isValidElement, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -38,6 +39,53 @@ function linkifyMessageBody(body: string) {
     .join("");
 }
 
+function textFromNode(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textFromNode).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return textFromNode(node.props.children);
+  return "";
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Fall through to the DOM fallback for WebView permission edge cases.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+function CopyableCodeBlock({ children }: { children?: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const text = textFromNode(children).replace(/\n$/, "");
+
+  async function handleCopy() {
+    await copyText(text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  }
+
+  return (
+    <div className="code-block-shell">
+      <button type="button" onClick={handleCopy} aria-label="Copy code block">
+        {copied ? "Copied" : "Copy"}
+      </button>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
 export function MessageMarkdown({ body }: MessageMarkdownProps) {
   const linkedBody = linkifyMessageBody(body);
   return (
@@ -60,6 +108,9 @@ export function MessageMarkdown({ body }: MessageMarkdownProps) {
               </a>
             );
           },
+          pre: ({ children }) => (
+            <CopyableCodeBlock>{Children.toArray(children)}</CopyableCodeBlock>
+          ),
         }}
       >
         {linkedBody}

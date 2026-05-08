@@ -29,7 +29,8 @@ export function filterMentionAgents(agents: Agent[], query: string) {
   const lowered = query.toLowerCase();
   return agents
     .filter((agent) => {
-      const haystack = `${agent.handle} ${agent.display_name} ${agent.runtime} ${agent.model}`.toLowerCase();
+      const haystack =
+        `${agent.handle} ${agent.display_name} ${agent.role} ${agent.description} ${agent.runtime} ${agent.model}`.toLowerCase();
       return haystack.includes(lowered);
     })
     .slice(0, 6);
