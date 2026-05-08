@@ -1,0 +1,647 @@
+use std::path::PathBuf;
+
+use chrono::{DateTime, Utc};
+use sqlx::{
+    postgres::{PgPoolOptions, PgRow},
+    PgPool, Row,
+};
+use uuid::Uuid;
+
+use crate::{
+    attachments::{attachment_summary_sql, format_attachment_size},
+    db_url, load_artifact, resolve_agent_by_handle,
+    text::compact_chars_middle,
+    to_string, CommandResult, AGENT_CONTEXT_TOOL_MESSAGE_LIMIT,
+};
+
+struct AgentContextTarget {
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    label: String,
+}
+
+fn arg_value(args: &[String], name: &str) -> Option<String> {
+    args.windows(2)
+        .find_map(|window| (window[0] == name).then(|| window[1].clone()))
+}
+
+fn has_arg(args: &[String], name: &str) -> bool {
+    args.iter().any(|arg| arg == name)
+}
+
+fn parse_context_tool_limit(args: &[String], default: i64, max: i64) -> CommandResult<i64> {
+    let Some(raw) = arg_value(args, "--limit") else {
+        return Ok(default);
+    };
+    let parsed = raw
+        .parse::<i64>()
+        .map_err(|_| format!("invalid --limit value: {raw}"))?;
+    Ok(parsed.clamp(1, max))
+}
+
+pub(crate) fn short_id(id: Uuid) -> String {
+    id.to_string().chars().take(8).collect()
+}
+
+fn split_context_target(raw_target: &str) -> (String, Option<String>) {
+    let target = raw_target.trim();
+    if let Some(rest) = target.strip_prefix("dm:@") {
+        if let Some((handle, thread)) = rest.split_once(':') {
+            return (format!("dm:@{handle}"), Some(thread.to_owned()));
+        }
+        return (target.to_owned(), None);
+    }
+    if let Some(rest) = target.strip_prefix('#') {
+        if let Some((channel, thread)) = rest.split_once(':') {
+            return (format!("#{channel}"), Some(thread.to_owned()));
+        }
+    }
+    if let Some((channel, thread)) = target.split_once(':') {
+        return (channel.to_owned(), Some(thread.to_owned()));
+    }
+    (target.to_owned(), None)
+}
+
+async fn resolve_agent_context_channel(
+    pool: &PgPool,
+    channel_ref: &str,
+) -> CommandResult<(Uuid, String)> {
+    let channel_ref = channel_ref.trim();
+    if channel_ref.is_empty() {
+        return Err("target channel is empty".to_owned());
+    }
+
+    if let Some(handle) = channel_ref.strip_prefix("dm:@") {
+        let row = sqlx::query(
+            r#"
+            select c.id, a.handle
+            from channels c
+            join agents a on a.id = c.dm_agent_id
+            where c.kind = 'dm' and lower(a.handle) = lower($1)
+            "#,
+        )
+        .bind(handle)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+        let Some(row) = row else {
+            return Err(format!("unknown DM target: {channel_ref}"));
+        };
+        let channel_id: Uuid = row.get("id");
+        let handle: String = row.get("handle");
+        return Ok((channel_id, format!("dm:@{handle}")));
+    }
+
+    if let Ok(channel_id) = Uuid::parse_str(channel_ref.trim_start_matches("channel:")) {
+        let row = sqlx::query("select name, kind from channels where id = $1")
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string)?;
+        let Some(row) = row else {
+            return Err(format!("unknown channel id: {channel_id}"));
+        };
+        let name: String = row.get("name");
+        let kind: String = row.get("kind");
+        return Ok((
+            channel_id,
+            if kind == "dm" {
+                format!("dm:{name}")
+            } else {
+                format!("#{name}")
+            },
+        ));
+    }
+
+    let name = channel_ref.trim_start_matches('#');
+    let row = sqlx::query("select id, name, kind from channels where lower(name) = lower($1)")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+    let Some(row) = row else {
+        return Err(format!("unknown channel: {channel_ref}"));
+    };
+    let channel_id: Uuid = row.get("id");
+    let name: String = row.get("name");
+    let kind: String = row.get("kind");
+    Ok((
+        channel_id,
+        if kind == "dm" {
+            format!("dm:{name}")
+        } else {
+            format!("#{name}")
+        },
+    ))
+}
+
+async fn resolve_agent_context_thread(
+    pool: &PgPool,
+    channel_id: Uuid,
+    raw_thread: &str,
+) -> CommandResult<Uuid> {
+    let raw_thread = raw_thread.trim();
+    if raw_thread.is_empty() {
+        return Err("thread reference is empty".to_owned());
+    }
+    if let Ok(thread_id) = Uuid::parse_str(raw_thread) {
+        return Ok(thread_id);
+    }
+    let pattern = format!("{raw_thread}%");
+    let thread_id: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        select id
+        from messages
+        where channel_id = $1 and id::text like $2
+        order by created_at asc
+        limit 1
+        "#,
+    )
+    .bind(channel_id)
+    .bind(pattern)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+    thread_id.ok_or_else(|| format!("unknown thread/message id in target: {raw_thread}"))
+}
+
+async fn resolve_agent_context_target(
+    pool: &PgPool,
+    raw_target: &str,
+    thread_override: Option<&str>,
+) -> CommandResult<AgentContextTarget> {
+    let (channel_ref, thread_from_target) = split_context_target(raw_target);
+    let (channel_id, channel_label) = resolve_agent_context_channel(pool, &channel_ref).await?;
+    let thread_ref = thread_override
+        .map(str::to_owned)
+        .or(thread_from_target)
+        .filter(|thread| !thread.trim().is_empty());
+    let thread_root_id = match thread_ref {
+        Some(thread_ref) => {
+            Some(resolve_agent_context_thread(pool, channel_id, &thread_ref).await?)
+        }
+        None => None,
+    };
+    let label = match thread_root_id {
+        Some(thread_root_id) => format!("{channel_label}:{}", short_id(thread_root_id)),
+        None => channel_label,
+    };
+    Ok(AgentContextTarget {
+        channel_id,
+        thread_root_id,
+        label,
+    })
+}
+
+fn format_context_message_row(row: &PgRow, include_channel: bool) -> String {
+    let id: Uuid = row.get("id");
+    let sender_name: String = row.get("sender_name");
+    let sender_role: String = row.get("sender_role");
+    let body: String = row.get("body");
+    let created_at: DateTime<Utc> = row.get("created_at");
+    let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+    let task_number: Option<i64> = row.get("task_number");
+    let task_status: Option<String> = row.get("task_status");
+    let body = compact_chars_middle(&body, AGENT_CONTEXT_TOOL_MESSAGE_LIMIT).replace('\n', "\n  ");
+    let mut head = format!(
+        "[{}] id={} sender={}({})",
+        created_at.to_rfc3339(),
+        short_id(id),
+        sender_name,
+        sender_role
+    );
+    if include_channel {
+        let channel_name: String = row.get("channel_name");
+        let channel_kind: String = row.get("channel_kind");
+        if channel_kind == "dm" {
+            head.push_str(&format!(" surface=dm:{channel_name}"));
+        } else {
+            head.push_str(&format!(" surface=#{channel_name}"));
+        }
+    }
+    if let Some(thread_root_id) = thread_root_id {
+        head.push_str(&format!(" thread={}", short_id(thread_root_id)));
+    }
+    if let Some(task_number) = task_number {
+        head.push_str(&format!(
+            " task=#{task_number}({})",
+            task_status.unwrap_or_else(|| "unknown".to_owned())
+        ));
+    }
+    let mut output = format!("{head}\n  {body}");
+    if let Ok(attachment_summary) = row.try_get::<String, _>("attachment_summary") {
+        if !attachment_summary.trim().is_empty() {
+            output.push_str("\n  attachments:");
+            for line in attachment_summary.lines() {
+                output.push_str("\n  - ");
+                output.push_str(line);
+            }
+            output.push_str(
+                "\n  To inspect an attachment, run attachment-info with its attachment_id.",
+            );
+        }
+    }
+    output
+}
+
+pub(crate) async fn agent_context_history_read(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let target = arg_value(args, "--target")
+        .or_else(|| arg_value(args, "--channel"))
+        .ok_or_else(|| "history-read requires --target \"#channel[:thread]\"".to_owned())?;
+    let limit = parse_context_tool_limit(args, 30, 100)?;
+    let thread_override = arg_value(args, "--thread");
+    let target = resolve_agent_context_target(pool, &target, thread_override.as_deref()).await?;
+
+    let rows = if let Some(thread_root_id) = target.thread_root_id {
+        sqlx::query(&format!(
+            r#"
+            select
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                t.number as task_number, t.status as task_status,
+                {}
+            from messages m
+            left join tasks t on t.message_id = m.id
+            where m.channel_id = $1
+              and (m.id = $2 or m.thread_root_id = $2)
+            order by m.created_at desc
+            limit $3
+            "#,
+            attachment_summary_sql()
+        ))
+        .bind(target.channel_id)
+        .bind(thread_root_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    } else {
+        sqlx::query(&format!(
+            r#"
+            select
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                t.number as task_number, t.status as task_status,
+                {}
+            from messages m
+            left join tasks t on t.message_id = m.id
+            where m.channel_id = $1
+              and m.thread_root_id is null
+            order by m.created_at desc
+            limit $2
+            "#,
+            attachment_summary_sql()
+        ))
+        .bind(target.channel_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    };
+
+    let mut output = vec![format!(
+        "LocalSlock history for {} ({} message{})",
+        target.label,
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
+    )];
+    for row in rows.into_iter().rev() {
+        output.push(format_context_message_row(&row, false));
+    }
+    Ok(output.join("\n\n"))
+}
+
+pub(crate) async fn agent_context_message_search(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let query = arg_value(args, "--query")
+        .or_else(|| arg_value(args, "-q"))
+        .ok_or_else(|| "message-search requires --query <text>".to_owned())?;
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("message-search query is empty".to_owned());
+    }
+    let limit = parse_context_tool_limit(args, 30, 100)?;
+    let target = match arg_value(args, "--target").or_else(|| arg_value(args, "--channel")) {
+        Some(target) => Some(resolve_agent_context_target(pool, &target, None).await?),
+        None => None,
+    };
+    let pattern = format!("%{query}%");
+
+    let rows = if let Some(target) = target {
+        sqlx::query(&format!(
+            r#"
+            select
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                c.name as channel_name, c.kind as channel_kind,
+                t.number as task_number, t.status as task_status,
+                {}
+            from messages m
+            join channels c on c.id = m.channel_id
+            left join tasks t on t.message_id = m.id
+            where m.channel_id = $1
+              and m.body ilike $2
+            order by m.created_at desc
+            limit $3
+            "#,
+            attachment_summary_sql()
+        ))
+        .bind(target.channel_id)
+        .bind(pattern)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    } else {
+        sqlx::query(&format!(
+            r#"
+            select
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                c.name as channel_name, c.kind as channel_kind,
+                t.number as task_number, t.status as task_status,
+                {}
+            from messages m
+            join channels c on c.id = m.channel_id
+            left join tasks t on t.message_id = m.id
+            where m.body ilike $1
+            order by m.created_at desc
+            limit $2
+            "#,
+            attachment_summary_sql()
+        ))
+        .bind(pattern)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    };
+
+    let mut output = vec![format!(
+        "LocalSlock message search for {:?} ({} result{})",
+        query,
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
+    )];
+    for row in rows {
+        output.push(format_context_message_row(&row, true));
+    }
+    Ok(output.join("\n\n"))
+}
+
+pub(crate) async fn agent_context_attachment_info(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let raw_id = arg_value(args, "--attachment-id")
+        .or_else(|| arg_value(args, "--id"))
+        .ok_or_else(|| "attachment-info requires --attachment-id <uuid>".to_owned())?;
+    let attachment_id =
+        Uuid::parse_str(raw_id.trim()).map_err(|err| format!("invalid attachment id: {err}"))?;
+    let row = sqlx::query(
+        r#"
+        select
+            ma.id,
+            ma.message_id,
+            ma.original_name,
+            ma.mime_type,
+            ma.size_bytes,
+            ma.storage_path,
+            ma.created_at,
+            m.channel_id,
+            m.thread_root_id,
+            c.name as channel_name,
+            c.kind as channel_kind
+        from message_attachments ma
+        join messages m on m.id = ma.message_id
+        join channels c on c.id = m.channel_id
+        where ma.id = $1
+        "#,
+    )
+    .bind(attachment_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?
+    .ok_or_else(|| format!("attachment {attachment_id} does not exist"))?;
+
+    let mime_type: String = row.get("mime_type");
+    let storage_path: String = row.get("storage_path");
+    let exists = PathBuf::from(&storage_path).exists();
+    let channel_name: String = row.get("channel_name");
+    let channel_kind: String = row.get("channel_kind");
+    let surface = if channel_kind == "dm" {
+        format!("dm:{channel_name}")
+    } else {
+        format!("#{channel_name}")
+    };
+    let mut output = vec![
+        format!("LocalSlock attachment {}", row.get::<Uuid, _>("id")),
+        format!("message_id={}", row.get::<Uuid, _>("message_id")),
+        format!("surface={surface}"),
+        format!("name=\"{}\"", row.get::<String, _>("original_name")),
+        format!("mime={mime_type}"),
+        format!("size={}", format_attachment_size(row.get("size_bytes"))),
+        format!("local_path=\"{storage_path}\""),
+        format!("file_exists={exists}"),
+    ];
+    if mime_type.starts_with("image/") {
+        output.push(
+            "vision_hint=This is an image attachment. Inspect local_path directly with your runtime's file/vision support before answering visual UI questions."
+                .to_owned(),
+        );
+    }
+    Ok(output.join("\n"))
+}
+
+pub(crate) async fn agent_context_agent_inspect(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let target = arg_value(args, "--target")
+        .or_else(|| arg_value(args, "--agent"))
+        .ok_or_else(|| "agent-inspect requires --target @handle".to_owned())?;
+    let agent_id = resolve_agent_by_handle(pool, &target).await?;
+    let agent = sqlx::query(
+        r#"
+        select handle, display_name, role, status, runtime, model, avatar, description,
+               working_directory, daily_budget_micros
+        from agents
+        where id = $1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    let handle: String = agent.get("handle");
+    let mut output = vec![
+        format!("Agent @{handle}"),
+        format!("display_name={}", agent.get::<String, _>("display_name")),
+        format!("role={}", agent.get::<String, _>("role")),
+        format!("status={}", agent.get::<String, _>("status")),
+        format!(
+            "runtime={}/{}",
+            agent.get::<String, _>("runtime"),
+            agent.get::<String, _>("model")
+        ),
+        format!("description={}", agent.get::<String, _>("description")),
+        format!(
+            "working_directory={}",
+            agent.get::<String, _>("working_directory")
+        ),
+        format!(
+            "daily_budget=${:.4}",
+            agent.get::<i64, _>("daily_budget_micros") as f64 / 1_000_000.0
+        ),
+    ];
+
+    let runs = sqlx::query(
+        r#"
+        select status, command, input_tokens, output_tokens, cost_micros, started_at, stopped_at
+        from agent_runs
+        where agent_id = $1
+        order by started_at desc
+        limit 5
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    if !runs.is_empty() {
+        output.push("recent_runs:".to_owned());
+        for row in runs {
+            let started_at: DateTime<Utc> = row.get("started_at");
+            let stopped_at: Option<DateTime<Utc>> = row.get("stopped_at");
+            output.push(format!(
+                "- {} status={} tokens={}/{} cost=${:.4} command=\"{}\" stopped={}",
+                started_at.to_rfc3339(),
+                row.get::<String, _>("status"),
+                row.get::<i64, _>("input_tokens"),
+                row.get::<i64, _>("output_tokens"),
+                row.get::<i64, _>("cost_micros") as f64 / 1_000_000.0,
+                compact_chars_middle(&row.get::<String, _>("command"), 120).replace('"', "\\\""),
+                stopped_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "active".to_owned())
+            ));
+        }
+    }
+
+    let work_items = sqlx::query(
+        r#"
+        select source_kind, title, status, created_at, updated_at
+        from agent_work_items
+        where agent_id = $1
+        order by created_at desc
+        limit 5
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    if !work_items.is_empty() {
+        output.push("recent_requests:".to_owned());
+        for row in work_items {
+            let created_at: DateTime<Utc> = row.get("created_at");
+            output.push(format!(
+                "- {} [{}] {} status={}",
+                created_at.to_rfc3339(),
+                row.get::<String, _>("source_kind"),
+                compact_chars_middle(&row.get::<String, _>("title"), 120).replace('\n', " "),
+                row.get::<String, _>("status")
+            ));
+        }
+    }
+
+    let activities = sqlx::query(
+        r#"
+        select phase, status, summary, created_at
+        from agent_activities
+        where agent_id = $1 or agent_handle = $2
+        order by created_at desc
+        limit 5
+        "#,
+    )
+    .bind(agent_id)
+    .bind(&handle)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    if !activities.is_empty() {
+        output.push("recent_activity:".to_owned());
+        for row in activities {
+            let created_at: DateTime<Utc> = row.get("created_at");
+            output.push(format!(
+                "- {} {}:{} {}",
+                created_at.to_rfc3339(),
+                row.get::<String, _>("phase"),
+                row.get::<String, _>("status"),
+                compact_chars_middle(&row.get::<String, _>("summary"), 120).replace('\n', " ")
+            ));
+        }
+    }
+
+    Ok(output.join("\n"))
+}
+
+pub(crate) async fn agent_context_artifact_read_in_pool(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let raw_id = arg_value(args, "--artifact-id")
+        .or_else(|| arg_value(args, "--id"))
+        .ok_or_else(|| "artifact-read requires --artifact-id <uuid>".to_owned())?;
+    let artifact_id =
+        Uuid::parse_str(raw_id.trim()).map_err(|err| format!("invalid artifact id: {err}"))?;
+    let artifact = load_artifact(pool, artifact_id).await?;
+    Ok(format!(
+        "LocalSlock artifact {}\nkind={}\ntitle={}\nsummary={}\nmessage_id={}\nchannel_id={}\nthread_root_id={}\ncreator=@{}\nmetadata={}\n\n{}",
+        artifact.id,
+        artifact.kind,
+        artifact.title,
+        artifact.summary,
+        artifact.message_id,
+        artifact.channel_id,
+        artifact
+            .thread_root_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_owned()),
+        artifact.creator_agent_handle.unwrap_or_else(|| "unknown".to_owned()),
+        artifact.metadata,
+        artifact.content
+    ))
+}
+
+pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
+    if args.is_empty() || has_arg(args, "--help") || has_arg(args, "-h") {
+        return Ok(
+            "LocalSlock agent context tool\n\nCommands:\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID."
+                .to_owned(),
+        );
+    }
+
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url())
+        .await
+        .map_err(to_string)?;
+    match args[0].as_str() {
+        "history-read" | "read-history" | "read" => agent_context_history_read(&pool, args).await,
+        "message-search" | "search-messages" | "search" => {
+            agent_context_message_search(&pool, args).await
+        }
+        "attachment-info" | "attachment" | "attachment-view" => {
+            agent_context_attachment_info(&pool, args).await
+        }
+        "agent-inspect" | "inspect-agent" | "agent-query" => {
+            agent_context_agent_inspect(&pool, args).await
+        }
+        "artifact-read" | "artifact" | "artifact-view" => {
+            agent_context_artifact_read_in_pool(&pool, args).await
+        }
+        other => Err(format!("unknown agent context tool command: {other}")),
+    }
+}

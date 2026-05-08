@@ -1,0 +1,99 @@
+use serde::Deserialize;
+use serde_json::Value;
+use uuid::Uuid;
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum AgentEvent {
+    Message {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        thread_root_id: Option<Uuid>,
+        body: String,
+        as_task: Option<bool>,
+    },
+    Activity {
+        kind: Option<String>,
+        title: String,
+        detail: Option<String>,
+    },
+    TaskCreate {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        title: String,
+        body: Option<String>,
+        thread_body: Option<String>,
+        assign_self: Option<bool>,
+        status: Option<String>,
+    },
+    TaskStatus {
+        task_number: i64,
+        status: String,
+    },
+    TaskClaim {
+        task_number: i64,
+        assignee_handle: Option<String>,
+    },
+    Silent {
+        reason: Option<String>,
+    },
+    ReminderCreate {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        thread_root_id: Option<Uuid>,
+        message_id: Option<Uuid>,
+        title: String,
+        note: Option<String>,
+        #[serde(alias = "when", alias = "dueAt", default)]
+        due_at: Option<String>,
+        #[serde(alias = "cadence", default)]
+        recurrence: Option<String>,
+    },
+    ReminderCancel {
+        reminder_id: Uuid,
+    },
+    Usage {
+        #[serde(default)]
+        input_tokens: Option<i64>,
+        #[serde(default)]
+        output_tokens: Option<i64>,
+        #[serde(default)]
+        total_tokens: Option<i64>,
+        #[serde(default)]
+        cost_micros: Option<i64>,
+        #[serde(default)]
+        cost_usd: Option<f64>,
+    },
+    MemoryAppend {
+        body: String,
+    },
+    MemoryCompact {
+        body: String,
+    },
+    ChannelCreate {
+        name: String,
+        description: Option<String>,
+        agent_handles: Option<Vec<String>>,
+    },
+    ChannelInvite {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        agent_handles: Vec<String>,
+    },
+    ProfileUpdate {
+        display_name: Option<String>,
+        role: Option<String>,
+        avatar: Option<String>,
+        description: Option<String>,
+    },
+    ArtifactCreate {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        thread_root_id: Option<Uuid>,
+        kind: String,
+        title: String,
+        summary: Option<String>,
+        content: String,
+        metadata: Option<Value>,
+    },
+}
