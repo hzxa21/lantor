@@ -1088,6 +1088,20 @@ mark {
   font-size: 15px;
 }
 
+.mermaid-lightbox-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.mermaid-lightbox-actions span {
+  min-width: 46px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 820;
+  text-align: center;
+}
+
 .mermaid-lightbox-card header button {
   border: 0;
   border-radius: 999px;
@@ -1102,7 +1116,13 @@ mark {
   padding: 24px;
 }
 
-.mermaid-lightbox-canvas svg {
+.mermaid-lightbox-zoom {
+  width: max-content;
+  min-width: 100%;
+  transform-origin: top center;
+}
+
+.mermaid-lightbox-zoom svg {
   display: block;
   min-width: 720px;
   max-width: none;

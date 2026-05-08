@@ -29,6 +29,7 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
     mermaidRenderCache.get(cacheKey) ?? { status: "loading" }
   ));
   const [expanded, setExpanded] = useState(false);
+  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -84,9 +85,21 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
             <div className="mermaid-lightbox-card">
               <header>
                 <strong>{title}</strong>
-                <button type="button" onClick={() => setExpanded(false)}>Close</button>
+                <div className="mermaid-lightbox-actions">
+                  <button type="button" onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}>-</button>
+                  <span>{Math.round(zoom * 100)}%</span>
+                  <button type="button" onClick={() => setZoom((value) => Math.min(3, value + 0.25))}>+</button>
+                  <button type="button" onClick={() => setZoom(1)}>Reset</button>
+                  <button type="button" onClick={() => setExpanded(false)}>Close</button>
+                </div>
               </header>
-              <div className="mermaid-lightbox-canvas" dangerouslySetInnerHTML={{ __html: state.svg }} />
+              <div className="mermaid-lightbox-canvas">
+                <div
+                  className="mermaid-lightbox-zoom"
+                  style={{ transform: `scale(${zoom})` }}
+                  dangerouslySetInnerHTML={{ __html: state.svg }}
+                />
+              </div>
               <details>
                 <summary>Source</summary>
                 <pre>{normalizedSource}</pre>
