@@ -1,6 +1,5 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { MermaidDiagram, looksLikeMermaid } from "./MermaidDiagram";
 
 type MessageMarkdownProps = {
   body: string;
@@ -40,14 +39,6 @@ function linkifyMessageBody(body: string) {
 }
 
 export function MessageMarkdown({ body }: MessageMarkdownProps) {
-  if (looksLikeMermaid(body)) {
-    return (
-      <div className="markdown-body">
-        <MermaidDiagram source={body} />
-      </div>
-    );
-  }
-
   const linkedBody = linkifyMessageBody(body);
   return (
     <div className="markdown-body">
@@ -68,14 +59,6 @@ export function MessageMarkdown({ body }: MessageMarkdownProps) {
                 {children}
               </a>
             );
-          },
-          code: ({ children, className, ...props }) => {
-            const content = String(children).replace(/\n$/, "");
-            const language = /language-([A-Za-z0-9_-]+)/.exec(className || "")?.[1]?.toLowerCase();
-            if (language === "mermaid" || looksLikeMermaid(content)) {
-              return <MermaidDiagram source={content} />;
-            }
-            return <code {...props} className={className}>{children}</code>;
           },
         }}
       >

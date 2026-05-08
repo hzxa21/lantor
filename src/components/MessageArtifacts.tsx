@@ -1,7 +1,6 @@
 import { BarChart3, Braces, Code2, FileImage, FileText, GitBranch, Table2, Workflow } from "lucide-react";
 import { Artifact } from "../types";
 import { MessageMarkdown } from "./MessageMarkdown";
-import { MermaidDiagram } from "./MermaidDiagram";
 
 type MessageArtifactsProps = {
   artifacts: Artifact[];
@@ -111,7 +110,7 @@ function ArtifactContent({ artifact }: { artifact: Artifact }) {
   }
 
   if (artifact.kind === "mermaid") {
-    return <MermaidDiagram source={artifact.content || previewContent(artifact)} title={artifact.title} />;
+    return <pre>{artifact.content || previewContent(artifact)}</pre>;
   }
 
   if (artifact.kind === "svg") {
