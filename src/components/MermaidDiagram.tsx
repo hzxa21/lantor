@@ -1,4 +1,5 @@
 import { memo, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 type MermaidDiagramProps = {
   source: string;
@@ -77,6 +78,15 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
   }, []);
 
   useEffect(() => {
+    if (!expanded) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setExpanded(false);
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [expanded]);
+
+  useEffect(() => {
     let cancelled = false;
     if (!normalizedSource || normalizedSource.length > MERMAID_SOURCE_LIMIT) {
       const errorState = { status: "error", message: "Mermaid source is empty or too large to render inline." } as const;
@@ -120,13 +130,26 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
     return (
       <>
         <figure className="mermaid-diagram">
-          <button type="button" className="mermaid-expand" onClick={() => setExpanded(true)}>
+          <button
+            type="button"
+            className="mermaid-expand"
+            onClick={(event) => {
+              event.stopPropagation();
+              setExpanded(true);
+            }}
+          >
             Expand
           </button>
           <MermaidSvg svg={state.svg} title={title} />
         </figure>
-        {expanded && (
-          <div className="mermaid-lightbox" role="dialog" aria-modal="true" aria-label={title}>
+        {expanded && createPortal(
+          <div
+            className="mermaid-lightbox"
+            role="dialog"
+            aria-modal="true"
+            aria-label={title}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="mermaid-lightbox-card">
               <header>
                 <strong>{title}</strong>
@@ -151,7 +174,8 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
                 <pre>{normalizedSource}</pre>
               </details>
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
       </>
     );
