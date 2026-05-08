@@ -6527,7 +6527,7 @@ async fn resolve_agent_by_handle(pool: &PgPool, handle: &str) -> CommandResult<U
     if normalized.is_empty() {
         return Err("assignee handle is empty".to_owned());
     }
-    sqlx::query_scalar("select id from agents where handle = $1")
+    sqlx::query_scalar("select id from agents where lower(handle) = lower($1)")
         .bind(normalized)
         .fetch_optional(pool)
         .await
@@ -6914,6 +6914,24 @@ async fn finish_streaming_agent_message(
     stream_key: &str,
     delivery_state: &str,
 ) -> CommandResult<()> {
+    if delivery_state == "complete" {
+        if let Some((agent_id, run_id, work_item_id)) =
+            load_streaming_control_context(pool, stream_key).await?
+        {
+            if consume_streaming_agent_control_lines(
+                pool,
+                agent_id,
+                run_id,
+                work_item_id,
+                stream_key,
+            )
+            .await?
+            {
+                return Ok(());
+            }
+        }
+    }
+
     let affected = sqlx::query(
         r#"
         update messages
@@ -6947,6 +6965,33 @@ async fn finish_streaming_agent_message(
         }
     }
     Ok(())
+}
+
+async fn load_streaming_control_context(
+    pool: &PgPool,
+    stream_key: &str,
+) -> CommandResult<Option<(Uuid, Uuid, Option<Uuid>)>> {
+    let Some(run_prefix) = stream_key
+        .split(':')
+        .next()
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let Ok(run_id) = Uuid::parse_str(run_prefix) else {
+        return Ok(None);
+    };
+    let Some(row) = sqlx::query("select agent_id, work_item_id from agent_runs where id = $1")
+        .bind(run_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?
+    else {
+        return Ok(None);
+    };
+    let agent_id: Uuid = row.get("agent_id");
+    let work_item_id: Option<Uuid> = row.get("work_item_id");
+    Ok(Some((agent_id, run_id, work_item_id)))
 }
 
 fn silent_reply_reason(body: &str) -> Option<String> {
@@ -13304,6 +13349,86 @@ mod tests {
             assert!(visible_messages.iter().any(|message| message
                 .body
                 .contains("Created artifact: Architecture report")));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn streaming_finish_consumes_channel_create_control_line() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "creator-agent").await?;
+            let reviewer_id = insert_test_agent(&pool, "Hancock").await?;
+            let source_channel_id = insert_test_channel(&pool, "source-channel").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'claude stream-json', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let event = json!({
+                "type": "channel_create",
+                "name": "slock-ui-design",
+                "description": "讨论 SLock UI 设计后续工作",
+                "agent_handles": ["hancock"]
+            });
+            let stream_key = format!("{run_id}:claude-assistant");
+            let message_id = append_streaming_agent_message(
+                &pool,
+                agent_id,
+                source_channel_id,
+                None,
+                &stream_key,
+                &format!("好的，我来创建。\n\nLOCAL_SLOCK_EVENT {event}"),
+            )
+            .await?;
+
+            finish_streaming_agent_message(&pool, &stream_key, "complete").await?;
+
+            let visible_body: String =
+                sqlx::query_scalar("select body from messages where id = $1")
+                    .bind(message_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(visible_body, "好的，我来创建。");
+
+            let channel_id: Uuid =
+                sqlx::query_scalar("select id from channels where name = 'slock-ui-design'")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            let member_count: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from channel_members
+                where channel_id = $1 and agent_id = any($2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(&[agent_id, reviewer_id])
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(member_count, 2);
+
+            let leaked_messages: i64 = sqlx::query_scalar(
+                "select count(*)::bigint from messages where body like '%LOCAL_SLOCK_EVENT%'",
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(leaked_messages, 0);
             Ok(())
         }
         .await;
