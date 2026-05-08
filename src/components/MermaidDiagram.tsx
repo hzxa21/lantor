@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 type MermaidDiagramProps = {
@@ -21,9 +21,25 @@ function clampZoom(value: number) {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 }
 
-const MermaidSvg = memo(function MermaidSvg({ svg, title }: { svg: string; title: string }) {
-  return <div aria-label={title} dangerouslySetInnerHTML={{ __html: svg }} />;
-});
+function mermaidSvgDocument(svg: string) {
+  const policy = [
+    "default-src 'none'",
+    "style-src 'unsafe-inline'",
+    "img-src data:",
+  ].join("; ");
+  return `<!doctype html>
+<html>
+<head>
+  <meta http-equiv="Content-Security-Policy" content="${policy}">
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #fff; }
+    body { display: grid; place-items: start center; padding: 12px; box-sizing: border-box; overflow: auto; }
+    svg { display: block; max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>${svg}</body>
+</html>`;
+}
 
 export function looksLikeMermaid(value: string) {
   const source = value.trim();
@@ -42,7 +58,7 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
   const [expanded, setExpanded] = useState(false);
   const [zoomLabel, setZoomLabel] = useState(100);
   const zoomRef = useRef(1);
-  const zoomNodeRef = useRef<HTMLDivElement | null>(null);
+  const zoomNodeRef = useRef<HTMLIFrameElement | null>(null);
   const zoomLabelFrameRef = useRef<number | null>(null);
 
   function changeZoom(nextZoom: number) {
@@ -127,6 +143,7 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
   }, [cacheKey, normalizedSource, reactId]);
 
   if (state.status === "ready") {
+    const previewDoc = mermaidSvgDocument(state.svg);
     return (
       <>
         <figure className="mermaid-diagram">
@@ -140,7 +157,7 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
           >
             Expand
           </button>
-          <MermaidSvg svg={state.svg} title={title} />
+          <iframe title={title} srcDoc={previewDoc} sandbox="" />
         </figure>
         {expanded && createPortal(
           <div
@@ -162,12 +179,13 @@ export function MermaidDiagram({ source, title = "Mermaid diagram" }: MermaidDia
                 </div>
               </header>
               <div className="mermaid-lightbox-canvas">
-                <div
+                <iframe
                   ref={zoomNodeRef}
                   className="mermaid-lightbox-zoom"
-                >
-                  <MermaidSvg svg={state.svg} title={title} />
-                </div>
+                  title={title}
+                  srcDoc={previewDoc}
+                  sandbox=""
+                />
               </div>
               <details>
                 <summary>Source</summary>
