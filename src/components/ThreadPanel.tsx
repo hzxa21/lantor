@@ -4,6 +4,7 @@ import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
+import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
@@ -324,22 +325,7 @@ export function ThreadPanel({
             disabled={!activeRoot}
             placeholder={activeRoot ? isDm ? `Reply to @${dmAgent?.handle || "agent"}` : "Reply in thread" : "Select a thread to reply"}
           />
-          {replyAttachments.length > 0 && (
-            <div className="draft-attachments">
-              {replyAttachments.map((attachment) => (
-                <span key={attachment.id}>
-                  {attachment.original_name}
-                  <button
-                    type="button"
-                    onClick={() => removeReplyAttachment(attachment.id)}
-                    aria-label={`Remove ${attachment.original_name}`}
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
+          <DraftAttachmentsPreview attachments={replyAttachments} onRemove={removeReplyAttachment} />
           <div className="reply-composer-actions">
             <div className="reply-composer-buttons">
               <button

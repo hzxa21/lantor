@@ -1485,11 +1485,34 @@ mark {
 .draft-attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 8px;
   margin-top: 8px;
 }
 
-.draft-attachments span {
+.draft-attachment {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.draft-attachment.image {
+  width: 132px;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid rgba(20, 23, 31, 0.12);
+  border-radius: 16px;
+  background: #eef0f4;
+  box-shadow: 0 8px 20px rgba(32, 36, 44, 0.07);
+}
+
+.draft-attachment.image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.draft-attachment.file {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1503,14 +1526,29 @@ mark {
   font-weight: 600;
 }
 
-.draft-attachments span > button {
+.draft-attachment.file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-attachment-remove {
   display: inline-grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border-radius: 999px;
   background: rgba(142, 142, 147, 0.16);
   color: var(--muted);
+}
+
+.draft-attachment.image .draft-attachment-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: rgba(17, 24, 39, 0.86);
+  color: #fff;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.2);
 }
 
 .attach-button {

@@ -6,7 +6,6 @@ import {
   Paperclip,
   Plus,
   Send,
-  X,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
@@ -14,6 +13,7 @@ import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
+import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
@@ -418,22 +418,7 @@ export function Conversation({
               : "Create a channel before messaging"
           }
         />
-        {draftAttachments.length > 0 && (
-          <div className="draft-attachments">
-            {draftAttachments.map((attachment) => (
-              <span key={attachment.id}>
-                {attachment.original_name}
-                <button
-                  type="button"
-                  onClick={() => removeDraftAttachment(attachment.id)}
-                  aria-label={`Remove ${attachment.original_name}`}
-                >
-                  <X size={12} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        <DraftAttachmentsPreview attachments={draftAttachments} onRemove={removeDraftAttachment} />
         <div className="composer-actions">
           {!isDm && (
             <div className="send-mode" aria-label="Send mode">
