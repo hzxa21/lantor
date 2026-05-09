@@ -1,6 +1,16 @@
-import { useState } from "react";
-import { Agent, AgentActivity, AgentRun, AgentWorkItem } from "../types";
+import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useState } from "react";
+import {
+  Agent,
+  AgentActivity,
+  AgentRun,
+  AgentWorkItem,
+  AgentWorkspaceEntry,
+  AgentWorkspaceFile,
+  AgentWorkspaceListing,
+} from "../types";
 import { AgentAvatar } from "./AgentAvatar";
+import { MessageMarkdown } from "./MessageMarkdown";
 import { agentRequestSourceLabel, formatTime } from "../ui-utils";
 
 type AgentPhase = {
@@ -205,6 +215,14 @@ function workspaceKindLabel(kind: string) {
   return "ITEM";
 }
 
+function workspaceEntryPath(entry: AgentWorkspaceEntry) {
+  return entry.relative_path || entry.name;
+}
+
+function isMarkdownWorkspaceFile(file: AgentWorkspaceFile) {
+  return file.language === "markdown" || /\.(md|markdown)$/i.test(file.name);
+}
+
 export function AgentDetailDrawer({
   agent,
   activeRun,
@@ -223,10 +241,111 @@ export function AgentDetailDrawer({
   onRetryWorkItem,
 }: AgentDetailDrawerProps) {
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
+  const [expandedWorkspaceDirs, setExpandedWorkspaceDirs] = useState<Set<string>>(new Set());
+  const [workspaceNodes, setWorkspaceNodes] = useState<Record<string, AgentWorkspaceEntry[]>>({});
+  const [workspaceLoadingPath, setWorkspaceLoadingPath] = useState<string | null>(null);
+  const [workspacePreview, setWorkspacePreview] = useState<AgentWorkspaceFile | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const deleteDisabled = Boolean(activeRun);
   const workspacePath = agent.working_directory.trim();
-  const workspaceEntries = agent.workspace_entries ?? [];
+  const rootWorkspaceEntries = workspaceNodes[""] ?? agent.workspace_entries ?? [];
   const memoryPath = agent.workspace_memory_path || (workspacePath ? `${workspacePath}/MEMORY.md` : "");
+
+  useEffect(() => {
+    setExpandedWorkspaceDirs(new Set());
+    setWorkspaceNodes({ "": agent.workspace_entries ?? [] });
+    setWorkspaceLoadingPath(null);
+    setWorkspacePreview(null);
+    setWorkspaceError(null);
+  }, [agent.id]);
+
+  async function toggleWorkspaceDir(entry: AgentWorkspaceEntry) {
+    const path = workspaceEntryPath(entry);
+    setWorkspaceError(null);
+    if (expandedWorkspaceDirs.has(path)) {
+      setExpandedWorkspaceDirs((current) => {
+        const next = new Set(current);
+        next.delete(path);
+        return next;
+      });
+      return;
+    }
+
+    setExpandedWorkspaceDirs((current) => new Set(current).add(path));
+    if (workspaceNodes[path]) return;
+
+    setWorkspaceLoadingPath(path);
+    try {
+      const listing = await invoke<AgentWorkspaceListing>("agent_workspace_list", {
+        agentId: agent.id,
+        path,
+      });
+      setWorkspaceNodes((current) => ({ ...current, [path]: listing.entries }));
+    } catch (err) {
+      setWorkspaceError(String(err));
+    } finally {
+      setWorkspaceLoadingPath(null);
+    }
+  }
+
+  async function openWorkspaceFile(entry: AgentWorkspaceEntry) {
+    const path = workspaceEntryPath(entry);
+    setWorkspaceError(null);
+    setWorkspaceLoadingPath(path);
+    try {
+      const file = await invoke<AgentWorkspaceFile>("agent_workspace_read_file", {
+        agentId: agent.id,
+        path,
+      });
+      setWorkspacePreview(file);
+    } catch (err) {
+      setWorkspaceError(String(err));
+    } finally {
+      setWorkspaceLoadingPath(null);
+    }
+  }
+
+  function renderWorkspaceEntries(entries: AgentWorkspaceEntry[], depth = 0) {
+    return entries.map((entry) => {
+      const entryPath = workspaceEntryPath(entry);
+      const isDir = entry.kind === "dir";
+      const expanded = expandedWorkspaceDirs.has(entryPath);
+      const children = workspaceNodes[entryPath] ?? [];
+      const loading = workspaceLoadingPath === entryPath;
+      return (
+        <div key={entry.path} className="workspace-tree-node">
+          <button
+            type="button"
+            className={`workspace-tree-row ${isDir ? "is-dir" : "is-file"} ${workspacePreview?.relative_path === entryPath ? "selected" : ""}`}
+            style={{ paddingLeft: 10 + depth * 16 }}
+            onClick={() => {
+              if (isDir) {
+                void toggleWorkspaceDir(entry);
+              } else {
+                void openWorkspaceFile(entry);
+              }
+            }}
+          >
+            <span className={`workspace-entry-kind kind-${entry.kind}`}>
+              {isDir ? expanded ? "OPEN" : "DIR" : workspaceKindLabel(entry.kind)}
+            </span>
+            <div className="workspace-entry-main">
+              <strong title={entry.path}>{entry.name}</strong>
+              <small>{isDir ? compactPath(entry.path) : formatEntrySize(entry.size_bytes)}</small>
+            </div>
+            {loading && <span className="workspace-row-status">Loading</span>}
+          </button>
+          {isDir && expanded && (
+            <div className="workspace-tree-children">
+              {children.length > 0
+                ? renderWorkspaceEntries(children, depth + 1)
+                : !loading && <p className="workspace-empty-folder">Empty folder</p>}
+            </div>
+          )}
+        </div>
+      );
+    });
+  }
 
   return (
     <aside className="agent-drawer">
@@ -305,19 +424,9 @@ export function AgentDetailDrawer({
               </div>
               <strong>{agent.workspace_memory_exists ? "Present" : "Missing"}</strong>
             </div>
-            {workspaceEntries.length > 0 ? (
+            {rootWorkspaceEntries.length > 0 ? (
               <div className="workspace-tree" aria-label={`${agent.handle} workspace files`}>
-                {workspaceEntries.map((entry) => (
-                  <div key={entry.path} className="workspace-tree-row">
-                    <span className={`workspace-entry-kind kind-${entry.kind}`}>
-                      {workspaceKindLabel(entry.kind)}
-                    </span>
-                    <div className="workspace-entry-main">
-                      <strong title={entry.path}>{entry.name}</strong>
-                      <small>{entry.kind === "dir" ? compactPath(entry.path) : formatEntrySize(entry.size_bytes)}</small>
-                    </div>
-                  </div>
-                ))}
+                {renderWorkspaceEntries(rootWorkspaceEntries)}
               </div>
             ) : (
               <p className="empty-mini">
@@ -325,6 +434,26 @@ export function AgentDetailDrawer({
                   ? agent.workspace_exists ? "No visible workspace files yet." : "Workspace directory does not exist yet."
                   : "Set a working directory to show workspace files."}
               </p>
+            )}
+            {workspaceError && <p className="workspace-error">{workspaceError}</p>}
+            {workspacePreview && (
+              <div className="workspace-preview">
+                <div className="workspace-preview-head">
+                  <div>
+                    <strong>{workspacePreview.name}</strong>
+                    <span>
+                      {compactPath(workspacePreview.path)} · {formatEntrySize(workspacePreview.size_bytes)}
+                      {workspacePreview.truncated ? " · truncated" : ""}
+                    </span>
+                  </div>
+                  <button type="button" onClick={() => setWorkspacePreview(null)}>Close</button>
+                </div>
+                {isMarkdownWorkspaceFile(workspacePreview) ? (
+                  <MessageMarkdown body={workspacePreview.content} />
+                ) : (
+                  <pre className="workspace-preview-raw">{workspacePreview.content}</pre>
+                )}
+              </div>
             )}
           </section>
           <section className="detail-section performance-section">

@@ -1,8 +1,24 @@
 export type AgentWorkspaceEntry = {
   name: string;
   path: string;
+  relative_path: string;
   kind: "dir" | "file" | "other" | string;
   size_bytes: number | null;
+};
+
+export type AgentWorkspaceListing = {
+  path: string;
+  entries: AgentWorkspaceEntry[];
+};
+
+export type AgentWorkspaceFile = {
+  name: string;
+  path: string;
+  relative_path: string;
+  size_bytes: number;
+  language: string;
+  content: string;
+  truncated: boolean;
 };
 
 export type Agent = {

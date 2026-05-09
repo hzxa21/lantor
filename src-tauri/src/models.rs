@@ -35,8 +35,26 @@ pub(crate) struct Agent {
 pub(crate) struct AgentWorkspaceEntry {
     pub(crate) name: String,
     pub(crate) path: String,
+    pub(crate) relative_path: String,
     pub(crate) kind: String,
     pub(crate) size_bytes: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentWorkspaceListing {
+    pub(crate) path: String,
+    pub(crate) entries: Vec<AgentWorkspaceEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentWorkspaceFile {
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) relative_path: String,
+    pub(crate) size_bytes: i64,
+    pub(crate) language: String,
+    pub(crate) content: String,
+    pub(crate) truncated: bool,
 }
 
 #[derive(Debug, Serialize)]

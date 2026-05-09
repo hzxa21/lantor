@@ -2387,18 +2387,38 @@ body.resizing-column * {
   background: rgba(255, 255, 255, 0.58);
 }
 
-.workspace-tree-row {
+.workspace-tree-node {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
   min-width: 0;
-  padding: 8px 10px;
-  border-bottom: 1px solid rgba(118, 118, 128, 0.08);
 }
 
-.workspace-tree-row:last-child {
+.workspace-tree-row {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid rgba(118, 118, 128, 0.08);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.workspace-tree-row:hover,
+.workspace-tree-row.selected {
+  background: rgba(10, 132, 255, 0.07);
+}
+
+.workspace-tree-node:last-child > .workspace-tree-row {
   border-bottom: 0;
+}
+
+.workspace-tree-children {
+  display: grid;
+  border-bottom: 1px solid rgba(118, 118, 128, 0.08);
 }
 
 .workspace-entry-kind {
@@ -2414,6 +2434,11 @@ body.resizing-column * {
 .workspace-entry-kind.kind-dir {
   background: rgba(10, 132, 255, 0.1);
   color: var(--accent);
+}
+
+.workspace-tree-row.is-file .workspace-entry-kind {
+  background: rgba(52, 199, 89, 0.12);
+  color: #167d32;
 }
 
 .workspace-entry-main {
@@ -2437,6 +2462,99 @@ body.resizing-column * {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-row-status {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.workspace-empty-folder {
+  margin: 0;
+  padding: 7px 10px 7px 72px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workspace-error {
+  margin: 0;
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: rgba(255, 69, 58, 0.1);
+  color: #c91810;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.workspace-preview {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  max-height: 430px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid rgba(10, 132, 255, 0.14);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.workspace-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workspace-preview-head > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.workspace-preview-head strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-preview-head span {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-preview-head button {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.workspace-preview .markdown-body {
+  min-width: 0;
+  font-size: 13px;
+}
+
+.workspace-preview-raw {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: #111827;
+  color: #f9fafb;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .live-activity-section {
