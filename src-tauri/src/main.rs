@@ -38,9 +38,9 @@ use attachments::{load_message_attachment_lines, write_attachment_file, ATTACHME
 use context_tool::run_agent_context_tool;
 use models::{
     Agent, AgentActivity, AgentRun, AgentRunPatch, AgentSchedule, AgentWorkItem,
-    AgentWorkItemPatch, Artifact, AttachmentUpload, Bootstrap, Channel, ChannelMember,
-    LaunchAgentStatus, Message, MessageAttachment, Reminder, RuntimeCheck, SupervisorCommand,
-    SupervisorStatus, Task,
+    AgentWorkItemPatch, AgentWorkspaceEntry, Artifact, AttachmentUpload, Bootstrap, Channel,
+    ChannelMember, LaunchAgentStatus, Message, MessageAttachment, Reminder, RuntimeCheck,
+    SupervisorCommand, SupervisorStatus, Task,
 };
 use prompts::{
     build_claude_streaming_prompt, build_codex_streaming_prompt, build_work_item_prompt,
@@ -3819,21 +3819,104 @@ async fn load_agents(pool: &PgPool) -> CommandResult<Vec<Agent>> {
 
     Ok(rows
         .into_iter()
-        .map(|row| Agent {
-            id: row.get("id"),
-            handle: row.get("handle"),
-            display_name: row.get("display_name"),
-            role: row.get("role"),
-            status: row.get("status"),
-            runtime: row.get("runtime"),
-            model: row.get("model"),
-            avatar: row.get("avatar"),
-            description: row.get("description"),
-            launch_command: row.get("launch_command"),
-            working_directory: row.get("working_directory"),
-            daily_budget_micros: row.get("daily_budget_micros"),
+        .map(|row| {
+            let working_directory: String = row.get("working_directory");
+            let workspace = load_agent_workspace_summary(&working_directory);
+            Agent {
+                id: row.get("id"),
+                handle: row.get("handle"),
+                display_name: row.get("display_name"),
+                role: row.get("role"),
+                status: row.get("status"),
+                runtime: row.get("runtime"),
+                model: row.get("model"),
+                avatar: row.get("avatar"),
+                description: row.get("description"),
+                launch_command: row.get("launch_command"),
+                working_directory,
+                workspace_exists: workspace.exists,
+                workspace_memory_path: workspace.memory_path,
+                workspace_memory_exists: workspace.memory_exists,
+                workspace_entries: workspace.entries,
+                daily_budget_micros: row.get("daily_budget_micros"),
+            }
         })
         .collect())
+}
+
+struct AgentWorkspaceSummary {
+    exists: bool,
+    memory_path: String,
+    memory_exists: bool,
+    entries: Vec<AgentWorkspaceEntry>,
+}
+
+fn load_agent_workspace_summary(working_directory: &str) -> AgentWorkspaceSummary {
+    let working_directory = working_directory.trim();
+    if working_directory.is_empty() {
+        return AgentWorkspaceSummary {
+            exists: false,
+            memory_path: String::new(),
+            memory_exists: false,
+            entries: Vec::new(),
+        };
+    }
+
+    let workspace = PathBuf::from(working_directory);
+    let memory_path = workspace.join("MEMORY.md");
+    let memory_path_string = memory_path.to_string_lossy().to_string();
+    let exists = workspace.is_dir();
+    let memory_exists = memory_path.is_file();
+    let mut entries = Vec::new();
+
+    if exists {
+        if let Ok(read_dir) = fs::read_dir(&workspace) {
+            for entry in read_dir.flatten() {
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                if should_hide_workspace_entry(&file_name) {
+                    continue;
+                }
+                if let Ok(metadata) = entry.metadata() {
+                    let kind = if metadata.is_dir() {
+                        "dir"
+                    } else if metadata.is_file() {
+                        "file"
+                    } else {
+                        "other"
+                    };
+                    entries.push(AgentWorkspaceEntry {
+                        name: file_name,
+                        path: entry.path().to_string_lossy().to_string(),
+                        kind: kind.to_owned(),
+                        size_bytes: metadata.is_file().then_some(metadata.len() as i64),
+                    });
+                }
+            }
+        }
+    }
+
+    entries.sort_by(
+        |left, right| match (left.kind.as_str(), right.kind.as_str()) {
+            ("dir", "file") | ("dir", "other") | ("file", "other") => std::cmp::Ordering::Less,
+            ("file", "dir") | ("other", "dir") | ("other", "file") => std::cmp::Ordering::Greater,
+            _ => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
+        },
+    );
+    entries.truncate(48);
+
+    AgentWorkspaceSummary {
+        exists,
+        memory_path: memory_path_string,
+        memory_exists,
+        entries,
+    }
+}
+
+fn should_hide_workspace_entry(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | "dist" | ".next" | ".turbo"
+    )
 }
 
 async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {

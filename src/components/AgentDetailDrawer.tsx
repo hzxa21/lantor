@@ -187,6 +187,24 @@ function formatCost(value: number) {
   return `$${(value / 1_000_000).toFixed(value > 10_000 ? 2 : 4)}`;
 }
 
+function compactPath(value: string) {
+  if (!value) return "";
+  return value.replace(/^\/Users\/[^/]+/, "~");
+}
+
+function formatEntrySize(value: number | null) {
+  if (value === null) return "";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} MB`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)} KB`;
+  return `${value} B`;
+}
+
+function workspaceKindLabel(kind: string) {
+  if (kind === "dir") return "DIR";
+  if (kind === "file") return "FILE";
+  return "ITEM";
+}
+
 export function AgentDetailDrawer({
   agent,
   activeRun,
@@ -206,6 +224,9 @@ export function AgentDetailDrawer({
 }: AgentDetailDrawerProps) {
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
   const deleteDisabled = Boolean(activeRun);
+  const workspacePath = agent.working_directory.trim();
+  const workspaceEntries = agent.workspace_entries ?? [];
+  const memoryPath = agent.workspace_memory_path || (workspacePath ? `${workspacePath}/MEMORY.md` : "");
 
   return (
     <aside className="agent-drawer">
@@ -246,7 +267,7 @@ export function AgentDetailDrawer({
           <section className="detail-grid">
             <div>
               <span>Workspace</span>
-              <code>{agent.working_directory || "Not configured"}</code>
+              <code>{workspacePath ? agent.workspace_exists ? "Available" : "Missing" : "Not configured"}</code>
             </div>
             <div>
               <span>Active run</span>
@@ -260,6 +281,51 @@ export function AgentDetailDrawer({
               <span>Description</span>
               <code>{agent.description || "No notes"}</code>
             </div>
+          </section>
+          <section className="detail-section workspace-section">
+            <div className="detail-section-head">
+              <h4>Workspace</h4>
+              <span>{workspacePath ? agent.workspace_exists ? "Ready" : "Missing" : "Not configured"}</span>
+            </div>
+            <div className="workspace-path-card">
+              <div>
+                <span>Path</span>
+                <code title={workspacePath}>{workspacePath ? compactPath(workspacePath) : "Not configured"}</code>
+              </div>
+              {workspacePath && (
+                <button type="button" onClick={() => void navigator.clipboard.writeText(workspacePath)}>
+                  Copy
+                </button>
+              )}
+            </div>
+            <div className={`workspace-memory-card ${agent.workspace_memory_exists ? "ready" : "missing"}`}>
+              <div>
+                <span>MEMORY.md</span>
+                <code title={memoryPath}>{memoryPath ? compactPath(memoryPath) : "Not configured"}</code>
+              </div>
+              <strong>{agent.workspace_memory_exists ? "Present" : "Missing"}</strong>
+            </div>
+            {workspaceEntries.length > 0 ? (
+              <div className="workspace-tree" aria-label={`${agent.handle} workspace files`}>
+                {workspaceEntries.map((entry) => (
+                  <div key={entry.path} className="workspace-tree-row">
+                    <span className={`workspace-entry-kind kind-${entry.kind}`}>
+                      {workspaceKindLabel(entry.kind)}
+                    </span>
+                    <div className="workspace-entry-main">
+                      <strong title={entry.path}>{entry.name}</strong>
+                      <small>{entry.kind === "dir" ? compactPath(entry.path) : formatEntrySize(entry.size_bytes)}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="empty-mini">
+                {workspacePath
+                  ? agent.workspace_exists ? "No visible workspace files yet." : "Workspace directory does not exist yet."
+                  : "Set a working directory to show workspace files."}
+              </p>
+            )}
           </section>
           <section className="detail-section performance-section">
             <div className="detail-section-head">

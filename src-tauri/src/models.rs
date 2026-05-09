@@ -24,7 +24,19 @@ pub(crate) struct Agent {
     pub(crate) description: String,
     pub(crate) launch_command: String,
     pub(crate) working_directory: String,
+    pub(crate) workspace_exists: bool,
+    pub(crate) workspace_memory_path: String,
+    pub(crate) workspace_memory_exists: bool,
+    pub(crate) workspace_entries: Vec<AgentWorkspaceEntry>,
     pub(crate) daily_budget_micros: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentWorkspaceEntry {
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) kind: String,
+    pub(crate) size_bytes: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]

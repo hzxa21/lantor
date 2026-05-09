@@ -1,3 +1,10 @@
+export type AgentWorkspaceEntry = {
+  name: string;
+  path: string;
+  kind: "dir" | "file" | "other" | string;
+  size_bytes: number | null;
+};
+
 export type Agent = {
   id: string;
   handle: string;
@@ -10,6 +17,10 @@ export type Agent = {
   description: string;
   launch_command: string;
   working_directory: string;
+  workspace_exists: boolean;
+  workspace_memory_path: string;
+  workspace_memory_exists: boolean;
+  workspace_entries: AgentWorkspaceEntry[];
   daily_budget_micros: number;
 };
 

@@ -8,7 +8,7 @@ import {
   Send,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
@@ -156,6 +156,15 @@ export function Conversation({
     setIsComposerDragOver(false);
     if (!channel || event.dataTransfer.files.length === 0) return;
     addDraftAttachments(event.dataTransfer.files);
+    focusComposer();
+  }
+
+  function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const imageFiles = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+    event.preventDefault();
+    if (!channel) return;
+    addDraftAttachments(imageFiles);
     focusComposer();
   }
 
@@ -399,6 +408,7 @@ export function Conversation({
           }}
           onSelect={(event) => refreshMentionState(draft, event.currentTarget.selectionStart)}
           onKeyDown={handleComposerKeyDown}
+          onPaste={handleComposerPaste}
           disabled={!channel}
           placeholder={
             channel

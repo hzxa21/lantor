@@ -1,5 +1,5 @@
 import { MessageSquare, Paperclip, Reply, X } from "lucide-react";
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
@@ -129,6 +129,15 @@ export function ThreadPanel({
     setIsReplyDragOver(false);
     if (!activeRoot || event.dataTransfer.files.length === 0) return;
     addReplyAttachments(event.dataTransfer.files);
+    focusComposer();
+  }
+
+  function handleReplyPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const imageFiles = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+    event.preventDefault();
+    if (!activeRoot) return;
+    addReplyAttachments(imageFiles);
     focusComposer();
   }
 
@@ -311,6 +320,7 @@ export function ThreadPanel({
             }}
             onSelect={(event) => refreshMentionState(replyDraft, event.currentTarget.selectionStart)}
             onKeyDown={handleReplyKeyDown}
+            onPaste={handleReplyPaste}
             disabled={!activeRoot}
             placeholder={activeRoot ? isDm ? `Reply to @${dmAgent?.handle || "agent"}` : "Reply in thread" : "Select a thread to reply"}
           />
