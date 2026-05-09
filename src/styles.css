@@ -2349,35 +2349,6 @@ body.resizing-column * {
   white-space: nowrap;
 }
 
-.workspace-path-card button {
-  padding: 7px 10px;
-  border-radius: 10px;
-  background: rgba(10, 132, 255, 0.1);
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.workspace-memory-card strong {
-  padding: 5px 8px;
-  border-radius: 999px;
-  background: rgba(142, 142, 147, 0.12);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.workspace-memory-card.ready strong {
-  background: rgba(52, 199, 89, 0.14);
-  color: #167d32;
-}
-
-.workspace-memory-card.missing strong {
-  background: rgba(255, 159, 10, 0.16);
-  color: #9a5a00;
-}
-
 .workspace-tree {
   display: grid;
   max-height: 260px;
@@ -2394,9 +2365,9 @@ body.resizing-column * {
 
 .workspace-tree-row {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) auto;
+  grid-template-columns: 18px 46px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
   min-width: 0;
   padding: 8px 10px;
@@ -2405,6 +2376,23 @@ body.resizing-column * {
   border-radius: 0;
   background: transparent;
   text-align: left;
+}
+
+.workspace-disclosure {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.workspace-tree-row.is-dir:hover .workspace-disclosure {
+  background: rgba(10, 132, 255, 0.12);
+  color: var(--accent);
 }
 
 .workspace-tree-row:hover,
@@ -2472,7 +2460,7 @@ body.resizing-column * {
 
 .workspace-empty-folder {
   margin: 0;
-  padding: 7px 10px 7px 72px;
+  padding: 7px 10px 7px 92px;
   color: var(--muted);
   font-size: 12px;
 }

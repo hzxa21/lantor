@@ -326,8 +326,11 @@ export function AgentDetailDrawer({
               }
             }}
           >
+            <span className="workspace-disclosure" aria-hidden="true">
+              {isDir ? expanded ? "v" : ">" : ""}
+            </span>
             <span className={`workspace-entry-kind kind-${entry.kind}`}>
-              {isDir ? expanded ? "OPEN" : "DIR" : workspaceKindLabel(entry.kind)}
+              {isDir ? "DIR" : workspaceKindLabel(entry.kind)}
             </span>
             <div className="workspace-entry-main">
               <strong title={entry.path}>{entry.name}</strong>
@@ -411,18 +414,12 @@ export function AgentDetailDrawer({
                 <span>Path</span>
                 <code title={workspacePath}>{workspacePath ? compactPath(workspacePath) : "Not configured"}</code>
               </div>
-              {workspacePath && (
-                <button type="button" onClick={() => void navigator.clipboard.writeText(workspacePath)}>
-                  Copy
-                </button>
-              )}
             </div>
             <div className={`workspace-memory-card ${agent.workspace_memory_exists ? "ready" : "missing"}`}>
               <div>
                 <span>MEMORY.md</span>
                 <code title={memoryPath}>{memoryPath ? compactPath(memoryPath) : "Not configured"}</code>
               </div>
-              <strong>{agent.workspace_memory_exists ? "Present" : "Missing"}</strong>
             </div>
             {rootWorkspaceEntries.length > 0 ? (
               <div className="workspace-tree" aria-label={`${agent.handle} workspace files`}>
