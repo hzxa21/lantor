@@ -19,6 +19,14 @@ type AgentPhase = {
   detail: string;
 };
 
+type AgentDetailTab = "profile" | "activity" | "workspace";
+
+const AGENT_DETAIL_TABS: Array<{ id: AgentDetailTab; label: string }> = [
+  { id: "profile", label: "Profile" },
+  { id: "activity", label: "Activity" },
+  { id: "workspace", label: "Workspace" },
+];
+
 type AgentDetailDrawerProps = {
   agent: Agent;
   activeRun: AgentRun | null;
@@ -246,12 +254,14 @@ export function AgentDetailDrawer({
   const [workspaceLoadingPath, setWorkspaceLoadingPath] = useState<string | null>(null);
   const [workspacePreview, setWorkspacePreview] = useState<AgentWorkspaceFile | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [activeDetailTab, setActiveDetailTab] = useState<AgentDetailTab>("profile");
   const deleteDisabled = Boolean(activeRun);
   const workspacePath = agent.working_directory.trim();
   const rootWorkspaceEntries = workspaceNodes[""] ?? agent.workspace_entries ?? [];
   const memoryPath = agent.workspace_memory_path || (workspacePath ? `${workspacePath}/MEMORY.md` : "");
 
   useEffect(() => {
+    setActiveDetailTab("profile");
     setExpandedWorkspaceDirs(new Set());
     setWorkspaceNodes({ "": agent.workspace_entries ?? [] });
     setWorkspaceLoadingPath(null);
@@ -352,6 +362,259 @@ export function AgentDetailDrawer({
     });
   }
 
+  function tabBadge(tab: AgentDetailTab) {
+    if (tab === "profile") return agent.status;
+    if (tab === "activity") {
+      if (activeRun) return "Live";
+      return activities.length > 0 ? String(activities.length) : "Idle";
+    }
+    return workspacePath ? agent.workspace_exists ? "Ready" : "Missing" : "Unset";
+  }
+
+  function renderProfilePanel() {
+    return (
+      <>
+        <section className="detail-grid">
+          <div>
+            <span>Workspace</span>
+            <code>{workspacePath ? agent.workspace_exists ? "Available" : "Missing" : "Not configured"}</code>
+          </div>
+          <div>
+            <span>Active run</span>
+            <code>{activeRun ? `${activeRun.status}${activeRun.pid ? ` · pid ${activeRun.pid}` : ""}` : "No active run"}</code>
+          </div>
+          <div>
+            <span>Role</span>
+            <code>{agent.role || "agent"}</code>
+          </div>
+          <div>
+            <span>Description</span>
+            <code>{agent.description || "No notes"}</code>
+          </div>
+        </section>
+        <section className="detail-section performance-section">
+          <div className="detail-section-head">
+            <h4>Performance</h4>
+            <span>{performance.windowLabel}</span>
+          </div>
+          <div className="performance-grid">
+            <div className="performance-card">
+              <span>Turns</span>
+              <strong>{performance.turns}</strong>
+              <small>{performance.completedTurns} done · {performance.failedTurns} failed</small>
+            </div>
+            <div className="performance-card">
+              <span>First token</span>
+              <strong>{formatDuration(performance.p50FirstTokenMs)}</strong>
+              <small>p95 {formatDuration(performance.p95FirstTokenMs)}</small>
+            </div>
+            <div className="performance-card">
+              <span>Turn duration</span>
+              <strong>{formatDuration(performance.p50TurnMs)}</strong>
+              <small>p95 {formatDuration(performance.p95TurnMs)}</small>
+            </div>
+            <div className="performance-card">
+              <span>Error rate</span>
+              <strong>{Math.round(performance.errorRate * 100)}%</strong>
+              <small>{performance.activeTurns} currently active</small>
+            </div>
+            <div className="performance-card">
+              <span>Tokens</span>
+              <strong>{formatTokenCount(performance.inputTokens + performance.outputTokens)}</strong>
+              <small>{formatTokenCount(performance.inputTokens)} in · {formatTokenCount(performance.outputTokens)} out</small>
+            </div>
+            <div className="performance-card">
+              <span>Cost est.</span>
+              <strong>{formatCost(performance.costMicros)}</strong>
+              <small>
+                {agent.daily_budget_micros > 0
+                  ? `${formatCost(agent.daily_budget_micros)} daily budget`
+                  : "No daily cap"}
+              </small>
+            </div>
+          </div>
+        </section>
+        <section className="detail-section agent-autonomy-card">
+          <div>
+            <h4>Agent-managed routines</h4>
+            <p>
+              Scheduled follow-ups are created from conversation intent by the agent through LocalSlock APIs.
+              This panel stays focused on state, activity, and control instead of manual routine forms.
+            </p>
+          </div>
+        </section>
+      </>
+    );
+  }
+
+  function renderWorkspacePanel() {
+    return (
+      <section className="detail-section workspace-section">
+        <div className="detail-section-head">
+          <h4>Workspace</h4>
+          <span>{workspacePath ? agent.workspace_exists ? "Ready" : "Missing" : "Not configured"}</span>
+        </div>
+        <div className="workspace-path-card">
+          <div>
+            <span>Path</span>
+            <code title={workspacePath}>{workspacePath ? compactPath(workspacePath) : "Not configured"}</code>
+          </div>
+        </div>
+        <div className={`workspace-memory-card ${agent.workspace_memory_exists ? "ready" : "missing"}`}>
+          <div>
+            <span>MEMORY.md</span>
+            <code title={memoryPath}>{memoryPath ? compactPath(memoryPath) : "Not configured"}</code>
+          </div>
+        </div>
+        {rootWorkspaceEntries.length > 0 ? (
+          <>
+            <p className="workspace-hint">Expand folders or preview text files from this workspace.</p>
+            <div className="workspace-tree" aria-label={`${agent.handle} workspace files`}>
+              {renderWorkspaceEntries(rootWorkspaceEntries)}
+            </div>
+          </>
+        ) : (
+          <p className="empty-mini">
+            {workspacePath
+              ? agent.workspace_exists ? "No visible workspace files yet." : "Workspace directory does not exist yet."
+              : "Set a working directory to show workspace files."}
+          </p>
+        )}
+        {workspaceError && <p className="workspace-error">{workspaceError}</p>}
+        {workspacePreview && (
+          <div className="workspace-preview">
+            <div className="workspace-preview-head">
+              <div>
+                <strong>{workspacePreview.name}</strong>
+                <span>
+                  {compactPath(workspacePreview.path)} · {formatEntrySize(workspacePreview.size_bytes)}
+                  {workspacePreview.truncated ? " · truncated" : ""}
+                </span>
+              </div>
+              <button type="button" onClick={() => setWorkspacePreview(null)}>Close</button>
+            </div>
+            {isMarkdownWorkspaceFile(workspacePreview) ? (
+              <MessageMarkdown body={workspacePreview.content} />
+            ) : (
+              <pre className="workspace-preview-raw">{workspacePreview.content}</pre>
+            )}
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  function renderActivityPanel() {
+    return (
+      <>
+        <section className="detail-section live-activity-section">
+          <div className="detail-section-head">
+            <h4>Live activity</h4>
+            {activities.length > 0 && <span>Latest {activities.length}</span>}
+          </div>
+          {activities.length === 0 && <p className="empty-mini">No activity yet.</p>}
+          {activities.length > 0 && (
+            <div className="activity-timeline" role="log" aria-label={`${agent.handle} activity`}>
+              {activities.map((activity) => {
+                const title = userFacingActivityTitle(activity);
+                const detail = userFacingActivityDetail(activity);
+                const category = userFacingActivityCategory(activity);
+                const visibleMetadata = visibleMetadataEntries(activity);
+                const allMetadata = metadataEntries(activity);
+                return (
+                  <article
+                    key={activity.id}
+                    className={`activity-timeline-row ${expandedActivityId === activity.id ? "expanded" : ""}`}
+                    data-kind={activity.kind}
+                    data-phase={activity.phase}
+                    data-status={activity.status}
+                    onClick={() => setExpandedActivityId((current) => current === activity.id ? null : activity.id)}
+                  >
+                    <time>{formatActivityTime(activity.created_at)}</time>
+                    <span
+                      className="activity-dot"
+                      data-kind={activity.kind}
+                      data-phase={activity.phase}
+                      data-status={activity.status}
+                      aria-hidden="true"
+                    />
+                    <div className="activity-timeline-body">
+                      <div className="activity-timeline-title">
+                        <strong>{title}</strong>
+                        <span className={`activity-status status-${activity.status}`}>
+                          {statusForActivity(activity)}
+                        </span>
+                      </div>
+                      <div className="activity-structure-line">
+                        <span>{category}</span>
+                        {activity.status === "active" && <span>In progress</span>}
+                      </div>
+                      {visibleMetadata.length > 0 && (
+                        <div className="activity-metadata">
+                          {visibleMetadata.map(([key, value]) => (
+                            <span key={key} title={`${key}: ${value}`}>
+                              <b>{key}</b>
+                              {compactValue(value)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {detail && (
+                        <p title="Click to expand activity detail">{compactValue(detail, 120)}</p>
+                      )}
+                      {expandedActivityId === activity.id && allMetadata.length > 0 && (
+                        <pre className="activity-raw">{JSON.stringify(activity.metadata, null, 2)}</pre>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+        <section className="detail-section">
+          <div className="detail-section-head">
+            <h4>Agent inbox</h4>
+            {workItems.length > 0 && <span>{workItems.length} requests</span>}
+          </div>
+          {workItems.length === 0 && <p className="empty-mini">No agent requests yet.</p>}
+          {workItems.map((item) => (
+            <article key={item.id} className="detail-work" onClick={() => onOpenWorkItem(item)}>
+              <div>
+                <strong>{item.title}</strong>
+                <span>{agentRequestSourceLabel(item.source_kind, item.task_number)} · {item.status}</span>
+              </div>
+              <div className="detail-work-actions">
+                {["queued", "running", "cancelling"].includes(item.status) && (
+                  <button
+                    className="danger"
+                    disabled={item.status === "cancelling"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onCancelWorkItem(item);
+                    }}
+                  >
+                    {item.status === "cancelling" ? "Cancelling" : "Cancel"}
+                  </button>
+                )}
+                {["failed", "cancelled"].includes(item.status) && (
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRetryWorkItem(item);
+                    }}
+                  >
+                    Retry
+                  </button>
+                )}
+              </div>
+            </article>
+          ))}
+        </section>
+      </>
+    );
+  }
+
   return (
     <aside className="agent-drawer">
       <header className="agent-drawer-head">
@@ -388,228 +651,33 @@ export function AgentDetailDrawer({
             </div>
             <span className={`status-badge ${agent.status}`}>{agent.status}</span>
           </section>
-          <section className="detail-grid">
-            <div>
-              <span>Workspace</span>
-              <code>{workspacePath ? agent.workspace_exists ? "Available" : "Missing" : "Not configured"}</code>
-            </div>
-            <div>
-              <span>Active run</span>
-              <code>{activeRun ? `${activeRun.status}${activeRun.pid ? ` · pid ${activeRun.pid}` : ""}` : "No active run"}</code>
-            </div>
-            <div>
-              <span>Role</span>
-              <code>{agent.role || "agent"}</code>
-            </div>
-            <div>
-              <span>Description</span>
-              <code>{agent.description || "No notes"}</code>
-            </div>
-          </section>
-          <section className="detail-section workspace-section">
-            <div className="detail-section-head">
-              <h4>Workspace</h4>
-              <span>{workspacePath ? agent.workspace_exists ? "Ready" : "Missing" : "Not configured"}</span>
-            </div>
-            <div className="workspace-path-card">
-              <div>
-                <span>Path</span>
-                <code title={workspacePath}>{workspacePath ? compactPath(workspacePath) : "Not configured"}</code>
-              </div>
-            </div>
-            <div className={`workspace-memory-card ${agent.workspace_memory_exists ? "ready" : "missing"}`}>
-              <div>
-                <span>MEMORY.md</span>
-                <code title={memoryPath}>{memoryPath ? compactPath(memoryPath) : "Not configured"}</code>
-              </div>
-            </div>
-            {rootWorkspaceEntries.length > 0 ? (
-              <>
-                <p className="workspace-hint">Expand folders or preview text files from this workspace.</p>
-                <div className="workspace-tree" aria-label={`${agent.handle} workspace files`}>
-                  {renderWorkspaceEntries(rootWorkspaceEntries)}
-                </div>
-              </>
-            ) : (
-              <p className="empty-mini">
-                {workspacePath
-                  ? agent.workspace_exists ? "No visible workspace files yet." : "Workspace directory does not exist yet."
-                  : "Set a working directory to show workspace files."}
-              </p>
-            )}
-            {workspaceError && <p className="workspace-error">{workspaceError}</p>}
-            {workspacePreview && (
-              <div className="workspace-preview">
-                <div className="workspace-preview-head">
-                  <div>
-                    <strong>{workspacePreview.name}</strong>
-                    <span>
-                      {compactPath(workspacePreview.path)} · {formatEntrySize(workspacePreview.size_bytes)}
-                      {workspacePreview.truncated ? " · truncated" : ""}
-                    </span>
-                  </div>
-                  <button type="button" onClick={() => setWorkspacePreview(null)}>Close</button>
-                </div>
-                {isMarkdownWorkspaceFile(workspacePreview) ? (
-                  <MessageMarkdown body={workspacePreview.content} />
-                ) : (
-                  <pre className="workspace-preview-raw">{workspacePreview.content}</pre>
-                )}
-              </div>
-            )}
-          </section>
-          <section className="detail-section performance-section">
-            <div className="detail-section-head">
-              <h4>Performance</h4>
-              <span>{performance.windowLabel}</span>
-            </div>
-            <div className="performance-grid">
-              <div className="performance-card">
-                <span>Turns</span>
-                <strong>{performance.turns}</strong>
-                <small>{performance.completedTurns} done · {performance.failedTurns} failed</small>
-              </div>
-              <div className="performance-card">
-                <span>First token</span>
-                <strong>{formatDuration(performance.p50FirstTokenMs)}</strong>
-                <small>p95 {formatDuration(performance.p95FirstTokenMs)}</small>
-              </div>
-              <div className="performance-card">
-                <span>Turn duration</span>
-                <strong>{formatDuration(performance.p50TurnMs)}</strong>
-                <small>p95 {formatDuration(performance.p95TurnMs)}</small>
-              </div>
-              <div className="performance-card">
-                <span>Error rate</span>
-                <strong>{Math.round(performance.errorRate * 100)}%</strong>
-                <small>{performance.activeTurns} currently active</small>
-              </div>
-              <div className="performance-card">
-                <span>Tokens</span>
-                <strong>{formatTokenCount(performance.inputTokens + performance.outputTokens)}</strong>
-                <small>{formatTokenCount(performance.inputTokens)} in · {formatTokenCount(performance.outputTokens)} out</small>
-              </div>
-              <div className="performance-card">
-                <span>Cost est.</span>
-                <strong>{formatCost(performance.costMicros)}</strong>
-                <small>
-                  {agent.daily_budget_micros > 0
-                    ? `${formatCost(agent.daily_budget_micros)} daily budget`
-                    : "No daily cap"}
-                </small>
-              </div>
-            </div>
-          </section>
-          <section className="detail-section agent-autonomy-card">
-            <div>
-              <h4>Agent-managed routines</h4>
-              <p>
-                Scheduled follow-ups are created from conversation intent by the agent through LocalSlock APIs.
-                This panel stays focused on state, activity, and control instead of manual routine forms.
-              </p>
-            </div>
-          </section>
-          <section className="detail-section live-activity-section">
-            <div className="detail-section-head">
-              <h4>Live activity</h4>
-              {activities.length > 0 && <span>Latest {activities.length}</span>}
-            </div>
-            {activities.length === 0 && <p className="empty-mini">No activity yet.</p>}
-            {activities.length > 0 && (
-              <div className="activity-timeline" role="log" aria-label={`${agent.handle} activity`}>
-                {activities.map((activity) => {
-                  const title = userFacingActivityTitle(activity);
-                  const detail = userFacingActivityDetail(activity);
-                  const category = userFacingActivityCategory(activity);
-                  const visibleMetadata = visibleMetadataEntries(activity);
-                  const allMetadata = metadataEntries(activity);
-                  return (
-                    <article
-                      key={activity.id}
-                      className={`activity-timeline-row ${expandedActivityId === activity.id ? "expanded" : ""}`}
-                      data-kind={activity.kind}
-                      data-phase={activity.phase}
-                      data-status={activity.status}
-                      onClick={() => setExpandedActivityId((current) => current === activity.id ? null : activity.id)}
-                    >
-                      <time>{formatActivityTime(activity.created_at)}</time>
-                      <span
-                        className="activity-dot"
-                        data-kind={activity.kind}
-                        data-phase={activity.phase}
-                        data-status={activity.status}
-                        aria-hidden="true"
-                      />
-                      <div className="activity-timeline-body">
-                        <div className="activity-timeline-title">
-                          <strong>{title}</strong>
-                          <span className={`activity-status status-${activity.status}`}>
-                            {statusForActivity(activity)}
-                          </span>
-                        </div>
-                        <div className="activity-structure-line">
-                          <span>{category}</span>
-                          {activity.status === "active" && <span>In progress</span>}
-                        </div>
-                        {visibleMetadata.length > 0 && (
-                          <div className="activity-metadata">
-                            {visibleMetadata.map(([key, value]) => (
-                              <span key={key} title={`${key}: ${value}`}>
-                                <b>{key}</b>
-                                {compactValue(value)}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        {detail && (
-                          <p title="Click to expand activity detail">{compactValue(detail, 120)}</p>
-                        )}
-                        {expandedActivityId === activity.id && allMetadata.length > 0 && (
-                          <pre className="activity-raw">{JSON.stringify(activity.metadata, null, 2)}</pre>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-          <section className="detail-section">
-            <h4>Agent inbox</h4>
-            {workItems.length === 0 && <p className="empty-mini">No agent requests yet.</p>}
-            {workItems.map((item) => (
-              <article key={item.id} className="detail-work" onClick={() => onOpenWorkItem(item)}>
-                <div>
-                  <strong>{item.title}</strong>
-                  <span>{agentRequestSourceLabel(item.source_kind, item.task_number)} · {item.status}</span>
-                </div>
-                <div className="detail-work-actions">
-                  {["queued", "running", "cancelling"].includes(item.status) && (
-                    <button
-                      className="danger"
-                      disabled={item.status === "cancelling"}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onCancelWorkItem(item);
-                      }}
-                    >
-                      {item.status === "cancelling" ? "Cancelling" : "Cancel"}
-                    </button>
-                  )}
-                  {["failed", "cancelled"].includes(item.status) && (
-                    <button
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onRetryWorkItem(item);
-                      }}
-                    >
-                      Retry
-                    </button>
-                  )}
-                </div>
-              </article>
+          <nav className="agent-detail-tabs" role="tablist" aria-label={`${agent.handle} detail sections`}>
+            {AGENT_DETAIL_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                id={`agent-detail-tab-${tab.id}`}
+                type="button"
+                role="tab"
+                aria-controls={`agent-detail-panel-${tab.id}`}
+                aria-selected={activeDetailTab === tab.id}
+                className={`agent-detail-tab ${activeDetailTab === tab.id ? "active" : ""}`}
+                onClick={() => setActiveDetailTab(tab.id)}
+              >
+                <span>{tab.label}</span>
+                <small>{tabBadge(tab.id)}</small>
+              </button>
             ))}
-          </section>
+          </nav>
+          <div
+            id={`agent-detail-panel-${activeDetailTab}`}
+            className={`agent-detail-panel panel-${activeDetailTab}`}
+            role="tabpanel"
+            aria-labelledby={`agent-detail-tab-${activeDetailTab}`}
+          >
+            {activeDetailTab === "profile" && renderProfilePanel()}
+            {activeDetailTab === "activity" && renderActivityPanel()}
+            {activeDetailTab === "workspace" && renderWorkspacePanel()}
+          </div>
         </div>
       </div>
       <footer className="agent-drawer-actions">
