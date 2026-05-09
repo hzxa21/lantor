@@ -2358,6 +2358,13 @@ body.resizing-column * {
   background: rgba(255, 255, 255, 0.58);
 }
 
+.workspace-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .workspace-tree-node {
   display: grid;
   min-width: 0;
@@ -2452,10 +2459,26 @@ body.resizing-column * {
   white-space: nowrap;
 }
 
-.workspace-row-status {
+.workspace-row-action {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.1);
   color: var(--muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.workspace-tree-row.is-dir .workspace-row-action {
+  background: rgba(10, 132, 255, 0.1);
+  color: var(--accent);
+}
+
+.workspace-tree-row.is-file:hover .workspace-row-action,
+.workspace-tree-row.selected .workspace-row-action {
+  background: rgba(52, 199, 89, 0.13);
+  color: #167d32;
 }
 
 .workspace-empty-folder {

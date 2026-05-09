@@ -336,7 +336,9 @@ export function AgentDetailDrawer({
               <strong title={entry.path}>{entry.name}</strong>
               <small>{isDir ? compactPath(entry.path) : formatEntrySize(entry.size_bytes)}</small>
             </div>
-            {loading && <span className="workspace-row-status">Loading</span>}
+            <span className="workspace-row-action">
+              {loading ? "Loading" : isDir ? expanded ? "Collapse" : "Expand" : "Preview"}
+            </span>
           </button>
           {isDir && expanded && (
             <div className="workspace-tree-children">
@@ -422,9 +424,12 @@ export function AgentDetailDrawer({
               </div>
             </div>
             {rootWorkspaceEntries.length > 0 ? (
-              <div className="workspace-tree" aria-label={`${agent.handle} workspace files`}>
-                {renderWorkspaceEntries(rootWorkspaceEntries)}
-              </div>
+              <>
+                <p className="workspace-hint">Expand folders or preview text files from this workspace.</p>
+                <div className="workspace-tree" aria-label={`${agent.handle} workspace files`}>
+                  {renderWorkspaceEntries(rootWorkspaceEntries)}
+                </div>
+              </>
             ) : (
               <p className="empty-mini">
                 {workspacePath
