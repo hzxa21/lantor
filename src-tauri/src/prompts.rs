@@ -20,11 +20,15 @@ fn local_slock_operating_policy_prompt() -> &'static str {
 
 fn local_slock_context_tools_prompt() -> &'static str {
     r##"Read-only context tools:
+- workspace info: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-info
+- workspace files: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80
+- durable memory: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000
 - history: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20
 - search: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool message-search --query "text" --target "#channel" --limit 20
 - attachment: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"
 - artifact: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
-- agent introspection: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle""##
+- agent introspection: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"
+Workspace and memory commands default to your own LOCAL_SLOCK_AGENT_ID; add --target "@handle" only when inspecting another visible agent."##
 }
 
 fn local_slock_control_api_prompt() -> &'static str {
@@ -160,7 +164,7 @@ fn build_runtime_standing_prompt(
          You collaborate with one local human through channels, threads, tasks, and DMs.\n\
          {transport_note}\n\
          LocalSlock keeps one warm runtime session per agent so previous turns remain in provider context; channel and thread are delivered as message envelope fields, not as separate runtime sessions.\n\
-         Each new turn contains the latest inbox item plus a bounded context snapshot. Do not assume it is an exhaustive transcript; rely on the active runtime session and use the history/search tool when older context is needed.\n\
+         Each new turn contains the latest inbox item plus a bounded context snapshot. Do not assume it is an exhaustive transcript; rely on the active runtime session and use the history/search tool when older context is needed. Use workspace-info, workspace-list, and memory-read when you need to recover your current LocalSlock workspace or inspect durable MEMORY.md beyond the injected prompt excerpt.\n\
          \n\
          {}\n\
          \n\

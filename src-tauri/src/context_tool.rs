@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use chrono::{DateTime, Utc};
 use sqlx::{
@@ -20,6 +23,12 @@ struct AgentContextTarget {
     label: String,
 }
 
+struct AgentWorkspaceTarget {
+    id: Uuid,
+    handle: String,
+    working_directory: String,
+}
+
 fn arg_value(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
         .find_map(|window| (window[0] == name).then(|| window[1].clone()))
@@ -35,6 +44,20 @@ fn parse_context_tool_limit(args: &[String], default: i64, max: i64) -> CommandR
     };
     let parsed = raw
         .parse::<i64>()
+        .map_err(|_| format!("invalid --limit value: {raw}"))?;
+    Ok(parsed.clamp(1, max))
+}
+
+fn parse_context_tool_usize_limit(
+    args: &[String],
+    default: usize,
+    max: usize,
+) -> CommandResult<usize> {
+    let Some(raw) = arg_value(args, "--limit") else {
+        return Ok(default);
+    };
+    let parsed = raw
+        .parse::<usize>()
         .map_err(|_| format!("invalid --limit value: {raw}"))?;
     Ok(parsed.clamp(1, max))
 }
@@ -615,10 +638,250 @@ pub(crate) async fn agent_context_artifact_read_in_pool(
     ))
 }
 
+async fn resolve_agent_workspace_target(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<AgentWorkspaceTarget> {
+    let explicit_target = arg_value(args, "--target").or_else(|| arg_value(args, "--agent"));
+    let row = if let Some(target) = explicit_target {
+        let agent_id = resolve_agent_by_handle(pool, &target).await?;
+        sqlx::query("select id, handle, working_directory from agents where id = $1")
+            .bind(agent_id)
+            .fetch_one(pool)
+            .await
+            .map_err(to_string)?
+    } else if let Ok(agent_id) = env::var("LOCAL_SLOCK_AGENT_ID") {
+        let agent_id = Uuid::parse_str(agent_id.trim())
+            .map_err(|err| format!("invalid LOCAL_SLOCK_AGENT_ID: {err}"))?;
+        sqlx::query("select id, handle, working_directory from agents where id = $1")
+            .bind(agent_id)
+            .fetch_one(pool)
+            .await
+            .map_err(to_string)?
+    } else if let Ok(handle) = env::var("LOCAL_SLOCK_AGENT_HANDLE") {
+        let agent_id = resolve_agent_by_handle(pool, &handle).await?;
+        sqlx::query("select id, handle, working_directory from agents where id = $1")
+            .bind(agent_id)
+            .fetch_one(pool)
+            .await
+            .map_err(to_string)?
+    } else {
+        return Err(
+            "workspace commands require --target @handle or LOCAL_SLOCK_AGENT_ID".to_owned(),
+        );
+    };
+
+    Ok(AgentWorkspaceTarget {
+        id: row.get("id"),
+        handle: row.get("handle"),
+        working_directory: row.get("working_directory"),
+    })
+}
+
+fn workspace_path(target: &AgentWorkspaceTarget) -> CommandResult<PathBuf> {
+    let working_directory = target.working_directory.trim();
+    if working_directory.is_empty() {
+        return Err(format!(
+            "@{} has no working_directory configured",
+            target.handle
+        ));
+    }
+    Ok(PathBuf::from(working_directory))
+}
+
+fn memory_path(workspace: &Path) -> PathBuf {
+    workspace.join("MEMORY.md")
+}
+
+fn file_summary(path: &Path) -> String {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            if metadata.is_dir() {
+                "dir".to_owned()
+            } else if metadata.is_file() {
+                format!("file bytes={}", metadata.len())
+            } else {
+                "other".to_owned()
+            }
+        }
+        Err(err) => format!("missing error={}", err),
+    }
+}
+
+fn should_skip_workspace_entry(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | "dist" | ".next" | ".turbo"
+    )
+}
+
+fn collect_workspace_entries(
+    root: &Path,
+    current: &Path,
+    depth: usize,
+    max_depth: usize,
+    limit: usize,
+    entries: &mut Vec<String>,
+) {
+    if entries.len() >= limit || depth > max_depth {
+        return;
+    }
+    let Ok(read_dir) = fs::read_dir(current) else {
+        return;
+    };
+    let mut children = read_dir
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    children.sort_by(|left, right| {
+        left.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .cmp(
+                right
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default(),
+            )
+    });
+    for child in children {
+        if entries.len() >= limit {
+            return;
+        }
+        if should_skip_workspace_entry(&child) {
+            continue;
+        }
+        let relative = child.strip_prefix(root).unwrap_or(&child);
+        let is_dir = child.is_dir();
+        entries.push(format!(
+            "- {}{} ({})",
+            relative.display(),
+            if is_dir { "/" } else { "" },
+            file_summary(&child)
+        ));
+        if is_dir && depth < max_depth {
+            collect_workspace_entries(root, &child, depth + 1, max_depth, limit, entries);
+        }
+    }
+}
+
+pub(crate) async fn agent_context_workspace_info(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let target = resolve_agent_workspace_target(pool, args).await?;
+    let workspace = workspace_path(&target)?;
+    let memory = memory_path(&workspace);
+    let cwd = env::current_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|err| format!("unavailable: {err}"));
+    let mut output = vec![
+        format!("LocalSlock workspace for @{}", target.handle),
+        format!("agent_id={}", target.id),
+        format!("working_directory=\"{}\"", workspace.display()),
+        format!("context_tool_cwd=\"{}\"", cwd.replace('"', "\\\"")),
+        format!("workspace_exists={}", workspace.exists()),
+        format!("workspace_kind={}", file_summary(&workspace)),
+        format!("memory_path=\"{}\"", memory.display()),
+        format!("memory_exists={}", memory.exists()),
+        format!("memory_kind={}", file_summary(&memory)),
+    ];
+
+    if workspace.exists() && workspace.is_dir() {
+        let mut entries = Vec::new();
+        collect_workspace_entries(&workspace, &workspace, 1, 1, 12, &mut entries);
+        if !entries.is_empty() {
+            output.push("top_level_entries:".to_owned());
+            output.extend(entries);
+        }
+    }
+    Ok(output.join("\n"))
+}
+
+pub(crate) async fn agent_context_memory_read(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let target = resolve_agent_workspace_target(pool, args).await?;
+    let workspace = workspace_path(&target)?;
+    let memory = memory_path(&workspace);
+    if !memory.exists() {
+        return Ok(format!(
+            "LocalSlock MEMORY.md for @{}\nmemory_path=\"{}\"\nmemory_exists=false",
+            target.handle,
+            memory.display()
+        ));
+    }
+    let metadata = fs::metadata(&memory).map_err(to_string)?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "MEMORY.md is not a regular file: {}",
+            memory.display()
+        ));
+    }
+    let limit = parse_context_tool_usize_limit(args, 16 * 1024, 64 * 1024)?;
+    let body = fs::read_to_string(&memory).map_err(to_string)?;
+    let compacted = compact_chars_middle(body.trim(), limit);
+    Ok(format!(
+        "LocalSlock MEMORY.md for @{}\nmemory_path=\"{}\"\nbytes={}\nchars_returned={}\n\n{}",
+        target.handle,
+        memory.display(),
+        metadata.len(),
+        compacted.chars().count(),
+        compacted
+    ))
+}
+
+pub(crate) async fn agent_context_workspace_list(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let target = resolve_agent_workspace_target(pool, args).await?;
+    let workspace = workspace_path(&target)?;
+    if !workspace.exists() {
+        return Ok(format!(
+            "LocalSlock workspace list for @{}\nworking_directory=\"{}\"\nworkspace_exists=false",
+            target.handle,
+            workspace.display()
+        ));
+    }
+    if !workspace.is_dir() {
+        return Err(format!(
+            "working_directory is not a directory: {}",
+            workspace.display()
+        ));
+    }
+    let limit = parse_context_tool_usize_limit(args, 80, 500)?;
+    let max_depth = arg_value(args, "--max-depth")
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map(|parsed| parsed.clamp(1, 5))
+                .map_err(|_| format!("invalid --max-depth value: {value}"))
+        })
+        .transpose()?
+        .unwrap_or(2);
+    let mut entries = Vec::new();
+    collect_workspace_entries(&workspace, &workspace, 1, max_depth, limit, &mut entries);
+    let mut output = vec![format!(
+        "LocalSlock workspace list for @{}\nworking_directory=\"{}\"\nmax_depth={} limit={} returned={}",
+        target.handle,
+        workspace.display(),
+        max_depth,
+        limit,
+        entries.len()
+    )];
+    output.extend(entries);
+    Ok(output.join("\n"))
+}
+
 pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
     if args.is_empty() || has_arg(args, "--help") || has_arg(args, "-h") {
         return Ok(
-            "LocalSlock agent context tool\n\nCommands:\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID."
+            "LocalSlock agent context tool\n\nCommands:\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID. Workspace commands default to the current LOCAL_SLOCK_AGENT_ID when invoked by an agent."
                 .to_owned(),
         );
     }
@@ -629,6 +892,13 @@ pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<Str
         .await
         .map_err(to_string)?;
     match args[0].as_str() {
+        "workspace-info" | "workspace" | "self-workspace" => {
+            agent_context_workspace_info(&pool, args).await
+        }
+        "workspace-list" | "list-workspace" | "workspace-ls" => {
+            agent_context_workspace_list(&pool, args).await
+        }
+        "memory-read" | "read-memory" | "memory" => agent_context_memory_read(&pool, args).await,
         "history-read" | "read-history" | "read" => agent_context_history_read(&pool, args).await,
         "message-search" | "search-messages" | "search" => {
             agent_context_message_search(&pool, args).await

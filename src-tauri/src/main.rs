@@ -10371,8 +10371,9 @@ mod tests {
         consume_streaming_agent_control_lines,
         context_tool::{
             agent_context_agent_inspect, agent_context_artifact_read_in_pool,
-            agent_context_attachment_info, agent_context_history_read,
-            agent_context_message_search, short_id,
+            agent_context_attachment_info, agent_context_history_read, agent_context_memory_read,
+            agent_context_message_search, agent_context_workspace_info,
+            agent_context_workspace_list, short_id,
         },
         delete_agent_in_pool, delete_channel_in_pool, extract_agent_event_json,
         extract_agent_mentions, finish_streaming_agent_message, handle_agent_event,
@@ -10513,6 +10514,67 @@ mod tests {
             Ok(())
         }
         .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn agent_context_tool_reads_workspace_and_memory() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let workspace =
+            std::env::temp_dir().join(format!("localslock-workspace-tool-{}", Uuid::new_v4()));
+        let result: Result<(), String> = async {
+            std::fs::create_dir_all(workspace.join("notes")).map_err(|err| err.to_string())?;
+            std::fs::write(
+                workspace.join("MEMORY.md"),
+                "# @workspace-agent\n\n## Role\nWorkspace-aware test agent.\n",
+            )
+            .map_err(|err| err.to_string())?;
+            std::fs::write(workspace.join("notes").join("handoff.md"), "handoff note")
+                .map_err(|err| err.to_string())?;
+
+            let agent_id = insert_test_agent(&pool, "workspace-agent").await?;
+            sqlx::query("update agents set working_directory = $2 where id = $1")
+                .bind(agent_id)
+                .bind(workspace.to_string_lossy().to_string())
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+
+            let target_args = vec![
+                "workspace-info".to_owned(),
+                "--target".to_owned(),
+                "@workspace-agent".to_owned(),
+            ];
+            let workspace_info = agent_context_workspace_info(&pool, &target_args).await?;
+            assert!(workspace_info.contains("LocalSlock workspace for @workspace-agent"));
+            assert!(workspace_info.contains("memory_exists=true"));
+            assert!(workspace_info.contains("MEMORY.md"));
+
+            let memory_args = vec![
+                "memory-read".to_owned(),
+                "--target".to_owned(),
+                "@workspace-agent".to_owned(),
+            ];
+            let memory = agent_context_memory_read(&pool, &memory_args).await?;
+            assert!(memory.contains("Workspace-aware test agent"));
+
+            let list_args = vec![
+                "workspace-list".to_owned(),
+                "--target".to_owned(),
+                "@workspace-agent".to_owned(),
+                "--max-depth".to_owned(),
+                "2".to_owned(),
+            ];
+            let listing = agent_context_workspace_list(&pool, &list_args).await?;
+            assert!(listing.contains("notes/"));
+            assert!(listing.contains("notes/handoff.md"));
+            Ok(())
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&workspace);
         drop_test_schema(pool, schema).await;
         assert!(result.is_ok(), "{:?}", result.err());
     }
