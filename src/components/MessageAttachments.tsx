@@ -1,9 +1,15 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { FileText, Image as ImageIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { FileText, X } from "lucide-react";
 import { MessageAttachment } from "../types";
 
 type MessageAttachmentsProps = {
   attachments: MessageAttachment[];
+};
+
+type ImagePreview = {
+  src: string;
+  alt: string;
 };
 
 function formatBytes(value: number) {
@@ -13,34 +19,77 @@ function formatBytes(value: number) {
 }
 
 export function MessageAttachments({ attachments }: MessageAttachmentsProps) {
+  const [imagePreview, setImagePreview] = useState<ImagePreview | null>(null);
+
+  useEffect(() => {
+    if (!imagePreview) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setImagePreview(null);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [imagePreview]);
+
   if (attachments.length === 0) return null;
 
   return (
-    <div className="message-attachments">
-      {attachments.map((attachment) => {
-        const src = convertFileSrc(attachment.storage_path);
-        const isImage = attachment.mime_type.startsWith("image/");
-        return (
-          <a
-            key={attachment.id}
-            className={`message-attachment ${isImage ? "image" : ""}`}
-            href={src}
-            target="_blank"
-            rel="noreferrer"
-            title={attachment.original_name}
-          >
-            {isImage ? (
-              <img src={src} alt={attachment.original_name} loading="lazy" />
-            ) : (
+    <>
+      <div className="message-attachments">
+        {attachments.map((attachment) => {
+          const src = convertFileSrc(attachment.storage_path);
+          const isImage = attachment.mime_type.startsWith("image/");
+          if (isImage) {
+            return (
+              <button
+                key={attachment.id}
+                type="button"
+                className="message-attachment image"
+                aria-label={`Preview ${attachment.original_name}`}
+                onClick={() => setImagePreview({ src, alt: attachment.original_name })}
+              >
+                <img src={src} alt="" loading="lazy" />
+              </button>
+            );
+          }
+          return (
+            <a
+              key={attachment.id}
+              className="message-attachment"
+              href={src}
+              target="_blank"
+              rel="noreferrer"
+              title={attachment.original_name}
+            >
               <span className="attachment-icon"><FileText size={18} /></span>
-            )}
-            <span className="attachment-meta">
-              <span>{isImage ? <ImageIcon size={13} /> : <FileText size={13} />} {attachment.original_name}</span>
-              <small>{attachment.mime_type || "file"} · {formatBytes(attachment.size_bytes)}</small>
-            </span>
-          </a>
-        );
-      })}
-    </div>
+              <span className="attachment-meta">
+                <span><FileText size={13} /> {attachment.original_name}</span>
+                <small>{attachment.mime_type || "file"} · {formatBytes(attachment.size_bytes)}</small>
+              </span>
+            </a>
+          );
+        })}
+      </div>
+      {imagePreview && (
+        <div className="attachment-lightbox" role="dialog" aria-modal="true" aria-label="Image preview">
+          <button
+            type="button"
+            className="attachment-lightbox-backdrop"
+            aria-label="Close image preview"
+            onClick={() => setImagePreview(null)}
+          />
+          <div className="attachment-lightbox-content">
+            <button
+              type="button"
+              className="attachment-lightbox-close"
+              aria-label="Close image preview"
+              onClick={() => setImagePreview(null)}
+            >
+              <X size={18} />
+            </button>
+            <img src={imagePreview.src} alt={imagePreview.alt} />
+          </div>
+        </div>
+      )}
+    </>
   );
 }
