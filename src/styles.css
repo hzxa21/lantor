@@ -1537,9 +1537,15 @@ mark {
   place-items: center;
   width: 20px;
   height: 20px;
+  padding: 0;
   border-radius: 999px;
   background: rgba(142, 142, 147, 0.16);
   color: var(--muted);
+  line-height: 0;
+}
+
+.draft-attachment-remove svg {
+  display: block;
 }
 
 .draft-attachment.image .draft-attachment-remove {
