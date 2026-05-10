@@ -112,4 +112,13 @@ pub(crate) enum AgentEvent {
         body: Option<String>,
         files: Vec<AgentAttachmentFile>,
     },
+    HandoffCreate {
+        #[serde(alias = "target_handle")]
+        target_agent: String,
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        thread_root_id: Uuid,
+        reason: Option<String>,
+        body: String,
+    },
 }

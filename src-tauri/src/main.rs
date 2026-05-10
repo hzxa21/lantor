@@ -2916,7 +2916,7 @@ async fn build_dispatch_work_context(
         ));
     }
     lines.push(
-        "Warm Codex/Claude streaming runtimes should reply with normal assistant text; LocalSlock routes that text to the target automatically. Non-message LOCAL_SLOCK_EVENT control lines such as artifact_create and attachment_create are allowed as standalone lines. Do not emit legacy message events in warm streaming mode."
+        "Warm Codex/Claude streaming runtimes should reply with normal assistant text; LocalSlock routes that text to the target automatically. Non-message LOCAL_SLOCK_EVENT control lines such as artifact_create, attachment_create, and handoff_create are allowed as standalone lines. Do not emit legacy message events in warm streaming mode."
             .to_owned(),
     );
 
@@ -6063,6 +6063,46 @@ async fn handle_agent_event(
             .await?;
             Ok(format!("attachment message created: {message_id}"))
         }
+        AgentEvent::HandoffCreate {
+            target_agent,
+            channel,
+            channel_id,
+            thread_root_id,
+            reason,
+            body,
+        } => {
+            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
+            let (target_agent_id, target_handle, work_item_id, handoff_message_id) =
+                create_agent_handoff(
+                    pool,
+                    agent_id,
+                    channel_id,
+                    thread_root_id,
+                    &target_agent,
+                    reason.as_deref(),
+                    &body,
+                )
+                .await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "handoff",
+                "Handoff created",
+                json!({
+                    "target_agent_id": target_agent_id,
+                    "target_handle": target_handle,
+                    "work_item_id": work_item_id,
+                    "message_id": handoff_message_id,
+                    "thread_root_id": thread_root_id
+                })
+                .to_string(),
+            )
+            .await?;
+            Ok(format!(
+                "handoff created for @{target_handle}: {work_item_id}"
+            ))
+        }
     }
 }
 
@@ -6135,6 +6175,160 @@ async fn resolve_agent_by_handle(pool: &PgPool, handle: &str) -> CommandResult<U
         .await
         .map_err(to_string)?
         .ok_or_else(|| format!("agent @{normalized} does not exist"))
+}
+
+async fn resolve_agent_handle(pool: &PgPool, agent_id: Uuid) -> CommandResult<String> {
+    sqlx::query_scalar("select handle from agents where id = $1")
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)
+}
+
+async fn create_agent_handoff(
+    pool: &PgPool,
+    source_agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Uuid,
+    target_agent: &str,
+    reason: Option<&str>,
+    body: &str,
+) -> CommandResult<(Uuid, String, Uuid, Uuid)> {
+    let target_agent_id = resolve_agent_by_handle(pool, target_agent).await?;
+    if target_agent_id == source_agent_id {
+        return Err("handoff_create target_agent must be a different agent".to_owned());
+    }
+    let target_handle = resolve_agent_handle(pool, target_agent_id).await?;
+    let source_handle = resolve_agent_handle(pool, source_agent_id).await?;
+    let root_channel: Option<Uuid> = sqlx::query_scalar(
+        "select channel_id from messages where id = $1 and thread_root_id is null",
+    )
+    .bind(thread_root_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+    if root_channel != Some(channel_id) {
+        return Err("thread_root_id does not belong to target channel".to_owned());
+    }
+    let source_is_member: bool = sqlx::query_scalar(
+        r#"
+        select exists (
+            select 1 from channel_members
+            where channel_id = $1 and agent_id = $2
+        )
+        "#,
+    )
+    .bind(channel_id)
+    .bind(source_agent_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    if !source_is_member {
+        return Err("handoff_create requires source agent channel membership".to_owned());
+    }
+
+    let request_body = body.trim();
+    if request_body.is_empty() {
+        return Err("handoff_create body is required".to_owned());
+    }
+    let reason = reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Agent handoff requested");
+    let system_body = format!(
+        "@{source_handle} handed this thread to @{target_handle}.\nReason: {reason}\n\n{request_body}"
+    );
+    let handoff_message_id =
+        insert_system_message(pool, channel_id, Some(thread_root_id), &system_body).await?;
+
+    sqlx::query(
+        r#"
+        insert into channel_members (channel_id, agent_id)
+        values ($1, $2)
+        on conflict (channel_id, agent_id) do nothing
+        "#,
+    )
+    .bind(channel_id)
+    .bind(target_agent_id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    upsert_agent_thread_subscription(
+        pool,
+        target_agent_id,
+        channel_id,
+        thread_root_id,
+        "handoff",
+        Some(handoff_message_id),
+    )
+    .await?;
+    let channel_name: String = sqlx::query_scalar("select name from channels where id = $1")
+        .bind(channel_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    let context = build_dispatch_work_context(
+        pool,
+        channel_id,
+        &format!("#{channel_name}"),
+        Some(thread_root_id),
+        handoff_message_id,
+        &system_body,
+        "Handoff message id",
+        "Handoff request",
+    )
+    .await?;
+    let title = request_body
+        .lines()
+        .next()
+        .map(|line| line.chars().take(120).collect::<String>())
+        .filter(|line| !line.trim().is_empty())
+        .unwrap_or_else(|| format!("Handoff from @{source_handle}"));
+    let work_item_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_work_items (
+            agent_id, channel_id, thread_root_id, source_message_id, source_kind, title, context, status
+        )
+        values ($1, $2, $3, $4, 'handoff', $5, $6, 'queued')
+        returning id
+        "#,
+    )
+    .bind(target_agent_id)
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(handoff_message_id)
+    .bind(&title)
+    .bind(&context)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    notify_ui_work_item_changed(pool, work_item_id, "work_item_created").await;
+    let scheduled = enqueue_agent_work_if_available(pool, target_agent_id, work_item_id).await?;
+    record_agent_activity(
+        pool,
+        Some(target_agent_id),
+        None,
+        "handoff",
+        if scheduled {
+            "Handoff dispatched"
+        } else {
+            "Handoff queued"
+        },
+        json!({
+            "from": source_handle,
+            "work_item_id": work_item_id,
+            "message_id": handoff_message_id,
+            "thread_root_id": thread_root_id
+        })
+        .to_string(),
+    )
+    .await?;
+    Ok((
+        target_agent_id,
+        target_handle,
+        work_item_id,
+        handoff_message_id,
+    ))
 }
 
 fn infer_attachment_mime_type(path: &Path, original_name: &str) -> String {
@@ -10970,6 +11164,7 @@ mod tests {
         assert!(streaming.contains("you may emit standalone LOCAL_SLOCK_EVENT control lines"));
         assert!(streaming.contains("artifact_create"));
         assert!(streaming.contains("attachment_create"));
+        assert!(streaming.contains("handoff_create"));
         assert!(streaming.contains("Do not emit legacy LOCAL_SLOCK_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
     }
@@ -11249,6 +11444,148 @@ mod tests {
                 let _ = std::fs::remove_dir(parent);
             }
             let _ = std::fs::remove_dir_all(&dir);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn handoff_create_dispatches_target_agent_to_existing_thread() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let source_agent_id = insert_test_agent(&pool, "source").await?;
+            let target_agent_id = insert_test_agent(&pool, "target").await?;
+            let channel_id = insert_test_channel(&pool, "handoff").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(source_agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let root_message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Please investigate this thread', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(source_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            handle_agent_event(
+                &pool,
+                source_agent_id,
+                run_id,
+                AgentEvent::HandoffCreate {
+                    target_agent: "@target".to_owned(),
+                    channel: None,
+                    channel_id: Some(channel_id),
+                    thread_root_id: root_message_id,
+                    reason: Some("User asked target to continue".to_owned()),
+                    body: "Please continue the implementation from this thread.".to_owned(),
+                },
+            )
+            .await?;
+
+            let handoff_message = sqlx::query(
+                r#"
+                select id, body
+                from messages
+                where channel_id = $1
+                  and thread_root_id = $2
+                  and sender_role = 'system'
+                "#,
+            )
+            .bind(channel_id)
+            .bind(root_message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let handoff_message_id: Uuid = handoff_message.get("id");
+            let handoff_body: String = handoff_message.get("body");
+            assert!(handoff_body.contains("@source handed this thread to @target"));
+            assert!(handoff_body.contains("User asked target to continue"));
+
+            let target_is_member: bool = sqlx::query_scalar(
+                r#"
+                select exists (
+                    select 1 from channel_members
+                    where channel_id = $1 and agent_id = $2
+                )
+                "#,
+            )
+            .bind(channel_id)
+            .bind(target_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert!(target_is_member);
+
+            let work_item = sqlx::query(
+                r#"
+                select agent_id, thread_root_id, source_message_id, source_kind, title, context, status
+                from agent_work_items
+                where source_message_id = $1
+                "#,
+            )
+            .bind(handoff_message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(work_item.get::<Uuid, _>("agent_id"), target_agent_id);
+            assert_eq!(
+                work_item.get::<Option<Uuid>, _>("thread_root_id"),
+                Some(root_message_id)
+            );
+            assert_eq!(
+                work_item.get::<Option<Uuid>, _>("source_message_id"),
+                Some(handoff_message_id)
+            );
+            assert_eq!(work_item.get::<String, _>("source_kind"), "handoff");
+            assert_eq!(work_item.get::<String, _>("status"), "queued");
+            assert!(
+                work_item
+                    .get::<String, _>("context")
+                    .contains("Handoff request")
+            );
+
+            let pending_start: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from supervisor_commands
+                where agent_id = $1 and work_item_id in (
+                    select id from agent_work_items where source_message_id = $2
+                )
+                "#,
+            )
+            .bind(target_agent_id)
+            .bind(handoff_message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(pending_start, 1);
             Ok(())
         }
         .await;
