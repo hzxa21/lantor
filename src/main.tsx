@@ -1942,7 +1942,6 @@ function App() {
         openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
         selectChannel={selectChannel}
         openCreateAgentModal={() => setShowCreateAgentModal(true)}
-        openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openDmWithAgent={openDmWithAgent}
         onResizeStart={startSidebarResize}
       />
@@ -2021,6 +2020,7 @@ function App() {
         addDraftAttachments={(files) => appendDraftAttachments(files, "root")}
         removeDraftAttachment={(id) => setDraftAttachments((current) => current.filter((item) => item.id !== id))}
         sendRootMessage={sendRootMessage}
+        openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openArtifact={openArtifact}
       />
 
@@ -2072,6 +2072,7 @@ function App() {
           addReplyAttachments={(files) => appendDraftAttachments(files, "reply")}
           removeReplyAttachment={(id) => setReplyAttachments((current) => current.filter((item) => item.id !== id))}
           sendReply={sendReply}
+          openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
           openArtifact={openArtifact}
           onResizeStart={startThreadResize}
         />

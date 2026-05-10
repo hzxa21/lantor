@@ -495,6 +495,32 @@ button,
   font-size: 13px;
 }
 
+.message-agent-avatar-trigger {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  align-self: start;
+  padding: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: inherit;
+}
+
+.message-agent-avatar-trigger.tiny {
+  width: 30px;
+  height: 30px;
+  border-radius: 11px;
+}
+
+.message-agent-avatar-trigger:hover {
+  background: rgba(10, 132, 255, 0.08);
+}
+
+.message-agent-avatar-trigger:hover .agent-avatar {
+  transform: translateY(-1px) scale(1.03);
+}
+
 .agent-avatar {
   position: relative;
   isolation: isolate;
@@ -1664,6 +1690,16 @@ body.resizing-column * {
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.thread-message-with-avatar {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.thread-message-content {
+  min-width: 0;
 }
 
 .thread-task-card {

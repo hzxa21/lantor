@@ -4,6 +4,7 @@ import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
+import { AgentAvatar } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
@@ -28,6 +29,7 @@ type ThreadPanelProps = {
   addReplyAttachments: (files: FileList | File[]) => void;
   removeReplyAttachment: (id: string) => void;
   sendReply: () => void;
+  openAgentDetail: (agent: Agent) => void;
   openArtifact: (artifact: Artifact) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
@@ -36,6 +38,12 @@ function wasEdited(message: Message) {
   const created = new Date(message.created_at).getTime();
   const updated = new Date(message.updated_at).getTime();
   return Number.isFinite(created) && Number.isFinite(updated) && updated - created > 1000;
+}
+
+function agentForMessage(message: Message, agents: Agent[]) {
+  if (message.sender_role !== "agent") return null;
+  const sender = message.sender_name.replace(/^@/, "");
+  return agents.find((agent) => agent.handle === sender || agent.display_name === message.sender_name) ?? null;
 }
 
 export function ThreadPanel({
@@ -57,6 +65,7 @@ export function ThreadPanel({
   addReplyAttachments,
   removeReplyAttachment,
   sendReply,
+  openAgentDetail,
   openArtifact,
   onResizeStart,
 }: ThreadPanelProps) {
@@ -69,6 +78,7 @@ export function ThreadPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
+  const rootAgent = activeRoot ? agentForMessage(activeRoot, agents) : null;
   const {
     mentionState,
     mentionIndex,
@@ -232,22 +242,36 @@ export function ThreadPanel({
                   <time>{formatTime(activeRoot.created_at)}</time>
                 </div>
               ) : (
-                <>
-                  <div className="meta">
-                    <strong>{activeRoot.sender_name}</strong>
-                    <time>{formatTime(activeRoot.created_at)}</time>
-                    {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
+                <div className="thread-message-with-avatar">
+                  {rootAgent ? (
+                    <button
+                      type="button"
+                      className="message-agent-avatar-trigger"
+                      title={`View @${rootAgent.handle} details`}
+                      onClick={() => openAgentDetail(rootAgent)}
+                    >
+                      <AgentAvatar agent={rootAgent} size="sm" />
+                    </button>
+                  ) : (
+                    <div className="avatar">{activeRoot.sender_name.slice(0, 1)}</div>
+                  )}
+                  <div className="thread-message-content">
+                    <div className="meta">
+                      <strong>{activeRoot.sender_name}</strong>
+                      <time>{formatTime(activeRoot.created_at)}</time>
+                      {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
+                    </div>
+                    <MessageMarkdown body={activeRoot.body} />
+                    <MessageAttachments attachments={activeRoot.attachments} />
+                    <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
+                    {activeRoot.delivery_state === "streaming" && (
+                      <div className="message-stream-state">Streaming response...</div>
+                    )}
+                    {activeRoot.delivery_state === "error" && (
+                      <div className="message-stream-state error">Response interrupted</div>
+                    )}
                   </div>
-                  <MessageMarkdown body={activeRoot.body} />
-                  <MessageAttachments attachments={activeRoot.attachments} />
-                  <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
-                  {activeRoot.delivery_state === "streaming" && (
-                    <div className="message-stream-state">Streaming response...</div>
-                  )}
-                  {activeRoot.delivery_state === "error" && (
-                    <div className="message-stream-state error">Response interrupted</div>
-                  )}
-                </>
+                </div>
               )}
             </article>
           )}
@@ -299,6 +323,7 @@ export function ThreadPanel({
               </div>
             )}
             {replies.map((reply) => {
+              const replyAgent = agentForMessage(reply, agents);
               if (reply.sender_role === "system") {
                 return (
                   <article key={reply.id} className="system-message">
@@ -311,7 +336,18 @@ export function ThreadPanel({
               }
               return (
                 <article key={reply.id}>
-                  <div className="avatar tiny">{reply.sender_name.slice(0, 1)}</div>
+                  {replyAgent ? (
+                    <button
+                      type="button"
+                      className="message-agent-avatar-trigger tiny"
+                      title={`View @${replyAgent.handle} details`}
+                      onClick={() => openAgentDetail(replyAgent)}
+                    >
+                      <AgentAvatar agent={replyAgent} size="sm" />
+                    </button>
+                  ) : (
+                    <div className="avatar tiny">{reply.sender_name.slice(0, 1)}</div>
+                  )}
                   <div>
                     <div className="meta">
                       <strong>{reply.sender_name}</strong>

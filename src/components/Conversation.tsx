@@ -46,6 +46,7 @@ type ConversationProps = {
   addDraftAttachments: (files: FileList | File[]) => void;
   removeDraftAttachment: (id: string) => void;
   sendRootMessage: (asTask?: boolean) => void;
+  openAgentDetail: (agent: Agent) => void;
   openArtifact: (artifact: Artifact) => void;
 };
 
@@ -53,6 +54,12 @@ function wasEdited(message: Message) {
   const created = new Date(message.created_at).getTime();
   const updated = new Date(message.updated_at).getTime();
   return Number.isFinite(created) && Number.isFinite(updated) && updated - created > 1000;
+}
+
+function agentForMessage(message: Message, agents: Agent[]) {
+  if (message.sender_role !== "agent") return null;
+  const sender = message.sender_name.replace(/^@/, "");
+  return agents.find((agent) => agent.handle === sender || agent.display_name === message.sender_name) ?? null;
 }
 
 export function Conversation({
@@ -83,6 +90,7 @@ export function Conversation({
   addDraftAttachments,
   removeDraftAttachment,
   sendRootMessage,
+  openAgentDetail,
   openArtifact,
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
@@ -293,6 +301,7 @@ export function Conversation({
           {rootMessages.map((message) => {
             const linkedTask = taskForMessage(message.id);
             const replyCount = threadReplyCounts[message.id] ?? 0;
+            const messageAgent = isDm ? null : agentForMessage(message, agents);
             if (message.sender_role === "system") {
               return (
                 <article key={message.id} className="system-message">
@@ -309,7 +318,21 @@ export function Conversation({
                 className={`message-card ${message.id === activeRoot?.id ? "focused" : ""}`}
                 onClick={() => setActiveThreadId(message.id)}
               >
-                <div className="avatar">{message.sender_name.slice(0, 1)}</div>
+                {messageAgent ? (
+                  <button
+                    type="button"
+                    className="message-agent-avatar-trigger"
+                    title={`View @${messageAgent.handle} details`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openAgentDetail(messageAgent);
+                    }}
+                  >
+                    <AgentAvatar agent={messageAgent} size="sm" />
+                  </button>
+                ) : (
+                  <div className="avatar">{message.sender_name.slice(0, 1)}</div>
+                )}
                 <div className="message-body">
                   <div className="meta">
                     <strong>{message.sender_name}</strong>

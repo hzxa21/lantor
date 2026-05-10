@@ -28,7 +28,6 @@ type SidebarProps = {
   openChannelSettingsModal: () => void;
   selectChannel: (channelId: string) => void;
   openCreateAgentModal: () => void;
-  openAgentDetail: (agent: Agent) => void;
   openDmWithAgent: (agent: Agent) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
@@ -45,7 +44,6 @@ export function Sidebar({
   openChannelSettingsModal,
   selectChannel,
   openCreateAgentModal,
-  openAgentDetail,
   openDmWithAgent,
   onResizeStart,
 }: SidebarProps) {
@@ -162,8 +160,8 @@ export function Sidebar({
               <button
                 type="button"
                 className="dm-detail-trigger"
-                title={`View @${agent.handle} details`}
-                onClick={() => openAgentDetail(agent)}
+                title={`Message @${agent.handle}`}
+                onClick={() => item ? selectChannel(item.id) : openDmWithAgent(agent)}
               >
                 <AgentAvatar agent={agent} size="sm" />
               </button>
