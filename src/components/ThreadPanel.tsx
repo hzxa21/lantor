@@ -108,7 +108,12 @@ export function ThreadPanel({
   function returnThreadToBottom() {
     shouldFollowThreadRef.current = true;
     setShowBackToBottom(false);
-    scrollThreadToBottom("smooth");
+    scrollThreadToBottom();
+    window.requestAnimationFrame(() => {
+      scrollThreadToBottom();
+      shouldFollowThreadRef.current = true;
+      setShowBackToBottom(false);
+    });
   }
 
   function handleReplyKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
