@@ -4,6 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use sqlx::{
     postgres::{PgPoolOptions, PgRow},
     PgPool, Row,
@@ -27,6 +28,11 @@ struct AgentWorkspaceTarget {
     id: Uuid,
     handle: String,
     working_directory: String,
+}
+
+struct AgentInboxTarget {
+    id: Uuid,
+    handle: String,
 }
 
 fn arg_value(args: &[String], name: &str) -> Option<String> {
@@ -689,6 +695,126 @@ fn workspace_path(target: &AgentWorkspaceTarget) -> CommandResult<PathBuf> {
     Ok(PathBuf::from(working_directory))
 }
 
+async fn resolve_agent_inbox_target(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<AgentInboxTarget> {
+    let explicit_target = arg_value(args, "--target").or_else(|| arg_value(args, "--agent"));
+    let row = if let Some(target) = explicit_target {
+        let agent_id = resolve_agent_by_handle(pool, &target).await?;
+        sqlx::query("select id, handle from agents where id = $1")
+            .bind(agent_id)
+            .fetch_one(pool)
+            .await
+            .map_err(to_string)?
+    } else if let Ok(agent_id) = env::var("LOCAL_SLOCK_AGENT_ID") {
+        let agent_id = Uuid::parse_str(agent_id.trim())
+            .map_err(|err| format!("invalid LOCAL_SLOCK_AGENT_ID: {err}"))?;
+        sqlx::query("select id, handle from agents where id = $1")
+            .bind(agent_id)
+            .fetch_one(pool)
+            .await
+            .map_err(to_string)?
+    } else if let Ok(handle) = env::var("LOCAL_SLOCK_AGENT_HANDLE") {
+        let agent_id = resolve_agent_by_handle(pool, &handle).await?;
+        sqlx::query("select id, handle from agents where id = $1")
+            .bind(agent_id)
+            .fetch_one(pool)
+            .await
+            .map_err(to_string)?
+    } else {
+        return Err("inbox commands require --target @handle or LOCAL_SLOCK_AGENT_ID".to_owned());
+    };
+
+    Ok(AgentInboxTarget {
+        id: row.get("id"),
+        handle: row.get("handle"),
+    })
+}
+
+fn parse_inbox_states(args: &[String]) -> CommandResult<(String, Vec<String>)> {
+    let state = arg_value(args, "--state").unwrap_or_else(|| "active".to_owned());
+    let normalized = state.trim().to_ascii_lowercase();
+    let states = match normalized.as_str() {
+        "active" => vec!["unread".to_owned(), "processing".to_owned()],
+        "unread" => vec!["unread".to_owned()],
+        "processing" => vec!["processing".to_owned()],
+        "archived" | "done" => vec!["archived".to_owned()],
+        "all" => vec![
+            "unread".to_owned(),
+            "processing".to_owned(),
+            "archived".to_owned(),
+        ],
+        other => {
+            return Err(format!(
+                "invalid inbox --state {other:?}; expected active, unread, processing, archived, or all"
+            ));
+        }
+    };
+    Ok((normalized, states))
+}
+
+fn inbox_surface_label(
+    channel_name: Option<&str>,
+    channel_kind: Option<&str>,
+    thread_root_id: Option<Uuid>,
+) -> String {
+    match (channel_kind, channel_name, thread_root_id) {
+        (Some("dm"), Some(name), Some(thread_root_id)) => {
+            format!("dm:{name}:{}", short_id(thread_root_id))
+        }
+        (Some("dm"), Some(name), None) => format!("dm:{name}"),
+        (_, Some(name), Some(thread_root_id)) => format!("#{name}:{}", short_id(thread_root_id)),
+        (_, Some(name), None) => format!("#{name}"),
+        _ => "unknown".to_owned(),
+    }
+}
+
+async fn resolve_inbox_item_id(pool: &PgPool, agent_id: Uuid, raw_id: &str) -> CommandResult<Uuid> {
+    let raw_id = raw_id.trim().trim_start_matches("inbox:");
+    if raw_id.is_empty() {
+        return Err("inbox id is empty".to_owned());
+    }
+    if let Ok(inbox_id) = Uuid::parse_str(raw_id) {
+        let exists: Option<Uuid> =
+            sqlx::query_scalar("select id from agent_inbox_items where id = $1 and agent_id = $2")
+                .bind(inbox_id)
+                .bind(agent_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?;
+        return exists.ok_or_else(|| format!("inbox item {inbox_id} is not visible to this agent"));
+    }
+
+    let rows = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        select id
+        from agent_inbox_items
+        where agent_id = $1 and id::text like $2
+        order by created_at desc
+        limit 2
+        "#,
+    )
+    .bind(agent_id)
+    .bind(format!("{raw_id}%"))
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    match rows.as_slice() {
+        [id] => Ok(*id),
+        [] => Err(format!("unknown inbox item id prefix: {raw_id}")),
+        _ => Err(format!("ambiguous inbox item id prefix: {raw_id}")),
+    }
+}
+
+async fn notify_context_tool_refresh(pool: &PgPool, reason: &str) {
+    let _ = sqlx::query("select pg_notify($1, $2)")
+        .bind("localslock_ui_refresh")
+        .bind(serde_json::json!({ "type": "refresh", "reason": reason }).to_string())
+        .execute(pool)
+        .await;
+}
+
 fn memory_path(workspace: &Path) -> PathBuf {
     workspace.join("MEMORY.md")
 }
@@ -878,10 +1004,280 @@ pub(crate) async fn agent_context_workspace_list(
     Ok(output.join("\n"))
 }
 
+pub(crate) async fn agent_context_inbox_list(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let target = resolve_agent_inbox_target(pool, args).await?;
+    let (state_label, states) = parse_inbox_states(args)?;
+    let limit = parse_context_tool_limit(args, 20, 100)?;
+    let rows = sqlx::query(
+        r#"
+        select
+            i.id,
+            i.kind,
+            i.priority,
+            i.state,
+            i.title,
+            i.body_preview,
+            i.channel_id,
+            c.name as channel_name,
+            c.kind as channel_kind,
+            i.thread_root_id,
+            i.source_message_id,
+            i.task_id,
+            i.work_item_id,
+            i.created_at,
+            i.updated_at
+        from agent_inbox_items i
+        left join channels c on c.id = i.channel_id
+        where i.agent_id = $1
+          and i.state = any($2)
+        order by
+            case i.state when 'processing' then 0 when 'unread' then 1 else 2 end,
+            i.priority desc,
+            i.created_at asc
+        limit $3
+        "#,
+    )
+    .bind(target.id)
+    .bind(states)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    let mut output = vec![format!(
+        "LocalSlock inbox for @{}\nstate={} limit={} returned={}",
+        target.handle,
+        state_label,
+        limit,
+        rows.len()
+    )];
+    if rows.is_empty() {
+        output.push("No matching inbox items.".to_owned());
+        return Ok(output.join("\n"));
+    }
+
+    for row in rows {
+        let id: Uuid = row.get("id");
+        let created_at: DateTime<Utc> = row.get("created_at");
+        let channel_name: Option<String> = row.get("channel_name");
+        let channel_kind: Option<String> = row.get("channel_kind");
+        let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+        let surface = inbox_surface_label(
+            channel_name.as_deref(),
+            channel_kind.as_deref(),
+            thread_root_id,
+        );
+        let preview = compact_chars_middle(row.get::<String, _>("body_preview").trim(), 240)
+            .replace('\n', "\n  ");
+        let mut line = format!(
+            "- {} kind={} state={} priority={} target={} created={} title={:?}",
+            short_id(id),
+            row.get::<String, _>("kind"),
+            row.get::<String, _>("state"),
+            row.get::<i32, _>("priority"),
+            surface,
+            created_at.to_rfc3339(),
+            row.get::<String, _>("title")
+        );
+        if let Some(source_message_id) = row.get::<Option<Uuid>, _>("source_message_id") {
+            line.push_str(&format!(" source_message={}", short_id(source_message_id)));
+        }
+        if let Some(task_id) = row.get::<Option<Uuid>, _>("task_id") {
+            line.push_str(&format!(" task_id={}", short_id(task_id)));
+        }
+        if let Some(work_item_id) = row.get::<Option<Uuid>, _>("work_item_id") {
+            line.push_str(&format!(" work_item={}", short_id(work_item_id)));
+        }
+        if !preview.is_empty() {
+            line.push_str(&format!("\n  preview: {preview}"));
+        }
+        line.push_str(&format!(
+            "\n  read: \"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id {}",
+            short_id(id)
+        ));
+        output.push(line);
+    }
+
+    Ok(output.join("\n"))
+}
+
+pub(crate) async fn agent_context_inbox_read(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let target = resolve_agent_inbox_target(pool, args).await?;
+    let raw_id = arg_value(args, "--inbox-id")
+        .or_else(|| arg_value(args, "--id"))
+        .ok_or_else(|| "inbox-read requires --inbox-id <uuid-or-prefix>".to_owned())?;
+    let inbox_id = resolve_inbox_item_id(pool, target.id, &raw_id).await?;
+    sqlx::query(
+        r#"
+        update agent_inbox_items
+        set state = case when state = 'archived' then state else 'processing' end,
+            updated_at = now()
+        where id = $1 and agent_id = $2
+        "#,
+    )
+    .bind(inbox_id)
+    .bind(target.id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    notify_context_tool_refresh(pool, "inbox_read").await;
+
+    let row = sqlx::query(
+        r#"
+        select
+            i.id,
+            i.kind,
+            i.priority,
+            i.state,
+            i.title,
+            i.body_preview,
+            i.payload,
+            i.channel_id,
+            c.name as channel_name,
+            c.kind as channel_kind,
+            i.thread_root_id,
+            i.source_message_id,
+            i.task_id,
+            i.work_item_id,
+            i.created_at,
+            i.updated_at,
+            m.sender_name as source_sender_name,
+            m.sender_role as source_sender_role,
+            m.body as source_body,
+            m.created_at as source_created_at
+        from agent_inbox_items i
+        left join channels c on c.id = i.channel_id
+        left join messages m on m.id = i.source_message_id
+        where i.id = $1 and i.agent_id = $2
+        "#,
+    )
+    .bind(inbox_id)
+    .bind(target.id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    let channel_name: Option<String> = row.get("channel_name");
+    let channel_kind: Option<String> = row.get("channel_kind");
+    let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+    let surface = inbox_surface_label(
+        channel_name.as_deref(),
+        channel_kind.as_deref(),
+        thread_root_id,
+    );
+    let payload: Value = row.get("payload");
+    let payload = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_owned());
+    let body_preview = compact_chars_middle(row.get::<String, _>("body_preview").trim(), 1200);
+    let mut output = vec![
+        format!("LocalSlock inbox item {}", row.get::<Uuid, _>("id")),
+        format!("agent=@{}", target.handle),
+        format!("short_id={}", short_id(inbox_id)),
+        format!("kind={}", row.get::<String, _>("kind")),
+        format!("state={}", row.get::<String, _>("state")),
+        format!("priority={}", row.get::<i32, _>("priority")),
+        format!("target={surface}"),
+        format!("title={:?}", row.get::<String, _>("title")),
+        format!(
+            "created_at={}",
+            row.get::<DateTime<Utc>, _>("created_at").to_rfc3339()
+        ),
+    ];
+    if let Some(channel_id) = row.get::<Option<Uuid>, _>("channel_id") {
+        output.push(format!("channel_id={channel_id}"));
+    }
+    if let Some(thread_root_id) = thread_root_id {
+        output.push(format!("thread_root_id={thread_root_id}"));
+    }
+    if let Some(source_message_id) = row.get::<Option<Uuid>, _>("source_message_id") {
+        output.push(format!("source_message_id={source_message_id}"));
+    }
+    if let Some(task_id) = row.get::<Option<Uuid>, _>("task_id") {
+        output.push(format!("task_id={task_id}"));
+    }
+    if let Some(work_item_id) = row.get::<Option<Uuid>, _>("work_item_id") {
+        output.push(format!("work_item_id={work_item_id}"));
+    }
+    if !body_preview.is_empty() {
+        output.push(format!("preview:\n{body_preview}"));
+    }
+    if let Some(source_body) = row.get::<Option<String>, _>("source_body") {
+        let source_sender = row
+            .get::<Option<String>, _>("source_sender_name")
+            .unwrap_or_else(|| "unknown".to_owned());
+        let source_role = row
+            .get::<Option<String>, _>("source_sender_role")
+            .unwrap_or_else(|| "unknown".to_owned());
+        let source_created = row
+            .get::<Option<DateTime<Utc>>, _>("source_created_at")
+            .map(|created| created.to_rfc3339())
+            .unwrap_or_else(|| "unknown".to_owned());
+        output.push(format!(
+            "source_message:\n  sender={}({})\n  created_at={}\n  body:\n{}",
+            source_sender,
+            source_role,
+            source_created,
+            compact_chars_middle(source_body.trim(), AGENT_CONTEXT_TOOL_MESSAGE_LIMIT)
+        ));
+    }
+    output.push(format!("payload:\n{payload}"));
+    if surface != "unknown" {
+        output.push(format!(
+            "history_hint=\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool history-read --target {:?} --limit 30",
+            surface
+        ));
+    }
+    output.push(format!(
+        "archive_when_done=\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id {}",
+        short_id(inbox_id)
+    ));
+
+    Ok(output.join("\n\n"))
+}
+
+pub(crate) async fn agent_context_inbox_archive(
+    pool: &PgPool,
+    args: &[String],
+) -> CommandResult<String> {
+    let target = resolve_agent_inbox_target(pool, args).await?;
+    let raw_id = arg_value(args, "--inbox-id")
+        .or_else(|| arg_value(args, "--id"))
+        .ok_or_else(|| "inbox-archive requires --inbox-id <uuid-or-prefix>".to_owned())?;
+    let inbox_id = resolve_inbox_item_id(pool, target.id, &raw_id).await?;
+    let row = sqlx::query(
+        r#"
+        update agent_inbox_items
+        set state = 'archived',
+            archived_at = coalesce(archived_at, now()),
+            updated_at = now()
+        where id = $1 and agent_id = $2
+        returning id, kind, title
+        "#,
+    )
+    .bind(inbox_id)
+    .bind(target.id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    notify_context_tool_refresh(pool, "inbox_archived").await;
+    Ok(format!(
+        "Archived LocalSlock inbox item {} for @{} kind={} title={:?}",
+        short_id(row.get("id")),
+        target.handle,
+        row.get::<String, _>("kind"),
+        row.get::<String, _>("title")
+    ))
+}
+
 pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
     if args.is_empty() || has_arg(args, "--help") || has_arg(args, "-h") {
         return Ok(
-            "LocalSlock agent context tool\n\nCommands:\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID. Workspace commands default to the current LOCAL_SLOCK_AGENT_ID when invoked by an agent."
+            "LocalSlock agent context tool\n\nCommands:\n  inbox-list [--state active|unread|processing|archived|all] [--limit 20]\n  inbox-read --inbox-id <uuid-or-prefix>\n  inbox-archive --inbox-id <uuid-or-prefix>\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID. Inbox, workspace, and memory commands default to the current LOCAL_SLOCK_AGENT_ID when invoked by an agent."
                 .to_owned(),
         );
     }
@@ -892,6 +1288,11 @@ pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<Str
         .await
         .map_err(to_string)?;
     match args[0].as_str() {
+        "inbox-list" | "inbox" | "inbox-check" => agent_context_inbox_list(&pool, args).await,
+        "inbox-read" | "read-inbox" => agent_context_inbox_read(&pool, args).await,
+        "inbox-archive" | "archive-inbox" | "inbox-done" => {
+            agent_context_inbox_archive(&pool, args).await
+        }
         "workspace-info" | "workspace" | "self-workspace" => {
             agent_context_workspace_info(&pool, args).await
         }

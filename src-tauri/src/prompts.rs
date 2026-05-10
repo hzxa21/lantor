@@ -31,7 +31,10 @@ fn local_slock_memory_management_prompt() -> &'static str {
 }
 
 fn local_slock_context_tools_prompt() -> &'static str {
-    r##"Read-only context tools:
+    r##"Agent context tools:
+- inbox list: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20
+- inbox read: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"
+- inbox archive: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-archive --inbox-id "<uuid-or-prefix>"
 - workspace info: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-info
 - workspace files: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80
 - durable memory: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000
@@ -40,7 +43,8 @@ fn local_slock_context_tools_prompt() -> &'static str {
 - attachment: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"
 - artifact: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
 - agent introspection: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"
-Workspace and memory commands default to your own LOCAL_SLOCK_AGENT_ID; add --target "@handle" only when inspecting another visible agent."##
+Inbox, workspace, and memory commands default to your own LOCAL_SLOCK_AGENT_ID; add --target "@handle" only when inspecting another visible agent.
+When a turn is an inbox wake, first list/read active inbox items, decide which need visible work, and archive handled or intentionally ignored items."##
 }
 
 fn local_slock_control_api_prompt() -> &'static str {
@@ -182,7 +186,7 @@ fn build_runtime_standing_prompt(
          You collaborate with one local human through channels, threads, tasks, and DMs.\n\
          {transport_note}\n\
          LocalSlock keeps one warm runtime session per agent so previous turns remain in provider context; channel and thread are delivered as message envelope fields, not as separate runtime sessions.\n\
-         Each new turn contains the latest inbox item plus a bounded context snapshot. Do not assume it is an exhaustive transcript; rely on the active runtime session and use the history/search tool when older context is needed. Use workspace-info, workspace-list, and memory-read when you need to recover your current LocalSlock workspace or inspect durable MEMORY.md beyond the injected prompt excerpt.\n\
+         Each wake turn may contain a compact inbox processing prompt instead of a full request. Use inbox-list, inbox-read, and inbox-archive to pull pending items, decide what deserves a visible reply or action, and clear items you handled or intentionally ignored. Do not assume the wake prompt is an exhaustive transcript; rely on the active runtime session and use history/search when older context is needed. Use workspace-info, workspace-list, and memory-read when you need to recover your current LocalSlock workspace or inspect durable MEMORY.md beyond the injected prompt excerpt.\n\
          \n\
          {}\n\
          \n\

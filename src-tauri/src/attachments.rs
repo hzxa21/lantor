@@ -1,6 +1,5 @@
-use std::{collections::HashMap, env, fs, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
-use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::CommandResult;
@@ -62,48 +61,6 @@ pub(crate) fn format_attachment_size(size_bytes: i64) -> String {
     } else {
         format!("{size_bytes}B")
     }
-}
-
-pub(crate) async fn load_message_attachment_lines(
-    pool: &PgPool,
-    message_ids: &[Uuid],
-) -> CommandResult<HashMap<Uuid, Vec<String>>> {
-    if message_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let rows = sqlx::query(
-        r#"
-        select id, message_id, original_name, mime_type, size_bytes, storage_path
-        from message_attachments
-        where message_id = any($1)
-        order by created_at asc
-        "#,
-    )
-    .bind(message_ids)
-    .fetch_all(pool)
-    .await
-    .map_err(|err| err.to_string())?;
-    let mut attachments_by_message: HashMap<Uuid, Vec<String>> = HashMap::new();
-    for row in rows {
-        let id: Uuid = row.get("id");
-        let message_id: Uuid = row.get("message_id");
-        let original_name: String = row.get("original_name");
-        let mime_type: String = row.get("mime_type");
-        let size_bytes: i64 = row.get("size_bytes");
-        let storage_path: String = row.get("storage_path");
-        attachments_by_message
-            .entry(message_id)
-            .or_default()
-            .push(format!(
-                "- attachment_id={} name=\"{}\" mime={} size={} local_path=\"{}\"",
-                id,
-                original_name.replace('"', "\\\""),
-                mime_type,
-                format_attachment_size(size_bytes),
-                storage_path.replace('"', "\\\"")
-            ));
-    }
-    Ok(attachments_by_message)
 }
 
 pub(crate) fn attachment_summary_sql() -> &'static str {

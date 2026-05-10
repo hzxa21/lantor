@@ -11,7 +11,10 @@ const LOCAL_SLOCK_OPERATING_POLICY = [
 ].join("\n");
 
 const LOCAL_SLOCK_CONTEXT_TOOLS = [
-  "Read-only context tools:",
+  "Agent context tools:",
+  '- inbox list: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20',
+  '- inbox read: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"',
+  '- inbox archive: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-archive --inbox-id "<uuid-or-prefix>"',
   '- workspace info: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-info',
   '- workspace files: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80',
   '- durable memory: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000',
@@ -20,7 +23,8 @@ const LOCAL_SLOCK_CONTEXT_TOOLS = [
   '- attachment: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"',
   '- artifact: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"',
   '- agent introspection: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"',
-  'Workspace and memory commands default to your own LOCAL_SLOCK_AGENT_ID; add --target "@handle" only when inspecting another visible agent.',
+  'Inbox, workspace, and memory commands default to your own LOCAL_SLOCK_AGENT_ID; add --target "@handle" only when inspecting another visible agent.',
+  "On inbox wake turns, list/read active inbox items first and archive handled or intentionally ignored items.",
 ].join("\n");
 
 const LOCAL_SLOCK_CONTROL_EVENTS = [
