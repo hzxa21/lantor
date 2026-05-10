@@ -334,10 +334,7 @@ async fn maybe_insert_work_item_system_message(
     // Keep normal lifecycle messages for explicit task-backed work only; still surface
     // exceptional failures/cancellations for conversational turns.
     if work_item.task_number.is_none()
-        && !matches!(
-            reason,
-            "work_item_failed" | "work_item_cancelled" | "work_item_finished"
-        )
+        && !matches!(reason, "work_item_failed" | "work_item_cancelled")
     {
         return Ok(());
     }
@@ -6235,11 +6232,14 @@ async fn create_agent_handoff(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("Agent handoff requested");
-    let system_body = format!(
-        "@{source_handle} handed this thread to @{target_handle}.\nReason: {reason}\n\n{request_body}"
-    );
-    let handoff_message_id =
-        insert_system_message(pool, channel_id, Some(thread_root_id), &system_body).await?;
+    let handoff_message_id = insert_agent_handoff_message(
+        pool,
+        source_agent_id,
+        channel_id,
+        thread_root_id,
+        request_body,
+    )
+    .await?;
 
     sqlx::query(
         r#"
@@ -6273,7 +6273,7 @@ async fn create_agent_handoff(
         &format!("#{channel_name}"),
         Some(thread_root_id),
         handoff_message_id,
-        &system_body,
+        request_body,
         "Handoff message id",
         "Handoff request",
     )
@@ -6316,6 +6316,7 @@ async fn create_agent_handoff(
         },
         json!({
             "from": source_handle,
+            "reason": reason,
             "work_item_id": work_item_id,
             "message_id": handoff_message_id,
             "thread_root_id": thread_root_id
@@ -6428,6 +6429,46 @@ async fn insert_agent_message(
     body: &str,
     as_task: bool,
 ) -> CommandResult<Uuid> {
+    insert_agent_message_with_options(
+        pool,
+        agent_id,
+        channel_id,
+        thread_root_id,
+        body,
+        as_task,
+        true,
+    )
+    .await
+}
+
+async fn insert_agent_handoff_message(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Uuid,
+    body: &str,
+) -> CommandResult<Uuid> {
+    insert_agent_message_with_options(
+        pool,
+        agent_id,
+        channel_id,
+        Some(thread_root_id),
+        body,
+        false,
+        false,
+    )
+    .await
+}
+
+async fn insert_agent_message_with_options(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    body: &str,
+    as_task: bool,
+    dispatch_mentions: bool,
+) -> CommandResult<Uuid> {
     if body.is_empty() {
         return Err("message event body is empty".to_owned());
     }
@@ -6518,7 +6559,7 @@ async fn insert_agent_message(
         Some(msg_id),
     )
     .await?;
-    if !as_task {
+    if !as_task && dispatch_mentions {
         queue_agent_message_mentions(pool, msg_id).await?;
     }
     let _ = notify_ui_refresh(pool, "message").await;
@@ -11087,10 +11128,10 @@ mod tests {
         extract_agent_mentions, finish_streaming_agent_message, handle_agent_event,
         insert_agent_message, load_agent_memory_context, load_channel_agent_roster, load_messages,
         load_reminders, load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
-        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
-        process_due_reminders, queue_mentions_as_work_items, record_agent_activity,
-        send_owner_message_in_pool, silent_reply_reason, upsert_agent_thread_subscription,
-        upsert_runtime_thread_id,
+        notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
+        process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
+        record_agent_activity, send_owner_message_in_pool, silent_reply_reason,
+        upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
         DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
@@ -11504,29 +11545,35 @@ mod tests {
                     channel_id: Some(channel_id),
                     thread_root_id: root_message_id,
                     reason: Some("User asked target to continue".to_owned()),
-                    body: "Please continue the implementation from this thread.".to_owned(),
+                    body: "@target Please continue the implementation from this thread.".to_owned(),
                 },
             )
             .await?;
 
             let handoff_message = sqlx::query(
                 r#"
-                select id, body
+                select id, sender_agent_id, sender_name, sender_role, body
                 from messages
                 where channel_id = $1
                   and thread_root_id = $2
-                  and sender_role = 'system'
+                  and sender_agent_id = $3
+                  and sender_role = 'agent'
                 "#,
             )
             .bind(channel_id)
             .bind(root_message_id)
+            .bind(source_agent_id)
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
             let handoff_message_id: Uuid = handoff_message.get("id");
             let handoff_body: String = handoff_message.get("body");
-            assert!(handoff_body.contains("@source handed this thread to @target"));
-            assert!(handoff_body.contains("User asked target to continue"));
+            assert_eq!(handoff_message.get::<String, _>("sender_name"), "source");
+            assert_eq!(
+                handoff_body,
+                "@target Please continue the implementation from this thread."
+            );
+            assert!(!handoff_body.contains("Reason:"));
 
             let target_is_member: bool = sqlx::query_scalar(
                 r#"
@@ -11570,6 +11617,14 @@ mod tests {
                     .get::<String, _>("context")
                     .contains("Handoff request")
             );
+            let target_work_items: i64 = sqlx::query_scalar(
+                "select count(*)::bigint from agent_work_items where agent_id = $1",
+            )
+            .bind(target_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(target_work_items, 1);
 
             let pending_start: i64 = sqlx::query_scalar(
                 r#"
@@ -13374,6 +13429,67 @@ mod tests {
                 "#,
             )
             .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(system_messages, 0);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn conversational_work_item_finish_does_not_insert_system_message() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "conversation-agent").await?;
+            let channel_id = insert_test_channel(&pool, "conversation-finish").await?;
+            let source_message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Please answer in thread', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let work_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_work_items (
+                    agent_id, channel_id, thread_root_id, source_message_id,
+                    source_kind, title, context, status, completed_at
+                )
+                values ($1, $2, $3, $3, 'mention', 'Please answer in thread', 'context', 'done', now())
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(source_message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            notify_ui_work_item_changed(&pool, work_item_id, "work_item_finished").await;
+
+            let system_messages: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from messages
+                where channel_id = $1
+                  and thread_root_id = $2
+                  and sender_role = 'system'
+                  and body like '@conversation-agent completed agent request%'
+                "#,
+            )
+            .bind(channel_id)
+            .bind(source_message_id)
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
