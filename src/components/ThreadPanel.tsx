@@ -168,114 +168,116 @@ export function ThreadPanel({
       </header>
 
       <section className="thread-focus">
-        {activeRoot && (
-          <article className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""}`}>
-            {activeRoot.sender_role === "system" ? (
-              <div className="system-message-line">
-                <MessageMarkdown body={activeRoot.body} />
-                <time>{formatTime(activeRoot.created_at)}</time>
-              </div>
-            ) : (
-              <>
-                <div className="meta">
-                  <strong>{activeRoot.sender_name}</strong>
+        <div className="thread-scroll">
+          {activeRoot && (
+            <article className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""}`}>
+              {activeRoot.sender_role === "system" ? (
+                <div className="system-message-line">
+                  <MessageMarkdown body={activeRoot.body} />
                   <time>{formatTime(activeRoot.created_at)}</time>
-                  {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
                 </div>
-                <MessageMarkdown body={activeRoot.body} />
-                <MessageAttachments attachments={activeRoot.attachments} />
-                <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
-                {activeRoot.delivery_state === "streaming" && (
-                  <div className="message-stream-state">Streaming response...</div>
-                )}
-                {activeRoot.delivery_state === "error" && (
-                  <div className="message-stream-state error">Response interrupted</div>
-                )}
-              </>
-            )}
-          </article>
-        )}
-
-        {activeTask && (
-          <section className="thread-task-card">
-            <div className="task-card-head">
-              <span>Task #{activeTask.number}</span>
-              <strong>{activeTask.status.replace("_", " ")}</strong>
-            </div>
-            <input
-              value={taskTitleDrafts[activeTask.id] ?? activeTask.title}
-              onChange={(event) => setTaskTitleDraft(activeTask, event.target.value)}
-              onBlur={() => saveTaskTitle(activeTask)}
-              onKeyDown={(event) => {
-                if (isImeComposing(event)) return;
-                if (event.key === "Enter") saveTaskTitle(activeTask);
-              }}
-            />
-            <select
-              value={activeTask.assignee_id ?? ""}
-              onChange={(event) => claimTask(activeTask, event.target.value)}
-            >
-              <option value="">Unassigned</option>
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>{agent.display_name}</option>
-              ))}
-            </select>
-            <div className="status-row">
-              {TASK_STATUSES.map((status) => (
-                <button
-                  key={status}
-                  className={activeTask.status === status ? "active" : ""}
-                  onClick={() => updateTaskStatus(activeTask, status)}
-                >
-                  {status.replace("_", " ")}
-                </button>
-              ))}
-            </div>
-          </section>
-        )}
-
-        <section className="reply-list">
-          {!activeRoot && (
-            <div className="empty-state compact">
-              <MessageSquare size={28} />
-              <h2>No thread selected</h2>
-              <p>Select a root message after you create one.</p>
-            </div>
+              ) : (
+                <>
+                  <div className="meta">
+                    <strong>{activeRoot.sender_name}</strong>
+                    <time>{formatTime(activeRoot.created_at)}</time>
+                    {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
+                  </div>
+                  <MessageMarkdown body={activeRoot.body} />
+                  <MessageAttachments attachments={activeRoot.attachments} />
+                  <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
+                  {activeRoot.delivery_state === "streaming" && (
+                    <div className="message-stream-state">Streaming response...</div>
+                  )}
+                  {activeRoot.delivery_state === "error" && (
+                    <div className="message-stream-state error">Response interrupted</div>
+                  )}
+                </>
+              )}
+            </article>
           )}
-          {replies.map((reply) => {
-            if (reply.sender_role === "system") {
+
+          {activeTask && (
+            <section className="thread-task-card">
+              <div className="task-card-head">
+                <span>Task #{activeTask.number}</span>
+                <strong>{activeTask.status.replace("_", " ")}</strong>
+              </div>
+              <input
+                value={taskTitleDrafts[activeTask.id] ?? activeTask.title}
+                onChange={(event) => setTaskTitleDraft(activeTask, event.target.value)}
+                onBlur={() => saveTaskTitle(activeTask)}
+                onKeyDown={(event) => {
+                  if (isImeComposing(event)) return;
+                  if (event.key === "Enter") saveTaskTitle(activeTask);
+                }}
+              />
+              <select
+                value={activeTask.assignee_id ?? ""}
+                onChange={(event) => claimTask(activeTask, event.target.value)}
+              >
+                <option value="">Unassigned</option>
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>{agent.display_name}</option>
+                ))}
+              </select>
+              <div className="status-row">
+                {TASK_STATUSES.map((status) => (
+                  <button
+                    key={status}
+                    className={activeTask.status === status ? "active" : ""}
+                    onClick={() => updateTaskStatus(activeTask, status)}
+                  >
+                    {status.replace("_", " ")}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section className="reply-list">
+            {!activeRoot && (
+              <div className="empty-state compact">
+                <MessageSquare size={28} />
+                <h2>No thread selected</h2>
+                <p>Select a root message after you create one.</p>
+              </div>
+            )}
+            {replies.map((reply) => {
+              if (reply.sender_role === "system") {
+                return (
+                  <article key={reply.id} className="system-message">
+                    <div className="system-message-line">
+                      <MessageMarkdown body={reply.body} />
+                      <time>{formatTime(reply.created_at)}</time>
+                    </div>
+                  </article>
+                );
+              }
               return (
-                <article key={reply.id} className="system-message">
-                  <div className="system-message-line">
+                <article key={reply.id}>
+                  <div className="avatar tiny">{reply.sender_name.slice(0, 1)}</div>
+                  <div>
+                    <div className="meta">
+                      <strong>{reply.sender_name}</strong>
+                      <time>{formatTime(reply.created_at)}</time>
+                      {wasEdited(reply) && <span className="edited-indicator">edited</span>}
+                    </div>
                     <MessageMarkdown body={reply.body} />
-                    <time>{formatTime(reply.created_at)}</time>
+                    <MessageAttachments attachments={reply.attachments} />
+                    <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
+                    {reply.delivery_state === "streaming" && (
+                      <div className="message-stream-state">Streaming response...</div>
+                    )}
+                    {reply.delivery_state === "error" && (
+                      <div className="message-stream-state error">Response interrupted</div>
+                    )}
                   </div>
                 </article>
               );
-            }
-            return (
-              <article key={reply.id}>
-                <div className="avatar tiny">{reply.sender_name.slice(0, 1)}</div>
-                <div>
-                  <div className="meta">
-                    <strong>{reply.sender_name}</strong>
-                    <time>{formatTime(reply.created_at)}</time>
-                    {wasEdited(reply) && <span className="edited-indicator">edited</span>}
-                  </div>
-                  <MessageMarkdown body={reply.body} />
-                  <MessageAttachments attachments={reply.attachments} />
-                  <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
-                  {reply.delivery_state === "streaming" && (
-                    <div className="message-stream-state">Streaming response...</div>
-                  )}
-                  {reply.delivery_state === "error" && (
-                    <div className="message-stream-state error">Response interrupted</div>
-                  )}
-                </div>
-              </article>
-            );
-          })}
-        </section>
+            })}
+          </section>
+        </div>
 
         <section
           className={`reply-composer ${isReplyDragOver ? "drag-over" : ""}`}

@@ -1718,7 +1718,7 @@ body.resizing-column * {
 
 .reply-composer {
   z-index: 1;
-  grid-row: 4;
+  grid-row: 2;
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -1952,9 +1952,20 @@ body.resizing-column * {
 
 .thread-focus {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
   overflow: hidden;
+}
+
+.thread-scroll {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.thread-scroll .reply-list {
+  overflow: visible;
 }
 
 .app.thread-hidden {
