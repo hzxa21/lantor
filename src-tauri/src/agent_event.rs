@@ -3,6 +3,15 @@ use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct AgentAttachmentFile {
+    #[serde(alias = "local_path")]
+    pub(crate) path: String,
+    pub(crate) name: Option<String>,
+    #[serde(alias = "mime")]
+    pub(crate) mime_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum AgentEvent {
     Message {
@@ -95,5 +104,12 @@ pub(crate) enum AgentEvent {
         summary: Option<String>,
         content: String,
         metadata: Option<Value>,
+    },
+    AttachmentCreate {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        thread_root_id: Option<Uuid>,
+        body: Option<String>,
+        files: Vec<AgentAttachmentFile>,
     },
 }

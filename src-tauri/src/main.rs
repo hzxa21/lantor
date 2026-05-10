@@ -33,7 +33,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use agent_event::AgentEvent;
+use agent_event::{AgentAttachmentFile, AgentEvent};
 use attachments::{load_message_attachment_lines, write_attachment_file, ATTACHMENT_SIZE_LIMIT};
 use context_tool::run_agent_context_tool;
 use models::{
@@ -2916,7 +2916,7 @@ async fn build_dispatch_work_context(
         ));
     }
     lines.push(
-        "Warm Codex/Claude streaming runtimes should reply with normal assistant text; LocalSlock routes that text to the target automatically. Non-message LOCAL_SLOCK_EVENT control lines such as artifact_create are allowed as standalone lines. Do not emit legacy message events in warm streaming mode."
+        "Warm Codex/Claude streaming runtimes should reply with normal assistant text; LocalSlock routes that text to the target automatically. Non-message LOCAL_SLOCK_EVENT control lines such as artifact_create and attachment_create are allowed as standalone lines. Do not emit legacy message events in warm streaming mode."
             .to_owned(),
     );
 
@@ -3059,54 +3059,7 @@ async fn send_owner_message_in_pool(
     .await
     .map_err(to_string)?;
 
-    for attachment in attachments {
-        if attachment.bytes.is_empty() {
-            continue;
-        }
-        if attachment.bytes.len() > ATTACHMENT_SIZE_LIMIT {
-            return Err(format!(
-                "attachment {} is larger than 25MB",
-                attachment.original_name
-            ));
-        }
-        let attachment_id = Uuid::new_v4();
-        let original_name = attachment.original_name.trim();
-        let original_name = if original_name.is_empty() {
-            "attachment"
-        } else {
-            original_name
-        };
-        let mime_type = attachment.mime_type.trim();
-        let mime_type = if mime_type.is_empty() {
-            "application/octet-stream"
-        } else {
-            mime_type
-        };
-        let storage_path =
-            write_attachment_file(msg_id, attachment_id, original_name, &attachment.bytes)?;
-        sqlx::query(
-            r#"
-            insert into message_attachments (
-                id,
-                message_id,
-                original_name,
-                mime_type,
-                size_bytes,
-                storage_path
-            )
-            values ($1, $2, $3, $4, $5, $6)
-            "#,
-        )
-        .bind(attachment_id)
-        .bind(msg_id)
-        .bind(original_name)
-        .bind(mime_type)
-        .bind(attachment.bytes.len() as i64)
-        .bind(storage_path)
-        .execute(&mut *tx)
-        .await
-        .map_err(to_string)?;
-    }
+    insert_message_attachments_tx(&mut tx, msg_id, attachments).await?;
 
     let mut task_id = None;
     if as_task {
@@ -3140,6 +3093,64 @@ async fn send_owner_message_in_pool(
     .await?;
     let _ = notify_ui_refresh(pool, "message").await;
     Ok(())
+}
+
+async fn insert_message_attachments_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    message_id: Uuid,
+    attachments: Vec<AttachmentUpload>,
+) -> CommandResult<usize> {
+    let mut inserted = 0;
+    for attachment in attachments {
+        if attachment.bytes.is_empty() {
+            continue;
+        }
+        if attachment.bytes.len() > ATTACHMENT_SIZE_LIMIT {
+            return Err(format!(
+                "attachment {} is larger than 25MB",
+                attachment.original_name
+            ));
+        }
+        let attachment_id = Uuid::new_v4();
+        let original_name = attachment.original_name.trim();
+        let original_name = if original_name.is_empty() {
+            "attachment"
+        } else {
+            original_name
+        };
+        let mime_type = attachment.mime_type.trim();
+        let mime_type = if mime_type.is_empty() {
+            "application/octet-stream"
+        } else {
+            mime_type
+        };
+        let storage_path =
+            write_attachment_file(message_id, attachment_id, original_name, &attachment.bytes)?;
+        sqlx::query(
+            r#"
+            insert into message_attachments (
+                id,
+                message_id,
+                original_name,
+                mime_type,
+                size_bytes,
+                storage_path
+            )
+            values ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(attachment_id)
+        .bind(message_id)
+        .bind(original_name)
+        .bind(mime_type)
+        .bind(attachment.bytes.len() as i64)
+        .bind(storage_path)
+        .execute(&mut **tx)
+        .await
+        .map_err(to_string)?;
+        inserted += 1;
+    }
+    Ok(inserted)
 }
 
 #[tauri::command]
@@ -6012,6 +6023,46 @@ async fn handle_agent_event(
             .await?;
             Ok(format!("artifact created: {artifact_id}"))
         }
+        AgentEvent::AttachmentCreate {
+            channel,
+            channel_id,
+            thread_root_id,
+            body,
+            files,
+        } => {
+            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
+            let uploads = load_agent_attachment_uploads(files)?;
+            let upload_count = uploads.len();
+            let body = body
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| default_attachment_message_body(&uploads));
+            let message_id = insert_agent_attachment_message(
+                pool,
+                agent_id,
+                channel_id,
+                thread_root_id,
+                &body,
+                uploads,
+            )
+            .await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "attachment",
+                "Attachment message created",
+                json!({
+                    "message_id": message_id,
+                    "file_count": upload_count
+                })
+                .to_string(),
+            )
+            .await?;
+            Ok(format!("attachment message created: {message_id}"))
+        }
     }
 }
 
@@ -6084,6 +6135,95 @@ async fn resolve_agent_by_handle(pool: &PgPool, handle: &str) -> CommandResult<U
         .await
         .map_err(to_string)?
         .ok_or_else(|| format!("agent @{normalized} does not exist"))
+}
+
+fn infer_attachment_mime_type(path: &Path, original_name: &str) -> String {
+    let extension = Path::new(original_name)
+        .extension()
+        .or_else(|| path.extension())
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "txt" => "text/plain",
+        "md" | "markdown" => "text/markdown",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+    .to_owned()
+}
+
+fn load_agent_attachment_uploads(
+    files: Vec<AgentAttachmentFile>,
+) -> CommandResult<Vec<AttachmentUpload>> {
+    if files.is_empty() {
+        return Err("attachment_create requires at least one file".to_owned());
+    }
+    let mut uploads = Vec::with_capacity(files.len());
+    for file in files {
+        let raw_path = file.path.trim();
+        if raw_path.is_empty() {
+            return Err("attachment_create file path is empty".to_owned());
+        }
+        let path = PathBuf::from(raw_path);
+        let metadata = fs::metadata(&path)
+            .map_err(|err| format!("cannot read attachment file {}: {err}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!("attachment path is not a file: {}", path.display()));
+        }
+        if metadata.len() > ATTACHMENT_SIZE_LIMIT as u64 {
+            return Err(format!(
+                "attachment file {} is larger than 25MB",
+                path.display()
+            ));
+        }
+        let bytes = fs::read(&path)
+            .map_err(|err| format!("cannot read attachment file {}: {err}", path.display()))?;
+        if bytes.is_empty() {
+            return Err(format!("attachment file is empty: {}", path.display()));
+        }
+        let original_name = file
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "attachment".to_owned());
+        let mime_type = file
+            .mime_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| infer_attachment_mime_type(&path, &original_name));
+        uploads.push(AttachmentUpload {
+            original_name,
+            mime_type,
+            bytes,
+        });
+    }
+    Ok(uploads)
+}
+
+fn default_attachment_message_body(uploads: &[AttachmentUpload]) -> String {
+    if uploads.len() == 1 {
+        format!("Attached file: {}", uploads[0].original_name.trim())
+    } else {
+        format!("Attached {} files.", uploads.len())
+    }
 }
 
 async fn insert_agent_message(
@@ -6188,6 +6328,87 @@ async fn insert_agent_message(
         queue_agent_message_mentions(pool, msg_id).await?;
     }
     let _ = notify_ui_refresh(pool, "message").await;
+    Ok(msg_id)
+}
+
+async fn insert_agent_attachment_message(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    body: &str,
+    attachments: Vec<AttachmentUpload>,
+) -> CommandResult<Uuid> {
+    if attachments.is_empty() {
+        return Err("attachment_create requires at least one file".to_owned());
+    }
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("attachment_create body is empty".to_owned());
+    }
+    if let Some(thread_root_id) = thread_root_id {
+        let root_channel: Option<Uuid> = sqlx::query_scalar(
+            "select channel_id from messages where id = $1 and thread_root_id is null",
+        )
+        .bind(thread_root_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+        if root_channel != Some(channel_id) {
+            return Err("thread_root_id does not belong to target channel".to_owned());
+        }
+    }
+
+    let sender = sqlx::query("select display_name, role from agents where id = $1")
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    let sender_name: String = sender.get("display_name");
+    let sender_role: String = sender.get("role");
+
+    let mut tx = pool.begin().await.map_err(to_string)?;
+    let msg_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into messages (
+            channel_id, thread_root_id, sender_agent_id, sender_name, sender_role, body, is_task
+        )
+        values ($1, $2, $3, $4, $5, $6, false)
+        returning id
+        "#,
+    )
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(agent_id)
+    .bind(sender_name)
+    .bind(sender_role)
+    .bind(body)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(to_string)?;
+
+    let inserted = insert_message_attachments_tx(&mut tx, msg_id, attachments).await?;
+    if inserted == 0 {
+        return Err("attachment_create produced no attachments".to_owned());
+    }
+    tx.commit().await.map_err(to_string)?;
+
+    let conversation_thread_root_id = thread_root_id.unwrap_or(msg_id);
+    upsert_agent_thread_subscription(
+        pool,
+        agent_id,
+        channel_id,
+        conversation_thread_root_id,
+        "agent_attachment_message",
+        Some(msg_id),
+    )
+    .await?;
+    queue_agent_message_mentions(pool, msg_id).await?;
+    if let Ok(message) = load_message(pool, msg_id).await {
+        let _ = notify_ui_message_upsert(pool, &message, "attachment_created").await;
+    } else {
+        let _ = notify_ui_refresh(pool, "attachment_created").await;
+    }
     Ok(msg_id)
 }
 
@@ -10677,8 +10898,9 @@ mod tests {
         send_owner_message_in_pool, silent_reply_reason, upsert_agent_thread_subscription,
         upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
-        AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL,
-        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
+        AgentAttachmentFile, AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
+        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::json;
@@ -10747,6 +10969,7 @@ mod tests {
         assert!(streaming.contains("will stream your Codex assistant text"));
         assert!(streaming.contains("you may emit standalone LOCAL_SLOCK_EVENT control lines"));
         assert!(streaming.contains("artifact_create"));
+        assert!(streaming.contains("attachment_create"));
         assert!(streaming.contains("Do not emit legacy LOCAL_SLOCK_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
     }
@@ -10949,6 +11172,83 @@ mod tests {
             .await?;
             assert!(tool_output.contains("kind=markdown"));
             assert!(tool_output.contains("# Review report"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn attachment_create_event_imports_local_file_as_message_attachment() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "attachment-agent").await?;
+            let channel_id = insert_test_channel(&pool, "attachments").await?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let dir =
+                std::env::temp_dir().join(format!("localslock-attachment-test-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+            let source_path = dir.join("generated.png");
+            let source_bytes = b"\x89PNG\r\n\x1a\nlocalslock-test-image";
+            std::fs::write(&source_path, source_bytes).map_err(|err| err.to_string())?;
+
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::AttachmentCreate {
+                    channel: None,
+                    channel_id: Some(channel_id),
+                    thread_root_id: None,
+                    body: Some("Generated architecture diagram".to_owned()),
+                    files: vec![AgentAttachmentFile {
+                        path: source_path.to_string_lossy().to_string(),
+                        name: Some("architecture.png".to_owned()),
+                        mime_type: Some("image/png".to_owned()),
+                    }],
+                },
+            )
+            .await?;
+
+            let messages = load_messages(&pool).await?;
+            let message = messages
+                .iter()
+                .find(|message| message.body == "Generated architecture diagram")
+                .expect("attachment message should be loaded");
+            assert_eq!(message.attachments.len(), 1);
+            let attachment = &message.attachments[0];
+            assert_eq!(attachment.original_name, "architecture.png");
+            assert_eq!(attachment.mime_type, "image/png");
+            assert_eq!(attachment.size_bytes, source_bytes.len() as i64);
+            assert_ne!(
+                attachment.storage_path.as_str(),
+                source_path.to_string_lossy().as_ref()
+            );
+            assert_eq!(
+                std::fs::read(&attachment.storage_path).map_err(|err| err.to_string())?,
+                source_bytes
+            );
+
+            let stored_path = std::path::PathBuf::from(&attachment.storage_path);
+            let _ = std::fs::remove_file(&stored_path);
+            if let Some(parent) = stored_path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
             Ok(())
         }
         .await;
