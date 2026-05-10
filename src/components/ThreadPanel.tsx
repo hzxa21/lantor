@@ -1,4 +1,4 @@
-import { MessageSquare, Paperclip, Reply, X } from "lucide-react";
+import { ArrowDown, MessageSquare, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
@@ -61,6 +61,7 @@ export function ThreadPanel({
   onResizeStart,
 }: ThreadPanelProps) {
   const [isReplyDragOver, setIsReplyDragOver] = useState(false);
+  const [showBackToBottom, setShowBackToBottom] = useState(false);
   const replyDragDepthRef = useRef(0);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowThreadRef = useRef(true);
@@ -93,12 +94,21 @@ export function ThreadPanel({
   function handleThreadScroll() {
     const element = threadScrollRef.current;
     if (!element) return;
-    shouldFollowThreadRef.current = isThreadScrollAtBottom(element);
+    const atBottom = isThreadScrollAtBottom(element);
+    shouldFollowThreadRef.current = atBottom;
+    const shouldShow = Boolean(activeRoot) && !atBottom;
+    setShowBackToBottom((current) => current === shouldShow ? current : shouldShow);
   }
 
   function handleThreadContentLoad() {
     if (!shouldFollowThreadRef.current) return;
     scrollThreadToBottom();
+  }
+
+  function returnThreadToBottom() {
+    shouldFollowThreadRef.current = true;
+    setShowBackToBottom(false);
+    scrollThreadToBottom("smooth");
   }
 
   function handleReplyKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -173,6 +183,7 @@ export function ThreadPanel({
 
   useLayoutEffect(() => {
     shouldFollowThreadRef.current = true;
+    setShowBackToBottom(false);
     scrollThreadToBottom();
   }, [activeRoot?.id]);
 
@@ -316,6 +327,12 @@ export function ThreadPanel({
               );
             })}
           </section>
+          {activeRoot && showBackToBottom && (
+            <button type="button" className="thread-back-to-bottom" onClick={returnThreadToBottom}>
+              <ArrowDown size={15} />
+              Back to bottom
+            </button>
+          )}
         </div>
 
         <section
