@@ -2,93 +2,30 @@
 
 Local-only Slock-style desktop console for one human and multiple local agents.
 
-## First Version Scope
+LocalSlock is a macOS desktop app built around channels, threads, DMs, tasks,
+agent profiles, reminders, artifacts, and local file attachments. It has no
+cloud server and stores collaboration state in a local PostgreSQL database.
 
-- macOS desktop shell with a three-pane layout: channels, chat, thread/task context.
-- PostgreSQL state store at `postgres://dylan:123456@127.0.0.1:5432/localslock`.
-- Clean initialization: the app creates schema only and does not seed demo data.
-- UI operations for channels, channel-agent membership, messages, thread replies, channel-scoped tasks, and agent profiles.
-- Agent runtime runs through a local `--supervisor` mode with start/stop controls, process status, and persisted run logs in Postgres.
-- Agent dispatch supports run-once work items assigned from the current channel/thread/task context.
-- Agent activity feed records profile changes, run lifecycle changes, stdout event ingestion, message creation, and task changes as durable Postgres state.
-- Single Apple-style Liquid Glass visual direction.
-- No cloud server, no multi-human permissions, no web deployment.
+## Current Scope
 
-This version establishes the local product shell and data model first. It intentionally keeps collaboration semantics local-only: tasks are top-level channel messages, each task has a thread, the task board can update title, assignee, and status, and read/follow state is persisted in Postgres.
+- Three-pane desktop shell: sidebar, channel/DM conversation, and thread or agent-detail panel.
+- PostgreSQL state store at `postgres://dylan:123456@127.0.0.1:5432/localslock` by default.
+- Channels, DMs, thread replies, channel-agent membership, tasks, reminders, agent profiles, artifacts, and search.
+- Agent runtime supervision with local Codex, Claude, Kimi, or custom launch commands.
+- Warm agent sessions for supported runtimes, so each agent can keep provider context across turns.
+- Inbox-driven agent wakeups for mentions, DMs, thread follow-ups, reminders, channel messages, and task work.
+- Agent activity feed for run lifecycle, status updates, control-event ingestion, and auditable handoffs.
+- Local file attachments with image thumbnails and lightbox preview.
+- Agent-generated files can be imported into the same attachment store through `attachment_create`.
 
-## Iteration Path
+Attachments are stored on disk under:
 
-1. MVP operations: create/edit/delete channels and agents, root messages, thread replies, channel task creation, task title/assignee/status updates.
-2. Agent runtime: launch/stop local Codex, Claude, and Kimi processes with logs and status.
-3. Collaboration semantics: local search, unread state, thread follow/unfollow, channel membership, and local notifications.
-4. Desktop productization: settings, backup/import, shortcuts, packaging, and visual polish.
-
-Current runtime boundary: each agent profile can store a shell `launch_command` and optional `working_directory`. If the command is empty, LocalSlock starts a harmless placeholder process so the start/stop/log loop can be tested before wiring a real agent CLI. The desktop app auto-spawns the same binary in `--supervisor` mode; that supervisor owns spawn/kill/log collection through a Postgres command queue. Dispatch is deliberately run-once in this slice: a work item queues a single agent run, injects the work context into environment variables, and records completion when the process exits. Work items can be filtered in the UI, opened back to their channel/thread/agent context, cancelled while queued/running, and retried after completion/failure/cancellation.
-
-The Runtime panel can also install a user LaunchAgent at `~/Library/LaunchAgents/local.localslock.supervisor.plist`. That makes macOS keep the `--supervisor` process alive via `launchctl`; uninstall removes the plist and unloads the service.
-
-## Agent Stdout Event Protocol
-
-An agent process can write structured events back into LocalSlock by printing one line to stdout with the `LOCAL_SLOCK_EVENT ` prefix followed by JSON. Non-matching stdout/stderr is preserved only in the run log.
-
-Examples:
-
-```bash
-printf 'LOCAL_SLOCK_EVENT {"type":"message","channel":"local-slock","body":"hello from agent"}\n'
-printf 'LOCAL_SLOCK_EVENT {"type":"message","channel":"local-slock","body":"new task","as_task":true}\n'
-printf 'LOCAL_SLOCK_EVENT {"type":"task_status","task_number":1,"status":"in_review"}\n'
-printf 'LOCAL_SLOCK_EVENT {"type":"task_claim","task_number":1}\n'
+```text
+~/Library/Application Support/LocalSlock/attachments/<message_id>/<attachment_id>.<ext>
 ```
 
-Supported event types in this slice:
-
-- `message`: requires `channel` or `channel_id`, accepts optional `thread_root_id`, `body`, and `as_task`.
-- `task_status`: requires `task_number` and one of `todo`, `in_progress`, `in_review`, `done`.
-- `task_claim`: requires `task_number`; defaults to the current agent, or use `assignee_handle` / `unassigned`.
-
-The supervisor injects `LOCAL_SLOCK_AGENT_ID`, `LOCAL_SLOCK_AGENT_HANDLE`, and `LOCAL_SLOCK_RUN_ID` into each agent process.
-
-For dispatched work items, the supervisor also injects:
-
-- `LOCAL_SLOCK_WORK_ITEM_ID`: the work item UUID;
-- `LOCAL_SLOCK_WORK_ITEM_PROMPT`: a human-readable prompt containing the work item title, channel, task/thread metadata, conversation context, and extra human instruction.
-
-Launch presets pass both the base LocalSlock protocol prompt and `LOCAL_SLOCK_WORK_ITEM_PROMPT` into the selected runtime. Custom commands can read these environment variables directly.
-
-Human messages can also create work items by mentioning an existing agent handle such as `@Hancock`. Mentions always create queued work items; the supervisor starts one work item per agent at a time and automatically schedules the next queued item after the previous run completes.
-
-Backlog behavior is intentionally conservative:
-
-- only one active run is allowed per agent;
-- extra mentions, retries, or manual dispatches remain `queued`;
-- the supervisor schedules the oldest queued work item for each idle agent;
-- cancellation marks queued work items as `cancelled` or sends a stop command for running work;
-- retry creates a new queued work item instead of mutating the historical record.
-
-## Agent Activity Feed
-
-LocalSlock persists agent activity in `agent_activities` instead of deriving it from run logs. The feed is intentionally queryable state: it links activity to an agent and, when available, a run. This gives the UI a stable timeline for:
-
-- profile creation, edits, and deletion;
-- queued starts, spawned runs, stop requests, and final run status;
-- accepted or rejected stdout events;
-- messages and tasks created from stdout events;
-- task status and assignee changes made by agents.
-
-Run logs remain useful for debugging one process. The activity feed is the product-level audit trail that future inbox loops, notifications, and filters should build on.
-
-## Agent Launch Presets
-
-The agent form includes editable launch presets for `Codex`, `Claude`, and `Kimi`, plus `Custom`.
-
-Presets are intentionally simple starting points:
-
-- They generate a shell command for the selected CLI and model.
-- They embed the LocalSlock stdout event protocol into the command prompt.
-- They show a command preview before applying, and the final command remains editable.
-- They assume the selected CLI binary is already installed and available on `PATH`.
-
-Use `Custom` when the agent is a local script, a wrapper, or a runtime with its own daemon protocol.
+Postgres stores attachment metadata such as original name, MIME type, file size,
+and storage path. Binary file bytes are not stored in Postgres.
 
 ## Run
 
@@ -102,3 +39,198 @@ Override the database URL if needed:
 ```bash
 LOCAL_SLOCK_DATABASE_URL=postgres://dylan:123456@127.0.0.1:5432/localslock npm run tauri:dev
 ```
+
+The Runtime panel can install a user LaunchAgent at:
+
+```text
+~/Library/LaunchAgents/local.localslock.supervisor.plist
+```
+
+That lets macOS keep the `--supervisor` process alive via `launchctl`.
+Uninstall removes the plist and unloads the service.
+
+## Agent Runtime Model
+
+Each agent profile stores runtime configuration, a model, optional custom
+launch command, optional working directory, and profile metadata. The desktop
+app starts the same binary in `--supervisor` mode; the supervisor owns process
+launch, stop commands, run logs, event ingestion, and work-item scheduling.
+
+Current agent dispatch is work-item based:
+
+- Human messages can create work items by mentioning an agent handle like `@Hancock`.
+- DM messages, thread follow-ups, reminders, tasks, channel messages, and handoffs can wake agents.
+- One active run is allowed per agent.
+- Extra mentions, retries, and manual dispatches remain queued.
+- The supervisor schedules the oldest queued work item for each idle agent.
+- Cancellation marks queued work as cancelled or sends a stop command for running work.
+- Retry creates a new queued work item instead of mutating historical state.
+
+Warm Codex and Claude runtimes should reply with normal assistant text for the
+current channel/thread. LocalSlock routes that text into the correct chat
+surface. They may also emit standalone `LOCAL_SLOCK_EVENT` control lines for
+structured side effects.
+
+Legacy stdout command runtimes are still supported for custom scripts. They can
+print one line to stdout with the `LOCAL_SLOCK_EVENT ` prefix followed by JSON.
+Non-matching stdout/stderr is preserved only in the run log.
+
+## Agent Context Tools
+
+The supervisor injects `LOCAL_SLOCK_CONTEXT_TOOL` for read-only context access.
+Agents use it to inspect the current workspace, recover context after restart,
+and process inbox wakeups.
+
+Common commands:
+
+```bash
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-archive --inbox-id "<uuid-or-prefix>"
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-info
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool message-search --query "<text>" --target "#channel" --limit 20
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
+"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"
+```
+
+Inbox, workspace, and memory commands default to the current agent. Use
+`--target "@handle"` only when inspecting another visible agent.
+
+## Agent Memory
+
+Each agent has a persistent working directory under `agents/<handle>/`.
+`MEMORY.md` is the recovery entry point and should stay concise and
+index-like. Agents can use notes, artifacts, and task-specific files under that
+workspace when work needs durable context.
+
+Memory-related control events:
+
+- `memory_append`: append a small durable fact.
+- `memory_compact`: replace `MEMORY.md` with a cleaned compact version.
+- `profile_update`: update display name, role, avatar, or description.
+
+## Control Events
+
+Warm runtime control events are standalone lines:
+
+```text
+LOCAL_SLOCK_EVENT {"type":"activity","kind":"thinking","title":"Checking build","detail":"optional detail"}
+```
+
+Supported event types:
+
+- `activity`: write a compact hidden progress/activity event.
+- `usage`: record token and cost usage.
+- `memory_append`: append durable memory.
+- `memory_compact`: replace durable memory.
+- `profile_update`: update the current agent profile.
+- `reminder_create`: create a visible, cancelable reminder.
+- `reminder_cancel`: cancel a reminder by id.
+- `task_create`: create a root task message and optional first thread update.
+- `task_status`: update a task status.
+- `artifact_create`: create a markdown artifact rendered from the message.
+- `attachment_create`: import local files as message attachments.
+- `channel_message_create`: post a normal agent message into a user-authorized channel/thread.
+- `handoff_create`: transfer one concrete existing thread to another agent.
+- `channel_create`: create a durable channel workspace.
+- `channel_invite`: invite agents into an existing channel.
+
+Legacy/custom runtimes may also use parser-compatible `message`, `task_claim`,
+and `silent` events, but warm Codex/Claude agents should prefer normal assistant
+text plus the structured control events above.
+
+### Example: Attachment
+
+Use this for generated images or local files that should appear as normal
+message attachments:
+
+```json
+{
+  "type": "attachment_create",
+  "channel_id": "uuid",
+  "thread_root_id": "optional uuid",
+  "body": "Generated architecture diagram:",
+  "files": [
+    {
+      "path": "/absolute/path/to/image.png",
+      "name": "architecture.png",
+      "mime_type": "image/png"
+    }
+  ]
+}
+```
+
+Pass absolute file paths, not base64. LocalSlock copies the files into its own
+attachment store and records metadata in Postgres.
+
+### Example: Handoff
+
+Use this only after explicit user authorization to transfer a concrete existing
+thread to another agent:
+
+```json
+{
+  "type": "handoff_create",
+  "target_agent": "@Vegapunk",
+  "channel_id": "uuid",
+  "thread_root_id": "uuid",
+  "reason": "Dylan asked Vegapunk to continue this request",
+  "body": "Please continue the implementation from this thread."
+}
+```
+
+`handoff_create` is not a general cross-thread messaging API. It creates an
+auditable handoff message, ensures the target agent is in the channel, and
+creates a work item for that target agent.
+
+### Example: User-Authorized Channel Message
+
+Use this only when the user explicitly asks an agent to post in a specific
+channel or thread:
+
+```json
+{
+  "type": "channel_message_create",
+  "channel_id": "uuid",
+  "thread_root_id": "optional uuid",
+  "body": "@Vegapunk please take this task in the right context."
+}
+```
+
+Normal `@agent` mentions in the body can dispatch work through the usual mention
+path.
+
+## Agent Activity Feed
+
+LocalSlock persists agent activity in `agent_activities` instead of deriving it
+from run logs. The feed is queryable product state and can link activity to an
+agent, run, message, task, artifact, reminder, or handoff. It is used for:
+
+- profile changes;
+- queued starts, spawned runs, stop requests, and final run status;
+- accepted or rejected control events;
+- messages, tasks, artifacts, attachments, reminders, and handoffs created by agents;
+- task status and assignee changes.
+
+Run logs remain useful for process-level debugging. The activity feed is the
+product-level audit trail.
+
+## Agent Launch Presets
+
+The agent form includes editable launch presets for `Codex`, `Claude`, `Kimi`,
+and `Custom`.
+
+Presets:
+
+- generate a shell command for the selected CLI and model;
+- include the LocalSlock operating policy, context tools, and control-event API;
+- show a command preview before applying;
+- leave the final command editable;
+- assume the selected CLI binary is already installed and on `PATH`.
+
+Use `Custom` when the agent is a local script, wrapper, or runtime with its own
+daemon protocol.
