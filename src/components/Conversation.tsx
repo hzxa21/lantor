@@ -7,7 +7,7 @@ import {
   Plus,
   Send,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
@@ -88,6 +88,8 @@ export function Conversation({
   const [sendAsTask, setSendAsTask] = useState(false);
   const [isComposerDragOver, setIsComposerDragOver] = useState(false);
   const composerDragDepthRef = useRef(0);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+  const shouldFollowMessagesRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isDm = channel?.kind === "dm";
@@ -102,6 +104,28 @@ export function Conversation({
     closeMentionPicker,
     focusComposer,
   } = useMentionPicker({ agents, value: draft, setValue: setDraft, textareaRef });
+  const lastRootMessage = rootMessages[rootMessages.length - 1] ?? null;
+
+  function isMessageListAtBottom(element: HTMLDivElement) {
+    return element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+  }
+
+  function scrollMessagesToBottom(behavior: ScrollBehavior = "auto") {
+    const element = messageListRef.current;
+    if (!element) return;
+    element.scrollTo({ top: element.scrollHeight, behavior });
+  }
+
+  function handleMessageListScroll() {
+    const element = messageListRef.current;
+    if (!element) return;
+    shouldFollowMessagesRef.current = isMessageListAtBottom(element);
+  }
+
+  function handleMessageListContentLoad() {
+    if (!shouldFollowMessagesRef.current) return;
+    scrollMessagesToBottom();
+  }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isImeComposing(event)) return;
@@ -179,6 +203,16 @@ export function Conversation({
     setIsComposerDragOver(false);
   }, [channel?.id]);
 
+  useLayoutEffect(() => {
+    shouldFollowMessagesRef.current = true;
+    scrollMessagesToBottom();
+  }, [channel?.id]);
+
+  useLayoutEffect(() => {
+    if (!shouldFollowMessagesRef.current) return;
+    scrollMessagesToBottom();
+  }, [activeTab, channel?.id, rootMessages.length, lastRootMessage?.id, lastRootMessage?.updated_at, lastRootMessage?.delivery_state]);
+
   return (
     <section className="conversation">
       <header className="topbar">
@@ -227,7 +261,12 @@ export function Conversation({
       </div>
 
       {activeTab === "chat" ? (
-        <div className="message-list">
+        <div
+          ref={messageListRef}
+          className="message-list"
+          onScroll={handleMessageListScroll}
+          onLoadCapture={handleMessageListContentLoad}
+        >
           {channel ? (
             rootMessages.length > 0 ? (
               <div className="beginning">

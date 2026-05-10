@@ -1,5 +1,5 @@
 import { MessageSquare, Paperclip, Reply, X } from "lucide-react";
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
@@ -62,6 +62,8 @@ export function ThreadPanel({
 }: ThreadPanelProps) {
   const [isReplyDragOver, setIsReplyDragOver] = useState(false);
   const replyDragDepthRef = useRef(0);
+  const threadScrollRef = useRef<HTMLDivElement | null>(null);
+  const shouldFollowThreadRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isDm = channel?.kind === "dm";
@@ -76,6 +78,28 @@ export function ThreadPanel({
     closeMentionPicker,
     focusComposer,
   } = useMentionPicker({ agents, value: replyDraft, setValue: setReplyDraft, textareaRef });
+  const lastReply = replies[replies.length - 1] ?? null;
+
+  function isThreadScrollAtBottom(element: HTMLDivElement) {
+    return element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+  }
+
+  function scrollThreadToBottom(behavior: ScrollBehavior = "auto") {
+    const element = threadScrollRef.current;
+    if (!element) return;
+    element.scrollTo({ top: element.scrollHeight, behavior });
+  }
+
+  function handleThreadScroll() {
+    const element = threadScrollRef.current;
+    if (!element) return;
+    shouldFollowThreadRef.current = isThreadScrollAtBottom(element);
+  }
+
+  function handleThreadContentLoad() {
+    if (!shouldFollowThreadRef.current) return;
+    scrollThreadToBottom();
+  }
 
   function handleReplyKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isImeComposing(event)) return;
@@ -147,6 +171,16 @@ export function ThreadPanel({
     setIsReplyDragOver(false);
   }, [activeRoot?.id]);
 
+  useLayoutEffect(() => {
+    shouldFollowThreadRef.current = true;
+    scrollThreadToBottom();
+  }, [activeRoot?.id]);
+
+  useLayoutEffect(() => {
+    if (!shouldFollowThreadRef.current) return;
+    scrollThreadToBottom();
+  }, [activeRoot?.id, activeRoot?.updated_at, replies.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
+
   return (
     <aside className="thread">
       <button
@@ -168,7 +202,12 @@ export function ThreadPanel({
       </header>
 
       <section className="thread-focus">
-        <div className="thread-scroll">
+        <div
+          ref={threadScrollRef}
+          className="thread-scroll"
+          onScroll={handleThreadScroll}
+          onLoadCapture={handleThreadContentLoad}
+        >
           {activeRoot && (
             <article className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""}`}>
               {activeRoot.sender_role === "system" ? (
