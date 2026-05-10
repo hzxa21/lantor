@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Agent,
   AgentActivity,
@@ -43,6 +43,7 @@ type AgentDetailDrawerProps = {
   onOpenWorkItem: (item: AgentWorkItem) => void;
   onCancelWorkItem: (item: AgentWorkItem) => void;
   onRetryWorkItem: (item: AgentWorkItem) => void;
+  onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
 export type AgentPerformance = {
@@ -247,6 +248,7 @@ export function AgentDetailDrawer({
   onOpenWorkItem,
   onCancelWorkItem,
   onRetryWorkItem,
+  onResizeStart,
 }: AgentDetailDrawerProps) {
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
   const [expandedWorkspaceDirs, setExpandedWorkspaceDirs] = useState<Set<string>>(new Set());
@@ -617,6 +619,12 @@ export function AgentDetailDrawer({
 
   return (
     <aside className="agent-drawer">
+      <button
+        type="button"
+        className="thread-resize-handle"
+        aria-label="Resize agent detail panel"
+        onPointerDown={onResizeStart}
+      />
       <header className="agent-drawer-head">
         <div>
           <span>Agent</span>

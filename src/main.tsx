@@ -69,6 +69,8 @@ const ACTIVITY_PHASE_LABELS: Record<string, string> = {
 
 const DEFAULT_THREAD_PANEL_WIDTH = 420;
 const MIN_THREAD_PANEL_WIDTH = 320;
+const DEFAULT_AGENT_DRAWER_WIDTH = 420;
+const MIN_AGENT_DRAWER_WIDTH = 320;
 const DEFAULT_SIDEBAR_WIDTH = 292;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 460;
@@ -156,6 +158,10 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
 
 function maxThreadPanelWidth() {
   return Math.max(MIN_THREAD_PANEL_WIDTH, Math.floor(window.innerWidth * (2 / 3)));
+}
+
+function maxAgentDrawerWidth() {
+  return Math.max(MIN_AGENT_DRAWER_WIDTH, Math.floor(window.innerWidth * (2 / 3)));
 }
 
 function matchesSearchTime(value: string | null, range: SearchTimeRange) {
@@ -332,6 +338,13 @@ function App() {
     return Number.isFinite(value)
       ? Math.min(maxThreadPanelWidth(), Math.max(MIN_THREAD_PANEL_WIDTH, value))
       : DEFAULT_THREAD_PANEL_WIDTH;
+  });
+  const [agentDrawerWidth, setAgentDrawerWidth] = useState(() => {
+    const stored = window.localStorage.getItem("localslock.agentDrawerWidth");
+    const value = stored ? Number(stored) : DEFAULT_AGENT_DRAWER_WIDTH;
+    return Number.isFinite(value)
+      ? Math.min(maxAgentDrawerWidth(), Math.max(MIN_AGENT_DRAWER_WIDTH, value))
+      : DEFAULT_AGENT_DRAWER_WIDTH;
   });
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = window.localStorage.getItem("localslock.sidebarWidth");
@@ -753,6 +766,10 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("localslock.threadPanelWidth", String(threadPanelWidth));
   }, [threadPanelWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem("localslock.agentDrawerWidth", String(agentDrawerWidth));
+  }, [agentDrawerWidth]);
 
   useEffect(() => {
     window.localStorage.setItem("localslock.sidebarWidth", String(sidebarWidth));
@@ -1812,6 +1829,32 @@ function App() {
     window.addEventListener("pointerup", onPointerUp);
   }
 
+  function startAgentDrawerResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = agentDrawerWidth;
+
+    function onPointerMove(moveEvent: PointerEvent) {
+      const delta = startX - moveEvent.clientX;
+      const maxWidth = Math.max(
+        MIN_AGENT_DRAWER_WIDTH,
+        Math.min(maxAgentDrawerWidth(), window.innerWidth - sidebarWidth - MIN_CONVERSATION_WIDTH),
+      );
+      const next = Math.min(maxWidth, Math.max(MIN_AGENT_DRAWER_WIDTH, startWidth + delta));
+      setAgentDrawerWidth(next);
+    }
+
+    function onPointerUp() {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      document.body.classList.remove("resizing-column");
+    }
+
+    document.body.classList.add("resizing-column");
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  }
+
   async function startAgent(agent: Agent) {
     await mutate("start_agent", { agentId: agent.id });
   }
@@ -1884,7 +1927,7 @@ function App() {
       className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"}`}
       style={{
         "--sidebar-width": `${sidebarWidth}px`,
-        "--thread-width": `${threadPanelWidth}px`,
+        "--thread-width": `${selectedAgent ? agentDrawerWidth : threadPanelWidth}px`,
       } as CSSProperties}
     >
       <Sidebar
@@ -2004,6 +2047,7 @@ function App() {
           }}
           onCancelWorkItem={cancelWorkItem}
           onRetryWorkItem={retryWorkItem}
+          onResizeStart={startAgentDrawerResize}
         />
       ) : showThread && (
         <ThreadPanel
