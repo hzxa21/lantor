@@ -188,6 +188,7 @@ export type AgentWorkItem = {
   channel_name: string | null;
   thread_root_id: string | null;
   source_message_id: string | null;
+  inbox_item_id?: string | null;
   task_id: string | null;
   task_number: number | null;
   source_kind: string;

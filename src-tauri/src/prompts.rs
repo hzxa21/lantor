@@ -79,7 +79,7 @@ pub(crate) fn build_work_item_prompt(
     available_agents: &[String],
 ) -> String {
     let mut lines = vec![
-        "Current LocalSlock agent request:".to_owned(),
+        "Current LocalSlock inbox processing turn:".to_owned(),
         format!("id: {work_item_id}"),
         format!("title: {title}"),
     ];
