@@ -35,15 +35,19 @@ const LOCAL_SLOCK_CONTROL_EVENTS = [
   '{"type":"task_create","channel_id":"uuid","title":"Short task title","body":"Root task message","thread_body":"First execution update","assign_self":true,"status":"in_progress"}',
   '{"type":"task_status","task_number":1,"status":"in_review"}',
   '{"type":"artifact_create","channel_id":"uuid","thread_root_id":"optional uuid","kind":"markdown","title":"Report","summary":"Short chat summary","content":"Full markdown content","metadata":{}}',
+  '{"type":"attachment_create","channel_id":"uuid","thread_root_id":"optional uuid","body":"Short message","files":[{"path":"/absolute/path/to/image.png","name":"image.png","mime_type":"image/png"}]}',
+  '{"type":"channel_message_create","channel_id":"uuid","thread_root_id":"optional uuid","body":"Message body"}',
+  '{"type":"handoff_create","target_agent":"@Vegapunk","channel_id":"uuid","thread_root_id":"uuid","reason":"why this handoff is needed","body":"specific request"}',
   '{"type":"channel_create","name":"short-topic","description":"why this channel exists","agent_handles":["@Hancock"]}',
   '{"type":"channel_invite","channel":"local-slock","agent_handles":["@Vegapunk"]}',
+  "Use channel_message_create only after the user explicitly asks you to post in a specific channel/thread. It posts as your agent identity, requires channel membership, and normal @mentions may dispatch work.",
   "Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents.",
 ].join("\n");
 
 const LOCAL_SLOCK_LEGACY_VISIBLE_EVENTS = [
   "Visible reply transport:",
   "- Warm Codex/Claude streaming runtimes should answer with normal assistant text; LocalSlock routes it to the current channel/thread automatically.",
-  "- Warm streaming runtimes may still emit non-message LOCAL_SLOCK_EVENT control lines above, including artifact_create; LocalSlock consumes and hides those lines.",
+  "- Warm streaming runtimes may still emit non-message LOCAL_SLOCK_EVENT control lines above, including artifact_create, attachment_create, channel_message_create, and handoff_create; LocalSlock consumes and hides those lines.",
   "- Legacy stdout command runtimes should create visible chat by printing exactly one LOCAL_SLOCK_EVENT message line.",
   '{"type":"message","channel_id":"uuid","body":"..."}',
   '{"type":"message","channel_id":"uuid","thread_root_id":"uuid","body":"..."}',

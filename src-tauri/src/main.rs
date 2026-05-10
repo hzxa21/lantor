@@ -2385,14 +2385,19 @@ fn extract_agent_mentions(body: &str) -> Vec<String> {
 #[derive(Clone, Copy)]
 enum MentionDispatchOrigin {
     Owner,
-    Agent { sender_agent_id: Uuid },
+    Agent {
+        sender_agent_id: Uuid,
+        allow_channel_member_invite: bool,
+    },
 }
 
 impl MentionDispatchOrigin {
     fn sender_agent_id(self) -> Option<Uuid> {
         match self {
             MentionDispatchOrigin::Owner => None,
-            MentionDispatchOrigin::Agent { sender_agent_id } => Some(sender_agent_id),
+            MentionDispatchOrigin::Agent {
+                sender_agent_id, ..
+            } => Some(sender_agent_id),
         }
     }
 
@@ -2402,6 +2407,16 @@ impl MentionDispatchOrigin {
 
     fn is_agent(self) -> bool {
         matches!(self, MentionDispatchOrigin::Agent { .. })
+    }
+
+    fn allows_channel_member_invite(self) -> bool {
+        match self {
+            MentionDispatchOrigin::Owner => true,
+            MentionDispatchOrigin::Agent {
+                allow_channel_member_invite,
+                ..
+            } => allow_channel_member_invite,
+        }
     }
 }
 
@@ -2497,7 +2512,7 @@ async fn queue_mentions_as_work_items(
             if Some(agent_id) == origin.sender_agent_id() {
                 continue;
             }
-            if origin.is_agent() {
+            if origin.is_agent() && !origin.allows_channel_member_invite() {
                 let is_channel_member: bool = sqlx::query_scalar(
                     r#"
                     select exists (
@@ -2823,7 +2838,10 @@ async fn queue_agent_message_mentions(pool: &PgPool, message_id: Uuid) -> Comman
         message_id,
         None,
         body.trim(),
-        MentionDispatchOrigin::Agent { sender_agent_id },
+        MentionDispatchOrigin::Agent {
+            sender_agent_id,
+            allow_channel_member_invite: false,
+        },
     )
     .await
 }
@@ -2913,7 +2931,7 @@ async fn build_dispatch_work_context(
         ));
     }
     lines.push(
-        "Warm Codex/Claude streaming runtimes should reply with normal assistant text; LocalSlock routes that text to the target automatically. Non-message LOCAL_SLOCK_EVENT control lines such as artifact_create, attachment_create, and handoff_create are allowed as standalone lines. Do not emit legacy message events in warm streaming mode."
+        "Warm Codex/Claude streaming runtimes should reply with normal assistant text; LocalSlock routes that text to the target automatically. Non-message LOCAL_SLOCK_EVENT control lines such as artifact_create, attachment_create, channel_message_create, and handoff_create are allowed as standalone lines. Do not emit legacy message events in warm streaming mode."
             .to_owned(),
     );
 
@@ -5561,6 +5579,58 @@ async fn handle_agent_event(
             .await?;
             Ok(format!("message accepted {msg_id}"))
         }
+        AgentEvent::ChannelMessageCreate {
+            channel,
+            channel_id,
+            thread_root_id,
+            body,
+        } => {
+            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
+            ensure_agent_channel_member(pool, agent_id, channel_id, "channel_message_create")
+                .await?;
+            let body = body.trim();
+            if body.is_empty() {
+                return Err("channel_message_create body is required".to_owned());
+            }
+            let msg_id = insert_agent_message_with_options(
+                pool,
+                agent_id,
+                channel_id,
+                thread_root_id,
+                body,
+                false,
+                false,
+            )
+            .await?;
+            queue_mentions_as_work_items(
+                pool,
+                channel_id,
+                thread_root_id,
+                msg_id,
+                None,
+                body,
+                MentionDispatchOrigin::Agent {
+                    sender_agent_id: agent_id,
+                    allow_channel_member_invite: true,
+                },
+            )
+            .await?;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "message",
+                "Channel message posted from control event",
+                json!({
+                    "message_id": msg_id,
+                    "channel_id": channel_id,
+                    "thread_root_id": thread_root_id
+                })
+                .to_string(),
+            )
+            .await?;
+            Ok(format!("channel message accepted {msg_id}"))
+        }
         AgentEvent::Activity {
             kind,
             title,
@@ -6182,6 +6252,34 @@ async fn resolve_agent_handle(pool: &PgPool, agent_id: Uuid) -> CommandResult<St
         .map_err(to_string)
 }
 
+async fn ensure_agent_channel_member(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    event_name: &str,
+) -> CommandResult<()> {
+    let is_member: bool = sqlx::query_scalar(
+        r#"
+        select exists (
+            select 1 from channel_members
+            where channel_id = $1 and agent_id = $2
+        )
+        "#,
+    )
+    .bind(channel_id)
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+    if is_member {
+        Ok(())
+    } else {
+        Err(format!(
+            "{event_name} requires source agent channel membership"
+        ))
+    }
+}
+
 async fn create_agent_handoff(
     pool: &PgPool,
     source_agent_id: Uuid,
@@ -6207,22 +6305,7 @@ async fn create_agent_handoff(
     if root_channel != Some(channel_id) {
         return Err("thread_root_id does not belong to target channel".to_owned());
     }
-    let source_is_member: bool = sqlx::query_scalar(
-        r#"
-        select exists (
-            select 1 from channel_members
-            where channel_id = $1 and agent_id = $2
-        )
-        "#,
-    )
-    .bind(channel_id)
-    .bind(source_agent_id)
-    .fetch_one(pool)
-    .await
-    .map_err(to_string)?;
-    if !source_is_member {
-        return Err("handoff_create requires source agent channel membership".to_owned());
-    }
+    ensure_agent_channel_member(pool, source_agent_id, channel_id, "handoff_create").await?;
 
     let request_body = body.trim();
     if request_body.is_empty() {
@@ -11205,6 +11288,7 @@ mod tests {
         assert!(streaming.contains("you may emit standalone LOCAL_SLOCK_EVENT control lines"));
         assert!(streaming.contains("artifact_create"));
         assert!(streaming.contains("attachment_create"));
+        assert!(streaming.contains("channel_message_create"));
         assert!(streaming.contains("handoff_create"));
         assert!(streaming.contains("Do not emit legacy LOCAL_SLOCK_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
@@ -11644,6 +11728,174 @@ mod tests {
             Ok(())
         }
         .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn channel_message_create_posts_agent_message_and_dispatches_mentions() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let source_agent_id = insert_test_agent(&pool, "source").await?;
+            let target_agent_id = insert_test_agent(&pool, "target").await?;
+            let channel_id = insert_test_channel(&pool, "channel-message").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(source_agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(source_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            handle_agent_event(
+                &pool,
+                source_agent_id,
+                run_id,
+                AgentEvent::ChannelMessageCreate {
+                    channel: None,
+                    channel_id: Some(channel_id),
+                    thread_root_id: None,
+                    body: "@target please start this task in this channel.".to_owned(),
+                },
+            )
+            .await?;
+
+            let message = sqlx::query(
+                r#"
+                select id, thread_root_id, sender_agent_id, sender_name, sender_role, body, is_task
+                from messages
+                where channel_id = $1 and sender_agent_id = $2
+                "#,
+            )
+            .bind(channel_id)
+            .bind(source_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let message_id: Uuid = message.get("id");
+            assert_eq!(message.get::<Option<Uuid>, _>("thread_root_id"), None);
+            assert_eq!(
+                message.get::<Option<Uuid>, _>("sender_agent_id"),
+                Some(source_agent_id)
+            );
+            assert_eq!(message.get::<String, _>("sender_name"), "source");
+            assert_eq!(message.get::<String, _>("sender_role"), "agent");
+            assert_eq!(
+                message.get::<String, _>("body"),
+                "@target please start this task in this channel."
+            );
+            assert!(!message.get::<bool, _>("is_task"));
+
+            let target_is_member: bool = sqlx::query_scalar(
+                r#"
+                select exists (
+                    select 1 from channel_members
+                    where channel_id = $1 and agent_id = $2
+                )
+                "#,
+            )
+            .bind(channel_id)
+            .bind(target_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert!(target_is_member);
+
+            let work_item = sqlx::query(
+                r#"
+                select agent_id, thread_root_id, source_message_id, source_kind
+                from agent_work_items
+                where source_message_id = $1 and agent_id = $2
+                "#,
+            )
+            .bind(message_id)
+            .bind(target_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(work_item.get::<Uuid, _>("agent_id"), target_agent_id);
+            assert_eq!(
+                work_item.get::<Option<Uuid>, _>("thread_root_id"),
+                Some(message_id)
+            );
+            assert_eq!(
+                work_item.get::<Option<Uuid>, _>("source_message_id"),
+                Some(message_id)
+            );
+            assert_eq!(work_item.get::<String, _>("source_kind"), "collaboration");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn channel_message_create_requires_source_channel_membership() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> =
+            async {
+                let source_agent_id = insert_test_agent(&pool, "source").await?;
+                let channel_id = insert_test_channel(&pool, "channel-message-denied").await?;
+                let run_id: Uuid = sqlx::query_scalar(
+                    r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+                )
+                .bind(source_agent_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+
+                let err = handle_agent_event(
+                    &pool,
+                    source_agent_id,
+                    run_id,
+                    AgentEvent::ChannelMessageCreate {
+                        channel: None,
+                        channel_id: Some(channel_id),
+                        thread_root_id: None,
+                        body: "I should not be posted.".to_owned(),
+                    },
+                )
+                .await
+                .expect_err("non-member channel_message_create should be rejected");
+                assert!(
+                    err.contains("channel_message_create requires source agent channel membership")
+                );
+
+                let message_count: i64 = sqlx::query_scalar(
+                    "select count(*)::bigint from messages where channel_id = $1",
+                )
+                .bind(channel_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+                assert_eq!(message_count, 0);
+                Ok(())
+            }
+            .await;
         drop_test_schema(pool, schema).await;
         assert!(result.is_ok(), "{:?}", result.err());
     }
@@ -13693,6 +13945,7 @@ mod tests {
                 "@reviewer please review this again",
                 MentionDispatchOrigin::Agent {
                     sender_agent_id: author_id,
+                    allow_channel_member_invite: false,
                 },
             )
             .await?;

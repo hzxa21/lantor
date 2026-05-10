@@ -21,6 +21,12 @@ pub(crate) enum AgentEvent {
         body: String,
         as_task: Option<bool>,
     },
+    ChannelMessageCreate {
+        channel: Option<String>,
+        channel_id: Option<Uuid>,
+        thread_root_id: Option<Uuid>,
+        body: String,
+    },
     Activity {
         kind: Option<String>,
         title: String,
