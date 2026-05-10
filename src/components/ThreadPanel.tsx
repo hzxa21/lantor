@@ -250,7 +250,7 @@ export function ThreadPanel({
                       title={`View @${rootAgent.handle} details`}
                       onClick={() => openAgentDetail(rootAgent)}
                     >
-                      <AgentAvatar agent={rootAgent} size="sm" />
+                      <AgentAvatar agent={rootAgent} />
                     </button>
                   ) : (
                     <div className="avatar">{activeRoot.sender_name.slice(0, 1)}</div>
@@ -339,14 +339,14 @@ export function ThreadPanel({
                   {replyAgent ? (
                     <button
                       type="button"
-                      className="message-agent-avatar-trigger tiny"
+                      className="message-agent-avatar-trigger"
                       title={`View @${replyAgent.handle} details`}
                       onClick={() => openAgentDetail(replyAgent)}
                     >
-                      <AgentAvatar agent={replyAgent} size="sm" />
+                      <AgentAvatar agent={replyAgent} />
                     </button>
                   ) : (
-                    <div className="avatar tiny">{reply.sender_name.slice(0, 1)}</div>
+                    <div className="avatar">{reply.sender_name.slice(0, 1)}</div>
                   )}
                   <div>
                     <div className="meta">

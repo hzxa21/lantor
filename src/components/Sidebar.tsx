@@ -157,14 +157,9 @@ export function Sidebar({
               key={agent.id}
               className={`dm-row ${item?.id === channel?.id ? "selected" : ""} ${badge ? "has-unread" : ""}`}
             >
-              <button
-                type="button"
-                className="dm-detail-trigger"
-                title={`Message @${agent.handle}`}
-                onClick={() => item ? selectChannel(item.id) : openDmWithAgent(agent)}
-              >
+              <div className="dm-avatar-shell" aria-hidden="true">
                 <AgentAvatar agent={agent} size="sm" />
-              </button>
+              </div>
               <button
                 type="button"
                 className="dm"

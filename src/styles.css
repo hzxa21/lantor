@@ -416,22 +416,14 @@ button,
   color: #fff;
 }
 
-.dm-detail-trigger {
+.dm-avatar-shell {
   display: grid;
   width: 34px;
   height: 42px;
   place-items: center;
   border-radius: 14px;
   background: transparent;
-  cursor: pointer;
-}
-
-.dm-detail-trigger:hover {
-  background: rgba(255, 255, 255, 0.36);
-}
-
-.dm-detail-trigger:hover .agent-avatar {
-  transform: translateY(-1px) scale(1.03);
+  cursor: default;
 }
 
 .member-editor {
@@ -497,20 +489,20 @@ button,
 
 .message-agent-avatar-trigger {
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   place-items: center;
   align-self: start;
   padding: 0;
-  border-radius: 13px;
+  border-radius: 15px;
   background: transparent;
   color: inherit;
 }
 
 .message-agent-avatar-trigger.tiny {
-  width: 30px;
-  height: 30px;
-  border-radius: 11px;
+  width: 34px;
+  height: 34px;
+  border-radius: 13px;
 }
 
 .message-agent-avatar-trigger:hover {
@@ -781,7 +773,7 @@ button,
 
 .message-card {
   display: grid;
-  grid-template-columns: 38px 1fr;
+  grid-template-columns: 44px 1fr;
   gap: 10px;
   margin: 0;
   padding: 7px 22px;
@@ -1694,7 +1686,7 @@ body.resizing-column * {
 
 .thread-message-with-avatar {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
+  grid-template-columns: 44px minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -1729,7 +1721,7 @@ body.resizing-column * {
 
 .reply-list article {
   display: grid;
-  grid-template-columns: 30px 1fr;
+  grid-template-columns: 44px 1fr;
   gap: 9px;
   padding: 7px 16px;
   border: 1px solid transparent;

@@ -328,7 +328,7 @@ export function Conversation({
                       openAgentDetail(messageAgent);
                     }}
                   >
-                    <AgentAvatar agent={messageAgent} size="sm" />
+                    <AgentAvatar agent={messageAgent} />
                   </button>
                 ) : (
                   <div className="avatar">{message.sender_name.slice(0, 1)}</div>
