@@ -225,9 +225,21 @@ export function Conversation({
     <section className="conversation">
       <header className="topbar">
         <div className="channel-title">
-          <span className={`hash-card ${isDm ? "dm-card" : ""}`}>
-            {isDm && dmAgent ? <AgentAvatar agent={dmAgent} size="sm" /> : <Hash />}
-          </span>
+          {isDm && dmAgent ? (
+            <button
+              type="button"
+              className="hash-card dm-card dm-agent-detail-trigger"
+              title={`View @${dmAgent.handle} details`}
+              aria-label={`View @${dmAgent.handle} details`}
+              onClick={() => openAgentDetail(dmAgent)}
+            >
+              <AgentAvatar agent={dmAgent} />
+            </button>
+          ) : (
+            <span className="hash-card">
+              <Hash />
+            </span>
+          )}
           <div>
             <h1>{isDm ? dmAgent?.display_name || "Direct Message" : channel?.name || "No channel"}</h1>
             <p>

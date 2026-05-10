@@ -657,6 +657,7 @@ button,
   width: 44px;
   height: 44px;
   place-items: center;
+  padding: 0;
   border-radius: 14px;
   background: var(--accent);
   color: #fff;
@@ -672,6 +673,10 @@ button,
   width: 100%;
   height: 100%;
   place-items: center;
+}
+
+.dm-agent-detail-trigger:hover .agent-avatar {
+  transform: translateY(-1px) scale(1.04);
 }
 
 .channel-title h1 {
