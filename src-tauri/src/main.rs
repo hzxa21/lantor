@@ -11207,14 +11207,15 @@ mod tests {
             agent_context_message_search, agent_context_workspace_info,
             agent_context_workspace_list, short_id,
         },
-        delete_agent_in_pool, delete_channel_in_pool, extract_agent_event_json,
-        extract_agent_mentions, finish_streaming_agent_message, handle_agent_event,
-        insert_agent_message, load_agent_memory_context, load_channel_agent_roster, load_messages,
-        load_reminders, load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
-        notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
-        process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
-        record_agent_activity, send_owner_message_in_pool, silent_reply_reason,
-        upsert_agent_thread_subscription, upsert_runtime_thread_id,
+        delete_agent_in_pool, delete_channel_in_pool, ensure_agent_workspace,
+        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
+        handle_agent_event, insert_agent_message, load_agent_memory_context,
+        load_channel_agent_roster, load_messages, load_reminders, load_runtime_thread_id,
+        maybe_hide_silent_streaming_reply, migrate, notify_ui_work_item_changed,
+        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
+        process_due_reminders, queue_mentions_as_work_items, record_agent_activity,
+        send_owner_message_in_pool, silent_reply_reason, upsert_agent_thread_subscription,
+        upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
         DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
@@ -11265,8 +11266,30 @@ mod tests {
         assert!(prompt.contains("one warm runtime session per agent"));
         assert!(prompt.contains("channel and thread are delivered as message envelope fields"));
         assert!(prompt.contains("Treat messages as conversation"));
+        assert!(prompt.contains("MEMORY.md is the entry point"));
+        assert!(prompt.contains("notes/<topic>.md"));
+        assert!(prompt.contains("stable user preferences"));
+        assert!(prompt.contains("Before long-running work, update Active Context"));
         assert!(prompt.contains("Read-only context tools"));
         assert!(prompt.contains("Persistent memory: prefer concise replies"));
+    }
+
+    #[test]
+    fn ensure_agent_workspace_creates_index_memory_template_and_notes_dir() {
+        let dir =
+            std::env::temp_dir().join(format!("localslock-memory-template-{}", Uuid::new_v4()));
+        ensure_agent_workspace(dir.to_str().expect("utf8 temp dir"), "template-agent")
+            .expect("ensure workspace");
+
+        let memory = std::fs::read_to_string(dir.join("MEMORY.md")).expect("read memory");
+        assert!(dir.join("notes").is_dir());
+        assert!(memory.contains("# @template-agent"));
+        assert!(memory.contains("## Key Knowledge"));
+        assert!(memory.contains("notes/user-preferences.md"));
+        assert!(memory.contains("## Active Context"));
+        assert!(memory.contains("Keep this file concise and index-like"));
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

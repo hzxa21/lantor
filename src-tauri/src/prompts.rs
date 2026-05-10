@@ -15,7 +15,19 @@ fn local_slock_operating_policy_prompt() -> &'static str {
 - Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else.
 - Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.
 - Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.
-- MEMORY.md is durable recovery context. Append small facts; compact only when memory is long or repetitive."#
+- MEMORY.md is durable recovery context. Keep it concise, index-like, and useful after restart or context compaction."#
+}
+
+fn local_slock_memory_management_prompt() -> &'static str {
+    r#"Workspace memory:
+- Your working directory is your persistent agent-owned workspace. Files there survive across turns and runtime restarts; use it for MEMORY.md, notes/, artifacts, code checkouts, and task-specific files.
+- MEMORY.md is the entry point to your durable knowledge, not a dumping ground. Keep it concise and index-like: role, links to important notes, and current Active Context.
+- Put detailed durable knowledge in notes/<topic>.md files such as notes/user-preferences.md, notes/channels.md, notes/work-log.md, or domain-specific notes. Add links from MEMORY.md when a new note becomes important.
+- Context can be compressed or the runtime can restart. After reading MEMORY.md, you should be able to recover who you are, what you know, what you were doing, and which notes to inspect next.
+- Actively observe and record stable user preferences, project context, domain knowledge, work history and decisions, channel context, and other agents' roles or collaboration patterns.
+- Do not memorize transient reasoning, every chat turn, raw logs, or one-off intermediate details. Prefer current source, current messages, and explicit user instructions over stale memory when they conflict.
+- Before long-running work, update Active Context with a compact resume point. After significant work finishes, update the relevant note and adjust MEMORY.md if the index changed.
+- Use memory_append for small durable facts and memory_compact for a full cleaned MEMORY.md replacement that preserves the index structure."#
 }
 
 fn local_slock_context_tools_prompt() -> &'static str {
@@ -36,7 +48,7 @@ fn local_slock_control_api_prompt() -> &'static str {
 LOCAL_SLOCK_EVENT {"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"<short user-facing status>","detail":"<optional compact detail>"}
 LOCAL_SLOCK_EVENT {"type":"usage","input_tokens":1234,"output_tokens":567,"cost_usd":0.0123}
 LOCAL_SLOCK_EVENT {"type":"memory_append","body":"<durable fact, preference, decision, or handoff>"}
-LOCAL_SLOCK_EVENT {"type":"memory_compact","body":"<full compact MEMORY.md replacement>"}
+LOCAL_SLOCK_EVENT {"type":"memory_compact","body":"<full compact MEMORY.md replacement with Role, Key Knowledge, and Active Context>"}
 LOCAL_SLOCK_EVENT {"type":"profile_update","display_name":"<optional>","role":"<optional concise role>","avatar":"<optional short avatar>","description":"<optional capability summary>"}
 LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title":"<title>","note":"<optional note>","recurrence":"none|daily|weekly"}
 LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
@@ -91,6 +103,7 @@ pub(crate) fn build_work_item_prompt(
         );
     }
     lines.push(local_slock_operating_policy_prompt().to_owned());
+    lines.push(local_slock_memory_management_prompt().to_owned());
     if !context.trim().is_empty() {
         lines.push("context:".to_owned());
         lines.push(context.trim().to_owned());
@@ -135,12 +148,14 @@ pub(crate) fn ensure_agent_workspace(working_directory: &str, handle: &str) -> C
     }
     let workspace = PathBuf::from(working_directory);
     fs::create_dir_all(&workspace).map_err(|err| err.to_string())?;
+    let notes = workspace.join("notes");
+    fs::create_dir_all(&notes).map_err(|err| err.to_string())?;
     let memory_path = workspace.join("MEMORY.md");
     if memory_path.exists() {
         return Ok(());
     }
     let template = format!(
-        "# @{handle}\n\n## Role\nLocalSlock agent.\n\n## Persistent Context\n- Add durable facts, user preferences, project notes, and handoff context here.\n- LocalSlock injects this file into the warm runtime standing prompt with a bounded context budget.\n",
+        "# @{handle}\n\n## Role\nLocalSlock agent.\n\n## Key Knowledge\n- Add links to durable notes here, for example `notes/user-preferences.md`, `notes/channels.md`, `notes/work-log.md`, or domain-specific notes.\n\n## Active Context\n- Currently working on: none.\n- Last interaction: workspace initialized.\n\n## Memory Policy\n- Keep this file concise and index-like. Put detailed durable knowledge in `notes/` and link it above.\n- Record stable user preferences, project context, domain knowledge, work history, channel context, and collaboration patterns.\n- Before long-running work, update Active Context with a compact resume point; after significant work, update the relevant note and this index if needed.\n",
     );
     fs::write(memory_path, template).map_err(|err| err.to_string())?;
     Ok(())
@@ -175,8 +190,11 @@ fn build_runtime_standing_prompt(
          \n\
          {}\n\
          \n\
+         {}\n\
+         \n\
          Keep user-visible replies concise and include concrete results or blockers. Non-message LOCAL_SLOCK_EVENT control lines are allowed as standalone lines. Do not print legacy LOCAL_SLOCK_EVENT message/task_claim lines unless explicitly asked to debug the legacy runtime path.",
         local_slock_operating_policy_prompt(),
+        local_slock_memory_management_prompt(),
         local_slock_context_tools_prompt(),
         local_slock_control_api_prompt(),
     );
