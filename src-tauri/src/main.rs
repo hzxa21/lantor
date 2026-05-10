@@ -2491,6 +2491,7 @@ const INTER_AGENT_THREAD_MESSAGE_LIMIT: i64 = 10;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DispatchKind {
+    ChannelMessage,
     Mention,
     Dm,
     ThreadFollowUp,
@@ -2924,6 +2925,11 @@ async fn queue_mentions_as_work_items(
                 if !targets.is_empty() {
                     dispatch_kind = DispatchKind::ThreadFollowUp;
                 }
+            } else if task_id.is_none() {
+                targets = load_channel_root_delivery_targets(pool, channel_id).await?;
+                if !targets.is_empty() {
+                    dispatch_kind = DispatchKind::ChannelMessage;
+                }
             }
         }
     }
@@ -2955,6 +2961,7 @@ async fn queue_mentions_as_work_items(
         .map(|line| line.chars().take(120).collect::<String>())
         .filter(|line| !line.trim().is_empty())
         .unwrap_or_else(|| match dispatch_kind {
+            DispatchKind::ChannelMessage => format!("Channel message in #{channel_name}"),
             DispatchKind::Dm => format!("DM in #{channel_name}"),
             DispatchKind::Mention => format!("Mention in #{channel_name}"),
             DispatchKind::ThreadFollowUp => format!("Thread follow-up in #{channel_name}"),
@@ -2996,6 +3003,7 @@ async fn queue_mentions_as_work_items(
             "task"
         } else {
             match (dispatch_kind, origin.is_agent()) {
+                (DispatchKind::ChannelMessage, _) => "channel_message",
                 (DispatchKind::Dm, _) => "dm",
                 (DispatchKind::ThreadFollowUp, _) => "thread_followup",
                 (DispatchKind::Mention, true) => "collaboration",
@@ -3013,6 +3021,7 @@ async fn queue_mentions_as_work_items(
             (DispatchKind::Mention, _, false) => 80,
             (DispatchKind::Mention, _, true) => 70,
             (DispatchKind::ThreadFollowUp, _, _) => 60,
+            (DispatchKind::ChannelMessage, _, _) => 35,
         };
         let inbox_item_id = create_agent_inbox_item(
             pool,
@@ -3051,11 +3060,14 @@ async fn queue_mentions_as_work_items(
             Some(agent_id),
             None,
             match dispatch_kind {
+                DispatchKind::ChannelMessage => "channel",
                 DispatchKind::Dm => "dm",
                 DispatchKind::Mention => "mention",
                 DispatchKind::ThreadFollowUp => "thread",
             },
             match (dispatch_kind, scheduled, origin.is_agent()) {
+                (DispatchKind::ChannelMessage, true, _) => "Channel message delivered to inbox",
+                (DispatchKind::ChannelMessage, false, _) => "Channel message queued in inbox",
                 (DispatchKind::Dm, true, _) => "DM delivered to inbox",
                 (DispatchKind::Dm, false, _) => "DM queued in inbox",
                 (DispatchKind::ThreadFollowUp, true, _) => "Thread follow-up delivered to inbox",
@@ -3124,6 +3136,29 @@ async fn load_thread_followup_targets(
     .await
     .map_err(to_string)?;
 
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.get("id"), row.get("handle")))
+        .collect())
+}
+
+async fn load_channel_root_delivery_targets(
+    pool: &PgPool,
+    channel_id: Uuid,
+) -> CommandResult<Vec<(Uuid, String)>> {
+    let rows = sqlx::query(
+        r#"
+        select a.id, a.handle
+        from channel_members cm
+        join agents a on a.id = cm.agent_id
+        where cm.channel_id = $1
+        order by lower(a.handle)
+        "#,
+    )
+    .bind(channel_id)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
     Ok(rows
         .into_iter()
         .map(|row| (row.get("id"), row.get("handle")))
@@ -13849,6 +13884,82 @@ mod tests {
                     .await
                     .map_err(|err| err.to_string())?;
             assert_eq!(state, "archived");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn owner_channel_root_message_without_mentions_delivers_to_member_agent_inbox() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "channel-listener").await?;
+            let channel_id = insert_test_channel(&pool, "channel-root-delivery").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                None,
+                "LocalSlock README needs a quick review",
+                false,
+                vec![],
+            )
+            .await?;
+            let message_id: Uuid =
+                sqlx::query_scalar("select id from messages where channel_id = $1 and body = $2")
+                    .bind(channel_id)
+                    .bind("LocalSlock README needs a quick review")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            let row = sqlx::query(
+                r#"
+                select
+                    w.source_kind,
+                    w.thread_root_id,
+                    w.source_message_id,
+                    i.kind as inbox_kind,
+                    i.priority,
+                    i.body_preview
+                from agent_work_items w
+                join agent_inbox_items i on i.work_item_id = w.id
+                where w.agent_id = $1 and w.source_message_id = $2
+                "#,
+            )
+            .bind(agent_id)
+            .bind(message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(row.get::<String, _>("source_kind"), "inbox_wake");
+            assert_eq!(row.get::<String, _>("inbox_kind"), "channel_message");
+            assert_eq!(row.get::<i32, _>("priority"), 35);
+            assert_eq!(
+                row.get::<Option<Uuid>, _>("thread_root_id"),
+                Some(message_id)
+            );
+            assert_eq!(
+                row.get::<Option<Uuid>, _>("source_message_id"),
+                Some(message_id)
+            );
+            assert!(row
+                .get::<String, _>("body_preview")
+                .contains("README needs"));
             Ok(())
         }
         .await;
