@@ -434,6 +434,10 @@ button,
   cursor: default;
 }
 
+.dm-avatar-shell .agent-avatar::after {
+  display: none;
+}
+
 .member-editor {
   display: grid;
   gap: 6px;
@@ -555,6 +559,7 @@ button,
   background: #34c759;
 }
 
+.agent-avatar.status-starting::after,
 .agent-avatar.status-queued::after,
 .agent-avatar.status-running::after,
 .agent-avatar.status-stopping::after {
@@ -646,24 +651,22 @@ button,
 }
 
 .dot {
-  color: #42d96b;
+  color: #8e8e93;
   fill: currentColor;
 }
 
 .dot.idle {
-  color: #8e8e93;
-}
-
-.dot.queued {
-  color: #0a84ff;
-}
-
-.dot.running {
   color: #34c759;
 }
 
+.dot.starting,
+.dot.queued,
+.dot.running {
+  color: #ffb020;
+}
+
 .dot.stopping {
-  color: #ff9500;
+  color: #ffb020;
 }
 
 .dot.error {
