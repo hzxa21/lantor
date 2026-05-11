@@ -16,7 +16,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
-import { downloadMessagesAsSvg, messageShareLink, messageToMarkdown, messagesToMarkdown } from "../message-share";
+import { downloadMessagesAsImage, messageShareLink, messageToMarkdown, messagesToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
@@ -303,7 +303,7 @@ export function Conversation({
   }
 
   function downloadSelectedImage() {
-    downloadMessagesAsSvg(selectedShareMessages, surfaceLabel);
+    void downloadMessagesAsImage(selectedShareMessages, surfaceLabel);
   }
 
   async function copyMessageMarkdown(message: Message) {

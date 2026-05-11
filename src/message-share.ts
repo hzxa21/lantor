@@ -77,7 +77,7 @@ function plainShareLines(messages: Message[], surfaceLabel: string) {
   return lines.flatMap((line) => wrapLine(line, 92));
 }
 
-export function downloadMessagesAsSvg(messages: Message[], surfaceLabel: string) {
+function shareSvg(messages: Message[], surfaceLabel: string) {
   const lines = plainShareLines(messages, surfaceLabel);
   const width = 1100;
   const lineHeight = 24;
@@ -94,13 +94,61 @@ export function downloadMessagesAsSvg(messages: Message[], surfaceLabel: string)
     text,
     "</svg>",
   ].join("\n");
-  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  return { svg, width, height };
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `localslock-share-${Date.now()}.svg`;
+  link.download = fileName;
   document.body.appendChild(link);
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function loadImage(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = url;
+  });
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("Canvas export failed"));
+    }, "image/png");
+  });
+}
+
+export async function downloadMessagesAsImage(messages: Message[], surfaceLabel: string) {
+  if (messages.length === 0) return;
+  const { svg, width, height } = shareSvg(messages, surfaceLabel);
+  const svgBlob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  const fileBase = `localslock-share-${Date.now()}`;
+  const svgUrl = URL.createObjectURL(svgBlob);
+  try {
+    if (height > 12_000) throw new Error("Share image too tall for PNG export");
+    const image = await loadImage(svgUrl);
+    const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(width * scale);
+    canvas.height = Math.ceil(height * scale);
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Canvas unavailable");
+    context.scale(scale, scale);
+    context.drawImage(image, 0, 0, width, height);
+    const pngBlob = await canvasToPngBlob(canvas);
+    downloadBlob(pngBlob, `${fileBase}.png`);
+  } catch (err) {
+    console.warn("PNG share export failed; falling back to SVG", err);
+    downloadBlob(svgBlob, `${fileBase}.svg`);
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
 }
