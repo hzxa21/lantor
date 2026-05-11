@@ -183,11 +183,58 @@ function activityMatchesAgent(activity: AgentActivity, agent: Agent) {
   return activity.agent_id === agent.id || activity.agent_handle === agent.handle;
 }
 
-function latestRespondingActivityForAgent(agent: Agent, activities: AgentActivity[]) {
+function isRespondingActivity(activity: AgentActivity) {
+  return RESPONDING_ACTIVITY_KINDS.has(activity.phase || activity.kind) || RESPONDING_ACTIVITY_KINDS.has(activity.kind);
+}
+
+function latestRespondingActivityForAgent(agent: Agent, activities: AgentActivity[], runId?: string): AgentActivity | null {
   const agentActivities = activities.filter((activity) => activityMatchesAgent(activity, agent));
-  return agentActivities.find((activity) => RESPONDING_ACTIVITY_KINDS.has(activity.phase || activity.kind) || RESPONDING_ACTIVITY_KINDS.has(activity.kind))
-    ?? agentActivities[0]
+  const scopedActivities = runId ? agentActivities.filter((activity) => activity.run_id === runId) : agentActivities;
+  return scopedActivities.find(isRespondingActivity)
+    ?? scopedActivities[0]
+    ?? (runId ? latestRespondingActivityForAgent(agent, activities) : null)
     ?? null;
+}
+
+function agentForRun(run: AgentRun, agents: Agent[]) {
+  return agents.find((agent) => agent.id === run.agent_id || agent.handle === run.agent_handle) ?? null;
+}
+
+function respondingIndicatorsForRuns(
+  runs: AgentRun[],
+  workItems: AgentWorkItem[],
+  agents: Agent[],
+  activities: AgentActivity[],
+  isInContext: (workItem: AgentWorkItem) => boolean,
+): RespondingIndicatorItem[] {
+  const seen = new Set<string>();
+  return runs.flatMap((run) => {
+    if (!ACTIVE_RUN_STATUSES.has(run.status)) return [];
+    const workItem = run.work_item_id ? workItems.find((item) => item.id === run.work_item_id) : null;
+    if (!workItem || !isInContext(workItem)) return [];
+    const key = run.agent_id || run.agent_handle;
+    if (!key || seen.has(key)) return [];
+    seen.add(key);
+    const agent = agentForRun(run, agents);
+    const activity = agent ? latestRespondingActivityForAgent(agent, activities, run.id) : null;
+    return [{
+      name: agent?.display_name || run.agent_handle,
+      state: activityStateForIndicator(activity),
+    }];
+  });
+}
+
+function mergeRespondingItems(primary: RespondingIndicatorItem[], fallback: RespondingIndicatorItem[]) {
+  if (primary.length === 0) return fallback;
+  const seen = new Set(primary.map((item) => item.name));
+  return [
+    ...primary,
+    ...fallback.filter((item) => {
+      if (seen.has(item.name)) return false;
+      seen.add(item.name);
+      return true;
+    }),
+  ];
 }
 
 function respondingIndicatorsForMessages(
@@ -1136,21 +1183,37 @@ function App() {
 
   const channelRespondingAgents = useMemo(() => {
     if (!channel || !data) return [];
-    return respondingIndicatorsForMessages(
+    const runningItems = respondingIndicatorsForRuns(
+      data.agent_runs,
+      data.agent_work_items,
+      data.agents,
+      data.agent_activities,
+      (workItem) => workItem.channel_id === channel.id && !workItem.thread_root_id,
+    );
+    const streamingItems = respondingIndicatorsForMessages(
       streamingMessages.filter((message) => message.channel_id === channel.id && !message.thread_root_id),
       data.agents,
       data.agent_activities,
     );
-  }, [streamingMessages, channel, data?.agents, data?.agent_activities]);
+    return mergeRespondingItems(runningItems, streamingItems);
+  }, [streamingMessages, channel, data?.agent_runs, data?.agent_work_items, data?.agents, data?.agent_activities]);
 
   const threadRespondingAgents = useMemo(() => {
     if (!activeRoot || !data) return [];
-    return respondingIndicatorsForMessages(
+    const runningItems = respondingIndicatorsForRuns(
+      data.agent_runs,
+      data.agent_work_items,
+      data.agents,
+      data.agent_activities,
+      (workItem) => workItem.thread_root_id === activeRoot.id,
+    );
+    const streamingItems = respondingIndicatorsForMessages(
       streamingMessages.filter((message) => message.thread_root_id === activeRoot.id),
       data.agents,
       data.agent_activities,
     );
-  }, [streamingMessages, activeRoot, data?.agents, data?.agent_activities]);
+    return mergeRespondingItems(runningItems, streamingItems);
+  }, [streamingMessages, activeRoot, data?.agent_runs, data?.agent_work_items, data?.agents, data?.agent_activities]);
 
   const threadReplyCounts = useMemo(() => {
     return visibleMessages.reduce<Record<string, number>>((counts, message) => {
