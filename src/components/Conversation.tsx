@@ -27,7 +27,7 @@ import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
-import { RespondingIndicator } from "./RespondingIndicator";
+import { RespondingIndicator, type RespondingIndicatorItem } from "./RespondingIndicator";
 
 type ConversationProps = {
   channel: Channel | null;
@@ -36,7 +36,7 @@ type ConversationProps = {
   activeTab: "chat" | "tasks";
   activeRoot: Message | null;
   rootMessages: Message[];
-  respondingAgents: string[];
+  respondingAgents: RespondingIndicatorItem[];
   threadReplyCounts: Record<string, number>;
   visibleTasks: Task[];
   draft: string;
@@ -535,7 +535,7 @@ export function Conversation({
               </article>
             );
           })}
-          <RespondingIndicator names={respondingAgents} />
+          <RespondingIndicator items={respondingAgents} />
           {messageMenu && (
             <MessageActionMenu
               x={messageMenu.x}

@@ -13,7 +13,7 @@ import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
-import { RespondingIndicator } from "./RespondingIndicator";
+import { RespondingIndicator, type RespondingIndicatorItem } from "./RespondingIndicator";
 
 type ThreadPanelProps = {
   channel: Channel | null;
@@ -21,7 +21,7 @@ type ThreadPanelProps = {
   activeRoot: Message | null;
   activeTask: Task | null;
   replies: Message[];
-  respondingAgents: string[];
+  respondingAgents: RespondingIndicatorItem[];
   unreadCount: number;
   taskTitleDrafts: Record<string, string>;
   replyDraft: string;
@@ -534,7 +534,7 @@ export function ThreadPanel({
               );
             })}
           </section>
-          <RespondingIndicator names={respondingAgents} />
+          <RespondingIndicator items={respondingAgents} />
           {messageMenu && (
             <MessageActionMenu
               x={messageMenu.x}

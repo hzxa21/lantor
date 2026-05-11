@@ -21,6 +21,7 @@ import { ConfirmModal } from "./components/ConfirmModal";
 import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { InboxModal } from "./components/InboxModal";
+import type { RespondingIndicatorItem } from "./components/RespondingIndicator";
 import { SavedMessagesModal } from "./components/SavedMessagesModal";
 import { SearchModal } from "./components/SearchModal";
 import { Sidebar } from "./components/Sidebar";
@@ -80,9 +81,21 @@ const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
 
-function uniqueSenderNames(messages: Message[]) {
-  return Array.from(new Set(messages.map((message) => message.sender_name).filter(Boolean)));
-}
+const RESPONDING_ACTIVITY_KINDS = new Set([
+  "thinking",
+  "command",
+  "file_edit",
+  "tools",
+  "acting",
+  "message",
+  "event",
+  "task",
+  "runtime",
+  "work",
+  "error",
+  "event_error",
+  "run_error",
+]);
 
 type UiBackendEvent =
   | { type: "refresh"; reason?: string }
@@ -122,6 +135,78 @@ type AppErrorBoundaryState = {
 
 function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
+}
+
+function agentForStreamingMessage(message: Message, agents: Agent[]) {
+  if (message.sender_role !== "agent") return null;
+  const sender = message.sender_name.replace(/^@/, "");
+  return agents.find((agent) => agent.handle === sender || agent.display_name === message.sender_name) ?? null;
+}
+
+function activityStateForIndicator(activity: AgentActivity | null) {
+  if (!activity) return "Responding";
+  if (activity.status === "error") return "Error";
+
+  const title = `${activity.summary || ""} ${activity.title || ""}`.toLowerCase();
+  if (title.includes("first token")) return "Responding";
+  if (title.includes("running command")) return "Running";
+  if (title.includes("editing file")) return "Editing";
+  if (title.includes("using tools")) return "Using tools";
+  if (title.includes("thinking")) return "Thinking";
+
+  switch (activity.phase || activity.kind) {
+    case "thinking":
+      return "Thinking";
+    case "command":
+    case "runtime":
+    case "work":
+      return "Running";
+    case "file_edit":
+      return "Editing";
+    case "tools":
+      return "Using tools";
+    case "error":
+    case "event_error":
+    case "run_error":
+      return "Error";
+    case "acting":
+    case "event":
+    case "message":
+    case "task":
+      return "Responding";
+    default:
+      return "Working";
+  }
+}
+
+function activityMatchesAgent(activity: AgentActivity, agent: Agent) {
+  return activity.agent_id === agent.id || activity.agent_handle === agent.handle;
+}
+
+function latestRespondingActivityForAgent(agent: Agent, activities: AgentActivity[]) {
+  const agentActivities = activities.filter((activity) => activityMatchesAgent(activity, agent));
+  return agentActivities.find((activity) => RESPONDING_ACTIVITY_KINDS.has(activity.phase || activity.kind) || RESPONDING_ACTIVITY_KINDS.has(activity.kind))
+    ?? agentActivities[0]
+    ?? null;
+}
+
+function respondingIndicatorsForMessages(
+  messages: Message[],
+  agents: Agent[],
+  activities: AgentActivity[],
+): RespondingIndicatorItem[] {
+  const seen = new Set<string>();
+  return messages.flatMap((message) => {
+    const agent = agentForStreamingMessage(message, agents);
+    const key = agent?.id ?? message.sender_name;
+    if (!key || seen.has(key)) return [];
+    seen.add(key);
+    const activity = agent ? latestRespondingActivityForAgent(agent, activities) : null;
+    return [{
+      name: agent?.display_name || message.sender_name,
+      state: activityStateForIndicator(activity),
+    }];
+  });
 }
 
 function isTextInput(target: EventTarget | null) {
@@ -1050,14 +1135,22 @@ function App() {
   }, [visibleMessages, activeRoot]);
 
   const channelRespondingAgents = useMemo(() => {
-    if (!channel) return [];
-    return uniqueSenderNames(streamingMessages.filter((message) => message.channel_id === channel.id && !message.thread_root_id));
-  }, [streamingMessages, channel]);
+    if (!channel || !data) return [];
+    return respondingIndicatorsForMessages(
+      streamingMessages.filter((message) => message.channel_id === channel.id && !message.thread_root_id),
+      data.agents,
+      data.agent_activities,
+    );
+  }, [streamingMessages, channel, data?.agents, data?.agent_activities]);
 
   const threadRespondingAgents = useMemo(() => {
-    if (!activeRoot) return [];
-    return uniqueSenderNames(streamingMessages.filter((message) => message.thread_root_id === activeRoot.id));
-  }, [streamingMessages, activeRoot]);
+    if (!activeRoot || !data) return [];
+    return respondingIndicatorsForMessages(
+      streamingMessages.filter((message) => message.thread_root_id === activeRoot.id),
+      data.agents,
+      data.agent_activities,
+    );
+  }, [streamingMessages, activeRoot, data?.agents, data?.agent_activities]);
 
   const threadReplyCounts = useMemo(() => {
     return visibleMessages.reduce<Record<string, number>>((counts, message) => {
