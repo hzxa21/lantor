@@ -933,6 +933,35 @@ button,
   box-shadow: none;
 }
 
+.message-card.compact,
+.reply-list article.compact {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.message-compact-time {
+  align-self: start;
+  justify-self: end;
+  margin-top: 2px;
+  color: rgba(123, 125, 132, 0.82);
+  font-size: 11px;
+  line-height: 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+  white-space: nowrap;
+}
+
+.message-card.compact:hover .message-compact-time,
+.message-card.compact.focused .message-compact-time,
+.message-card.compact.tap-focused .message-compact-time,
+.message-card.compact[data-jump-focused="true"] .message-compact-time,
+.reply-list article.compact:hover .message-compact-time,
+.reply-list article.compact.tap-focused .message-compact-time,
+.reply-list article.compact[data-jump-focused="true"] .message-compact-time {
+  opacity: 1;
+}
+
 .message-card:hover,
 .message-card.focused,
 .message-card.tap-focused {
@@ -1104,6 +1133,11 @@ mark {
 
 .message-body p {
   margin-top: 3px;
+}
+
+.message-card.compact .message-body p,
+.reply-list article.compact .reply-body p {
+  margin-top: 0;
 }
 
 .local-entity-link {
@@ -4792,6 +4826,12 @@ body.resizing-column * {
     grid-template-columns: 34px minmax(0, 1fr);
     gap: 8px;
     padding: 8px 12px;
+  }
+
+  .message-card.compact,
+  .reply-list article.compact {
+    padding-top: 4px;
+    padding-bottom: 4px;
   }
 
   .message-agent-avatar-trigger {

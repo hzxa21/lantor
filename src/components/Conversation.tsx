@@ -17,6 +17,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
+import { isCompactFollowupMessage } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime, visibleChannelDescription } from "../ui-utils";
@@ -432,11 +433,12 @@ export function Conversation({
               <p>Create a channel in the left sidebar, then send messages or tasks.</p>
             </div>
           )}
-          {rootMessages.map((message) => {
+          {rootMessages.map((message, index) => {
             const linkedTask = taskForMessage(message.id);
             const replyCount = threadReplyCounts[message.id] ?? 0;
             const messageAgent = isDm ? null : agentForMessage(message, agents);
             const isSaved = savedMessageIds.has(message.id);
+            const isCompact = isCompactFollowupMessage(message, rootMessages[index - 1]);
             if (message.sender_role === "system") {
               return (
                 <article key={message.id} className="system-message">
@@ -451,7 +453,7 @@ export function Conversation({
               <article
                 key={message.id}
                 data-message-id={message.id}
-                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""} ${tapFocusedMessageId === message.id ? "tap-focused" : ""} ${isSaved ? "saved" : ""}`}
+                className={`message-card ${isCompact ? "compact" : ""} ${message.id === activeRoot?.id ? "focused" : ""} ${tapFocusedMessageId === message.id ? "tap-focused" : ""} ${isSaved ? "saved" : ""}`}
                 data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
                 onClick={() => {
                   setTapFocusedMessageId(message.id);
@@ -470,7 +472,11 @@ export function Conversation({
                 onPointerCancel={clearLongPress}
                 onPointerLeave={clearLongPress}
               >
-                {messageAgent ? (
+                {isCompact ? (
+                  <time className="message-compact-time" dateTime={message.created_at}>
+                    {formatTime(message.created_at)}
+                  </time>
+                ) : messageAgent ? (
                   <button
                     type="button"
                     className="message-agent-avatar-trigger"
@@ -486,30 +492,32 @@ export function Conversation({
                   <div className="avatar">{message.sender_name.slice(0, 1)}</div>
                 )}
                 <div className="message-body">
-                  <div className="meta">
-                    <strong>{message.sender_name}</strong>
-                    <span>{message.sender_role}</span>
-                    <time>{formatTime(message.created_at)}</time>
-                    {wasEdited(message) && <span className="edited-indicator">edited</span>}
-                    {linkedTask && (
-                      <mark>
-                        <CheckCircle2 size={14} /> #{linkedTask.number} · {linkedTask.status.replace("_", " ")}
-                      </mark>
-                    )}
-                    <button
-                      type="button"
-                      className={`message-save-button ${isSaved ? "saved" : ""}`}
-                      title={isSaved ? "Unsave message" : "Save message"}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onToggleMessageSaved(message, !isSaved);
-                      }}
-                    >
-                      <Bookmark size={13} />
-                      {isSaved ? "Saved" : "Save"}
-                    </button>
-                  </div>
+                  {!isCompact && (
+                    <div className="meta">
+                      <strong>{message.sender_name}</strong>
+                      <span>{message.sender_role}</span>
+                      <time>{formatTime(message.created_at)}</time>
+                      {wasEdited(message) && <span className="edited-indicator">edited</span>}
+                      {linkedTask && (
+                        <mark>
+                          <CheckCircle2 size={14} /> #{linkedTask.number} · {linkedTask.status.replace("_", " ")}
+                        </mark>
+                      )}
+                      <button
+                        type="button"
+                        className={`message-save-button ${isSaved ? "saved" : ""}`}
+                        title={isSaved ? "Unsave message" : "Save message"}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onToggleMessageSaved(message, !isSaved);
+                        }}
+                      >
+                        <Bookmark size={13} />
+                        {isSaved ? "Saved" : "Save"}
+                      </button>
+                    </div>
+                  )}
                   <MessageMarkdown body={firstLines(message.body)} />
                   <MessageAttachments attachments={message.attachments} />
                   <MessageArtifacts artifacts={message.artifacts} onOpenArtifact={openArtifact} />

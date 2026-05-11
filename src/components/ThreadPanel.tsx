@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
+import { isCompactFollowupMessage } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
@@ -442,9 +443,10 @@ export function ThreadPanel({
                 <p>Select a root message after you create one.</p>
               </div>
             )}
-            {replies.map((reply) => {
+            {replies.map((reply, index) => {
               const replyAgent = agentForMessage(reply, agents);
               const replySaved = savedMessageIds.has(reply.id);
+              const isCompact = isCompactFollowupMessage(reply, replies[index - 1]);
               if (reply.sender_role === "system") {
                 return (
                   <article key={reply.id} className="system-message">
@@ -459,7 +461,7 @@ export function ThreadPanel({
                 <article
                   key={reply.id}
                   data-message-id={reply.id}
-                  className={`${replySaved ? "saved" : ""} ${tapFocusedMessageId === reply.id ? "tap-focused" : ""}`}
+                  className={`${isCompact ? "compact" : ""} ${replySaved ? "saved" : ""} ${tapFocusedMessageId === reply.id ? "tap-focused" : ""}`}
                   data-jump-focused={focusedMessageId === reply.id ? "true" : "false"}
                   onClick={() => setTapFocusedMessageId(reply.id)}
                   onContextMenu={(event) => {
@@ -475,7 +477,11 @@ export function ThreadPanel({
                   onPointerCancel={clearLongPress}
                   onPointerLeave={clearLongPress}
                 >
-                  {replyAgent ? (
+                  {isCompact ? (
+                    <time className="message-compact-time" dateTime={reply.created_at}>
+                      {formatTime(reply.created_at)}
+                    </time>
+                  ) : replyAgent ? (
                     <button
                       type="button"
                       className="message-agent-avatar-trigger"
@@ -490,25 +496,27 @@ export function ThreadPanel({
                   ) : (
                     <div className="avatar">{reply.sender_name.slice(0, 1)}</div>
                   )}
-                  <div>
-                    <div className="meta">
-                      <strong>{reply.sender_name}</strong>
-                      <time>{formatTime(reply.created_at)}</time>
-                      {wasEdited(reply) && <span className="edited-indicator">edited</span>}
-                      <button
-                        type="button"
-                        className={`message-save-button ${replySaved ? "saved" : ""}`}
-                        title={replySaved ? "Unsave message" : "Save message"}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onToggleMessageSaved(reply, !replySaved);
-                        }}
-                      >
-                        <Bookmark size={13} />
-                        {replySaved ? "Saved" : "Save"}
-                      </button>
-                    </div>
+                  <div className="reply-body">
+                    {!isCompact && (
+                      <div className="meta">
+                        <strong>{reply.sender_name}</strong>
+                        <time>{formatTime(reply.created_at)}</time>
+                        {wasEdited(reply) && <span className="edited-indicator">edited</span>}
+                        <button
+                          type="button"
+                          className={`message-save-button ${replySaved ? "saved" : ""}`}
+                          title={replySaved ? "Unsave message" : "Save message"}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleMessageSaved(reply, !replySaved);
+                          }}
+                        >
+                          <Bookmark size={13} />
+                          {replySaved ? "Saved" : "Save"}
+                        </button>
+                      </div>
+                    )}
                     <MessageMarkdown body={reply.body} />
                     <MessageAttachments attachments={reply.attachments} />
                     <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
