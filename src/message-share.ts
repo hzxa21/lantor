@@ -97,17 +97,6 @@ function shareSvg(messages: Message[], surfaceLabel: string) {
   return { svg, width, height };
 }
 
-function downloadBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
 function loadImage(url: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
@@ -126,8 +115,14 @@ function canvasToPngBlob(canvas: HTMLCanvasElement) {
   });
 }
 
-export async function downloadMessagesAsImage(messages: Message[], surfaceLabel: string) {
-  if (messages.length === 0) return;
+export type ShareImageDownload = {
+  url: string;
+  fileName: string;
+  kind: "png" | "svg";
+};
+
+export async function prepareMessagesImageDownload(messages: Message[], surfaceLabel: string): Promise<ShareImageDownload | null> {
+  if (messages.length === 0) return null;
   const { svg, width, height } = shareSvg(messages, surfaceLabel);
   const svgBlob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
   const fileBase = `localslock-share-${Date.now()}`;
@@ -144,10 +139,18 @@ export async function downloadMessagesAsImage(messages: Message[], surfaceLabel:
     context.scale(scale, scale);
     context.drawImage(image, 0, 0, width, height);
     const pngBlob = await canvasToPngBlob(canvas);
-    downloadBlob(pngBlob, `${fileBase}.png`);
+    return {
+      url: URL.createObjectURL(pngBlob),
+      fileName: `${fileBase}.png`,
+      kind: "png",
+    };
   } catch (err) {
     console.warn("PNG share export failed; falling back to SVG", err);
-    downloadBlob(svgBlob, `${fileBase}.svg`);
+    return {
+      url: URL.createObjectURL(svgBlob),
+      fileName: `${fileBase}.svg`,
+      kind: "svg",
+    };
   } finally {
     URL.revokeObjectURL(svgUrl);
   }

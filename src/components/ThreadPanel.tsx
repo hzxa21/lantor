@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
-import { downloadMessagesAsImage, messageShareLink, messageToMarkdown, messagesToMarkdown } from "../message-share";
+import { messageShareLink, messageToMarkdown, messagesToMarkdown, prepareMessagesImageDownload, type ShareImageDownload } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
@@ -92,6 +92,8 @@ export function ThreadPanel({
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
   const [shareMode, setShareMode] = useState(false);
   const [selectedShareIds, setSelectedShareIds] = useState<Set<string>>(() => new Set());
+  const [shareImageDownload, setShareImageDownload] = useState<ShareImageDownload | null>(null);
+  const [shareImagePreparing, setShareImagePreparing] = useState(false);
   const replyDragDepthRef = useRef(0);
   const longPressTimerRef = useRef<number | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
@@ -111,6 +113,7 @@ export function ThreadPanel({
     Boolean(message) && message?.sender_role !== "system"
   ));
   const selectedShareMessages = shareableMessages.filter((message) => selectedShareIds.has(message.id));
+  const selectedShareKey = selectedShareMessages.map((message) => `${message.id}:${message.updated_at}`).join("|");
   const {
     mentionState,
     mentionIndex,
@@ -285,14 +288,11 @@ export function ThreadPanel({
   function closeShareMode() {
     setShareMode(false);
     setSelectedShareIds(new Set());
+    setShareImageDownload(null);
   }
 
   async function copySelectedMarkdown() {
     await copyText(messagesToMarkdown(selectedShareMessages, surfaceLabel));
-  }
-
-  function downloadSelectedImage() {
-    void downloadMessagesAsImage(selectedShareMessages, surfaceLabel);
   }
 
   async function copyMessageMarkdown(message: Message) {
@@ -304,6 +304,39 @@ export function ThreadPanel({
     await copyText(messageShareLink(message, shareBaseUrl));
     setMessageMenu(null);
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setShareImageDownload(null);
+    if (!shareMode || selectedShareMessages.length === 0) {
+      setShareImagePreparing(false);
+      return () => {};
+    }
+
+    setShareImagePreparing(true);
+    prepareMessagesImageDownload(selectedShareMessages, surfaceLabel)
+      .then((download) => {
+        if (cancelled) {
+          if (download) URL.revokeObjectURL(download.url);
+          return;
+        }
+        objectUrl = download?.url ?? null;
+        setShareImageDownload(download);
+      })
+      .catch((error) => {
+        console.warn("Failed to prepare share image download", error);
+        if (!cancelled) setShareImageDownload(null);
+      })
+      .finally(() => {
+        if (!cancelled) setShareImagePreparing(false);
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [shareMode, selectedShareKey, surfaceLabel]);
 
   return (
     <aside className="thread">
@@ -580,10 +613,12 @@ export function ThreadPanel({
             <ShareSelectionBar
               count={selectedShareMessages.length}
               total={shareableMessages.length}
+              downloadFileName={shareImageDownload?.fileName}
+              downloadPending={shareImagePreparing}
+              downloadUrl={shareImageDownload?.url ?? null}
               onSelectAll={() => setSelectedShareIds(new Set(shareableMessages.map((message) => message.id)))}
               onCancel={closeShareMode}
               onCopyMarkdown={copySelectedMarkdown}
-              onDownloadImage={downloadSelectedImage}
             />
           )}
           {activeRoot && showBackToBottom && (

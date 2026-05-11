@@ -16,7 +16,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
-import { downloadMessagesAsImage, messageShareLink, messageToMarkdown, messagesToMarkdown } from "../message-share";
+import { messageShareLink, messageToMarkdown, messagesToMarkdown, prepareMessagesImageDownload, type ShareImageDownload } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
@@ -128,6 +128,8 @@ export function Conversation({
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
   const [shareMode, setShareMode] = useState(false);
   const [selectedShareIds, setSelectedShareIds] = useState<Set<string>>(() => new Set());
+  const [shareImageDownload, setShareImageDownload] = useState<ShareImageDownload | null>(null);
+  const [shareImagePreparing, setShareImagePreparing] = useState(false);
   const composerDragDepthRef = useRef(0);
   const longPressTimerRef = useRef<number | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -154,6 +156,7 @@ export function Conversation({
     : "LocalSlock";
   const shareableMessages = rootMessages.filter((message) => message.sender_role !== "system");
   const selectedShareMessages = shareableMessages.filter((message) => selectedShareIds.has(message.id));
+  const selectedShareKey = selectedShareMessages.map((message) => `${message.id}:${message.updated_at}`).join("|");
 
   function isMessageListAtBottom(element: HTMLDivElement) {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 32;
@@ -296,14 +299,11 @@ export function Conversation({
   function closeShareMode() {
     setShareMode(false);
     setSelectedShareIds(new Set());
+    setShareImageDownload(null);
   }
 
   async function copySelectedMarkdown() {
     await copyText(messagesToMarkdown(selectedShareMessages, surfaceLabel));
-  }
-
-  function downloadSelectedImage() {
-    void downloadMessagesAsImage(selectedShareMessages, surfaceLabel);
   }
 
   async function copyMessageMarkdown(message: Message) {
@@ -333,6 +333,39 @@ export function Conversation({
     const element = messageListRef.current?.querySelector<HTMLElement>(`[data-message-id="${focusedMessageId}"]`);
     element?.scrollIntoView({ block: "center" });
   }, [channel?.id, focusedMessageId, rootMessages.length]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setShareImageDownload(null);
+    if (!shareMode || selectedShareMessages.length === 0) {
+      setShareImagePreparing(false);
+      return () => {};
+    }
+
+    setShareImagePreparing(true);
+    prepareMessagesImageDownload(selectedShareMessages, surfaceLabel)
+      .then((download) => {
+        if (cancelled) {
+          if (download) URL.revokeObjectURL(download.url);
+          return;
+        }
+        objectUrl = download?.url ?? null;
+        setShareImageDownload(download);
+      })
+      .catch((error) => {
+        console.warn("Failed to prepare share image download", error);
+        if (!cancelled) setShareImageDownload(null);
+      })
+      .finally(() => {
+        if (!cancelled) setShareImagePreparing(false);
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [shareMode, selectedShareKey, surfaceLabel]);
 
   return (
     <section className="conversation">
@@ -591,10 +624,12 @@ export function Conversation({
             <ShareSelectionBar
               count={selectedShareMessages.length}
               total={shareableMessages.length}
+              downloadFileName={shareImageDownload?.fileName}
+              downloadPending={shareImagePreparing}
+              downloadUrl={shareImageDownload?.url ?? null}
               onSelectAll={() => setSelectedShareIds(new Set(shareableMessages.map((message) => message.id)))}
               onCancel={closeShareMode}
               onCopyMarkdown={copySelectedMarkdown}
-              onDownloadImage={downloadSelectedImage}
             />
           )}
         </div>
