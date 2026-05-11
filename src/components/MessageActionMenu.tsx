@@ -1,11 +1,10 @@
-import { Bookmark, Copy, Link, Share2 } from "lucide-react";
+import { Bookmark, Copy, Link } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 type MessageActionMenuProps = {
   x: number;
   y: number;
   isSaved: boolean;
-  onShare: () => void;
   onCopyLink: () => void;
   onCopyMarkdown: () => void;
   onToggleSaved: () => void;
@@ -16,7 +15,6 @@ export function MessageActionMenu({
   x,
   y,
   isSaved,
-  onShare,
   onCopyLink,
   onCopyMarkdown,
   onToggleSaved,
@@ -54,10 +52,6 @@ export function MessageActionMenu({
       onClick={(event) => event.stopPropagation()}
       role="menu"
     >
-      <button type="button" onClick={onShare}>
-        <Share2 size={18} />
-        <span>Share messages...</span>
-      </button>
       <button type="button" onClick={onCopyLink}>
         <Link size={18} />
         <span>Copy link</span>

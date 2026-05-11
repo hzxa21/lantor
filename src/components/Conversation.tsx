@@ -16,7 +16,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
-import { messageShareLink, messageToMarkdown, messagesToMarkdown, prepareMessagesImageDownload, type ShareImageDownload } from "../message-share";
+import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
@@ -25,7 +25,6 @@ import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
-import { ShareSelectionBar } from "./ShareSelectionBar";
 
 type ConversationProps = {
   channel: Channel | null;
@@ -126,10 +125,6 @@ export function Conversation({
   const [isComposerDragOver, setIsComposerDragOver] = useState(false);
   const [showChannelActions, setShowChannelActions] = useState(false);
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
-  const [shareMode, setShareMode] = useState(false);
-  const [selectedShareIds, setSelectedShareIds] = useState<Set<string>>(() => new Set());
-  const [shareImageDownload, setShareImageDownload] = useState<ShareImageDownload | null>(null);
-  const [shareImagePreparing, setShareImagePreparing] = useState(false);
   const composerDragDepthRef = useRef(0);
   const longPressTimerRef = useRef<number | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -154,10 +149,6 @@ export function Conversation({
       ? `DM with @${dmAgent?.handle || "agent"}`
       : `#${channel.name}`
     : "LocalSlock";
-  const shareableMessages = rootMessages.filter((message) => message.sender_role !== "system");
-  const selectedShareMessages = shareableMessages.filter((message) => selectedShareIds.has(message.id));
-  const selectedShareKey = selectedShareMessages.map((message) => `${message.id}:${message.updated_at}`).join("|");
-
   function isMessageListAtBottom(element: HTMLDivElement) {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 32;
   }
@@ -255,8 +246,6 @@ export function Conversation({
     setIsComposerDragOver(false);
     setShowChannelActions(false);
     setMessageMenu(null);
-    setShareMode(false);
-    setSelectedShareIds(new Set());
   }, [channel?.id]);
 
   function handleChannelActionsBlur(event: FocusEvent<HTMLDivElement>) {
@@ -271,7 +260,7 @@ export function Conversation({
   }
 
   function startMessageLongPress(event: ReactPointerEvent<HTMLElement>, message: Message) {
-    if (event.pointerType === "mouse" || shareMode) return;
+    if (event.pointerType === "mouse") return;
     clearLongPress();
     const x = event.clientX;
     const y = event.clientY;
@@ -279,31 +268,6 @@ export function Conversation({
       setMessageMenu({ x, y, message });
       longPressTimerRef.current = null;
     }, 520);
-  }
-
-  function toggleShareMessage(message: Message) {
-    setSelectedShareIds((current) => {
-      const next = new Set(current);
-      if (next.has(message.id)) next.delete(message.id);
-      else next.add(message.id);
-      return next;
-    });
-  }
-
-  function beginShare(message: Message) {
-    setShareMode(true);
-    setSelectedShareIds(new Set([message.id]));
-    setMessageMenu(null);
-  }
-
-  function closeShareMode() {
-    setShareMode(false);
-    setSelectedShareIds(new Set());
-    setShareImageDownload(null);
-  }
-
-  async function copySelectedMarkdown() {
-    await copyText(messagesToMarkdown(selectedShareMessages, surfaceLabel));
   }
 
   async function copyMessageMarkdown(message: Message) {
@@ -333,39 +297,6 @@ export function Conversation({
     const element = messageListRef.current?.querySelector<HTMLElement>(`[data-message-id="${focusedMessageId}"]`);
     element?.scrollIntoView({ block: "center" });
   }, [channel?.id, focusedMessageId, rootMessages.length]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl: string | null = null;
-    setShareImageDownload(null);
-    if (!shareMode || selectedShareMessages.length === 0) {
-      setShareImagePreparing(false);
-      return () => {};
-    }
-
-    setShareImagePreparing(true);
-    prepareMessagesImageDownload(selectedShareMessages, surfaceLabel)
-      .then((download) => {
-        if (cancelled) {
-          if (download) URL.revokeObjectURL(download.url);
-          return;
-        }
-        objectUrl = download?.url ?? null;
-        setShareImageDownload(download);
-      })
-      .catch((error) => {
-        console.warn("Failed to prepare share image download", error);
-        if (!cancelled) setShareImageDownload(null);
-      })
-      .finally(() => {
-        if (!cancelled) setShareImagePreparing(false);
-      });
-
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [shareMode, selectedShareKey, surfaceLabel]);
 
   return (
     <section className="conversation">
@@ -522,12 +453,9 @@ export function Conversation({
               <article
                 key={message.id}
                 data-message-id={message.id}
-                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""} ${shareMode ? "share-mode" : ""} ${selectedShareIds.has(message.id) ? "share-selected" : ""}`}
+                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""}`}
                 data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
-                onClick={() => {
-                  if (shareMode) toggleShareMessage(message);
-                  else setActiveThreadId(message.id);
-                }}
+                onClick={() => setActiveThreadId(message.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setMessageMenu({ x: event.clientX, y: event.clientY, message });
@@ -538,19 +466,6 @@ export function Conversation({
                 onPointerCancel={clearLongPress}
                 onPointerLeave={clearLongPress}
               >
-                {shareMode && (
-                  <button
-                    type="button"
-                    className={`message-share-selector ${selectedShareIds.has(message.id) ? "selected" : ""}`}
-                    aria-label={selectedShareIds.has(message.id) ? "Unselect message" : "Select message"}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggleShareMessage(message);
-                    }}
-                  >
-                    {selectedShareIds.has(message.id) && <CheckCircle2 size={18} />}
-                  </button>
-                )}
                 {messageAgent ? (
                   <button
                     type="button"
@@ -610,7 +525,6 @@ export function Conversation({
               x={messageMenu.x}
               y={messageMenu.y}
               isSaved={savedMessageIds.has(messageMenu.message.id)}
-              onShare={() => beginShare(messageMenu.message)}
               onCopyLink={() => copyMessageLink(messageMenu.message)}
               onCopyMarkdown={() => copyMessageMarkdown(messageMenu.message)}
               onToggleSaved={() => {
@@ -618,18 +532,6 @@ export function Conversation({
                 setMessageMenu(null);
               }}
               onClose={() => setMessageMenu(null)}
-            />
-          )}
-          {shareMode && (
-            <ShareSelectionBar
-              count={selectedShareMessages.length}
-              total={shareableMessages.length}
-              downloadFileName={shareImageDownload?.fileName}
-              downloadPending={shareImagePreparing}
-              downloadUrl={shareImageDownload?.url ?? null}
-              onSelectAll={() => setSelectedShareIds(new Set(shareableMessages.map((message) => message.id)))}
-              onCancel={closeShareMode}
-              onCopyMarkdown={copySelectedMarkdown}
             />
           )}
         </div>

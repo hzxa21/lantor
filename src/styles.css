@@ -873,62 +873,6 @@ button,
   box-shadow: inset 3px 0 var(--accent);
 }
 
-.message-card.share-mode,
-.reply-list article.share-mode {
-  grid-template-columns: 44px minmax(0, 1fr);
-  cursor: pointer;
-}
-
-.message-card.share-mode {
-  padding-left: 64px;
-}
-
-.reply-list article.share-mode {
-  padding-left: 58px;
-}
-
-.thread-message-with-avatar.share-mode {
-  grid-template-columns: 44px minmax(0, 1fr);
-  padding-left: 44px;
-}
-
-.message-card.share-selected,
-.thread-root.share-selected,
-.reply-list article.share-selected {
-  background: rgba(255, 211, 64, 0.18);
-}
-
-.message-share-selector {
-  position: absolute;
-  top: 17px;
-  left: 22px;
-  z-index: 1;
-  display: grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  border: 1px solid rgba(10, 132, 255, 0.28);
-  border-radius: 999px;
-  background: #fff;
-  color: var(--accent);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
-}
-
-.reply-list article > .message-share-selector {
-  left: 16px;
-}
-
-.thread-message-with-avatar > .message-share-selector {
-  top: 10px;
-  left: 0;
-}
-
-.message-share-selector.selected {
-  border-color: rgba(10, 132, 255, 0.35);
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
 .message-card[data-jump-focused="true"],
 .thread-root[data-jump-focused="true"],
 .reply-list article[data-jump-focused="true"] {
@@ -970,74 +914,6 @@ button,
 .message-action-menu button:hover {
   background: rgba(10, 132, 255, 0.08);
   color: var(--accent);
-}
-
-.share-selection-bar {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  left: 18px;
-  z-index: 110;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 14px 18px;
-  border: 1px solid rgba(20, 23, 31, 0.14);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.94);
-  color: var(--ink);
-  box-shadow: 0 -18px 56px rgba(15, 23, 42, 0.17);
-  backdrop-filter: blur(18px) saturate(1.08);
-}
-
-.share-selection-bar strong {
-  font-size: 15px;
-  font-weight: 860;
-}
-
-.share-selection-bar div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  justify-content: flex-end;
-}
-
-.share-selection-bar button,
-.share-selection-bar a {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 13px;
-  border-radius: 999px;
-  background: rgba(142, 142, 147, 0.1);
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 820;
-  text-decoration: none;
-}
-
-.share-selection-bar button.accent,
-.share-selection-bar a.accent {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
-.share-selection-bar button:hover:not(:disabled),
-.share-selection-bar a:hover {
-  background: rgba(10, 132, 255, 0.12);
-  color: var(--accent);
-}
-
-.share-selection-bar button.accent:hover:not(:disabled),
-.share-selection-bar a.accent:hover {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
-.share-selection-bar button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 
 .system-message {
@@ -4789,37 +4665,6 @@ body.resizing-column * {
     padding: 8px 12px;
   }
 
-  .message-card.share-mode,
-  .reply-list article.share-mode,
-  .thread-message-with-avatar.share-mode {
-    grid-template-columns: 34px minmax(0, 1fr);
-  }
-
-  .message-card.share-mode,
-  .reply-list article.share-mode {
-    padding-left: 44px;
-  }
-
-  .thread-message-with-avatar.share-mode {
-    padding-left: 34px;
-  }
-
-  .message-share-selector {
-    width: 22px;
-    height: 22px;
-    top: 14px;
-    left: 12px;
-  }
-
-  .reply-list article > .message-share-selector {
-    left: 12px;
-  }
-
-  .thread-message-with-avatar > .message-share-selector {
-    top: 6px;
-    left: 0;
-  }
-
   .message-agent-avatar-trigger {
     width: 34px;
     height: 34px;
@@ -5138,23 +4983,4 @@ body.resizing-column * {
     min-width: 0;
   }
 
-  .share-selection-bar {
-    right: 0;
-    bottom: 0;
-    left: 0;
-    align-items: stretch;
-    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
-    flex-direction: column;
-  }
-
-  .share-selection-bar div {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    justify-content: stretch;
-  }
-
-  .share-selection-bar button,
-  .share-selection-bar a {
-    justify-content: center;
-  }
 }
