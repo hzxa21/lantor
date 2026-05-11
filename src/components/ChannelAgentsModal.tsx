@@ -12,13 +12,6 @@ type ChannelAgentsModalProps = {
   onClose: () => void;
 };
 
-function statusLabel(status: string) {
-  if (status === "idle") return "Online";
-  if (["starting", "queued", "running", "stopping"].includes(status)) return "Working";
-  if (status === "error") return "Error";
-  return status;
-}
-
 export function ChannelAgentsModal({
   open,
   channel,
@@ -43,18 +36,19 @@ export function ChannelAgentsModal({
             return (
               <label key={agent.id} className={`channel-agent-option ${isMember ? "selected" : ""}`}>
                 <input
+                  className="channel-agent-checkbox"
                   type="checkbox"
                   checked={isMember}
                   onChange={(event) => onSetMember(agent.id, event.target.checked)}
+                  aria-label={`${isMember ? "Remove" : "Add"} @${agent.handle}`}
                 />
                 <div className="channel-agent-profile">
                   <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
                   <div className="agent-pick-row">
                     <strong>{agent.display_name}</strong>
-                    <small>@{agent.handle} · {agent.runtime}</small>
+                    <small>@{agent.handle}</small>
                   </div>
                 </div>
-                <div className={`channel-agent-status status-${agent.status}`}>{statusLabel(agent.status)}</div>
               </label>
             );
           })}

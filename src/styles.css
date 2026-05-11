@@ -3589,16 +3589,35 @@ body.resizing-column * {
 }
 
 .channel-agent-picker label {
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
 }
 
 .channel-agent-picker .channel-agent-option {
-  min-height: 58px;
+  position: relative;
+  min-height: 56px;
+  border: 1px solid transparent;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .channel-agent-picker .channel-agent-option.selected {
   background: rgba(10, 132, 255, 0.08);
+  border-color: rgba(10, 132, 255, 0.18);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.modal-form .modal-member-editor input.channel-agent-checkbox[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  min-width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .channel-agent-profile {
@@ -3639,39 +3658,6 @@ body.resizing-column * {
 .agent-pick-row small {
   color: var(--muted);
   font-size: 12px;
-}
-
-.channel-agent-status {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 72px;
-  padding: 5px 9px;
-  border-radius: 999px;
-  background: rgba(142, 142, 147, 0.12);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.channel-agent-status.status-idle {
-  background: rgba(52, 199, 89, 0.12);
-  color: #1f8a3d;
-}
-
-.channel-agent-status.status-starting,
-.channel-agent-status.status-queued,
-.channel-agent-status.status-running,
-.channel-agent-status.status-stopping {
-  background: rgba(255, 176, 32, 0.15);
-  color: #9a5a00;
-}
-
-.channel-agent-status.status-error {
-  background: rgba(255, 59, 48, 0.12);
-  color: #c91810;
 }
 
 .search-backdrop {
