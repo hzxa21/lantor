@@ -74,6 +74,7 @@ const DEFAULT_SIDEBAR_WIDTH = 292;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 460;
 const MIN_CONVERSATION_WIDTH = 360;
+const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
@@ -316,7 +317,7 @@ function App() {
   const [agentDraft, setAgentDraft] = useState<AgentForm>(EMPTY_AGENT_FORM);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [agentEdit, setAgentEdit] = useState<AgentForm>(EMPTY_AGENT_FORM);
-  const [showThread, setShowThread] = useState(true);
+  const [showThread, setShowThread] = useState(() => window.innerWidth > MOBILE_BREAKPOINT);
   const [showCreateChannelModal, setShowCreateChannelModal] = useState(false);
   const [showChannelSettingsModal, setShowChannelSettingsModal] = useState(false);
   const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
