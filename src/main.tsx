@@ -97,6 +97,19 @@ type ConfirmRequest = {
   onConfirm: () => Promise<void> | void;
 };
 
+type ActiveTab = "chat" | "tasks";
+
+type MobileHistoryState = {
+  __localslockMobileUi: true;
+  index: number;
+  activeChannelId: string;
+  activeThreadId: string | null;
+  activeTab: ActiveTab;
+  showThread: boolean;
+  showMobileSidebar: boolean;
+  selectedAgentId: string | null;
+};
+
 type AppErrorBoundaryState = {
   error: Error | null;
   info: ErrorInfo | null;
@@ -109,6 +122,34 @@ function phaseForActivity(kind: string) {
 function isTextInput(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
   return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
+}
+
+function isMobileViewport() {
+  return window.innerWidth <= MOBILE_BREAKPOINT;
+}
+
+function isMobileHistoryState(value: unknown): value is MobileHistoryState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Record<string, unknown>;
+  return state.__localslockMobileUi === true
+    && typeof state.index === "number"
+    && typeof state.activeChannelId === "string"
+    && (state.activeThreadId === null || typeof state.activeThreadId === "string")
+    && (state.activeTab === "chat" || state.activeTab === "tasks")
+    && typeof state.showThread === "boolean"
+    && typeof state.showMobileSidebar === "boolean"
+    && (state.selectedAgentId === null || typeof state.selectedAgentId === "string");
+}
+
+function mobileHistoryKey(state: MobileHistoryState) {
+  return [
+    state.activeChannelId,
+    state.activeThreadId ?? "",
+    state.activeTab,
+    state.showThread ? "thread" : "conversation",
+    state.showMobileSidebar ? "sidebar" : "content",
+    state.selectedAgentId ?? "",
+  ].join("|");
 }
 
 function errorMessage(err: unknown, fallback: string) {
@@ -297,7 +338,7 @@ function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"chat" | "tasks">("chat");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
   const [draft, setDraft] = useState("");
   const [replyDraft, setReplyDraft] = useState("");
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
@@ -364,6 +405,23 @@ function App() {
   const refreshQueuedRef = useRef(false);
   const messageDeltaBufferRef = useRef<Map<string, { append: string; deliveryState: Message["delivery_state"] }>>(new Map());
   const messageDeltaFlushTimerRef = useRef<number | null>(null);
+  const mobileHistoryReadyRef = useRef(false);
+  const mobileHistoryIndexRef = useRef(0);
+  const restoringMobileHistoryRef = useRef(false);
+  const lastMobileHistoryKeyRef = useRef<string | null>(null);
+
+  function buildMobileHistoryState(index = mobileHistoryIndexRef.current): MobileHistoryState {
+    return {
+      __localslockMobileUi: true,
+      index,
+      activeChannelId,
+      activeThreadId,
+      activeTab,
+      showThread,
+      showMobileSidebar,
+      selectedAgentId,
+    };
+  }
 
   async function refreshRuntimeChecks() {
     if (!isTauriRuntime()) {
@@ -846,8 +904,88 @@ function App() {
     revealThread(message.thread_root_id ?? message.id);
     setFocusedMessageId(message.id);
     setActiveTab("chat");
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
   }, [data]);
+
+  useEffect(() => {
+    function onPopState(event: PopStateEvent) {
+      if (!isMobileHistoryState(event.state)) return;
+      restoringMobileHistoryRef.current = true;
+      mobileHistoryReadyRef.current = true;
+      mobileHistoryIndexRef.current = event.state.index;
+      lastMobileHistoryKeyRef.current = mobileHistoryKey(event.state);
+      setActiveChannelId(event.state.activeChannelId);
+      setActiveThreadId(event.state.activeThreadId);
+      setActiveTab(event.state.activeTab);
+      setShowThread(event.state.showThread);
+      setShowMobileSidebar(event.state.showMobileSidebar);
+      setSelectedAgentId(event.state.selectedAgentId);
+    }
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!data || !activeChannelId || !isMobileViewport()) return;
+
+    const currentState = buildMobileHistoryState(mobileHistoryIndexRef.current);
+    const currentKey = mobileHistoryKey(currentState);
+
+    if (restoringMobileHistoryRef.current) {
+      restoringMobileHistoryRef.current = false;
+      lastMobileHistoryKeyRef.current = currentKey;
+      return;
+    }
+
+    if (!mobileHistoryReadyRef.current) {
+      const existingState = window.history.state;
+      if (isMobileHistoryState(existingState)) {
+        mobileHistoryReadyRef.current = true;
+        mobileHistoryIndexRef.current = existingState.index;
+        const nextState = buildMobileHistoryState(existingState.index);
+        window.history.replaceState(nextState, "");
+        lastMobileHistoryKeyRef.current = mobileHistoryKey(nextState);
+        return;
+      }
+
+      const baseState: MobileHistoryState = {
+        ...currentState,
+        index: 0,
+        activeThreadId: null,
+        activeTab: "chat",
+        showThread: false,
+        showMobileSidebar: true,
+        selectedAgentId: null,
+      };
+      const baseKey = mobileHistoryKey(baseState);
+      window.history.replaceState(baseState, "");
+      mobileHistoryReadyRef.current = true;
+      mobileHistoryIndexRef.current = 0;
+      lastMobileHistoryKeyRef.current = baseKey;
+
+      if (baseKey === currentKey) return;
+      const firstState = { ...currentState, index: 1 };
+      window.history.pushState(firstState, "");
+      mobileHistoryIndexRef.current = 1;
+      lastMobileHistoryKeyRef.current = mobileHistoryKey(firstState);
+      return;
+    }
+
+    if (lastMobileHistoryKeyRef.current === currentKey) return;
+    const nextState = { ...currentState, index: mobileHistoryIndexRef.current + 1 };
+    window.history.pushState(nextState, "");
+    mobileHistoryIndexRef.current = nextState.index;
+    lastMobileHistoryKeyRef.current = mobileHistoryKey(nextState);
+  }, [
+    activeChannelId,
+    activeTab,
+    activeThreadId,
+    data,
+    selectedAgentId,
+    showMobileSidebar,
+    showThread,
+  ]);
 
   const rootMessages = useMemo(() => {
     if (!data || !channel) return [];
@@ -1407,6 +1545,29 @@ function App() {
     if (threadId) setShowThread(true);
   }
 
+  function navigateMobileBack(fallback: () => void) {
+    if (isMobileViewport() && mobileHistoryReadyRef.current && mobileHistoryIndexRef.current > 0) {
+      window.history.back();
+      return;
+    }
+    fallback();
+  }
+
+  function closeMobileSidebar() {
+    navigateMobileBack(() => setShowMobileSidebar(false));
+  }
+
+  function closeSelectedAgent() {
+    navigateMobileBack(() => setSelectedAgentId(null));
+  }
+
+  function closeThreadPanel() {
+    navigateMobileBack(() => {
+      openThread(null);
+      setShowThread(false);
+    });
+  }
+
   function addOptimisticOwnerMessage(channelId: string, threadRootId: string | null, body: string, asTask: boolean) {
     const id = `local-${clientId()}`;
     const optimisticMessage: Message = {
@@ -1964,14 +2125,14 @@ function App() {
           setShowMobileSidebar(false);
           openDmWithAgent(agent);
         }}
-        onMobileClose={() => setShowMobileSidebar(false)}
+        onMobileClose={closeMobileSidebar}
         onResizeStart={startSidebarResize}
       />
       <button
         type="button"
         className="mobile-sidebar-backdrop"
         aria-label="Close navigation"
-        onClick={() => setShowMobileSidebar(false)}
+        onClick={closeMobileSidebar}
       />
 
       <SearchModal
@@ -2053,7 +2214,7 @@ function App() {
           performance={selectedAgentPerformance}
           workItems={selectedAgentWorkItems}
           reminders={data.reminders}
-          onClose={() => setSelectedAgentId(null)}
+          onClose={closeSelectedAgent}
           onDelete={deleteAgent}
           onStart={startAgent}
           onStop={stopAgent}
@@ -2081,10 +2242,7 @@ function App() {
           taskTitleDrafts={taskTitleDrafts}
           replyDraft={replyDraft}
           replyAttachments={replyAttachments}
-          onClose={() => {
-            openThread(null);
-            setShowThread(false);
-          }}
+          onClose={closeThreadPanel}
           setTaskTitleDraft={setTaskTitleDraft}
           saveTaskTitle={saveTaskTitle}
           claimTask={claimTask}

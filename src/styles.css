@@ -4793,6 +4793,11 @@ body.resizing-column * {
     gap: 8px;
   }
 
+  .reply-composer-buttons {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .send,
   .reply-composer .reply-send,
   .attach-button,
