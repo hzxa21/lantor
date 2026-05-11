@@ -22,7 +22,6 @@ import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { InboxModal } from "./components/InboxModal";
 import { SearchModal } from "./components/SearchModal";
-import { ReminderModal } from "./components/ReminderModal";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadPanel } from "./components/ThreadPanel";
 import {
@@ -38,7 +37,6 @@ import {
   EMPTY_AGENT_FORM,
   InboxItem,
   Message,
-  Reminder,
   RUNTIME_PRESETS,
   RuntimeCheck,
   SearchResult,
@@ -214,10 +212,6 @@ function defaultAgentWorkspace(handle: string) {
   return normalized ? `/Users/dylan/Desktop/workspace/localslock/agents/${normalized}` : "";
 }
 
-function datetimeLocalValue(date: Date) {
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-}
-
 function numericMetadata(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -324,21 +318,11 @@ function App() {
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showInboxModal, setShowInboxModal] = useState(false);
-  const [showReminderModal, setShowReminderModal] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
-  const [reminderTitle, setReminderTitle] = useState("");
-  const [reminderNote, setReminderNote] = useState("");
-  const [reminderDueAt, setReminderDueAt] = useState(() => {
-    const date = new Date(Date.now() + 30 * 60 * 1000);
-    date.setSeconds(0, 0);
-    return datetimeLocalValue(date);
-  });
-  const [reminderRecurrence, setReminderRecurrence] = useState("none");
-  const [reminderIncludeThread, setReminderIncludeThread] = useState(true);
   const [threadPanelWidth, setThreadPanelWidth] = useState(() => {
     const stored = window.localStorage.getItem("localslock.threadPanelWidth");
     const value = stored ? Number(stored) : DEFAULT_THREAD_PANEL_WIDTH;
@@ -811,7 +795,6 @@ function App() {
         showCreateAgentModal ||
         showSearchModal ||
         showInboxModal ||
-        showReminderModal ||
         Boolean(editingAgentId);
       if (event.key === "Escape" && !modalOpen && !isTextInput(event.target)) {
         if (selectedAgentId) {
@@ -834,7 +817,6 @@ function App() {
     showCreateAgentModal,
     showCreateChannelModal,
     showInboxModal,
-    showReminderModal,
     showSearchModal,
     showThread,
   ]);
@@ -1882,44 +1864,6 @@ function App() {
     await mutate("retry_agent_work", { workItemId: item.id });
   }
 
-  function reminderDueAtIso() {
-    const value = reminderDueAt.trim();
-    if (!value) return "";
-    const date = new Date(value);
-    return date.toISOString();
-  }
-
-  async function createReminder() {
-    if (!channel || !reminderTitle.trim() || !reminderDueAt.trim()) return;
-    await mutate("create_reminder", {
-      channelId: channel.id,
-      threadRootId: reminderIncludeThread ? activeThreadId : null,
-      messageId: reminderIncludeThread ? activeThreadId : null,
-      title: reminderTitle,
-      note: reminderNote,
-      dueAt: reminderDueAtIso(),
-      recurrence: reminderRecurrence,
-    });
-    setReminderTitle("");
-    setReminderNote("");
-    const date = new Date(Date.now() + 30 * 60 * 1000);
-    date.setSeconds(0, 0);
-    setReminderDueAt(datetimeLocalValue(date));
-    setReminderRecurrence("none");
-  }
-
-  async function snoozeReminder(reminder: Reminder, minutes: number) {
-    await mutate("snooze_reminder", { reminderId: reminder.id, minutes });
-  }
-
-  async function completeReminder(reminder: Reminder) {
-    await mutate("complete_reminder", { reminderId: reminder.id });
-  }
-
-  async function cancelReminder(reminder: Reminder) {
-    await mutate("cancel_reminder", { reminderId: reminder.id });
-  }
-
   async function installSupervisorService() {
     await mutate("install_supervisor_service");
   }
@@ -1952,10 +1896,6 @@ function App() {
         openInbox={() => {
           setShowMobileSidebar(false);
           setShowInboxModal(true);
-        }}
-        openReminders={() => {
-          setShowMobileSidebar(false);
-          setShowReminderModal(true);
         }}
         openCreateChannelModal={() => {
           setShowMobileSidebar(false);
@@ -2003,29 +1943,6 @@ function App() {
         onClose={() => setShowInboxModal(false)}
       />
 
-      <ReminderModal
-        open={showReminderModal}
-        reminders={data.reminders}
-        channels={data.channels}
-        currentChannel={channel}
-        title={reminderTitle}
-        note={reminderNote}
-        dueAt={reminderDueAt}
-        recurrence={reminderRecurrence}
-        includeThread={reminderIncludeThread}
-        activeThreadId={activeThreadId}
-        onTitleChange={setReminderTitle}
-        onNoteChange={setReminderNote}
-        onDueAtChange={setReminderDueAt}
-        onRecurrenceChange={setReminderRecurrence}
-        onIncludeThreadChange={setReminderIncludeThread}
-        onCreate={createReminder}
-        onSnooze={snoozeReminder}
-        onComplete={completeReminder}
-        onCancelReminder={cancelReminder}
-        onClose={() => setShowReminderModal(false)}
-      />
-
       <Conversation
         channel={channel}
         agents={data.agents}
@@ -2069,6 +1986,7 @@ function App() {
           activities={selectedAgentActivities}
           performance={selectedAgentPerformance}
           workItems={selectedAgentWorkItems}
+          reminders={data.reminders}
           onClose={() => setSelectedAgentId(null)}
           onDelete={deleteAgent}
           onStart={startAgent}

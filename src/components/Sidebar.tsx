@@ -1,7 +1,6 @@
 import {
   ChevronDown,
   Circle,
-  Clock3,
   Hash,
   Inbox,
   Plus,
@@ -23,7 +22,6 @@ type SidebarProps = {
   inboxUnreadCount: number;
   openSearch: () => void;
   openInbox: () => void;
-  openReminders: () => void;
   openCreateChannelModal: () => void;
   selectChannel: (channelId: string) => void;
   openCreateAgentModal: () => void;
@@ -39,7 +37,6 @@ export function Sidebar({
   inboxUnreadCount,
   openSearch,
   openInbox,
-  openReminders,
   openCreateChannelModal,
   selectChannel,
   openCreateAgentModal,
@@ -50,7 +47,6 @@ export function Sidebar({
   const [collapsedSections, setCollapsedSections] = useState({ channels: false, dms: false });
   const normalChannels = data.channels.filter((item) => item.kind !== "dm");
   const dmChannels = data.channels.filter((item) => item.kind === "dm");
-  const dueReminders = data.reminders.filter((reminder) => reminder.status === "fired").length;
   const toggleSection = (section: "channels" | "dms") => {
     setCollapsedSections((current) => ({ ...current, [section]: !current[section] }));
   };
@@ -87,14 +83,6 @@ export function Sidebar({
           <Inbox size={18} />
           <span>Inbox</span>
           {inboxUnreadCount > 0 && <strong>{inboxUnreadCount}</strong>}
-        </button>
-        <button
-          className={`sidebar-nav-trigger ${dueReminders ? "has-unread" : ""}`}
-          onClick={openReminders}
-        >
-          <Clock3 size={18} />
-          <span>Reminders</span>
-          {dueReminders > 0 && <strong>{dueReminders}</strong>}
         </button>
       </section>
 

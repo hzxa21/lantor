@@ -8,6 +8,7 @@ import {
   AgentWorkspaceEntry,
   AgentWorkspaceFile,
   AgentWorkspaceListing,
+  Reminder,
 } from "../types";
 import { AgentAvatar } from "./AgentAvatar";
 import { MessageMarkdown } from "./MessageMarkdown";
@@ -34,6 +35,7 @@ type AgentDetailDrawerProps = {
   activities: AgentActivity[];
   performance: AgentPerformance;
   workItems: AgentWorkItem[];
+  reminders: Reminder[];
   onClose: () => void;
   onDelete: (agent: Agent) => void;
   onStart: (agent: Agent) => void;
@@ -190,6 +192,25 @@ function formatActivityTime(value: string) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function formatReminderTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return formatTime(value);
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function reminderStatusLabel(status: string) {
+  if (status === "scheduled") return "Scheduled";
+  if (status === "fired") return "Due";
+  if (status === "completed") return "Done";
+  if (status === "cancelled") return "Cancelled";
+  return status;
+}
+
 function formatDuration(value: number | null) {
   if (value === null || Number.isNaN(value)) return "n/a";
   if (value < 1000) return `${Math.round(value)} ms`;
@@ -239,6 +260,7 @@ export function AgentDetailDrawer({
   activities,
   performance,
   workItems,
+  reminders,
   onClose,
   onDelete,
   onStart,
@@ -261,6 +283,12 @@ export function AgentDetailDrawer({
   const workspacePath = agent.working_directory.trim();
   const rootWorkspaceEntries = workspaceNodes[""] ?? agent.workspace_entries ?? [];
   const memoryPath = agent.workspace_memory_path || (workspacePath ? `${workspacePath}/MEMORY.md` : "");
+  const agentReminders = reminders
+    .filter((reminder) => reminder.creator_agent_id === agent.id)
+    .sort((left, right) => new Date(left.due_at).getTime() - new Date(right.due_at).getTime());
+  const liveAgentReminders = agentReminders.filter((reminder) => !["completed", "cancelled"].includes(reminder.status));
+  const dueAgentReminders = liveAgentReminders.filter((reminder) => reminder.status === "fired");
+  const visibleAgentReminders = liveAgentReminders.slice(0, 8);
 
   useEffect(() => {
     setActiveDetailTab("profile");
@@ -365,7 +393,11 @@ export function AgentDetailDrawer({
   }
 
   function tabBadge(tab: AgentDetailTab) {
-    if (tab === "profile") return agent.status;
+    if (tab === "profile") {
+      if (dueAgentReminders.length > 0) return `${dueAgentReminders.length} due`;
+      if (liveAgentReminders.length > 0) return `${liveAgentReminders.length} reminders`;
+      return agent.status;
+    }
     if (tab === "activity") {
       if (activeRun) return "Live";
       return activities.length > 0 ? String(activities.length) : "Idle";
@@ -440,10 +472,53 @@ export function AgentDetailDrawer({
           <div>
             <h4>Agent-managed routines</h4>
             <p>
-              Scheduled follow-ups are created from conversation intent by the agent through LocalSlock APIs.
-              This panel stays focused on state, activity, and control instead of manual routine forms.
+              Reminders are created from conversation intent by the agent through LocalSlock APIs.
+              They are shown here as read-only agent state instead of a manual user reminder form.
             </p>
           </div>
+        </section>
+        <section className="detail-section agent-reminders-section">
+          <div className="detail-section-head">
+            <h4>Reminders</h4>
+            <span>
+              {dueAgentReminders.length > 0
+                ? `${dueAgentReminders.length} due`
+                : liveAgentReminders.length > 0
+                  ? `${liveAgentReminders.length} active`
+                  : "None"}
+            </span>
+          </div>
+          {liveAgentReminders.length === 0 ? (
+            <p className="empty-mini">No active reminders created by @{agent.handle}.</p>
+          ) : (
+            <div className="agent-reminder-list" aria-label={`${agent.handle} reminders`}>
+              {visibleAgentReminders.map((reminder) => (
+                <article
+                  key={reminder.id}
+                  className={`agent-reminder-row status-${reminder.status}`}
+                >
+                  <div className="agent-reminder-icon" aria-hidden="true">
+                    {reminder.status === "fired" ? "!" : reminder.recurrence !== "none" ? "R" : "."}
+                  </div>
+                  <div className="agent-reminder-body">
+                    <div className="agent-reminder-title">
+                      <strong>{reminder.title}</strong>
+                      <span>{reminderStatusLabel(reminder.status)}</span>
+                    </div>
+                    {reminder.note && <p>{reminder.note}</p>}
+                    <small>
+                      {formatReminderTime(reminder.due_at)}
+                      {reminder.recurrence !== "none" ? ` · ${reminder.recurrence}` : ""}
+                      {reminder.channel_name ? ` · #${reminder.channel_name}` : ""}
+                    </small>
+                  </div>
+                </article>
+              ))}
+              {liveAgentReminders.length > visibleAgentReminders.length && (
+                <p className="agent-reminder-overflow">Showing {visibleAgentReminders.length} of {liveAgentReminders.length} active reminders.</p>
+              )}
+            </div>
+          )}
         </section>
       </>
     );
