@@ -1560,8 +1560,8 @@ mark {
 .composer-actions {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
+  flex-wrap: nowrap;
+  gap: 8px;
   justify-content: flex-end;
   min-width: 0;
 }
@@ -1668,11 +1668,43 @@ mark {
   color: var(--accent);
 }
 
+.task-toggle {
+  display: inline-flex;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid rgba(20, 23, 31, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.task-toggle:hover:not(:disabled) {
+  border-color: rgba(10, 132, 255, 0.3);
+  background: rgba(10, 132, 255, 0.08);
+  color: var(--accent);
+}
+
+.task-toggle.active {
+  border-color: rgba(10, 132, 255, 0.45);
+  background: rgba(10, 132, 255, 0.14);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.14);
+}
+
 .send {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  padding: 10px 14px;
+  min-width: 86px;
+  height: 38px;
+  margin-left: auto;
+  padding: 0 14px;
   border-radius: 14px;
   background: var(--accent);
   color: #fff;
@@ -1873,12 +1905,11 @@ body.resizing-column * {
 .reply-composer .reply-send {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  width: auto;
-  min-width: 76px;
+  width: 40px;
+  min-width: 40px;
   height: 40px;
   justify-content: center;
-  padding: 0 13px;
+  padding: 0;
   border-radius: 12px;
   background: var(--accent);
   color: #fff;
@@ -2110,29 +2141,6 @@ body.resizing-column * {
 
 .profile {
   grid-template-columns: 42px 1fr;
-}
-
-.send-mode {
-  display: inline-flex;
-  margin-right: auto;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-}
-
-.send-mode button {
-  padding: 7px 10px;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.send-mode button.active {
-  background: var(--accent);
-  color: #fff;
 }
 
 .modal-backdrop {
@@ -4536,24 +4544,29 @@ body.resizing-column * {
     gap: 8px;
   }
 
-  .send-mode {
-    order: 3;
-    width: 100%;
-    margin-right: 0;
-  }
-
-  .send-mode button {
-    flex: 1;
-  }
-
   .send,
   .reply-composer .reply-send,
-  .attach-button {
+  .attach-button,
+  .task-toggle {
+    width: 44px;
+    min-width: 44px;
     min-height: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 14px;
+  }
+
+  .task-toggle {
+    margin-left: auto;
+  }
+
+  .task-toggle span,
+  .send span {
+    display: none;
   }
 
   .send {
-    flex: 1;
+    margin-left: 0;
     justify-content: center;
   }
 

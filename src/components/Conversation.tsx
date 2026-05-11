@@ -1,5 +1,6 @@
 import {
   CheckCircle2,
+  Flag,
   Hash,
   LayoutList,
   Menu,
@@ -557,12 +558,6 @@ export function Conversation({
         />
         <DraftAttachmentsPreview attachments={draftAttachments} onRemove={removeDraftAttachment} />
         <div className="composer-actions">
-          {!isDm && (
-            <div className="send-mode" aria-label="Send mode">
-              <button className={!sendAsTask ? "active" : ""} onClick={() => setSendAsTask(false)}>Message</button>
-              <button className={sendAsTask ? "active" : ""} onClick={() => setSendAsTask(true)}>Task</button>
-            </div>
-          )}
           <button
             type="button"
             className="attach-button"
@@ -571,8 +566,29 @@ export function Conversation({
           >
             <Paperclip size={16} />
           </button>
-          <button className="send" disabled={!channel || (!draft.trim() && draftAttachments.length === 0)} onClick={submitComposer}>
-            Send <Send size={15} />
+          {!isDm && (
+            <button
+              type="button"
+              className={`task-toggle ${sendAsTask ? "active" : ""}`}
+              title={sendAsTask ? "Send next message as a normal message" : "Send next message as a task"}
+              aria-label={sendAsTask ? "Send next message as a normal message" : "Send next message as a task"}
+              aria-pressed={sendAsTask}
+              disabled={!channel}
+              onClick={() => setSendAsTask((current) => !current)}
+            >
+              <Flag size={15} />
+              <span>Task</span>
+            </button>
+          )}
+          <button
+            className="send"
+            title={sendAsTask && !isDm ? "Create task" : "Send message"}
+            aria-label={sendAsTask && !isDm ? "Create task" : "Send message"}
+            disabled={!channel || (!draft.trim() && draftAttachments.length === 0)}
+            onClick={submitComposer}
+          >
+            <span>{sendAsTask && !isDm ? "Create" : "Send"}</span>
+            <Send size={17} />
           </button>
         </div>
       </footer>

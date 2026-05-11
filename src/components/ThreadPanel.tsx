@@ -438,10 +438,12 @@ export function ThreadPanel({
               <button
                 type="button"
                 className="reply-send"
+                title="Send reply"
+                aria-label="Send reply"
                 disabled={!activeRoot || (!replyDraft.trim() && replyAttachments.length === 0)}
                 onClick={submitReply}
               >
-                Reply <Reply size={15} />
+                <Reply size={16} />
               </button>
             </div>
           </div>
