@@ -97,6 +97,20 @@ pub(crate) struct Message {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct SavedMessage {
+    pub(crate) id: Uuid,
+    pub(crate) message_id: Uuid,
+    pub(crate) channel_id: Uuid,
+    pub(crate) channel_name: String,
+    pub(crate) thread_root_id: Option<Uuid>,
+    pub(crate) sender_name: String,
+    pub(crate) sender_role: String,
+    pub(crate) body: String,
+    pub(crate) message_created_at: DateTime<Utc>,
+    pub(crate) created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct MessageAttachment {
     pub(crate) id: Uuid,
     pub(crate) message_id: Uuid,
@@ -314,6 +328,7 @@ pub(crate) struct Bootstrap {
     pub(crate) channel_members: Vec<ChannelMember>,
     pub(crate) agents: Vec<Agent>,
     pub(crate) messages: Vec<Message>,
+    pub(crate) saved_messages: Vec<SavedMessage>,
     pub(crate) artifacts: Vec<Artifact>,
     pub(crate) tasks: Vec<Task>,
     pub(crate) reminders: Vec<Reminder>,

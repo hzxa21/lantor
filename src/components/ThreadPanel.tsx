@@ -1,4 +1,4 @@
-import { ArrowDown, MessageSquare, Paperclip, Reply, X } from "lucide-react";
+import { ArrowDown, Bookmark, MessageSquare, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
@@ -31,6 +31,9 @@ type ThreadPanelProps = {
   sendReply: () => void;
   openAgentDetail: (agent: Agent) => void;
   openArtifact: (artifact: Artifact) => void;
+  savedMessageIds: Set<string>;
+  focusedMessageId: string | null;
+  onToggleMessageSaved: (message: Message, saved: boolean) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
@@ -67,6 +70,9 @@ export function ThreadPanel({
   sendReply,
   openAgentDetail,
   openArtifact,
+  savedMessageIds,
+  focusedMessageId,
+  onToggleMessageSaved,
   onResizeStart,
 }: ThreadPanelProps) {
   const [isReplyDragOver, setIsReplyDragOver] = useState(false);
@@ -79,6 +85,7 @@ export function ThreadPanel({
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
   const rootAgent = activeRoot ? agentForMessage(activeRoot, agents) : null;
+  const rootSaved = activeRoot ? savedMessageIds.has(activeRoot.id) : false;
   const {
     mentionState,
     mentionIndex,
@@ -207,6 +214,12 @@ export function ThreadPanel({
     scrollThreadToBottom();
   }, [activeRoot?.id, activeRoot?.updated_at, replies.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
 
+  useEffect(() => {
+    if (!focusedMessageId) return;
+    const element = threadScrollRef.current?.querySelector<HTMLElement>(`[data-message-id="${focusedMessageId}"]`);
+    element?.scrollIntoView({ block: "center" });
+  }, [activeRoot?.id, focusedMessageId, replies.length]);
+
   return (
     <aside className="thread">
       <button
@@ -235,7 +248,16 @@ export function ThreadPanel({
           onLoadCapture={handleThreadContentLoad}
         >
           {activeRoot && (
-            <article className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""}`}>
+            <article
+              data-message-id={activeRoot.id}
+              className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${rootSaved ? "saved" : ""}`}
+              data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
+              onContextMenu={(event) => {
+                if (activeRoot.sender_role === "system") return;
+                event.preventDefault();
+                onToggleMessageSaved(activeRoot, !rootSaved);
+              }}
+            >
               {activeRoot.sender_role === "system" ? (
                 <div className="system-message-line">
                   <MessageMarkdown body={activeRoot.body} />
@@ -260,6 +282,15 @@ export function ThreadPanel({
                       <strong>{activeRoot.sender_name}</strong>
                       <time>{formatTime(activeRoot.created_at)}</time>
                       {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
+                      <button
+                        type="button"
+                        className={`message-save-button ${rootSaved ? "saved" : ""}`}
+                        title={rootSaved ? "Unsave message" : "Save message"}
+                        onClick={() => onToggleMessageSaved(activeRoot, !rootSaved)}
+                      >
+                        <Bookmark size={13} />
+                        {rootSaved ? "Saved" : "Save"}
+                      </button>
                     </div>
                     <MessageMarkdown body={activeRoot.body} />
                     <MessageAttachments attachments={activeRoot.attachments} />
@@ -324,6 +355,7 @@ export function ThreadPanel({
             )}
             {replies.map((reply) => {
               const replyAgent = agentForMessage(reply, agents);
+              const replySaved = savedMessageIds.has(reply.id);
               if (reply.sender_role === "system") {
                 return (
                   <article key={reply.id} className="system-message">
@@ -335,7 +367,16 @@ export function ThreadPanel({
                 );
               }
               return (
-                <article key={reply.id}>
+                <article
+                  key={reply.id}
+                  data-message-id={reply.id}
+                  className={replySaved ? "saved" : ""}
+                  data-jump-focused={focusedMessageId === reply.id ? "true" : "false"}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    onToggleMessageSaved(reply, !replySaved);
+                  }}
+                >
                   {replyAgent ? (
                     <button
                       type="button"
@@ -353,6 +394,15 @@ export function ThreadPanel({
                       <strong>{reply.sender_name}</strong>
                       <time>{formatTime(reply.created_at)}</time>
                       {wasEdited(reply) && <span className="edited-indicator">edited</span>}
+                      <button
+                        type="button"
+                        className={`message-save-button ${replySaved ? "saved" : ""}`}
+                        title={replySaved ? "Unsave message" : "Save message"}
+                        onClick={() => onToggleMessageSaved(reply, !replySaved)}
+                      >
+                        <Bookmark size={13} />
+                        {replySaved ? "Saved" : "Save"}
+                      </button>
                     </div>
                     <MessageMarkdown body={reply.body} />
                     <MessageAttachments attachments={reply.attachments} />

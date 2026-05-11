@@ -25,12 +25,12 @@ use tokio::net::TcpListener;
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
-use crate::{
-    agent_workspace_list_in_pool, agent_workspace_read_file_in_pool,
-    complete_reminder_in_pool, load_artifact, load_bootstrap, mark_channel_read_in_pool,
-    open_dm_with_agent_in_pool, send_owner_message_in_pool, to_string, UI_REFRESH_CHANNEL,
-};
 use crate::models::AttachmentUpload;
+use crate::{
+    agent_workspace_list_in_pool, agent_workspace_read_file_in_pool, complete_reminder_in_pool,
+    load_artifact, load_bootstrap, mark_channel_read_in_pool, open_dm_with_agent_in_pool,
+    send_owner_message_in_pool, set_message_saved_in_pool, to_string, UI_REFRESH_CHANNEL,
+};
 
 #[derive(Clone)]
 struct WebState {
@@ -71,6 +71,13 @@ struct ReminderIdRequest {
 #[serde(rename_all = "camelCase")]
 struct ArtifactReadRequest {
     artifact_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetMessageSavedRequest {
+    message_id: Uuid,
+    saved: bool,
 }
 
 #[derive(Deserialize)]
@@ -136,12 +143,16 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
         .route("/api/events", get(api_events))
         .route("/api/attachments/{attachment_id}", get(api_attachment))
         .route("/api/send_message", post(api_send_message))
+        .route("/api/set_message_saved", post(api_set_message_saved))
         .route("/api/mark_channel_read", post(api_mark_channel_read))
         .route("/api/complete_reminder", post(api_complete_reminder))
         .route("/api/artifact_read", post(api_artifact_read))
         .route("/api/open_dm_with_agent", post(api_open_dm_with_agent))
         .route("/api/agent_workspace_list", post(api_agent_workspace_list))
-        .route("/api/agent_workspace_read_file", post(api_agent_workspace_read_file))
+        .route(
+            "/api/agent_workspace_read_file",
+            post(api_agent_workspace_read_file),
+        )
         .with_state(state);
 
     if index.is_file() {
@@ -168,7 +179,9 @@ fn web_dist_dir() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let candidates = [
         manifest_dir.join("../dist"),
-        env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("dist"),
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("dist"),
     ];
     candidates
         .into_iter()
@@ -189,7 +202,11 @@ async fn missing_dist(dist_dir: PathBuf) -> impl IntoResponse {
 </html>"#,
         dist_dir.display()
     );
-    (StatusCode::SERVICE_UNAVAILABLE, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        body,
+    )
 }
 
 async fn api_health() -> impl IntoResponse {
@@ -233,6 +250,18 @@ async fn api_mark_channel_read(
 ) -> Result<impl IntoResponse, Response> {
     require_auth(&state, &headers, None)?;
     mark_channel_read_in_pool(&state.pool, request.channel_id)
+        .await
+        .map(|_| Json(json!({ "ok": true })))
+        .map_err(api_error)
+}
+
+async fn api_set_message_saved(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Json(request): Json<SetMessageSavedRequest>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&state, &headers, None)?;
+    set_message_saved_in_pool(&state.pool, request.message_id, request.saved)
         .await
         .map(|_| Json(json!({ "ok": true })))
         .map_err(api_error)
@@ -370,12 +399,16 @@ async fn api_attachment(
     let mut response = Response::new(Body::from(bytes));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_str(&content_type).unwrap_or(HeaderValue::from_static("application/octet-stream")),
+        HeaderValue::from_str(&content_type)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
     response.headers_mut().insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("inline; filename=\"{}\"", original_name.replace('"', "")))
-            .unwrap_or(HeaderValue::from_static("inline")),
+        HeaderValue::from_str(&format!(
+            "inline; filename=\"{}\"",
+            original_name.replace('"', "")
+        ))
+        .unwrap_or(HeaderValue::from_static("inline")),
     );
     Ok(response)
 }
@@ -415,10 +448,7 @@ fn require_auth(
 fn api_error(message: String) -> Response {
     (
         StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            ok: false,
-            message,
-        }),
+        Json(ApiError { ok: false, message }),
     )
         .into_response()
 }

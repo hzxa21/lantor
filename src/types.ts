@@ -76,6 +76,19 @@ export type Message = {
   updated_at: string;
 };
 
+export type SavedMessage = {
+  id: string;
+  message_id: string;
+  channel_id: string;
+  channel_name: string;
+  thread_root_id: string | null;
+  sender_name: string;
+  sender_role: string;
+  body: string;
+  message_created_at: string;
+  created_at: string;
+};
+
 export type MessageAttachment = {
   id: string;
   message_id: string;
@@ -242,6 +255,7 @@ export type Bootstrap = {
   channel_members: ChannelMember[];
   agents: Agent[];
   messages: Message[];
+  saved_messages: SavedMessage[];
   artifacts: Artifact[];
   tasks: Task[];
   reminders: Reminder[];

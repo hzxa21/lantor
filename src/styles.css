@@ -237,7 +237,8 @@ button,
 
 .quick-actions button:hover,
 .channel:hover,
-.dm:hover {
+.dm:hover,
+.saved-message:hover {
   background: rgba(255, 255, 255, 0.36);
 }
 
@@ -256,11 +257,17 @@ button,
   font-size: 13px;
 }
 
+.saved-list,
 .channel-block,
 .dm-list {
   min-height: 0;
   overflow: auto;
   padding: 8px 18px;
+}
+
+.saved-list {
+  flex: 0 0 auto;
+  max-height: min(28vh, 300px);
 }
 
 .channel-block {
@@ -273,6 +280,7 @@ button,
   border-top: 1px solid rgba(0, 0, 0, 0.05);
 }
 
+.saved-list.collapsed,
 .channel-block.collapsed,
 .dm-list.collapsed {
   flex: 0 0 auto;
@@ -360,6 +368,48 @@ button,
 .channel.selected strong {
   background: rgba(255, 255, 255, 0.2);
   color: #fff;
+}
+
+.saved-message {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  width: 100%;
+  align-items: start;
+  gap: 9px;
+  padding: 9px 10px;
+  border-radius: 14px;
+  text-align: left;
+}
+
+.saved-message svg {
+  margin-top: 2px;
+  color: #b27400;
+  fill: rgba(255, 204, 0, 0.2);
+}
+
+.saved-message div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.saved-message strong,
+.saved-message span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-message strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.saved-message span {
+  color: currentColor;
+  font-size: 11px;
+  opacity: 0.58;
 }
 
 .dm-row {
@@ -872,6 +922,19 @@ button,
   box-shadow: inset 3px 0 var(--accent);
 }
 
+.message-card.saved,
+.thread-root.saved,
+.reply-list article.saved {
+  background: rgba(255, 204, 0, 0.08);
+}
+
+.message-card[data-jump-focused="true"],
+.thread-root[data-jump-focused="true"],
+.reply-list article[data-jump-focused="true"] {
+  background: rgba(255, 204, 0, 0.15);
+  box-shadow: inset 3px 0 #ffcc00;
+}
+
 .system-message {
   margin: 2px 22px;
   padding: 0;
@@ -926,6 +989,32 @@ button,
 .meta .edited-indicator {
   font-size: 11px;
   font-style: italic;
+}
+
+.message-save-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.1);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.message-save-button svg {
+  fill: transparent;
+}
+
+.message-save-button:hover,
+.message-save-button.saved {
+  background: rgba(255, 204, 0, 0.16);
+  color: #8a5b00;
+}
+
+.message-save-button.saved svg {
+  fill: currentColor;
 }
 
 mark {

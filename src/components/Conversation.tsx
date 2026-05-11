@@ -2,6 +2,7 @@ import {
   CheckCircle2,
   Flag,
   Hash,
+  Bookmark,
   LayoutList,
   Menu,
   MessageSquare,
@@ -55,6 +56,9 @@ type ConversationProps = {
   sendRootMessage: (asTask?: boolean) => void;
   openAgentDetail: (agent: Agent) => void;
   openArtifact: (artifact: Artifact) => void;
+  savedMessageIds: Set<string>;
+  focusedMessageId: string | null;
+  onToggleMessageSaved: (message: Message, saved: boolean) => void;
 };
 
 function wasEdited(message: Message) {
@@ -102,6 +106,9 @@ export function Conversation({
   sendRootMessage,
   openAgentDetail,
   openArtifact,
+  savedMessageIds,
+  focusedMessageId,
+  onToggleMessageSaved,
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
   const [isComposerDragOver, setIsComposerDragOver] = useState(false);
@@ -237,6 +244,12 @@ export function Conversation({
     if (!shouldFollowMessagesRef.current) return;
     scrollMessagesToBottom();
   }, [activeTab, channel?.id, rootMessages.length, lastRootMessage?.id, lastRootMessage?.updated_at, lastRootMessage?.delivery_state]);
+
+  useEffect(() => {
+    if (!focusedMessageId) return;
+    const element = messageListRef.current?.querySelector<HTMLElement>(`[data-message-id="${focusedMessageId}"]`);
+    element?.scrollIntoView({ block: "center" });
+  }, [channel?.id, focusedMessageId, rootMessages.length]);
 
   return (
     <section className="conversation">
@@ -378,6 +391,7 @@ export function Conversation({
             const linkedTask = taskForMessage(message.id);
             const replyCount = threadReplyCounts[message.id] ?? 0;
             const messageAgent = isDm ? null : agentForMessage(message, agents);
+            const isSaved = savedMessageIds.has(message.id);
             if (message.sender_role === "system") {
               return (
                 <article key={message.id} className="system-message">
@@ -391,8 +405,14 @@ export function Conversation({
             return (
               <article
                 key={message.id}
-                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""}`}
+                data-message-id={message.id}
+                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""}`}
+                data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
                 onClick={() => setActiveThreadId(message.id)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  onToggleMessageSaved(message, !isSaved);
+                }}
               >
                 {messageAgent ? (
                   <button
@@ -420,6 +440,18 @@ export function Conversation({
                         <CheckCircle2 size={14} /> #{linkedTask.number} · {linkedTask.status.replace("_", " ")}
                       </mark>
                     )}
+                    <button
+                      type="button"
+                      className={`message-save-button ${isSaved ? "saved" : ""}`}
+                      title={isSaved ? "Unsave message" : "Save message"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onToggleMessageSaved(message, !isSaved);
+                      }}
+                    >
+                      <Bookmark size={13} />
+                      {isSaved ? "Saved" : "Save"}
+                    </button>
                   </div>
                   <MessageMarkdown body={firstLines(message.body)} />
                   <MessageAttachments attachments={message.attachments} />

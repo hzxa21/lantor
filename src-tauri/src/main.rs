@@ -41,7 +41,8 @@ use models::{
     Agent, AgentActivity, AgentRun, AgentRunPatch, AgentSchedule, AgentWorkItem,
     AgentWorkItemPatch, AgentWorkspaceEntry, AgentWorkspaceFile, AgentWorkspaceListing, Artifact,
     AttachmentUpload, Bootstrap, Channel, ChannelMember, LaunchAgentStatus, Message,
-    MessageAttachment, Reminder, RuntimeCheck, SupervisorCommand, SupervisorStatus, Task,
+    MessageAttachment, Reminder, RuntimeCheck, SavedMessage, SupervisorCommand, SupervisorStatus,
+    Task,
 };
 use prompts::{
     build_claude_streaming_prompt, build_codex_streaming_prompt, build_work_item_prompt,
@@ -153,7 +154,11 @@ fn db_url() -> String {
         .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned())
 }
 
-pub(crate) async fn notify_postgres(pool: &PgPool, channel: &str, payload: &str) -> CommandResult<()> {
+pub(crate) async fn notify_postgres(
+    pool: &PgPool,
+    channel: &str,
+    payload: &str,
+) -> CommandResult<()> {
     sqlx::query("select pg_notify($1, $2)")
         .bind(channel)
         .bind(payload)
@@ -887,6 +892,21 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         r#"
+        create table if not exists saved_messages (
+            id uuid primary key default gen_random_uuid(),
+            message_id uuid not null unique references messages(id) on delete cascade,
+            created_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("create index if not exists saved_messages_created_at_idx on saved_messages(created_at desc)")
+        .execute(pool)
+        .await?;
+
+    sqlx::query(
+        r#"
         create table if not exists artifacts (
             id uuid primary key default gen_random_uuid(),
             message_id uuid not null references messages(id) on delete cascade,
@@ -1338,6 +1358,7 @@ pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResu
     let channel_members = load_channel_members(pool).await?;
     let agents = load_agents(pool).await?;
     let messages = load_messages(pool).await?;
+    let saved_messages = load_saved_messages(pool).await?;
     let artifacts = load_artifacts(pool).await?;
     let tasks = load_tasks(pool).await?;
     let reminders = load_reminders(pool).await?;
@@ -1354,6 +1375,7 @@ pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResu
         channel_members,
         agents,
         messages,
+        saved_messages,
         artifacts,
         tasks,
         reminders,
@@ -1576,7 +1598,10 @@ async fn artifact_read(artifact_id: Uuid, state: State<'_, AppState>) -> Command
     load_artifact(&state.pool, artifact_id).await
 }
 
-pub(crate) async fn open_dm_with_agent_in_pool(pool: &PgPool, agent_id: Uuid) -> CommandResult<String> {
+pub(crate) async fn open_dm_with_agent_in_pool(
+    pool: &PgPool,
+    agent_id: Uuid,
+) -> CommandResult<String> {
     let mut tx = pool.begin().await.map_err(to_string)?;
     let agent_row = sqlx::query("select handle from agents where id = $1")
         .bind(agent_id)
@@ -3548,6 +3573,53 @@ async fn delete_message(message_id: Uuid, state: State<'_, AppState>) -> Command
 }
 
 #[tauri::command]
+async fn set_message_saved(
+    message_id: Uuid,
+    saved: bool,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    set_message_saved_in_pool(&state.pool, message_id, saved).await?;
+    let _ = notify_ui_refresh(&state.pool, "saved_message_updated").await;
+    Ok(())
+}
+
+pub(crate) async fn set_message_saved_in_pool(
+    pool: &PgPool,
+    message_id: Uuid,
+    saved: bool,
+) -> CommandResult<()> {
+    let exists: bool = sqlx::query_scalar("select exists(select 1 from messages where id = $1)")
+        .bind(message_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    if !exists {
+        return Err("message does not exist".to_owned());
+    }
+
+    if saved {
+        sqlx::query(
+            r#"
+            insert into saved_messages (message_id)
+            values ($1)
+            on conflict (message_id) do nothing
+            "#,
+        )
+        .bind(message_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+    } else {
+        sqlx::query("delete from saved_messages where message_id = $1")
+            .bind(message_id)
+            .execute(pool)
+            .await
+            .map_err(to_string)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn claim_task(
     task_id: Uuid,
     agent_id: Option<Uuid>,
@@ -3831,7 +3903,10 @@ async fn complete_reminder(reminder_id: Uuid, state: State<'_, AppState>) -> Com
     complete_reminder_in_pool(&state.pool, reminder_id).await
 }
 
-pub(crate) async fn complete_reminder_in_pool(pool: &PgPool, reminder_id: Uuid) -> CommandResult<()> {
+pub(crate) async fn complete_reminder_in_pool(
+    pool: &PgPool,
+    reminder_id: Uuid,
+) -> CommandResult<()> {
     sqlx::query(
         r#"
         update reminders
@@ -4018,7 +4093,10 @@ async fn mark_channel_read(channel_id: Uuid, state: State<'_, AppState>) -> Comm
     mark_channel_read_in_pool(&state.pool, channel_id).await
 }
 
-pub(crate) async fn mark_channel_read_in_pool(pool: &PgPool, channel_id: Uuid) -> CommandResult<()> {
+pub(crate) async fn mark_channel_read_in_pool(
+    pool: &PgPool,
+    channel_id: Uuid,
+) -> CommandResult<()> {
     sqlx::query(
         r#"
         insert into channel_read_state (channel_id, last_read_at)
@@ -4529,6 +4607,47 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
     attach_message_attachments(pool, &mut messages).await?;
     attach_message_artifacts(pool, &mut messages).await?;
     Ok(messages)
+}
+
+async fn load_saved_messages(pool: &PgPool) -> CommandResult<Vec<SavedMessage>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            sm.id,
+            sm.message_id,
+            m.channel_id,
+            c.name as channel_name,
+            m.thread_root_id,
+            m.sender_name,
+            m.sender_role,
+            m.body,
+            m.created_at as message_created_at,
+            sm.created_at
+        from saved_messages sm
+        join messages m on m.id = sm.message_id
+        join channels c on c.id = m.channel_id
+        order by sm.created_at desc
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| SavedMessage {
+            id: row.get("id"),
+            message_id: row.get("message_id"),
+            channel_id: row.get("channel_id"),
+            channel_name: row.get("channel_name"),
+            thread_root_id: row.get("thread_root_id"),
+            sender_name: row.get("sender_name"),
+            sender_role: row.get("sender_role"),
+            body: row.get("body"),
+            message_created_at: row.get("message_created_at"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
 }
 
 async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message> {
@@ -11463,6 +11582,7 @@ pub fn run() {
             open_dm_with_agent,
             retry_agent_work,
             send_message,
+            set_message_saved,
             set_channel_agent_membership,
             snooze_reminder,
             start_agent,

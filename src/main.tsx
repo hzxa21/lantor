@@ -39,6 +39,7 @@ import {
   Message,
   RUNTIME_PRESETS,
   RuntimeCheck,
+  SavedMessage,
   SearchResult,
   SearchScope,
   SearchTimeRange,
@@ -320,6 +321,7 @@ function App() {
   const [showInboxModal, setShowInboxModal] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
@@ -1039,6 +1041,10 @@ function App() {
     return inboxItems.filter((item) => item.unread).length;
   }, [inboxItems]);
 
+  const savedMessageIds = useMemo(() => {
+    return new Set(data?.saved_messages.map((item) => item.message_id) ?? []);
+  }, [data?.saved_messages]);
+
   const visibleTasks = useMemo(() => {
     if (!data || !channel) return [];
     if (channel.kind === "dm") return [];
@@ -1359,6 +1365,7 @@ function App() {
 
   function openThread(threadId: string | null) {
     setActiveThreadId(threadId);
+    setFocusedMessageId(null);
     if (!threadId) return;
     setThreadUnreadCounts((current) => {
       if (!current[threadId]) return current;
@@ -1714,6 +1721,13 @@ function App() {
     setShowSearchModal(false);
   }
 
+  function openSavedMessage(item: SavedMessage) {
+    selectChannel(item.channel_id);
+    revealThread(item.thread_root_id ?? item.message_id);
+    setFocusedMessageId(item.message_id);
+    setActiveTab("chat");
+  }
+
   function openInboxItem(item: InboxItem) {
     if (item.channelId) selectChannel(item.channelId);
     if (item.threadId) {
@@ -1864,6 +1878,10 @@ function App() {
     await mutate("retry_agent_work", { workItemId: item.id });
   }
 
+  async function setMessageSaved(message: Message, saved: boolean) {
+    await mutate("set_message_saved", { messageId: message.id, saved });
+  }
+
   async function installSupervisorService() {
     await mutate("install_supervisor_service");
   }
@@ -1896,6 +1914,10 @@ function App() {
         openInbox={() => {
           setShowMobileSidebar(false);
           setShowInboxModal(true);
+        }}
+        openSavedMessage={(item) => {
+          setShowMobileSidebar(false);
+          openSavedMessage(item);
         }}
         openCreateChannelModal={() => {
           setShowMobileSidebar(false);
@@ -1976,6 +1998,9 @@ function App() {
         sendRootMessage={sendRootMessage}
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openArtifact={openArtifact}
+        savedMessageIds={savedMessageIds}
+        focusedMessageId={focusedMessageId}
+        onToggleMessageSaved={setMessageSaved}
       />
 
       {selectedAgent ? (
@@ -2029,6 +2054,9 @@ function App() {
           sendReply={sendReply}
           openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
           openArtifact={openArtifact}
+          savedMessageIds={savedMessageIds}
+          focusedMessageId={focusedMessageId}
+          onToggleMessageSaved={setMessageSaved}
           onResizeStart={startThreadResize}
         />
       )}
