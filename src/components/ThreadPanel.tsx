@@ -423,6 +423,17 @@ export function ThreadPanel({
             </section>
           )}
 
+          {activeRoot && (
+            <div className="thread-replies-divider" aria-label="Beginning of replies">
+              <span />
+              <div>
+                <strong>Beginning of replies</strong>
+                <small>{replies.length} {replies.length === 1 ? "reply" : "replies"}</small>
+              </div>
+              <span />
+            </div>
+          )}
+
           <section className="reply-list">
             {!activeRoot && (
               <div className="empty-state compact">
