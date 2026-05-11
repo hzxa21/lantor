@@ -62,6 +62,10 @@ export function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+export function visibleChannelDescription(description: string) {
+  return description.trim() === "Local channel" ? "" : description;
+}
+
 export function presetPrompt(form: AgentForm) {
   const name = form.displayName || form.handle || "$LOCAL_SLOCK_AGENT_HANDLE";
   return [

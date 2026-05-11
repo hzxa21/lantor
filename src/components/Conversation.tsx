@@ -19,7 +19,7 @@ import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
-import { firstLines, formatTime } from "../ui-utils";
+import { firstLines, formatTime, visibleChannelDescription } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
@@ -333,7 +333,7 @@ export function Conversation({
             <p>
               {isDm
                 ? dmAgent ? `@${dmAgent.handle} · ${dmAgent.runtime} · ${dmAgent.status}` : "Agent no longer exists"
-                : channel?.description || "Create a channel from the sidebar"}
+                : channel ? visibleChannelDescription(channel.description) : "Create a channel from the sidebar"}
             </p>
           </div>
         </div>

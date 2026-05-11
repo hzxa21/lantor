@@ -821,6 +821,9 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    sqlx::query("update channels set description = '' where description = 'Local channel'")
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         r#"
@@ -1466,7 +1469,7 @@ async fn create_channel(name: String, state: State<'_, AppState>) -> CommandResu
     sqlx::query(
         r#"
         insert into channels (name, description, kind)
-        values ($1, 'Local channel', 'channel')
+        values ($1, '', 'channel')
         on conflict (name) do nothing
         "#,
     )

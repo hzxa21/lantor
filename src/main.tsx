@@ -46,7 +46,7 @@ import {
   SearchTimeRange,
   Task,
 } from "./types";
-import { agentRequestSourceLabel, buildPresetCommand, firstLines, formatTime } from "./ui-utils";
+import { agentRequestSourceLabel, buildPresetCommand, firstLines, formatTime, visibleChannelDescription } from "./ui-utils";
 import "./styles.css";
 
 const ACTIVITY_PHASE_LABELS: Record<string, string> = {
@@ -1067,7 +1067,7 @@ function App() {
         id: `${channel.kind}:${channel.id}`,
         kind: channel.kind === "dm" ? "dm" : "channel",
         title: channel.kind === "dm" ? `DM with @${dmAgent?.handle ?? "agent"}` : `New activity in #${channel.name}`,
-        excerpt: latest?.body ?? channel.description,
+        excerpt: latest?.body ?? visibleChannelDescription(channel.description),
         surface: channel.kind === "dm" ? "Direct message" : `#${channel.name}`,
         actor: latest?.sender_name ?? "",
         timestamp: timestamp(latest?.created_at),
@@ -1314,7 +1314,7 @@ function App() {
       results.push(...data.channels
         .filter((item) => {
         const dmAgent = item.kind === "dm" ? data.agents.find((agent) => agent.id === item.dm_agent_id) : null;
-          return includes(`${item.name} ${item.description} ${dmAgent?.handle ?? ""} ${dmAgent?.display_name ?? ""}`);
+          return includes(`${item.name} ${visibleChannelDescription(item.description)} ${dmAgent?.handle ?? ""} ${dmAgent?.display_name ?? ""}`);
         })
         .map((item) => {
         const dmAgent = item.kind === "dm" ? data.agents.find((agent) => agent.id === item.dm_agent_id) : null;
@@ -1322,8 +1322,8 @@ function App() {
           id: item.id,
           kind: item.kind === "dm" ? "dm" : "channel",
           title: item.kind === "dm" ? `@${dmAgent?.handle ?? "agent"}` : `#${item.name}`,
-          detail: item.kind === "dm" ? dmAgent?.display_name ?? "direct message" : item.description || "channel",
-          excerpt: item.kind === "dm" ? dmAgent?.description ?? "" : item.description,
+          detail: item.kind === "dm" ? dmAgent?.display_name ?? "direct message" : visibleChannelDescription(item.description) || "channel",
+          excerpt: item.kind === "dm" ? dmAgent?.description ?? "" : visibleChannelDescription(item.description),
           createdAt: null,
           channelId: item.id,
           threadId: null,
@@ -1450,7 +1450,7 @@ function App() {
 
   useEffect(() => {
     setChannelNameDraft(channel?.name ?? "");
-    setChannelDescriptionDraft(channel?.description ?? "");
+    setChannelDescriptionDraft(channel ? visibleChannelDescription(channel.description) : "");
   }, [channel?.id, channel?.name, channel?.description]);
 
   useEffect(() => {
