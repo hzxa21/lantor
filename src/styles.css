@@ -1917,17 +1917,28 @@ body.resizing-column * {
 
 .thread-root {
   grid-row: 1;
-  margin: 8px 12px 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #fff;
+  position: relative;
+  margin: 0;
+  padding: 7px 16px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+.thread-root:hover {
+  transform: none;
+  border-color: transparent;
+  background: rgba(246, 247, 249, 0.92);
 }
 
 .thread-root.system-message {
-  margin: 8px 12px 4px;
-  padding: 0;
+  margin: 0;
+  padding: 4px 16px;
   border: 0;
+  background: transparent;
+}
+
+.thread-root.system-message:hover {
   background: transparent;
 }
 
@@ -1935,7 +1946,7 @@ body.resizing-column * {
   position: relative;
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
-  gap: 10px;
+  gap: 9px;
 }
 
 .thread-message-content {
@@ -4909,8 +4920,8 @@ body.resizing-column * {
   }
 
   .thread-root {
-    margin: 8px 12px 4px;
-    padding: 10px;
+    margin: 0;
+    padding: 8px 12px;
   }
 
   .thread-message-with-avatar {
