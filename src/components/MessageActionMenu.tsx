@@ -1,5 +1,5 @@
 import { Bookmark, Copy, Link, Share2 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 type MessageActionMenuProps = {
   x: number;
@@ -22,8 +22,11 @@ export function MessageActionMenu({
   onToggleSaved,
   onClose,
 }: MessageActionMenuProps) {
+  const openedAtRef = useRef(Date.now());
+
   useEffect(() => {
     function handleClose() {
+      if (Date.now() - openedAtRef.current < 350) return;
       onClose();
     }
 

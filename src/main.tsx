@@ -348,6 +348,12 @@ function App() {
       ? Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, value))
       : DEFAULT_SIDEBAR_WIDTH;
   });
+
+  useEffect(() => {
+    if (!focusedMessageId) return;
+    const timer = window.setTimeout(() => setFocusedMessageId(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [focusedMessageId]);
   const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
   const [dismissedInboxItems, setDismissedInboxItems] = useState<Record<string, string>>({});

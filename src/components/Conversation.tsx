@@ -12,7 +12,7 @@ import {
   Settings,
   Trash2,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
@@ -129,6 +129,7 @@ export function Conversation({
   const [shareMode, setShareMode] = useState(false);
   const [selectedShareIds, setSelectedShareIds] = useState<Set<string>>(() => new Set());
   const composerDragDepthRef = useRef(0);
+  const longPressTimerRef = useRef<number | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowMessagesRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -260,6 +261,23 @@ export function Conversation({
     setShowChannelActions(false);
   }
 
+  function clearLongPress() {
+    if (longPressTimerRef.current === null) return;
+    window.clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = null;
+  }
+
+  function startMessageLongPress(event: ReactPointerEvent<HTMLElement>, message: Message) {
+    if (event.pointerType === "mouse" || shareMode) return;
+    clearLongPress();
+    const x = event.clientX;
+    const y = event.clientY;
+    longPressTimerRef.current = window.setTimeout(() => {
+      setMessageMenu({ x, y, message });
+      longPressTimerRef.current = null;
+    }, 520);
+  }
+
   function toggleShareMessage(message: Message) {
     setSelectedShareIds((current) => {
       const next = new Set(current);
@@ -302,6 +320,8 @@ export function Conversation({
     shouldFollowMessagesRef.current = true;
     scrollMessagesToBottom();
   }, [channel?.id]);
+
+  useEffect(() => clearLongPress, []);
 
   useLayoutEffect(() => {
     if (!shouldFollowMessagesRef.current) return;
@@ -479,6 +499,11 @@ export function Conversation({
                   event.preventDefault();
                   setMessageMenu({ x: event.clientX, y: event.clientY, message });
                 }}
+                onPointerDown={(event) => startMessageLongPress(event, message)}
+                onPointerMove={clearLongPress}
+                onPointerUp={clearLongPress}
+                onPointerCancel={clearLongPress}
+                onPointerLeave={clearLongPress}
               >
                 {shareMode && (
                   <button
@@ -523,6 +548,7 @@ export function Conversation({
                       type="button"
                       className={`message-save-button ${isSaved ? "saved" : ""}`}
                       title={isSaved ? "Unsave message" : "Save message"}
+                      onPointerDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation();
                         onToggleMessageSaved(message, !isSaved);

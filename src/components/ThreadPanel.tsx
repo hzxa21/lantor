@@ -93,6 +93,7 @@ export function ThreadPanel({
   const [shareMode, setShareMode] = useState(false);
   const [selectedShareIds, setSelectedShareIds] = useState<Set<string>>(() => new Set());
   const replyDragDepthRef = useRef(0);
+  const longPressTimerRef = useRef<number | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowThreadRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -247,6 +248,25 @@ export function ThreadPanel({
     element?.scrollIntoView({ block: "center" });
   }, [activeRoot?.id, focusedMessageId, replies.length]);
 
+  useEffect(() => clearLongPress, []);
+
+  function clearLongPress() {
+    if (longPressTimerRef.current === null) return;
+    window.clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = null;
+  }
+
+  function startMessageLongPress(event: ReactPointerEvent<HTMLElement>, message: Message) {
+    if (event.pointerType === "mouse" || shareMode) return;
+    clearLongPress();
+    const x = event.clientX;
+    const y = event.clientY;
+    longPressTimerRef.current = window.setTimeout(() => {
+      setMessageMenu({ x, y, message });
+      longPressTimerRef.current = null;
+    }, 520);
+  }
+
   function toggleShareMessage(message: Message) {
     setSelectedShareIds((current) => {
       const next = new Set(current);
@@ -325,6 +345,13 @@ export function ThreadPanel({
               onClick={() => {
                 if (activeRoot.sender_role !== "system" && shareMode) toggleShareMessage(activeRoot);
               }}
+              onPointerDown={(event) => {
+                if (activeRoot.sender_role !== "system") startMessageLongPress(event, activeRoot);
+              }}
+              onPointerMove={clearLongPress}
+              onPointerUp={clearLongPress}
+              onPointerCancel={clearLongPress}
+              onPointerLeave={clearLongPress}
             >
               {activeRoot.sender_role === "system" ? (
                 <div className="system-message-line">
@@ -370,6 +397,7 @@ export function ThreadPanel({
                         type="button"
                         className={`message-save-button ${rootSaved ? "saved" : ""}`}
                         title={rootSaved ? "Unsave message" : "Save message"}
+                        onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.stopPropagation();
                           onToggleMessageSaved(activeRoot, !rootSaved);
@@ -466,6 +494,11 @@ export function ThreadPanel({
                     event.preventDefault();
                     setMessageMenu({ x: event.clientX, y: event.clientY, message: reply });
                   }}
+                  onPointerDown={(event) => startMessageLongPress(event, reply)}
+                  onPointerMove={clearLongPress}
+                  onPointerUp={clearLongPress}
+                  onPointerCancel={clearLongPress}
+                  onPointerLeave={clearLongPress}
                 >
                   {shareMode && (
                     <button
@@ -504,6 +537,7 @@ export function ThreadPanel({
                         type="button"
                         className={`message-save-button ${replySaved ? "saved" : ""}`}
                         title={replySaved ? "Unsave message" : "Save message"}
+                        onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.stopPropagation();
                           onToggleMessageSaved(reply, !replySaved);

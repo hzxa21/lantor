@@ -872,20 +872,14 @@ button,
   box-shadow: inset 3px 0 var(--accent);
 }
 
-.message-card.saved,
-.thread-root.saved,
-.reply-list article.saved {
-  background: rgba(255, 204, 0, 0.08);
-}
-
 .message-card.share-mode,
 .reply-list article.share-mode {
-  grid-template-columns: 32px 44px minmax(0, 1fr);
+  grid-template-columns: 44px 44px minmax(0, 1fr);
   cursor: pointer;
 }
 
 .thread-message-with-avatar.share-mode {
-  grid-template-columns: 32px 44px minmax(0, 1fr);
+  grid-template-columns: 44px 44px minmax(0, 1fr);
 }
 
 .message-card.share-selected,
@@ -900,7 +894,8 @@ button,
   height: 24px;
   place-items: center;
   align-self: start;
-  margin-top: 7px;
+  justify-self: center;
+  margin-top: 5px;
   border: 1px solid rgba(10, 132, 255, 0.28);
   border-radius: 999px;
   background: #fff;
@@ -4770,7 +4765,7 @@ body.resizing-column * {
   .message-card.share-mode,
   .reply-list article.share-mode,
   .thread-message-with-avatar.share-mode {
-    grid-template-columns: 28px 34px minmax(0, 1fr);
+    grid-template-columns: 34px 34px minmax(0, 1fr);
   }
 
   .message-share-selector {
