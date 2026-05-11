@@ -2,6 +2,10 @@ import type { Message } from "./types";
 
 const COMPACT_FOLLOWUP_WINDOW_MS = 5 * 60 * 1000;
 
+export function isStreamingMessage(message: Message) {
+  return message.delivery_state === "streaming";
+}
+
 export function isCompactFollowupMessage(message: Message, previous: Message | null | undefined) {
   if (!previous) return false;
   if (message.sender_role === "system" || previous.sender_role === "system") return false;

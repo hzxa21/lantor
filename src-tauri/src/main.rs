@@ -4168,6 +4168,7 @@ async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
             c.dm_agent_id,
             count(m.id) filter (
                 where m.created_at > coalesce(r.last_read_at, '-infinity'::timestamptz)
+                  and m.delivery_state <> 'streaming'
             )::integer as unread_count
         from channels c
         left join channel_read_state r on r.channel_id = c.id

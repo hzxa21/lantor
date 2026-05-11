@@ -25,6 +25,7 @@ import { SavedMessagesModal } from "./components/SavedMessagesModal";
 import { SearchModal } from "./components/SearchModal";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadPanel } from "./components/ThreadPanel";
+import { isStreamingMessage } from "./message-grouping";
 import {
   ACTIVE_RUN_STATUSES,
   Agent,
@@ -78,6 +79,10 @@ const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
+
+function uniqueSenderNames(messages: Message[]) {
+  return Array.from(new Set(messages.map((message) => message.sender_name).filter(Boolean)));
+}
 
 type UiBackendEvent =
   | { type: "refresh"; reason?: string }
@@ -803,12 +808,12 @@ function App() {
   useEffect(() => {
     if (!data) return;
     if (!knownMessageIdsRef.current) {
-      knownMessageIdsRef.current = new Set(data.messages.map((message) => message.id));
+      knownMessageIdsRef.current = new Set(data.messages.filter((message) => !isStreamingMessage(message)).map((message) => message.id));
       return;
     }
 
     const known = knownMessageIdsRef.current;
-    const newMessages = data.messages.filter((message) => !known.has(message.id));
+    const newMessages = data.messages.filter((message) => !isStreamingMessage(message) && !known.has(message.id));
     if (newMessages.length === 0) return;
     newMessages.forEach((message) => known.add(message.id));
 
@@ -1022,43 +1027,61 @@ function App() {
     showThread,
   ]);
 
+  const visibleMessages = useMemo(() => {
+    if (!data) return [];
+    return data.messages.filter((message) => !isStreamingMessage(message));
+  }, [data?.messages]);
+
+  const streamingMessages = useMemo(() => {
+    if (!data) return [];
+    return data.messages.filter(isStreamingMessage);
+  }, [data?.messages]);
+
   const rootMessages = useMemo(() => {
-    if (!data || !channel) return [];
-    return data.messages.filter((m) => m.channel_id === channel.id && !m.thread_root_id);
-  }, [data, channel]);
+    if (!channel) return [];
+    return visibleMessages.filter((m) => m.channel_id === channel.id && !m.thread_root_id);
+  }, [visibleMessages, channel]);
 
   const activeRoot = activeThreadId ? rootMessages.find((m) => m.id === activeThreadId) ?? null : null;
 
   const replies = useMemo(() => {
-    if (!data || !activeRoot) return [];
-    return data.messages.filter((m) => m.thread_root_id === activeRoot.id);
-  }, [data, activeRoot]);
+    if (!activeRoot) return [];
+    return visibleMessages.filter((m) => m.thread_root_id === activeRoot.id);
+  }, [visibleMessages, activeRoot]);
+
+  const channelRespondingAgents = useMemo(() => {
+    if (!channel) return [];
+    return uniqueSenderNames(streamingMessages.filter((message) => message.channel_id === channel.id && !message.thread_root_id));
+  }, [streamingMessages, channel]);
+
+  const threadRespondingAgents = useMemo(() => {
+    if (!activeRoot) return [];
+    return uniqueSenderNames(streamingMessages.filter((message) => message.thread_root_id === activeRoot.id));
+  }, [streamingMessages, activeRoot]);
 
   const threadReplyCounts = useMemo(() => {
-    if (!data) return {};
-    return data.messages.reduce<Record<string, number>>((counts, message) => {
+    return visibleMessages.reduce<Record<string, number>>((counts, message) => {
       if (!message.thread_root_id) return counts;
       counts[message.thread_root_id] = (counts[message.thread_root_id] ?? 0) + 1;
       return counts;
     }, {});
-  }, [data?.messages]);
+  }, [visibleMessages]);
 
   const allThreadRootMessages = useMemo(() => {
-    if (!data) return [];
     const latestByRoot = new Map<string, number>();
-    for (const message of data.messages) {
+    for (const message of visibleMessages) {
       if (!message.thread_root_id) continue;
       const timestamp = new Date(message.created_at).getTime();
       latestByRoot.set(message.thread_root_id, Math.max(latestByRoot.get(message.thread_root_id) ?? 0, timestamp));
     }
-    return data.messages
+    return visibleMessages
       .filter((message) =>
         !message.thread_root_id &&
         latestByRoot.has(message.id) &&
         (message.thread_followed || (threadUnreadCounts[message.id] ?? 0) > 0) &&
         !locallyUnfollowedThreadIds.has(message.id))
       .sort((left, right) => (latestByRoot.get(right.id) ?? 0) - (latestByRoot.get(left.id) ?? 0));
-  }, [data?.messages, locallyUnfollowedThreadIds, threadUnreadCounts]);
+  }, [visibleMessages, locallyUnfollowedThreadIds, threadUnreadCounts]);
 
   const inboxItems = useMemo(() => {
     if (!data) return [];
@@ -1067,7 +1090,7 @@ function App() {
     const latestByChannel = new Map<string, Message>();
     const latestReplyByRoot = new Map<string, Message>();
 
-    for (const message of data.messages) {
+    for (const message of visibleMessages) {
       const currentChannelLatest = latestByChannel.get(message.channel_id);
       if (!currentChannelLatest || new Date(message.created_at) > new Date(currentChannelLatest.created_at)) {
         latestByChannel.set(message.channel_id, message);
@@ -1139,7 +1162,7 @@ function App() {
       });
     }
 
-    data.messages
+    visibleMessages
       .filter((message) => message.sender_role !== "owner" && messageMentionsOwner(message))
       .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
       .slice(0, 24)
@@ -1230,7 +1253,7 @@ function App() {
         return new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime();
       })
       .slice(0, 120);
-  }, [allThreadRootMessages, channelAlertIds, data, dismissedInboxItems, threadReplyCounts, threadUnreadCounts]);
+  }, [allThreadRootMessages, channelAlertIds, data, dismissedInboxItems, threadReplyCounts, threadUnreadCounts, visibleMessages]);
 
   const inboxUnreadCount = useMemo(() => {
     return inboxItems.filter((item) => item.unread).length;
@@ -1267,9 +1290,9 @@ function App() {
   }, [data, activeRoot]);
 
   const activeChannelMessageCount = useMemo(() => {
-    if (!data || !activeChannelId) return 0;
-    return data.messages.filter((message) => message.channel_id === activeChannelId).length;
-  }, [data?.messages, activeChannelId]);
+    if (!activeChannelId) return 0;
+    return visibleMessages.filter((message) => message.channel_id === activeChannelId).length;
+  }, [visibleMessages, activeChannelId]);
 
   const activeRunFor = useCallback((agentId: string) => {
     return data?.agent_runs.find((run) => run.agent_id === agentId && ACTIVE_RUN_STATUSES.has(run.status)) ?? null;
@@ -1386,7 +1409,7 @@ function App() {
     }
 
     if (searchScopeAllows(searchScope, "messages")) {
-      results.push(...data.messages
+      results.push(...visibleMessages
         .filter((item) =>
           matchesSearchTime(item.created_at, searchTimeRange) &&
           includes(`${item.sender_name} ${item.body} ${channelLabel(item.channel_id)}`))
@@ -1477,7 +1500,7 @@ function App() {
     }
 
     return results.slice(0, 80);
-  }, [data, searchQuery, searchScope, searchTimeRange]);
+  }, [data, searchQuery, searchScope, searchTimeRange, visibleMessages]);
 
   function taskForMessage(messageId: string) {
     return data?.tasks.find((task) => task.message_id === messageId) ?? null;
@@ -1567,11 +1590,11 @@ function App() {
       setActiveTab("chat");
     }
     const repliedRootIds = new Set(
-      data?.messages
+      visibleMessages
         .filter((message) => message.channel_id === channelId && message.thread_root_id)
-        .map((message) => message.thread_root_id) ?? [],
+        .map((message) => message.thread_root_id),
     );
-    const first = data?.messages.find((m) => m.channel_id === channelId && !m.thread_root_id && repliedRootIds.has(m.id));
+    const first = visibleMessages.find((m) => m.channel_id === channelId && !m.thread_root_id && repliedRootIds.has(m.id));
     openThread(first?.id ?? null);
   }
 
@@ -2218,6 +2241,7 @@ function App() {
         activeTab={activeTab}
         activeRoot={activeRoot}
         rootMessages={rootMessages}
+        respondingAgents={channelRespondingAgents}
         threadReplyCounts={threadReplyCounts}
         visibleTasks={visibleTasks}
         draft={draft}
@@ -2286,6 +2310,7 @@ function App() {
           activeRoot={activeRoot}
           activeTask={activeTask}
           replies={replies}
+          respondingAgents={threadRespondingAgents}
           unreadCount={activeThreadId ? threadUnreadCounts[activeThreadId] ?? 0 : 0}
           taskTitleDrafts={taskTitleDrafts}
           replyDraft={replyDraft}

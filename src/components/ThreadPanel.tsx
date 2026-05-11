@@ -13,6 +13,7 @@ import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { RespondingIndicator } from "./RespondingIndicator";
 
 type ThreadPanelProps = {
   channel: Channel | null;
@@ -20,6 +21,7 @@ type ThreadPanelProps = {
   activeRoot: Message | null;
   activeTask: Task | null;
   replies: Message[];
+  respondingAgents: string[];
   unreadCount: number;
   taskTitleDrafts: Record<string, string>;
   replyDraft: string;
@@ -66,6 +68,7 @@ export function ThreadPanel({
   activeRoot,
   activeTask,
   replies,
+  respondingAgents,
   unreadCount,
   taskTitleDrafts,
   replyDraft,
@@ -234,7 +237,7 @@ export function ThreadPanel({
   useLayoutEffect(() => {
     if (!shouldFollowThreadRef.current) return;
     scrollThreadToBottom();
-  }, [activeRoot?.id, activeRoot?.updated_at, replies.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
+  }, [activeRoot?.id, activeRoot?.updated_at, replies.length, respondingAgents.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
 
   useEffect(() => {
     if (!focusedMessageId) return;
@@ -531,6 +534,7 @@ export function ThreadPanel({
               );
             })}
           </section>
+          <RespondingIndicator names={respondingAgents} />
           {messageMenu && (
             <MessageActionMenu
               x={messageMenu.x}

@@ -27,6 +27,7 @@ import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { RespondingIndicator } from "./RespondingIndicator";
 
 type ConversationProps = {
   channel: Channel | null;
@@ -35,6 +36,7 @@ type ConversationProps = {
   activeTab: "chat" | "tasks";
   activeRoot: Message | null;
   rootMessages: Message[];
+  respondingAgents: string[];
   threadReplyCounts: Record<string, number>;
   visibleTasks: Task[];
   draft: string;
@@ -92,6 +94,7 @@ export function Conversation({
   activeTab,
   activeRoot,
   rootMessages,
+  respondingAgents,
   threadReplyCounts,
   visibleTasks,
   draft,
@@ -294,7 +297,7 @@ export function Conversation({
   useLayoutEffect(() => {
     if (!shouldFollowMessagesRef.current) return;
     scrollMessagesToBottom();
-  }, [activeTab, channel?.id, rootMessages.length, lastRootMessage?.id, lastRootMessage?.updated_at, lastRootMessage?.delivery_state]);
+  }, [activeTab, channel?.id, rootMessages.length, respondingAgents.length, lastRootMessage?.id, lastRootMessage?.updated_at, lastRootMessage?.delivery_state]);
 
   useEffect(() => {
     if (!focusedMessageId) return;
@@ -532,6 +535,7 @@ export function Conversation({
               </article>
             );
           })}
+          <RespondingIndicator names={respondingAgents} />
           {messageMenu && (
             <MessageActionMenu
               x={messageMenu.x}
