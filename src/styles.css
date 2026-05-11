@@ -536,6 +536,35 @@ button,
     0 10px 24px rgba(20, 22, 28, 0.16);
 }
 
+.agent-avatar::after {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  z-index: 2;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #8e8e93;
+  box-shadow:
+    0 0 0 2px var(--avatar-bg),
+    0 1px 4px rgba(20, 22, 28, 0.22);
+  content: "";
+}
+
+.agent-avatar.status-idle::after {
+  background: #34c759;
+}
+
+.agent-avatar.status-queued::after,
+.agent-avatar.status-running::after,
+.agent-avatar.status-stopping::after {
+  background: #ffb020;
+}
+
+.agent-avatar.status-error::after {
+  background: #ff3b30;
+}
+
 .agent-avatar-pixels {
   position: absolute;
   inset: var(--avatar-pixel-inset);
@@ -574,6 +603,16 @@ button,
   --avatar-pixel-inset: 10px;
 }
 
+.agent-avatar-lg::after {
+  right: 4px;
+  bottom: 4px;
+  width: 13px;
+  height: 13px;
+  box-shadow:
+    0 0 0 3px var(--avatar-bg),
+    0 1px 5px rgba(20, 22, 28, 0.24);
+}
+
 .agent-avatar-sm {
   width: 30px;
   height: 30px;
@@ -582,6 +621,13 @@ button,
   --avatar-cell-gap: 1px;
   --avatar-cell-radius: 1px;
   --avatar-pixel-inset: 6px;
+}
+
+.agent-avatar-sm::after {
+  right: 1px;
+  bottom: 1px;
+  width: 8px;
+  height: 8px;
 }
 
 .profile strong {
