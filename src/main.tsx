@@ -21,6 +21,7 @@ import { ConfirmModal } from "./components/ConfirmModal";
 import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { InboxModal } from "./components/InboxModal";
+import { SavedMessagesModal } from "./components/SavedMessagesModal";
 import { SearchModal } from "./components/SearchModal";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadPanel } from "./components/ThreadPanel";
@@ -319,6 +320,7 @@ function App() {
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showInboxModal, setShowInboxModal] = useState(false);
+  const [showSavedModal, setShowSavedModal] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
@@ -797,6 +799,7 @@ function App() {
         showCreateAgentModal ||
         showSearchModal ||
         showInboxModal ||
+        showSavedModal ||
         Boolean(editingAgentId);
       if (event.key === "Escape" && !modalOpen && !isTextInput(event.target)) {
         if (selectedAgentId) {
@@ -819,6 +822,7 @@ function App() {
     showCreateAgentModal,
     showCreateChannelModal,
     showInboxModal,
+    showSavedModal,
     showSearchModal,
     showThread,
   ]);
@@ -1726,6 +1730,7 @@ function App() {
     revealThread(item.thread_root_id ?? item.message_id);
     setFocusedMessageId(item.message_id);
     setActiveTab("chat");
+    setShowSavedModal(false);
   }
 
   function openInboxItem(item: InboxItem) {
@@ -1882,6 +1887,10 @@ function App() {
     await mutate("set_message_saved", { messageId: message.id, saved });
   }
 
+  async function unsaveSavedMessage(item: SavedMessage) {
+    await mutate("set_message_saved", { messageId: item.message_id, saved: false });
+  }
+
   async function installSupervisorService() {
     await mutate("install_supervisor_service");
   }
@@ -1915,9 +1924,9 @@ function App() {
           setShowMobileSidebar(false);
           setShowInboxModal(true);
         }}
-        openSavedMessage={(item) => {
+        openSaved={() => {
           setShowMobileSidebar(false);
-          openSavedMessage(item);
+          setShowSavedModal(true);
         }}
         openCreateChannelModal={() => {
           setShowMobileSidebar(false);
@@ -1963,6 +1972,14 @@ function App() {
         onMarkItemRead={markInboxItemRead}
         onMarkAllRead={markAllInboxRead}
         onClose={() => setShowInboxModal(false)}
+      />
+
+      <SavedMessagesModal
+        open={showSavedModal}
+        items={data.saved_messages}
+        onOpenItem={openSavedMessage}
+        onUnsaveItem={unsaveSavedMessage}
+        onClose={() => setShowSavedModal(false)}
       />
 
       <Conversation

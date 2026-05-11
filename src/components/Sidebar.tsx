@@ -13,10 +13,8 @@ import {
   Agent,
   Bootstrap,
   Channel,
-  SavedMessage,
 } from "../types";
 import { AgentAvatar } from "./AgentAvatar";
-import { firstLines, formatTime } from "../ui-utils";
 
 type SidebarProps = {
   data: Bootstrap;
@@ -25,7 +23,7 @@ type SidebarProps = {
   inboxUnreadCount: number;
   openSearch: () => void;
   openInbox: () => void;
-  openSavedMessage: (item: SavedMessage) => void;
+  openSaved: () => void;
   openCreateChannelModal: () => void;
   selectChannel: (channelId: string) => void;
   openCreateAgentModal: () => void;
@@ -41,7 +39,7 @@ export function Sidebar({
   inboxUnreadCount,
   openSearch,
   openInbox,
-  openSavedMessage,
+  openSaved,
   openCreateChannelModal,
   selectChannel,
   openCreateAgentModal,
@@ -49,10 +47,10 @@ export function Sidebar({
   onMobileClose,
   onResizeStart,
 }: SidebarProps) {
-  const [collapsedSections, setCollapsedSections] = useState({ saved: false, channels: false, dms: false });
+  const [collapsedSections, setCollapsedSections] = useState({ channels: false, dms: false });
   const normalChannels = data.channels.filter((item) => item.kind !== "dm");
   const dmChannels = data.channels.filter((item) => item.kind === "dm");
-  const toggleSection = (section: "saved" | "channels" | "dms") => {
+  const toggleSection = (section: "channels" | "dms") => {
     setCollapsedSections((current) => ({ ...current, [section]: !current[section] }));
   };
 
@@ -89,42 +87,15 @@ export function Sidebar({
           <span>Inbox</span>
           {inboxUnreadCount > 0 && <strong>{inboxUnreadCount}</strong>}
         </button>
+        <button
+          className={`sidebar-nav-trigger ${data.saved_messages.length ? "has-unread" : ""}`}
+          onClick={openSaved}
+        >
+          <Bookmark size={18} />
+          <span>Saved</span>
+          {data.saved_messages.length > 0 && <strong>{data.saved_messages.length}</strong>}
+        </button>
       </section>
-
-      {data.saved_messages.length > 0 && (
-        <section className={`saved-list ${collapsedSections.saved ? "collapsed" : ""}`}>
-          <div className="section-title">
-            <div className="section-label">
-              <button
-                className={`section-collapse ${collapsedSections.saved ? "collapsed" : ""}`}
-                onClick={() => toggleSection("saved")}
-                aria-expanded={!collapsedSections.saved}
-                title={collapsedSections.saved ? "Show saved messages" : "Hide saved messages"}
-              >
-                <ChevronDown size={14} />
-              </button>
-              <span>Saved</span>
-            </div>
-          </div>
-          {!collapsedSections.saved && data.saved_messages.slice(0, 8).map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className="saved-message"
-              title={item.body}
-              onClick={() => openSavedMessage(item)}
-            >
-              <Bookmark size={15} />
-              <div>
-                <strong>{firstLines(item.body, 1) || "Saved message"}</strong>
-                <span>
-                  #{item.channel_name} · {item.thread_root_id ? "thread" : "channel"} · {formatTime(item.message_created_at)}
-                </span>
-              </div>
-            </button>
-          ))}
-        </section>
-      )}
 
       <section className={`channel-block ${collapsedSections.channels ? "collapsed" : ""}`}>
         <div className="section-title">

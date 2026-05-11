@@ -237,8 +237,7 @@ button,
 
 .quick-actions button:hover,
 .channel:hover,
-.dm:hover,
-.saved-message:hover {
+.dm:hover {
   background: rgba(255, 255, 255, 0.36);
 }
 
@@ -257,17 +256,11 @@ button,
   font-size: 13px;
 }
 
-.saved-list,
 .channel-block,
 .dm-list {
   min-height: 0;
   overflow: auto;
   padding: 8px 18px;
-}
-
-.saved-list {
-  flex: 0 0 auto;
-  max-height: min(28vh, 300px);
 }
 
 .channel-block {
@@ -280,7 +273,6 @@ button,
   border-top: 1px solid rgba(0, 0, 0, 0.05);
 }
 
-.saved-list.collapsed,
 .channel-block.collapsed,
 .dm-list.collapsed {
   flex: 0 0 auto;
@@ -368,48 +360,6 @@ button,
 .channel.selected strong {
   background: rgba(255, 255, 255, 0.2);
   color: #fff;
-}
-
-.saved-message {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  width: 100%;
-  align-items: start;
-  gap: 9px;
-  padding: 9px 10px;
-  border-radius: 14px;
-  text-align: left;
-}
-
-.saved-message svg {
-  margin-top: 2px;
-  color: #b27400;
-  fill: rgba(255, 204, 0, 0.2);
-}
-
-.saved-message div {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.saved-message strong,
-.saved-message span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.saved-message strong {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.saved-message span {
-  color: currentColor;
-  font-size: 11px;
-  opacity: 0.58;
 }
 
 .dm-row {
