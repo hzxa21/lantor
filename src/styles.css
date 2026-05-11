@@ -4286,13 +4286,13 @@ body.resizing-column * {
   #root {
     width: 100%;
     min-width: 0;
-    min-height: var(--localslock-mobile-viewport-height, 100dvh);
+    min-height: 100dvh;
     overflow: hidden;
   }
 
   body {
     min-width: 0;
-    min-height: var(--localslock-mobile-viewport-height, 100dvh);
+    min-height: 100dvh;
   }
 
   .app,
@@ -4300,7 +4300,7 @@ body.resizing-column * {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
     width: 100vw;
-    height: var(--localslock-mobile-viewport-height, 100dvh);
+    height: 100dvh;
     min-width: 0;
     overflow: hidden;
   }
@@ -4311,7 +4311,7 @@ body.resizing-column * {
     z-index: 52;
     width: min(88vw, 380px);
     max-width: 100vw;
-    height: var(--localslock-mobile-viewport-height, 100dvh);
+    height: 100dvh;
     min-height: 0;
     border-right: 1px solid var(--line);
     border-bottom: 0;
@@ -4413,7 +4413,7 @@ body.resizing-column * {
 
   .conversation {
     grid-template-rows: auto auto minmax(0, 1fr) auto;
-    height: var(--localslock-mobile-viewport-height, 100dvh);
+    height: 100dvh;
     min-height: 0;
     border-right: 0;
   }
@@ -4529,13 +4529,6 @@ body.resizing-column * {
     padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
   }
 
-  .app-toast {
-    right: 12px;
-    bottom: calc(12px + env(safe-area-inset-bottom));
-    left: 12px;
-    max-width: none;
-  }
-
   .composer textarea,
   .reply-composer textarea {
     min-height: 52px;
@@ -4583,7 +4576,7 @@ body.resizing-column * {
     inset: 0;
     z-index: 30;
     width: 100vw;
-    height: var(--localslock-mobile-viewport-height, 100dvh);
+    height: 100dvh;
     border-left: 0;
     box-shadow: none;
   }
@@ -4646,8 +4639,8 @@ body.resizing-column * {
   .reminder-panel,
   .thread-browser-panel {
     width: 100vw;
-    max-height: var(--localslock-mobile-viewport-height, 100dvh);
-    height: var(--localslock-mobile-viewport-height, 100dvh);
+    max-height: 100dvh;
+    height: 100dvh;
     border: 0;
     border-radius: 0;
     box-shadow: none;
