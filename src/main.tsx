@@ -239,6 +239,37 @@ function draftAttachmentFromFile(file: File): DraftAttachment {
   };
 }
 
+type ComposerDraftState = {
+  text: string;
+  attachments: DraftAttachment[];
+};
+
+const EMPTY_COMPOSER_DRAFT: ComposerDraftState = {
+  text: "",
+  attachments: [],
+};
+
+function isEmptyComposerDraft(draft: ComposerDraftState) {
+  return draft.text.length === 0 && draft.attachments.length === 0;
+}
+
+function updateComposerDraftRecord(
+  current: Record<string, ComposerDraftState>,
+  key: string | null | undefined,
+  updater: (draft: ComposerDraftState) => ComposerDraftState,
+) {
+  if (!key) return current;
+  const previous = current[key] ?? EMPTY_COMPOSER_DRAFT;
+  const nextDraft = updater(previous);
+  const next = { ...current };
+  if (isEmptyComposerDraft(nextDraft)) {
+    delete next[key];
+  } else {
+    next[key] = nextDraft;
+  }
+  return next;
+}
+
 async function attachmentUploads(attachments: DraftAttachment[]) {
   return Promise.all(attachments.map(async (attachment) => {
     const buffer = await attachment.file.arrayBuffer();
@@ -339,10 +370,8 @@ function App() {
   const [activeChannelId, setActiveChannelId] = useState<string>("");
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
-  const [draft, setDraft] = useState("");
-  const [replyDraft, setReplyDraft] = useState("");
-  const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
-  const [replyAttachments, setReplyAttachments] = useState<DraftAttachment[]>([]);
+  const [rootComposerDrafts, setRootComposerDrafts] = useState<Record<string, ComposerDraftState>>({});
+  const [replyComposerDrafts, setReplyComposerDrafts] = useState<Record<string, ComposerDraftState>>({});
   const [taskDraft, setTaskDraft] = useState("");
   const [taskTitleDrafts, setTaskTitleDrafts] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState("");
@@ -389,6 +418,12 @@ function App() {
       ? Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, value))
       : DEFAULT_SIDEBAR_WIDTH;
   });
+  const rootComposerDraft = activeChannelId ? rootComposerDrafts[activeChannelId] ?? EMPTY_COMPOSER_DRAFT : EMPTY_COMPOSER_DRAFT;
+  const replyComposerDraft = activeThreadId ? replyComposerDrafts[activeThreadId] ?? EMPTY_COMPOSER_DRAFT : EMPTY_COMPOSER_DRAFT;
+  const draft = rootComposerDraft.text;
+  const draftAttachments = rootComposerDraft.attachments;
+  const replyDraft = replyComposerDraft.text;
+  const replyAttachments = replyComposerDraft.attachments;
 
   useEffect(() => {
     if (!focusedMessageId) return;
@@ -1507,14 +1542,26 @@ function App() {
     });
   }
 
+  function updateRootComposerDraft(channelId: string | null | undefined, updater: (draft: ComposerDraftState) => ComposerDraftState) {
+    setRootComposerDrafts((current) => updateComposerDraftRecord(current, channelId, updater));
+  }
+
+  function updateReplyComposerDraft(threadId: string | null | undefined, updater: (draft: ComposerDraftState) => ComposerDraftState) {
+    setReplyComposerDrafts((current) => updateComposerDraftRecord(current, threadId, updater));
+  }
+
+  function setDraft(value: string) {
+    updateRootComposerDraft(activeChannelId, (current) => ({ ...current, text: value }));
+  }
+
+  function setReplyDraft(value: string) {
+    updateReplyComposerDraft(activeThreadId, (current) => ({ ...current, text: value }));
+  }
+
   function selectChannel(channelId: string) {
     const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
     setActiveChannelId(channelId);
     setShowMobileSidebar(false);
-    setDraft("");
-    setReplyDraft("");
-    setDraftAttachments([]);
-    setReplyAttachments([]);
     setTaskDraft("");
     if (nextChannel?.kind === "dm") {
       setActiveTab("chat");
@@ -1614,9 +1661,15 @@ function App() {
       .map(draftAttachmentFromFile);
     if (nextAttachments.length === 0) return;
     if (target === "root") {
-      setDraftAttachments((current) => [...current, ...nextAttachments]);
+      updateRootComposerDraft(activeChannelId, (current) => ({
+        ...current,
+        attachments: [...current.attachments, ...nextAttachments],
+      }));
     } else {
-      setReplyAttachments((current) => [...current, ...nextAttachments]);
+      updateReplyComposerDraft(activeThreadId, (current) => ({
+        ...current,
+        attachments: [...current.attachments, ...nextAttachments],
+      }));
     }
   }
 
@@ -1772,8 +1825,7 @@ function App() {
     const optimisticId = attachments.length === 0
       ? addOptimisticOwnerMessage(channel.id, null, body, sendAsTask)
       : null;
-    setDraft("");
-    setDraftAttachments([]);
+    updateRootComposerDraft(channel.id, () => EMPTY_COMPOSER_DRAFT);
     try {
       await apiInvoke("send_message", {
         channelId: channel.id,
@@ -1785,8 +1837,7 @@ function App() {
       await refresh();
     } catch (err) {
       if (optimisticId) removeOptimisticMessage(optimisticId);
-      setDraft(body);
-      setDraftAttachments(attachments);
+      updateRootComposerDraft(channel.id, () => ({ text: body, attachments }));
       const message = errorMessage(err, "Failed to send message");
       setAppError(message);
       console.error(err);
@@ -1816,10 +1867,6 @@ function App() {
       setActiveChannelId(channelId);
       setActiveThreadId(null);
       setActiveTab("chat");
-      setDraft("");
-      setReplyDraft("");
-      setDraftAttachments([]);
-      setReplyAttachments([]);
       setTaskDraft("");
       setSelectedAgentId(null);
     } catch (err) {
@@ -1836,8 +1883,7 @@ function App() {
     const optimisticId = attachments.length === 0
       ? addOptimisticOwnerMessage(channel.id, activeRoot.id, body, false)
       : null;
-    setReplyDraft("");
-    setReplyAttachments([]);
+    updateReplyComposerDraft(activeRoot.id, () => EMPTY_COMPOSER_DRAFT);
     try {
       await apiInvoke("send_message", {
         channelId: channel.id,
@@ -1849,8 +1895,7 @@ function App() {
       await refresh();
     } catch (err) {
       if (optimisticId) removeOptimisticMessage(optimisticId);
-      setReplyDraft(body);
-      setReplyAttachments(attachments);
+      updateReplyComposerDraft(activeRoot.id, () => ({ text: body, attachments }));
       const message = errorMessage(err, "Failed to send reply");
       setAppError(message);
       console.error(err);
@@ -2195,7 +2240,10 @@ function App() {
         createTaskFromBoard={createTaskFromBoard}
         setDraft={setDraft}
         addDraftAttachments={(files) => appendDraftAttachments(files, "root")}
-        removeDraftAttachment={(id) => setDraftAttachments((current) => current.filter((item) => item.id !== id))}
+        removeDraftAttachment={(id) => updateRootComposerDraft(activeChannelId, (current) => ({
+          ...current,
+          attachments: current.attachments.filter((item) => item.id !== id),
+        }))}
         sendRootMessage={sendRootMessage}
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openArtifact={openArtifact}
@@ -2249,7 +2297,10 @@ function App() {
           updateTaskStatus={updateTaskStatus}
           setReplyDraft={setReplyDraft}
           addReplyAttachments={(files) => appendDraftAttachments(files, "reply")}
-          removeReplyAttachment={(id) => setReplyAttachments((current) => current.filter((item) => item.id !== id))}
+          removeReplyAttachment={(id) => updateReplyComposerDraft(activeThreadId, (current) => ({
+            ...current,
+            attachments: current.attachments.filter((item) => item.id !== id),
+          }))}
           sendReply={sendReply}
           openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
           openArtifact={openArtifact}
