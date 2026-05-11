@@ -1961,10 +1961,6 @@ function App() {
           setShowMobileSidebar(false);
           setShowCreateChannelModal(true);
         }}
-        openChannelSettingsModal={() => {
-          setShowMobileSidebar(false);
-          setShowChannelSettingsModal(true);
-        }}
         selectChannel={selectChannel}
         openCreateAgentModal={() => {
           setShowMobileSidebar(false);
@@ -2046,6 +2042,8 @@ function App() {
         setActiveTab={setActiveTab}
         setActiveThreadId={revealThread}
         openMobileSidebar={() => setShowMobileSidebar(true)}
+        openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
+        deleteChannel={deleteChannel}
         openChannelAgentsModal={() => setShowChannelAgentsModal(true)}
         taskForMessage={taskForMessage}
         setTaskTitleDraft={setTaskTitleDraft}

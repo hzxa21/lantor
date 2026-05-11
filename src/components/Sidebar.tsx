@@ -6,7 +6,6 @@ import {
   Inbox,
   Plus,
   Search,
-  Settings,
   X,
 } from "lucide-react";
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
@@ -26,7 +25,6 @@ type SidebarProps = {
   openInbox: () => void;
   openReminders: () => void;
   openCreateChannelModal: () => void;
-  openChannelSettingsModal: () => void;
   selectChannel: (channelId: string) => void;
   openCreateAgentModal: () => void;
   openDmWithAgent: (agent: Agent) => void;
@@ -43,7 +41,6 @@ export function Sidebar({
   openInbox,
   openReminders,
   openCreateChannelModal,
-  openChannelSettingsModal,
   selectChannel,
   openCreateAgentModal,
   openDmWithAgent,
@@ -115,9 +112,6 @@ export function Sidebar({
             <span>Channels</span>
           </div>
           <div className="section-actions">
-            {channel?.kind !== "dm" && channel && (
-              <button onClick={openChannelSettingsModal} title="Channel settings"><Settings size={16} /></button>
-            )}
             <button onClick={openCreateChannelModal} title="Create channel"><Plus size={18} /></button>
           </div>
         </div>

@@ -7,8 +7,10 @@ import {
   Paperclip,
   Plus,
   Send,
+  Settings,
+  Trash2,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
@@ -35,6 +37,8 @@ type ConversationProps = {
   setActiveTab: (tab: "chat" | "tasks") => void;
   setActiveThreadId: (threadId: string | null) => void;
   openMobileSidebar: () => void;
+  openChannelSettingsModal: () => void;
+  deleteChannel: () => void;
   openChannelAgentsModal: () => void;
   taskForMessage: (messageId: string) => Task | null;
   setTaskTitleDraft: (task: Task, title: string) => void;
@@ -80,6 +84,8 @@ export function Conversation({
   setActiveTab,
   setActiveThreadId,
   openMobileSidebar,
+  openChannelSettingsModal,
+  deleteChannel,
   openChannelAgentsModal,
   taskForMessage,
   setTaskTitleDraft,
@@ -98,6 +104,7 @@ export function Conversation({
 }: ConversationProps) {
   const [sendAsTask, setSendAsTask] = useState(false);
   const [isComposerDragOver, setIsComposerDragOver] = useState(false);
+  const [showChannelActions, setShowChannelActions] = useState(false);
   const composerDragDepthRef = useRef(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowMessagesRef = useRef(true);
@@ -212,7 +219,13 @@ export function Conversation({
   useEffect(() => {
     composerDragDepthRef.current = 0;
     setIsComposerDragOver(false);
+    setShowChannelActions(false);
   }, [channel?.id]);
+
+  function handleChannelActionsBlur(event: FocusEvent<HTMLDivElement>) {
+    if (event.currentTarget.contains(event.relatedTarget)) return;
+    setShowChannelActions(false);
+  }
 
   useLayoutEffect(() => {
     shouldFollowMessagesRef.current = true;
@@ -278,6 +291,45 @@ export function Conversation({
             )}
           </div>
         </div>
+        {channel && !isDm && (
+          <div className="channel-header-actions" onBlur={handleChannelActionsBlur}>
+            <button
+              type="button"
+              className={`channel-action-trigger ${showChannelActions ? "active" : ""}`}
+              title="Channel actions"
+              aria-label="Channel actions"
+              aria-expanded={showChannelActions}
+              onClick={() => setShowChannelActions((current) => !current)}
+            >
+              <Settings size={18} />
+            </button>
+            {showChannelActions && (
+              <div className="channel-actions-menu">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowChannelActions(false);
+                    openChannelSettingsModal();
+                  }}
+                >
+                  <Settings size={15} />
+                  <span>Channel settings</span>
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => {
+                    setShowChannelActions(false);
+                    deleteChannel();
+                  }}
+                >
+                  <Trash2 size={15} />
+                  <span>Delete channel</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </header>
 
       <div className="tabs">
