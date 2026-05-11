@@ -11,8 +11,7 @@ import {
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { apiInvoke, isTauriRuntime, subscribeBackendEvents } from "./apiClient";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
 import type { AgentPerformance } from "./components/AgentDetailDrawer";
 import { AgentFormModal } from "./components/AgentFormModal";
@@ -75,7 +74,6 @@ const DEFAULT_SIDEBAR_WIDTH = 292;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 460;
 const MIN_CONVERSATION_WIDTH = 360;
-const UI_REFRESH_EVENT = "localslock://refresh";
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
@@ -365,9 +363,13 @@ function App() {
   const messageDeltaFlushTimerRef = useRef<number | null>(null);
 
   async function refreshRuntimeChecks() {
+    if (!isTauriRuntime()) {
+      setRuntimeChecks({});
+      return;
+    }
     const entries = await Promise.all(
       Object.keys(RUNTIME_PRESETS).map(async (runtime) => {
-        const check = await invoke<RuntimeCheck>("check_runtime", { runtime });
+        const check = await apiInvoke<RuntimeCheck>("check_runtime", { runtime });
         return [runtime, check] as const;
       }),
     );
@@ -375,7 +377,7 @@ function App() {
   }
 
   async function refresh() {
-    const next = await invoke<Bootstrap>("bootstrap");
+    const next = await apiInvoke<Bootstrap>("bootstrap");
     setData(next);
     setActiveChannelId((prev) => {
       if (next.channels.some((item) => item.id === prev)) return prev;
@@ -574,7 +576,7 @@ function App() {
 
   async function openArtifact(artifact: Artifact) {
     try {
-      const fullArtifact = await invoke<Artifact>("artifact_read", { artifactId: artifact.id });
+      const fullArtifact = await apiInvoke<Artifact>("artifact_read", { artifactId: artifact.id });
       const blob = new Blob([fullArtifact.content], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank", "noopener,noreferrer");
@@ -635,7 +637,7 @@ function App() {
 
   async function mutate(command: string, args: Record<string, unknown> = {}) {
     try {
-      await invoke(command, args);
+      await apiInvoke(command, args);
       await refresh();
     } catch (err) {
       const message = errorMessage(err, `${command} failed`);
@@ -675,10 +677,8 @@ function App() {
   }, []);
 
   useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
-    listen<string>(UI_REFRESH_EVENT, (event) => {
-      handleBackendEvent(event.payload);
-    })
+    let unlisten: (() => void) | null = null;
+    subscribeBackendEvents(handleBackendEvent)
       .then((handler) => {
         unlisten = handler;
       })
@@ -1300,7 +1300,7 @@ function App() {
 
   useEffect(() => {
     if (!activeChannelId) return;
-    invoke("mark_channel_read", { channelId: activeChannelId }).catch((err) => console.error(err));
+    apiInvoke("mark_channel_read", { channelId: activeChannelId }).catch((err) => console.error(err));
   }, [activeChannelId, activeChannelMessageCount]);
 
   async function createChannel() {
@@ -1456,7 +1456,7 @@ function App() {
       launchCommand: buildPresetCommand({ ...agentDraft, handle, displayName: agentDraft.displayName || handle }),
       workingDirectory: agentDraft.workingDirectory.trim() || defaultAgentWorkspace(handle),
     };
-    const agentId = await invoke<string>("create_agent", {
+    const agentId = await apiInvoke<string>("create_agent", {
       handle,
       displayName: nextForm.displayName,
       role: nextForm.role,
@@ -1470,7 +1470,7 @@ function App() {
     });
     if (channel) {
       if (channel.kind !== "dm") {
-        await invoke("set_channel_agent_membership", {
+        await apiInvoke("set_channel_agent_membership", {
           channelId: channel.id,
           agentId,
           member: true,
@@ -1588,7 +1588,7 @@ function App() {
     setDraft("");
     setDraftAttachments([]);
     try {
-      await invoke("send_message", {
+      await apiInvoke("send_message", {
         channelId: channel.id,
         threadRootId: null,
         body,
@@ -1624,7 +1624,7 @@ function App() {
 
   async function openDmWithAgent(agent: Agent) {
     try {
-      const channelId = await invoke<string>("open_dm_with_agent", { agentId: agent.id });
+      const channelId = await apiInvoke<string>("open_dm_with_agent", { agentId: agent.id });
       await refresh();
       setActiveChannelId(channelId);
       setActiveThreadId(null);
@@ -1652,7 +1652,7 @@ function App() {
     setReplyDraft("");
     setReplyAttachments([]);
     try {
-      await invoke("send_message", {
+      await apiInvoke("send_message", {
         channelId: channel.id,
         threadRootId: activeRoot.id,
         body,
@@ -1748,10 +1748,10 @@ function App() {
         next.delete(item.channelId!);
         return next;
       });
-      await invoke("mark_channel_read", { channelId: item.channelId });
+      await apiInvoke("mark_channel_read", { channelId: item.channelId });
     }
     if (item.reminderId) {
-      await invoke("complete_reminder", { reminderId: item.reminderId });
+      await apiInvoke("complete_reminder", { reminderId: item.reminderId });
     }
     await refresh();
   }
@@ -1771,10 +1771,10 @@ function App() {
         channelIds.add(item.channelId);
       }
     }
-    await Promise.all([...channelIds].map((channelId) => invoke("mark_channel_read", { channelId })));
+    await Promise.all([...channelIds].map((channelId) => apiInvoke("mark_channel_read", { channelId })));
     await Promise.all(data.reminders
       .filter((reminder) => reminder.status === "fired")
-      .map((reminder) => invoke("complete_reminder", { reminderId: reminder.id })));
+      .map((reminder) => apiInvoke("complete_reminder", { reminderId: reminder.id })));
     setChannelAlertIds(new Set());
     setThreadUnreadCounts({});
     await refresh();

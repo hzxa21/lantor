@@ -8,6 +8,7 @@ mod models;
 mod prompts;
 mod text;
 mod usage;
+mod web;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -59,7 +60,7 @@ const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/local
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
 const AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
 const SILENT_REPLY_PREFIX: &str = "LOCAL_SLOCK_SILENT_REPLY";
-const UI_REFRESH_CHANNEL: &str = "localslock_ui_refresh";
+pub(crate) const UI_REFRESH_CHANNEL: &str = "localslock_ui_refresh";
 const SUPERVISOR_WAKE_CHANNEL: &str = "localslock_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "localslock://refresh";
 const LOCAL_SLOCK_CONTEXT_TOOL_ENV: &str = "LOCAL_SLOCK_CONTEXT_TOOL";
@@ -152,7 +153,7 @@ fn db_url() -> String {
         .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned())
 }
 
-async fn notify_postgres(pool: &PgPool, channel: &str, payload: &str) -> CommandResult<()> {
+pub(crate) async fn notify_postgres(pool: &PgPool, channel: &str, payload: &str) -> CommandResult<()> {
     sqlx::query("select pg_notify($1, $2)")
         .bind(channel)
         .bind(payload)
@@ -163,7 +164,7 @@ async fn notify_postgres(pool: &PgPool, channel: &str, payload: &str) -> Command
     Ok(())
 }
 
-async fn notify_ui_refresh(pool: &PgPool, reason: &str) -> CommandResult<()> {
+pub(crate) async fn notify_ui_refresh(pool: &PgPool, reason: &str) -> CommandResult<()> {
     notify_postgres(
         pool,
         UI_REFRESH_CHANNEL,
@@ -1329,22 +1330,26 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
 #[tauri::command]
 async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
-    let channels = load_channels(&state.pool).await?;
-    let channel_members = load_channel_members(&state.pool).await?;
-    let agents = load_agents(&state.pool).await?;
-    let messages = load_messages(&state.pool).await?;
-    let artifacts = load_artifacts(&state.pool).await?;
-    let tasks = load_tasks(&state.pool).await?;
-    let reminders = load_reminders(&state.pool).await?;
-    let agent_schedules = load_agent_schedules(&state.pool).await?;
-    let agent_runs = load_agent_runs(&state.pool).await?;
-    let agent_work_items = load_agent_work_items(&state.pool).await?;
-    let agent_activities = load_agent_activities(&state.pool).await?;
-    let supervisor = load_supervisor_status(&state.pool).await?;
+    load_bootstrap(&state.pool, state.db_url.clone()).await
+}
+
+pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResult<Bootstrap> {
+    let channels = load_channels(pool).await?;
+    let channel_members = load_channel_members(pool).await?;
+    let agents = load_agents(pool).await?;
+    let messages = load_messages(pool).await?;
+    let artifacts = load_artifacts(pool).await?;
+    let tasks = load_tasks(pool).await?;
+    let reminders = load_reminders(pool).await?;
+    let agent_schedules = load_agent_schedules(pool).await?;
+    let agent_runs = load_agent_runs(pool).await?;
+    let agent_work_items = load_agent_work_items(pool).await?;
+    let agent_activities = load_agent_activities(pool).await?;
+    let supervisor = load_supervisor_status(pool).await?;
     let launch_agent = launch_agent::load_launch_agent_status()?;
 
     Ok(Bootstrap {
-        db_url: state.db_url.clone(),
+        db_url,
         channels,
         channel_members,
         agents,
@@ -1571,7 +1576,7 @@ async fn artifact_read(artifact_id: Uuid, state: State<'_, AppState>) -> Command
     load_artifact(&state.pool, artifact_id).await
 }
 
-async fn open_dm_with_agent_in_pool(pool: &PgPool, agent_id: Uuid) -> CommandResult<String> {
+pub(crate) async fn open_dm_with_agent_in_pool(pool: &PgPool, agent_id: Uuid) -> CommandResult<String> {
     let mut tx = pool.begin().await.map_err(to_string)?;
     let agent_row = sqlx::query("select handle from agents where id = $1")
         .bind(agent_id)
@@ -3356,7 +3361,7 @@ async fn send_message(
     .await
 }
 
-async fn send_owner_message_in_pool(
+pub(crate) async fn send_owner_message_in_pool(
     pool: &PgPool,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -3823,6 +3828,10 @@ async fn snooze_reminder(
 
 #[tauri::command]
 async fn complete_reminder(reminder_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    complete_reminder_in_pool(&state.pool, reminder_id).await
+}
+
+pub(crate) async fn complete_reminder_in_pool(pool: &PgPool, reminder_id: Uuid) -> CommandResult<()> {
     sqlx::query(
         r#"
         update reminders
@@ -3833,11 +3842,11 @@ async fn complete_reminder(reminder_id: Uuid, state: State<'_, AppState>) -> Com
         "#,
     )
     .bind(reminder_id)
-    .execute(&state.pool)
+    .execute(pool)
     .await
     .map_err(to_string)?;
-    insert_reminder_event(&state.pool, reminder_id, "completed", "").await?;
-    let _ = notify_ui_refresh(&state.pool, "reminder_completed").await;
+    insert_reminder_event(pool, reminder_id, "completed", "").await?;
+    let _ = notify_ui_refresh(pool, "reminder_completed").await;
     Ok(())
 }
 
@@ -4006,6 +4015,10 @@ async fn update_agent_schedule_status(
 
 #[tauri::command]
 async fn mark_channel_read(channel_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    mark_channel_read_in_pool(&state.pool, channel_id).await
+}
+
+pub(crate) async fn mark_channel_read_in_pool(pool: &PgPool, channel_id: Uuid) -> CommandResult<()> {
     sqlx::query(
         r#"
         insert into channel_read_state (channel_id, last_read_at)
@@ -4014,7 +4027,7 @@ async fn mark_channel_read(channel_id: Uuid, state: State<'_, AppState>) -> Comm
         "#,
     )
     .bind(channel_id)
-    .execute(&state.pool)
+    .execute(pool)
     .await
     .map_err(to_string)?;
 
@@ -4364,8 +4377,16 @@ async fn agent_workspace_list(
     path: String,
     state: State<'_, AppState>,
 ) -> CommandResult<AgentWorkspaceListing> {
-    let workspace = agent_workspace_root(&state.pool, agent_id).await?;
-    let directory = safe_workspace_path(&workspace, &path)?;
+    agent_workspace_list_in_pool(&state.pool, agent_id, &path).await
+}
+
+pub(crate) async fn agent_workspace_list_in_pool(
+    pool: &PgPool,
+    agent_id: Uuid,
+    path: &str,
+) -> CommandResult<AgentWorkspaceListing> {
+    let workspace = agent_workspace_root(pool, agent_id).await?;
+    let directory = safe_workspace_path(&workspace, path)?;
     if !directory.is_dir() {
         return Err("workspace path is not a directory".to_owned());
     }
@@ -4385,8 +4406,16 @@ async fn agent_workspace_read_file(
     path: String,
     state: State<'_, AppState>,
 ) -> CommandResult<AgentWorkspaceFile> {
-    let workspace = agent_workspace_root(&state.pool, agent_id).await?;
-    let file_path = safe_workspace_path(&workspace, &path)?;
+    agent_workspace_read_file_in_pool(&state.pool, agent_id, &path).await
+}
+
+pub(crate) async fn agent_workspace_read_file_in_pool(
+    pool: &PgPool,
+    agent_id: Uuid,
+    path: &str,
+) -> CommandResult<AgentWorkspaceFile> {
+    let workspace = agent_workspace_root(pool, agent_id).await?;
+    let file_path = safe_workspace_path(&workspace, path)?;
     if !file_path.is_file() {
         return Err("workspace path is not a file".to_owned());
     }
@@ -4407,7 +4436,7 @@ async fn agent_workspace_read_file(
     let name = file_path
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.clone());
+        .unwrap_or_else(|| path.to_owned());
     let relative_path = path_to_slash_string(
         file_path
             .strip_prefix(&workspace)
@@ -4640,7 +4669,7 @@ async fn load_artifacts(pool: &PgPool) -> CommandResult<Vec<Artifact>> {
     Ok(rows.iter().map(artifact_from_row).collect())
 }
 
-async fn load_artifact(pool: &PgPool, artifact_id: Uuid) -> CommandResult<Artifact> {
+pub(crate) async fn load_artifact(pool: &PgPool, artifact_id: Uuid) -> CommandResult<Artifact> {
     let row = sqlx::query(
         r#"
         select
@@ -11404,6 +11433,7 @@ pub fn run() {
         })
         .setup(move |app| {
             spawn_ui_refresh_listener(app.handle().clone(), database_url.clone());
+            web::spawn_web_server_if_configured(reminder_pool.clone(), database_url.clone());
             spawn_reminder_worker(reminder_pool.clone());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("LocalSlock");

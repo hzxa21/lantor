@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { apiInvoke } from "../apiClient";
 import {
   Agent,
   AgentActivity,
@@ -288,7 +288,7 @@ export function AgentDetailDrawer({
 
     setWorkspaceLoadingPath(path);
     try {
-      const listing = await invoke<AgentWorkspaceListing>("agent_workspace_list", {
+      const listing = await apiInvoke<AgentWorkspaceListing>("agent_workspace_list", {
         agentId: agent.id,
         path,
       });
@@ -305,7 +305,7 @@ export function AgentDetailDrawer({
     setWorkspaceError(null);
     setWorkspaceLoadingPath(path);
     try {
-      const file = await invoke<AgentWorkspaceFile>("agent_workspace_read_file", {
+      const file = await apiInvoke<AgentWorkspaceFile>("agent_workspace_read_file", {
         agentId: agent.id,
         path,
       });

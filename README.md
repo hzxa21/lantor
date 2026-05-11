@@ -40,6 +40,31 @@ Override the database URL if needed:
 LOCAL_SLOCK_DATABASE_URL=postgres://dylan:123456@127.0.0.1:5432/localslock npm run tauri:dev
 ```
 
+## Tailscale Web Access MVP
+
+LocalSlock can optionally expose a browser-accessible web UI from the same
+desktop process. This is intended for private Tailscale access from devices
+such as an iPhone. It is disabled by default.
+
+```bash
+npm run build
+LOCAL_SLOCK_WEB_BIND=0.0.0.0:8787 \
+LOCAL_SLOCK_WEB_TOKEN="$(openssl rand -hex 24)" \
+npm run tauri:dev
+```
+
+Then open the Mac's Tailscale address from the other device:
+
+```text
+http://<mac-tailscale-ip>:8787/?token=<LOCAL_SLOCK_WEB_TOKEN>
+```
+
+The token is required when binding to a non-loopback address. The web UI uses
+HTTP endpoints for the subset of Tauri commands needed by the chat surface:
+bootstrap state, sending messages, marking channels read, completing reminders,
+opening agent DMs, reading artifacts, workspace preview, attachment preview,
+and an SSE stream for live refresh events. Desktop Tauri still uses native IPC.
+
 The Runtime panel can install a user LaunchAgent at:
 
 ```text

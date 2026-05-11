@@ -1,6 +1,6 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { FileText, X } from "lucide-react";
+import { attachmentAssetUrl } from "../apiClient";
 import { MessageAttachment } from "../types";
 
 type MessageAttachmentsProps = {
@@ -36,7 +36,7 @@ export function MessageAttachments({ attachments }: MessageAttachmentsProps) {
     <>
       <div className="message-attachments">
         {attachments.map((attachment) => {
-          const src = convertFileSrc(attachment.storage_path);
+          const src = attachmentAssetUrl(attachment.storage_path, attachment.id);
           const isImage = attachment.mime_type.startsWith("image/");
           if (isImage) {
             return (
