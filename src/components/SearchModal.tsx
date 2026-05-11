@@ -1,4 +1,4 @@
-import { Activity, Bot, CalendarDays, FileText, Hash, LayoutList, MessageSquare, Search, X } from "lucide-react";
+import { Activity, ArrowLeft, Bot, CalendarDays, FileText, Hash, LayoutList, MessageSquare, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { SearchResult, SearchScope, SearchTimeRange } from "../types";
 
@@ -109,6 +109,9 @@ export function SearchModal({
     <div className="search-backdrop" onClick={onClose}>
       <section className="search-panel" onClick={(event) => event.stopPropagation()}>
         <header className="search-panel-head">
+          <button className="search-mobile-back" onClick={onClose} aria-label="Close search">
+            <ArrowLeft size={19} />
+          </button>
           <div className="search-input-icon"><Search size={24} /></div>
           <input
             ref={inputRef}
