@@ -2,6 +2,7 @@ import {
   CheckCircle2,
   Hash,
   LayoutList,
+  Menu,
   MessageSquare,
   Paperclip,
   Plus,
@@ -33,6 +34,7 @@ type ConversationProps = {
   taskTitleDrafts: Record<string, string>;
   setActiveTab: (tab: "chat" | "tasks") => void;
   setActiveThreadId: (threadId: string | null) => void;
+  openMobileSidebar: () => void;
   openChannelAgentsModal: () => void;
   taskForMessage: (messageId: string) => Task | null;
   setTaskTitleDraft: (task: Task, title: string) => void;
@@ -77,6 +79,7 @@ export function Conversation({
   taskTitleDrafts,
   setActiveTab,
   setActiveThreadId,
+  openMobileSidebar,
   openChannelAgentsModal,
   taskForMessage,
   setTaskTitleDraft,
@@ -224,6 +227,14 @@ export function Conversation({
   return (
     <section className="conversation">
       <header className="topbar">
+        <button
+          type="button"
+          className="mobile-nav-button"
+          aria-label="Open navigation"
+          onClick={openMobileSidebar}
+        >
+          <Menu size={18} />
+        </button>
         <div className="channel-title">
           {isDm && dmAgent ? (
             <button

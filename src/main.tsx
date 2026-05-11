@@ -325,6 +325,7 @@ function App() {
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showInboxModal, setShowInboxModal] = useState(false);
   const [showReminderModal, setShowReminderModal] = useState(false);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
@@ -1356,6 +1357,7 @@ function App() {
   function selectChannel(channelId: string) {
     const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
     setActiveChannelId(channelId);
+    setShowMobileSidebar(false);
     setDraft("");
     setReplyDraft("");
     setDraftAttachments([]);
@@ -1932,7 +1934,7 @@ function App() {
 
   return (
     <main
-      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"}`}
+      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"} ${showMobileSidebar ? "mobile-sidebar-open" : ""}`}
       style={{
         "--sidebar-width": `${sidebarWidth}px`,
         "--thread-width": `${selectedAgent ? agentDrawerWidth : threadPanelWidth}px`,
@@ -1943,15 +1945,43 @@ function App() {
         channel={channel}
         channelAlertIds={channelAlertIds}
         inboxUnreadCount={inboxUnreadCount}
-        openSearch={() => setShowSearchModal(true)}
-        openInbox={() => setShowInboxModal(true)}
-        openReminders={() => setShowReminderModal(true)}
-        openCreateChannelModal={() => setShowCreateChannelModal(true)}
-        openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
+        openSearch={() => {
+          setShowMobileSidebar(false);
+          setShowSearchModal(true);
+        }}
+        openInbox={() => {
+          setShowMobileSidebar(false);
+          setShowInboxModal(true);
+        }}
+        openReminders={() => {
+          setShowMobileSidebar(false);
+          setShowReminderModal(true);
+        }}
+        openCreateChannelModal={() => {
+          setShowMobileSidebar(false);
+          setShowCreateChannelModal(true);
+        }}
+        openChannelSettingsModal={() => {
+          setShowMobileSidebar(false);
+          setShowChannelSettingsModal(true);
+        }}
         selectChannel={selectChannel}
-        openCreateAgentModal={() => setShowCreateAgentModal(true)}
-        openDmWithAgent={openDmWithAgent}
+        openCreateAgentModal={() => {
+          setShowMobileSidebar(false);
+          setShowCreateAgentModal(true);
+        }}
+        openDmWithAgent={(agent) => {
+          setShowMobileSidebar(false);
+          openDmWithAgent(agent);
+        }}
+        onMobileClose={() => setShowMobileSidebar(false)}
         onResizeStart={startSidebarResize}
+      />
+      <button
+        type="button"
+        className="mobile-sidebar-backdrop"
+        aria-label="Close navigation"
+        onClick={() => setShowMobileSidebar(false)}
       />
 
       <SearchModal
@@ -2015,6 +2045,7 @@ function App() {
         taskTitleDrafts={taskTitleDrafts}
         setActiveTab={setActiveTab}
         setActiveThreadId={revealThread}
+        openMobileSidebar={() => setShowMobileSidebar(true)}
         openChannelAgentsModal={() => setShowChannelAgentsModal(true)}
         taskForMessage={taskForMessage}
         setTaskTitleDraft={setTaskTitleDraft}

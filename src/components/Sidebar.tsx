@@ -7,6 +7,7 @@ import {
   Plus,
   Search,
   Settings,
+  X,
 } from "lucide-react";
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
@@ -29,6 +30,7 @@ type SidebarProps = {
   selectChannel: (channelId: string) => void;
   openCreateAgentModal: () => void;
   openDmWithAgent: (agent: Agent) => void;
+  onMobileClose?: () => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
@@ -45,6 +47,7 @@ export function Sidebar({
   selectChannel,
   openCreateAgentModal,
   openDmWithAgent,
+  onMobileClose,
   onResizeStart,
 }: SidebarProps) {
   const [collapsedSections, setCollapsedSections] = useState({ channels: false, dms: false });
@@ -64,6 +67,14 @@ export function Sidebar({
       />
       <section className="workspace">
         <div className="workspace-switch">LocalSlock</div>
+        <button
+          type="button"
+          className="mobile-sidebar-close"
+          aria-label="Close navigation"
+          onClick={onMobileClose}
+        >
+          <X size={18} />
+        </button>
       </section>
 
       <section className="quick-actions">
