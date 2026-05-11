@@ -2113,7 +2113,8 @@ body.resizing-column * {
   white-space: nowrap;
 }
 
-.composer textarea {
+.composer textarea,
+.reply-composer textarea {
   min-height: 44px;
   padding: 12px 14px;
   border-radius: var(--radius-lg);
