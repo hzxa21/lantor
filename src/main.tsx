@@ -370,6 +370,8 @@ function App() {
   const refreshQueuedRef = useRef(false);
   const messageDeltaBufferRef = useRef<Map<string, { append: string; deliveryState: Message["delivery_state"] }>>(new Map());
   const messageDeltaFlushTimerRef = useRef<number | null>(null);
+  const mobileSurfaceKeyRef = useRef("");
+  const mobileBackClosingRef = useRef(false);
 
   async function refreshRuntimeChecks() {
     if (!isTauriRuntime()) {
@@ -783,6 +785,83 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("localslock.sidebarWidth", String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const viewport = window.visualViewport;
+
+    function updateMobileViewportHeight() {
+      const height = Math.round(viewport?.height ?? window.innerHeight);
+      root.style.setProperty("--localslock-mobile-viewport-height", `${height}px`);
+    }
+
+    updateMobileViewportHeight();
+    viewport?.addEventListener("resize", updateMobileViewportHeight);
+    viewport?.addEventListener("scroll", updateMobileViewportHeight);
+    window.addEventListener("resize", updateMobileViewportHeight);
+    window.addEventListener("orientationchange", updateMobileViewportHeight);
+    return () => {
+      viewport?.removeEventListener("resize", updateMobileViewportHeight);
+      viewport?.removeEventListener("scroll", updateMobileViewportHeight);
+      window.removeEventListener("resize", updateMobileViewportHeight);
+      window.removeEventListener("orientationchange", updateMobileViewportHeight);
+      root.style.removeProperty("--localslock-mobile-viewport-height");
+    };
+  }, []);
+
+  useEffect(() => {
+    const key = mobileSurfaceKey();
+    if (!isMobileLayout() || !key) {
+      mobileBackClosingRef.current = false;
+      mobileSurfaceKeyRef.current = key;
+      return;
+    }
+    if (mobileBackClosingRef.current) {
+      mobileBackClosingRef.current = false;
+      mobileSurfaceKeyRef.current = key;
+      return;
+    }
+    if (mobileSurfaceKeyRef.current === key) return;
+    window.history.pushState({ localslockMobileSurface: key }, "", window.location.href);
+    mobileSurfaceKeyRef.current = key;
+  }, [
+    confirmRequest,
+    editingAgentId,
+    selectedAgentId,
+    showChannelAgentsModal,
+    showChannelSettingsModal,
+    showCreateAgentModal,
+    showCreateChannelModal,
+    showInboxModal,
+    showMobileSidebar,
+    showReminderModal,
+    showSearchModal,
+    showThread,
+  ]);
+
+  useEffect(() => {
+    function onPopState() {
+      if (!isMobileLayout() || !mobileSurfaceKey()) return;
+      mobileBackClosingRef.current = true;
+      closeTopMobileSurface();
+    }
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [
+    confirmRequest,
+    editingAgentId,
+    selectedAgentId,
+    showChannelAgentsModal,
+    showChannelSettingsModal,
+    showCreateAgentModal,
+    showCreateChannelModal,
+    showInboxModal,
+    showMobileSidebar,
+    showReminderModal,
+    showSearchModal,
+    showThread,
+  ]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -1391,6 +1470,79 @@ function App() {
     if (threadId) setShowThread(true);
   }
 
+  function isMobileLayout() {
+    return window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`).matches;
+  }
+
+  function mobileSurfaceKey() {
+    if (confirmRequest) return "confirm";
+    if (editingAgentId) return "agent-edit";
+    if (showCreateAgentModal) return "agent-create";
+    if (showChannelAgentsModal) return "channel-agents";
+    if (showChannelSettingsModal) return "channel-settings";
+    if (showCreateChannelModal) return "channel-create";
+    if (showReminderModal) return "reminders";
+    if (showInboxModal) return "inbox";
+    if (showSearchModal) return "search";
+    if (selectedAgentId) return "agent-detail";
+    if (showThread) return "thread";
+    if (showMobileSidebar) return "navigation";
+    return "";
+  }
+
+  function closeTopMobileSurface() {
+    if (confirmRequest) {
+      setConfirmRequest(null);
+      return true;
+    }
+    if (editingAgentId) {
+      cancelEditAgent();
+      return true;
+    }
+    if (showCreateAgentModal) {
+      setShowCreateAgentModal(false);
+      return true;
+    }
+    if (showChannelAgentsModal) {
+      setShowChannelAgentsModal(false);
+      return true;
+    }
+    if (showChannelSettingsModal) {
+      setShowChannelSettingsModal(false);
+      return true;
+    }
+    if (showCreateChannelModal) {
+      setShowCreateChannelModal(false);
+      return true;
+    }
+    if (showReminderModal) {
+      setShowReminderModal(false);
+      return true;
+    }
+    if (showInboxModal) {
+      setShowInboxModal(false);
+      return true;
+    }
+    if (showSearchModal) {
+      setShowSearchModal(false);
+      return true;
+    }
+    if (selectedAgentId) {
+      setSelectedAgentId(null);
+      return true;
+    }
+    if (showThread) {
+      openThread(null);
+      setShowThread(false);
+      return true;
+    }
+    if (showMobileSidebar) {
+      setShowMobileSidebar(false);
+      return true;
+    }
+    return false;
+  }
+
   function addOptimisticOwnerMessage(channelId: string, threadRootId: string | null, body: string, asTask: boolean) {
     const id = `local-${clientId()}`;
     const optimisticMessage: Message = {
@@ -1430,6 +1582,10 @@ function App() {
   function appendDraftAttachments(files: FileList | File[], target: "root" | "reply") {
     const nextAttachments = Array.from(files)
       .filter((file) => {
+        if (file.size === 0) {
+          setAppError(`${file.name || "Attachment"} is empty`);
+          return false;
+        }
         if (file.size <= MAX_ATTACHMENT_BYTES) return true;
         setAppError(`${file.name} is larger than 25MB`);
         return false;
