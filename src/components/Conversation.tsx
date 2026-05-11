@@ -15,13 +15,17 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
+import { copyText } from "../clipboard";
+import { downloadMessagesAsSvg, messageShareLink, messageToMarkdown, messagesToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
+import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { ShareSelectionBar } from "./ShareSelectionBar";
 
 type ConversationProps = {
   channel: Channel | null;
@@ -60,6 +64,12 @@ type ConversationProps = {
   focusedMessageId: string | null;
   onToggleMessageSaved: (message: Message, saved: boolean) => void;
 };
+
+type MessageMenuState = {
+  x: number;
+  y: number;
+  message: Message;
+} | null;
 
 function wasEdited(message: Message) {
   const created = new Date(message.created_at).getTime();
@@ -113,6 +123,9 @@ export function Conversation({
   const [sendAsTask, setSendAsTask] = useState(false);
   const [isComposerDragOver, setIsComposerDragOver] = useState(false);
   const [showChannelActions, setShowChannelActions] = useState(false);
+  const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
+  const [shareMode, setShareMode] = useState(false);
+  const [selectedShareIds, setSelectedShareIds] = useState<Set<string>>(() => new Set());
   const composerDragDepthRef = useRef(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowMessagesRef = useRef(true);
@@ -131,6 +144,13 @@ export function Conversation({
     focusComposer,
   } = useMentionPicker({ agents, value: draft, setValue: setDraft, textareaRef });
   const lastRootMessage = rootMessages[rootMessages.length - 1] ?? null;
+  const surfaceLabel = channel
+    ? isDm
+      ? `DM with @${dmAgent?.handle || "agent"}`
+      : `#${channel.name}`
+    : "LocalSlock";
+  const shareableMessages = rootMessages.filter((message) => message.sender_role !== "system");
+  const selectedShareMessages = shareableMessages.filter((message) => selectedShareIds.has(message.id));
 
   function isMessageListAtBottom(element: HTMLDivElement) {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 32;
@@ -228,11 +248,52 @@ export function Conversation({
     composerDragDepthRef.current = 0;
     setIsComposerDragOver(false);
     setShowChannelActions(false);
+    setMessageMenu(null);
+    setShareMode(false);
+    setSelectedShareIds(new Set());
   }, [channel?.id]);
 
   function handleChannelActionsBlur(event: FocusEvent<HTMLDivElement>) {
     if (event.currentTarget.contains(event.relatedTarget)) return;
     setShowChannelActions(false);
+  }
+
+  function toggleShareMessage(message: Message) {
+    setSelectedShareIds((current) => {
+      const next = new Set(current);
+      if (next.has(message.id)) next.delete(message.id);
+      else next.add(message.id);
+      return next;
+    });
+  }
+
+  function beginShare(message: Message) {
+    setShareMode(true);
+    setSelectedShareIds(new Set([message.id]));
+    setMessageMenu(null);
+  }
+
+  function closeShareMode() {
+    setShareMode(false);
+    setSelectedShareIds(new Set());
+  }
+
+  async function copySelectedMarkdown() {
+    await copyText(messagesToMarkdown(selectedShareMessages, surfaceLabel));
+  }
+
+  function downloadSelectedImage() {
+    downloadMessagesAsSvg(selectedShareMessages, surfaceLabel);
+  }
+
+  async function copyMessageMarkdown(message: Message) {
+    await copyText(messageToMarkdown(message, surfaceLabel));
+    setMessageMenu(null);
+  }
+
+  async function copyMessageLink(message: Message) {
+    await copyText(messageShareLink(message));
+    setMessageMenu(null);
   }
 
   useLayoutEffect(() => {
@@ -406,14 +467,30 @@ export function Conversation({
               <article
                 key={message.id}
                 data-message-id={message.id}
-                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""}`}
+                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""} ${shareMode ? "share-mode" : ""} ${selectedShareIds.has(message.id) ? "share-selected" : ""}`}
                 data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
-                onClick={() => setActiveThreadId(message.id)}
+                onClick={() => {
+                  if (shareMode) toggleShareMessage(message);
+                  else setActiveThreadId(message.id);
+                }}
                 onContextMenu={(event) => {
                   event.preventDefault();
-                  onToggleMessageSaved(message, !isSaved);
+                  setMessageMenu({ x: event.clientX, y: event.clientY, message });
                 }}
               >
+                {shareMode && (
+                  <button
+                    type="button"
+                    className={`message-share-selector ${selectedShareIds.has(message.id) ? "selected" : ""}`}
+                    aria-label={selectedShareIds.has(message.id) ? "Unselect message" : "Select message"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleShareMessage(message);
+                    }}
+                  >
+                    {selectedShareIds.has(message.id) && <CheckCircle2 size={18} />}
+                  </button>
+                )}
                 {messageAgent ? (
                   <button
                     type="button"
@@ -467,6 +544,31 @@ export function Conversation({
               </article>
             );
           })}
+          {messageMenu && (
+            <MessageActionMenu
+              x={messageMenu.x}
+              y={messageMenu.y}
+              isSaved={savedMessageIds.has(messageMenu.message.id)}
+              onShare={() => beginShare(messageMenu.message)}
+              onCopyLink={() => copyMessageLink(messageMenu.message)}
+              onCopyMarkdown={() => copyMessageMarkdown(messageMenu.message)}
+              onToggleSaved={() => {
+                onToggleMessageSaved(messageMenu.message, !savedMessageIds.has(messageMenu.message.id));
+                setMessageMenu(null);
+              }}
+              onClose={() => setMessageMenu(null)}
+            />
+          )}
+          {shareMode && (
+            <ShareSelectionBar
+              count={selectedShareMessages.length}
+              total={shareableMessages.length}
+              onSelectAll={() => setSelectedShareIds(new Set(shareableMessages.map((message) => message.id)))}
+              onCancel={closeShareMode}
+              onCopyMarkdown={copySelectedMarkdown}
+              onDownloadImage={downloadSelectedImage}
+            />
+          )}
         </div>
       ) : (
         <div className="task-board">

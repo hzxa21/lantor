@@ -1,14 +1,18 @@
-import { ArrowDown, Bookmark, MessageSquare, Paperclip, Reply, X } from "lucide-react";
+import { ArrowDown, Bookmark, CheckCircle2, MessageSquare, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
+import { copyText } from "../clipboard";
+import { downloadMessagesAsSvg, messageShareLink, messageToMarkdown, messagesToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
+import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { ShareSelectionBar } from "./ShareSelectionBar";
 
 type ThreadPanelProps = {
   channel: Channel | null;
@@ -36,6 +40,12 @@ type ThreadPanelProps = {
   onToggleMessageSaved: (message: Message, saved: boolean) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
+
+type MessageMenuState = {
+  x: number;
+  y: number;
+  message: Message;
+} | null;
 
 function wasEdited(message: Message) {
   const created = new Date(message.created_at).getTime();
@@ -77,6 +87,9 @@ export function ThreadPanel({
 }: ThreadPanelProps) {
   const [isReplyDragOver, setIsReplyDragOver] = useState(false);
   const [showBackToBottom, setShowBackToBottom] = useState(false);
+  const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
+  const [shareMode, setShareMode] = useState(false);
+  const [selectedShareIds, setSelectedShareIds] = useState<Set<string>>(() => new Set());
   const replyDragDepthRef = useRef(0);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowThreadRef = useRef(true);
@@ -86,6 +99,15 @@ export function ThreadPanel({
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
   const rootAgent = activeRoot ? agentForMessage(activeRoot, agents) : null;
   const rootSaved = activeRoot ? savedMessageIds.has(activeRoot.id) : false;
+  const surfaceLabel = channel
+    ? isDm
+      ? `Thread in DM with @${dmAgent?.handle || "agent"}`
+      : `Thread in #${channel.name}`
+    : "LocalSlock thread";
+  const shareableMessages = [activeRoot, ...replies].filter((message): message is Message => (
+    Boolean(message) && message?.sender_role !== "system"
+  ));
+  const selectedShareMessages = shareableMessages.filter((message) => selectedShareIds.has(message.id));
   const {
     mentionState,
     mentionIndex,
@@ -201,6 +223,9 @@ export function ThreadPanel({
   useEffect(() => {
     replyDragDepthRef.current = 0;
     setIsReplyDragOver(false);
+    setMessageMenu(null);
+    setShareMode(false);
+    setSelectedShareIds(new Set());
   }, [activeRoot?.id]);
 
   useLayoutEffect(() => {
@@ -219,6 +244,44 @@ export function ThreadPanel({
     const element = threadScrollRef.current?.querySelector<HTMLElement>(`[data-message-id="${focusedMessageId}"]`);
     element?.scrollIntoView({ block: "center" });
   }, [activeRoot?.id, focusedMessageId, replies.length]);
+
+  function toggleShareMessage(message: Message) {
+    setSelectedShareIds((current) => {
+      const next = new Set(current);
+      if (next.has(message.id)) next.delete(message.id);
+      else next.add(message.id);
+      return next;
+    });
+  }
+
+  function beginShare(message: Message) {
+    setShareMode(true);
+    setSelectedShareIds(new Set([message.id]));
+    setMessageMenu(null);
+  }
+
+  function closeShareMode() {
+    setShareMode(false);
+    setSelectedShareIds(new Set());
+  }
+
+  async function copySelectedMarkdown() {
+    await copyText(messagesToMarkdown(selectedShareMessages, surfaceLabel));
+  }
+
+  function downloadSelectedImage() {
+    downloadMessagesAsSvg(selectedShareMessages, surfaceLabel);
+  }
+
+  async function copyMessageMarkdown(message: Message) {
+    await copyText(messageToMarkdown(message, surfaceLabel));
+    setMessageMenu(null);
+  }
+
+  async function copyMessageLink(message: Message) {
+    await copyText(messageShareLink(message));
+    setMessageMenu(null);
+  }
 
   return (
     <aside className="thread">
@@ -250,12 +313,15 @@ export function ThreadPanel({
           {activeRoot && (
             <article
               data-message-id={activeRoot.id}
-              className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${rootSaved ? "saved" : ""}`}
+              className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${rootSaved ? "saved" : ""} ${shareMode ? "share-mode" : ""} ${selectedShareIds.has(activeRoot.id) ? "share-selected" : ""}`}
               data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
               onContextMenu={(event) => {
                 if (activeRoot.sender_role === "system") return;
                 event.preventDefault();
-                onToggleMessageSaved(activeRoot, !rootSaved);
+                setMessageMenu({ x: event.clientX, y: event.clientY, message: activeRoot });
+              }}
+              onClick={() => {
+                if (activeRoot.sender_role !== "system" && shareMode) toggleShareMessage(activeRoot);
               }}
             >
               {activeRoot.sender_role === "system" ? (
@@ -264,13 +330,29 @@ export function ThreadPanel({
                   <time>{formatTime(activeRoot.created_at)}</time>
                 </div>
               ) : (
-                <div className="thread-message-with-avatar">
+                <div className={`thread-message-with-avatar ${shareMode ? "share-mode" : ""}`}>
+                  {shareMode && (
+                    <button
+                      type="button"
+                      className={`message-share-selector ${selectedShareIds.has(activeRoot.id) ? "selected" : ""}`}
+                      aria-label={selectedShareIds.has(activeRoot.id) ? "Unselect message" : "Select message"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleShareMessage(activeRoot);
+                      }}
+                    >
+                      {selectedShareIds.has(activeRoot.id) && <CheckCircle2 size={18} />}
+                    </button>
+                  )}
                   {rootAgent ? (
                     <button
                       type="button"
                       className="message-agent-avatar-trigger"
                       title={`View @${rootAgent.handle} details`}
-                      onClick={() => openAgentDetail(rootAgent)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openAgentDetail(rootAgent);
+                      }}
                     >
                       <AgentAvatar agent={rootAgent} />
                     </button>
@@ -286,7 +368,10 @@ export function ThreadPanel({
                         type="button"
                         className={`message-save-button ${rootSaved ? "saved" : ""}`}
                         title={rootSaved ? "Unsave message" : "Save message"}
-                        onClick={() => onToggleMessageSaved(activeRoot, !rootSaved)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onToggleMessageSaved(activeRoot, !rootSaved);
+                        }}
                       >
                         <Bookmark size={13} />
                         {rootSaved ? "Saved" : "Save"}
@@ -370,19 +455,38 @@ export function ThreadPanel({
                 <article
                   key={reply.id}
                   data-message-id={reply.id}
-                  className={replySaved ? "saved" : ""}
+                  className={`${replySaved ? "saved" : ""} ${shareMode ? "share-mode" : ""} ${selectedShareIds.has(reply.id) ? "share-selected" : ""}`}
                   data-jump-focused={focusedMessageId === reply.id ? "true" : "false"}
+                  onClick={() => {
+                    if (shareMode) toggleShareMessage(reply);
+                  }}
                   onContextMenu={(event) => {
                     event.preventDefault();
-                    onToggleMessageSaved(reply, !replySaved);
+                    setMessageMenu({ x: event.clientX, y: event.clientY, message: reply });
                   }}
                 >
+                  {shareMode && (
+                    <button
+                      type="button"
+                      className={`message-share-selector ${selectedShareIds.has(reply.id) ? "selected" : ""}`}
+                      aria-label={selectedShareIds.has(reply.id) ? "Unselect message" : "Select message"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleShareMessage(reply);
+                      }}
+                    >
+                      {selectedShareIds.has(reply.id) && <CheckCircle2 size={18} />}
+                    </button>
+                  )}
                   {replyAgent ? (
                     <button
                       type="button"
                       className="message-agent-avatar-trigger"
                       title={`View @${replyAgent.handle} details`}
-                      onClick={() => openAgentDetail(replyAgent)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openAgentDetail(replyAgent);
+                      }}
                     >
                       <AgentAvatar agent={replyAgent} />
                     </button>
@@ -398,7 +502,10 @@ export function ThreadPanel({
                         type="button"
                         className={`message-save-button ${replySaved ? "saved" : ""}`}
                         title={replySaved ? "Unsave message" : "Save message"}
-                        onClick={() => onToggleMessageSaved(reply, !replySaved)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onToggleMessageSaved(reply, !replySaved);
+                        }}
                       >
                         <Bookmark size={13} />
                         {replySaved ? "Saved" : "Save"}
@@ -418,6 +525,31 @@ export function ThreadPanel({
               );
             })}
           </section>
+          {messageMenu && (
+            <MessageActionMenu
+              x={messageMenu.x}
+              y={messageMenu.y}
+              isSaved={savedMessageIds.has(messageMenu.message.id)}
+              onShare={() => beginShare(messageMenu.message)}
+              onCopyLink={() => copyMessageLink(messageMenu.message)}
+              onCopyMarkdown={() => copyMessageMarkdown(messageMenu.message)}
+              onToggleSaved={() => {
+                onToggleMessageSaved(messageMenu.message, !savedMessageIds.has(messageMenu.message.id));
+                setMessageMenu(null);
+              }}
+              onClose={() => setMessageMenu(null)}
+            />
+          )}
+          {shareMode && (
+            <ShareSelectionBar
+              count={selectedShareMessages.length}
+              total={shareableMessages.length}
+              onSelectAll={() => setSelectedShareIds(new Set(shareableMessages.map((message) => message.id)))}
+              onCancel={closeShareMode}
+              onCopyMarkdown={copySelectedMarkdown}
+              onDownloadImage={downloadSelectedImage}
+            />
+          )}
           {activeRoot && showBackToBottom && (
             <button type="button" className="thread-back-to-bottom" onClick={returnThreadToBottom}>
               <ArrowDown size={15} />

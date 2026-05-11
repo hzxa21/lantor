@@ -831,6 +831,18 @@ function App() {
     return data?.channels.find((c) => c.id === activeChannelId) ?? data?.channels[0] ?? null;
   }, [activeChannelId, data]);
 
+  useEffect(() => {
+    if (!data || !window.location.hash.startsWith("#/message/")) return;
+    const messageId = decodeURIComponent(window.location.hash.replace("#/message/", ""));
+    const message = data.messages.find((item) => item.id === messageId || item.id.startsWith(messageId));
+    if (!message) return;
+    selectChannel(message.channel_id);
+    revealThread(message.thread_root_id ?? message.id);
+    setFocusedMessageId(message.id);
+    setActiveTab("chat");
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }, [data]);
+
   const rootMessages = useMemo(() => {
     if (!data || !channel) return [];
     return data.messages.filter((m) => m.channel_id === channel.id && !m.thread_root_id);
