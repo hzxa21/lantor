@@ -694,7 +694,7 @@ button,
 
 .topbar {
   display: flex;
-  min-height: 72px;
+  min-height: 75px;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -821,6 +821,7 @@ button,
   margin: 0;
   font-size: 22px;
   font-weight: 700;
+  line-height: 24px;
 }
 
 .channel-title p,
@@ -828,6 +829,7 @@ button,
   margin: 2px 0 0;
   color: var(--muted);
   font-size: 13px;
+  line-height: 16px;
 }
 
 .thread header button {
@@ -1910,7 +1912,7 @@ body.resizing-column * {
 
 .thread header {
   display: flex;
-  min-height: 72px;
+  min-height: 75px;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -1923,6 +1925,7 @@ body.resizing-column * {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
+  line-height: 24px;
 }
 
 .thread h2 span {
@@ -4760,6 +4763,7 @@ body.resizing-column * {
   .channel-title h1 {
     overflow: hidden;
     font-size: 18px;
+    line-height: 22px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -4767,6 +4771,7 @@ body.resizing-column * {
   .channel-title p {
     overflow: hidden;
     max-width: 62vw;
+    line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -4921,11 +4926,13 @@ body.resizing-column * {
   .thread h2,
   .agent-drawer-head h2 {
     font-size: 18px;
+    line-height: 22px;
   }
 
   .thread header p,
   .agent-drawer-head span {
     font-size: 11px;
+    line-height: 14px;
   }
 
   .thread-root {
