@@ -1061,6 +1061,11 @@ function App() {
     return new Set(data?.saved_messages.map((item) => item.message_id) ?? []);
   }, [data?.saved_messages]);
 
+  const shareBaseUrl = useMemo(() => {
+    if (!data) return window.location.origin;
+    return isTauriRuntime() ? data.web_base_url ?? window.location.origin : window.location.origin;
+  }, [data?.web_base_url]);
+
   const visibleTasks = useMemo(() => {
     if (!data || !channel) return [];
     if (channel.kind === "dm") return [];
@@ -2027,6 +2032,7 @@ function App() {
         sendRootMessage={sendRootMessage}
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openArtifact={openArtifact}
+        shareBaseUrl={shareBaseUrl}
         savedMessageIds={savedMessageIds}
         focusedMessageId={focusedMessageId}
         onToggleMessageSaved={setMessageSaved}
@@ -2083,6 +2089,7 @@ function App() {
           sendReply={sendReply}
           openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
           openArtifact={openArtifact}
+          shareBaseUrl={shareBaseUrl}
           savedMessageIds={savedMessageIds}
           focusedMessageId={focusedMessageId}
           onToggleMessageSaved={setMessageSaved}

@@ -324,6 +324,7 @@ pub(crate) struct SupervisorCommand {
 #[derive(Debug, Serialize)]
 pub(crate) struct Bootstrap {
     pub(crate) db_url: String,
+    pub(crate) web_base_url: Option<String>,
     pub(crate) channels: Vec<Channel>,
     pub(crate) channel_members: Vec<ChannelMember>,
     pub(crate) agents: Vec<Agent>,

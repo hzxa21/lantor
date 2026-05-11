@@ -251,6 +251,7 @@ export type RuntimeCheck = {
 
 export type Bootstrap = {
   db_url: string;
+  web_base_url: string | null;
   channels: Channel[];
   channel_members: ChannelMember[];
   agents: Agent[];

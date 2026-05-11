@@ -901,16 +901,17 @@ button,
   place-items: center;
   align-self: start;
   margin-top: 7px;
-  border: 2px solid rgba(20, 23, 31, 0.78);
+  border: 1px solid rgba(10, 132, 255, 0.28);
   border-radius: 999px;
   background: #fff;
-  color: #111827;
+  color: var(--accent);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
 }
 
 .message-share-selector.selected {
-  border-color: #ffcc00;
-  background: #ffcc00;
-  color: #111827;
+  border-color: rgba(10, 132, 255, 0.35);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .message-card[data-jump-focused="true"],
@@ -926,10 +927,11 @@ button,
   display: grid;
   min-width: 238px;
   overflow: hidden;
-  border: 2px solid #111;
-  border-radius: 0;
-  background: #fff;
-  box-shadow: 8px 10px 0 rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(20, 23, 31, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(18px) saturate(1.1);
 }
 
 .message-action-menu button {
@@ -938,9 +940,9 @@ button,
   gap: 12px;
   width: 100%;
   padding: 13px 16px;
-  border-bottom: 1px solid #111;
-  background: #fff;
-  color: #111;
+  border-bottom: 1px solid rgba(142, 142, 147, 0.16);
+  background: transparent;
+  color: var(--ink);
   font-size: 15px;
   font-weight: 760;
   text-align: left;
@@ -951,7 +953,8 @@ button,
 }
 
 .message-action-menu button:hover {
-  background: #fff3bd;
+  background: rgba(10, 132, 255, 0.08);
+  color: var(--accent);
 }
 
 .share-selection-bar {
@@ -965,11 +968,12 @@ button,
   justify-content: space-between;
   gap: 14px;
   padding: 14px 18px;
-  border: 2px solid #111;
-  border-radius: 0;
-  background: #ffd43b;
-  color: #111;
-  box-shadow: 0 -14px 36px rgba(15, 23, 42, 0.16);
+  border: 1px solid rgba(20, 23, 31, 0.14);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ink);
+  box-shadow: 0 -18px 56px rgba(15, 23, 42, 0.17);
+  backdrop-filter: blur(18px) saturate(1.08);
 }
 
 .share-selection-bar strong {
@@ -989,17 +993,26 @@ button,
   align-items: center;
   gap: 7px;
   padding: 9px 13px;
-  border: 2px solid #111;
-  border-radius: 0;
-  background: #fff;
-  color: #111;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.1);
+  color: var(--ink);
   font-size: 13px;
   font-weight: 820;
-  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.12);
 }
 
 .share-selection-bar button.accent {
-  background: #ff78ad;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.share-selection-bar button:hover:not(:disabled) {
+  background: rgba(10, 132, 255, 0.12);
+  color: var(--accent);
+}
+
+.share-selection-bar button.accent:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .share-selection-bar button:disabled {

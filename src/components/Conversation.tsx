@@ -60,6 +60,7 @@ type ConversationProps = {
   sendRootMessage: (asTask?: boolean) => void;
   openAgentDetail: (agent: Agent) => void;
   openArtifact: (artifact: Artifact) => void;
+  shareBaseUrl: string | null;
   savedMessageIds: Set<string>;
   focusedMessageId: string | null;
   onToggleMessageSaved: (message: Message, saved: boolean) => void;
@@ -116,6 +117,7 @@ export function Conversation({
   sendRootMessage,
   openAgentDetail,
   openArtifact,
+  shareBaseUrl,
   savedMessageIds,
   focusedMessageId,
   onToggleMessageSaved,
@@ -292,7 +294,7 @@ export function Conversation({
   }
 
   async function copyMessageLink(message: Message) {
-    await copyText(messageShareLink(message));
+    await copyText(messageShareLink(message, shareBaseUrl));
     setMessageMenu(null);
   }
 

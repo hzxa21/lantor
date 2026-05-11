@@ -13,6 +13,7 @@ mod web;
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
+    net::{IpAddr, SocketAddr},
     path::{Component, Path, PathBuf},
     process::{Command as StdCommand, Stdio},
     sync::Arc,
@@ -1353,6 +1354,24 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     load_bootstrap(&state.pool, state.db_url.clone()).await
 }
 
+fn configured_web_base_url() -> Option<String> {
+    if let Ok(value) = env::var("LOCAL_SLOCK_WEB_PUBLIC_URL") {
+        let trimmed = value.trim().trim_end_matches('/').to_owned();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+    let bind = env::var("LOCAL_SLOCK_WEB_BIND").ok()?;
+    let addr = bind.trim().parse::<SocketAddr>().ok()?;
+    let host = match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_owned(),
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) if ip.is_unspecified() => "[::1]".to_owned(),
+        IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    Some(format!("http://{host}:{}", addr.port()))
+}
+
 pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResult<Bootstrap> {
     let channels = load_channels(pool).await?;
     let channel_members = load_channel_members(pool).await?;
@@ -1371,6 +1390,7 @@ pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResu
 
     Ok(Bootstrap {
         db_url,
+        web_base_url: configured_web_base_url(),
         channels,
         channel_members,
         agents,
