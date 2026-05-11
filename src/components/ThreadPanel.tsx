@@ -569,6 +569,7 @@ export function ThreadPanel({
               event.target.value = "";
             }}
           />
+          <DraftAttachmentsPreview attachments={replyAttachments} onRemove={removeReplyAttachment} />
           <textarea
             ref={textareaRef}
             value={replyDraft}
@@ -582,7 +583,6 @@ export function ThreadPanel({
             disabled={!activeRoot}
             placeholder={activeRoot ? isDm ? `Reply to @${dmAgent?.handle || "agent"}` : "Reply in thread" : "Select a thread to reply"}
           />
-          <DraftAttachmentsPreview attachments={replyAttachments} onRemove={removeReplyAttachment} />
           <div className="reply-composer-actions">
             <div className="reply-composer-buttons">
               <button

@@ -644,6 +644,7 @@ export function Conversation({
             event.target.value = "";
           }}
         />
+        <DraftAttachmentsPreview attachments={draftAttachments} onRemove={removeDraftAttachment} />
         <textarea
           ref={textareaRef}
           value={draft}
@@ -663,7 +664,6 @@ export function Conversation({
               : "Create a channel before messaging"
           }
         />
-        <DraftAttachmentsPreview attachments={draftAttachments} onRemove={removeDraftAttachment} />
         <div className="composer-actions">
           <button
             type="button"
