@@ -20,10 +20,11 @@ type AgentPhase = {
   detail: string;
 };
 
-type AgentDetailTab = "profile" | "activity" | "workspace";
+type AgentDetailTab = "profile" | "reminders" | "activity" | "workspace";
 
 const AGENT_DETAIL_TABS: Array<{ id: AgentDetailTab; label: string }> = [
   { id: "profile", label: "Profile" },
+  { id: "reminders", label: "Reminders" },
   { id: "activity", label: "Activity" },
   { id: "workspace", label: "Workspace" },
 ];
@@ -393,10 +394,11 @@ export function AgentDetailDrawer({
   }
 
   function tabBadge(tab: AgentDetailTab) {
-    if (tab === "profile") {
+    if (tab === "profile") return agent.status;
+    if (tab === "reminders") {
       if (dueAgentReminders.length > 0) return `${dueAgentReminders.length} due`;
       if (liveAgentReminders.length > 0) return `${liveAgentReminders.length} reminders`;
-      return agent.status;
+      return "None";
     }
     if (tab === "activity") {
       if (activeRun) return "Live";
@@ -468,6 +470,13 @@ export function AgentDetailDrawer({
             </div>
           </div>
         </section>
+      </>
+    );
+  }
+
+  function renderRemindersPanel() {
+    return (
+      <>
         <section className="detail-section agent-autonomy-card">
           <div>
             <h4>Agent-managed routines</h4>
@@ -758,6 +767,7 @@ export function AgentDetailDrawer({
             aria-labelledby={`agent-detail-tab-${activeDetailTab}`}
           >
             {activeDetailTab === "profile" && renderProfilePanel()}
+            {activeDetailTab === "reminders" && renderRemindersPanel()}
             {activeDetailTab === "activity" && renderActivityPanel()}
             {activeDetailTab === "workspace" && renderWorkspacePanel()}
           </div>
