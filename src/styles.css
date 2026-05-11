@@ -2031,7 +2031,7 @@ body.resizing-column * {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   justify-content: flex-end;
   min-width: 0;
 }
@@ -2045,12 +2045,12 @@ body.resizing-column * {
 .reply-composer .reply-send {
   display: inline-flex;
   align-items: center;
-  width: 40px;
-  min-width: 40px;
-  height: 40px;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
   justify-content: center;
   padding: 0;
-  border-radius: 12px;
+  border-radius: 13px;
   background: var(--accent);
   color: #fff;
   font-size: 13px;
