@@ -180,9 +180,16 @@ function searchScopeAllows(scope: SearchScope, kind: SearchScope) {
   return scope === "all" || scope === kind;
 }
 
+function clientId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function draftAttachmentFromFile(file: File): DraftAttachment {
   return {
-    id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
+    id: `${file.name}-${file.size}-${file.lastModified}-${clientId()}`,
     file,
     original_name: file.name,
     mime_type: file.type || "application/octet-stream",
@@ -1382,7 +1389,7 @@ function App() {
   }
 
   function addOptimisticOwnerMessage(channelId: string, threadRootId: string | null, body: string, asTask: boolean) {
-    const id = `local-${crypto.randomUUID()}`;
+    const id = `local-${clientId()}`;
     const optimisticMessage: Message = {
       id,
       channel_id: channelId,
