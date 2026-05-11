@@ -584,26 +584,24 @@ export function ThreadPanel({
             placeholder={activeRoot ? isDm ? `Reply to @${dmAgent?.handle || "agent"}` : "Reply in thread" : "Select a thread to reply"}
           />
           <div className="reply-composer-actions">
-            <div className="reply-composer-buttons">
-              <button
-                type="button"
-                className="attach-button"
-                disabled={!activeRoot}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Paperclip size={15} />
-              </button>
-              <button
-                type="button"
-                className="reply-send"
-                title="Send reply"
-                aria-label="Send reply"
-                disabled={!activeRoot || (!replyDraft.trim() && replyAttachments.length === 0)}
-                onClick={submitReply}
-              >
-                <Reply size={16} />
-              </button>
-            </div>
+            <button
+              type="button"
+              className="attach-button"
+              disabled={!activeRoot}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip size={15} />
+            </button>
+            <button
+              type="button"
+              className="reply-send"
+              title="Send reply"
+              aria-label="Send reply"
+              disabled={!activeRoot || (!replyDraft.trim() && replyAttachments.length === 0)}
+              onClick={submitReply}
+            >
+              <Reply size={16} />
+            </button>
           </div>
         </section>
       </section>
