@@ -20,7 +20,7 @@ import { copyText } from "../clipboard";
 import { isCompactFollowupMessage } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
-import { firstLines, formatTime, visibleChannelDescription } from "../ui-utils";
+import { firstLines, formatClockTime, formatTime, visibleChannelDescription } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
@@ -474,7 +474,7 @@ export function Conversation({
               >
                 {isCompact ? (
                   <time className="message-compact-time" dateTime={message.created_at}>
-                    {formatTime(message.created_at)}
+                    {formatClockTime(message.created_at)}
                   </time>
                 ) : messageAgent ? (
                   <button

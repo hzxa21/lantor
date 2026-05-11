@@ -109,6 +109,14 @@ export function formatTime(value: string) {
   }).format(new Date(value));
 }
 
+export function formatClockTime(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(value));
+}
+
 export function firstLines(text: string, lines = 8) {
   const split = text.trim().split("\n");
   return split.slice(0, lines).join("\n") + (split.length > lines ? "\n..." : "");

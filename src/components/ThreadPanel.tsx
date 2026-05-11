@@ -6,7 +6,7 @@ import { copyText } from "../clipboard";
 import { isCompactFollowupMessage } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
-import { formatTime } from "../ui-utils";
+import { formatClockTime, formatTime } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
@@ -479,7 +479,7 @@ export function ThreadPanel({
                 >
                   {isCompact ? (
                     <time className="message-compact-time" dateTime={reply.created_at}>
-                      {formatTime(reply.created_at)}
+                      {formatClockTime(reply.created_at)}
                     </time>
                   ) : replyAgent ? (
                     <button
