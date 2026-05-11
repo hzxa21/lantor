@@ -3589,18 +3589,89 @@ body.resizing-column * {
 }
 
 .channel-agent-picker label {
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
+}
+
+.channel-agent-picker .channel-agent-option {
+  min-height: 58px;
+}
+
+.channel-agent-picker .channel-agent-option.selected {
+  background: rgba(10, 132, 255, 0.08);
+}
+
+.channel-agent-profile {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.channel-agent-profile .agent-avatar {
+  color: transparent;
+  font-size: 13px;
+}
+
+.channel-agent-profile .agent-avatar-glyph {
+  color: var(--avatar-color);
 }
 
 .agent-pick-row {
   display: grid;
   gap: 2px;
+  min-width: 0;
+}
+
+.agent-pick-row strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.agent-pick-row strong,
+.agent-pick-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-pick-row small {
   color: var(--muted);
   font-size: 12px;
+}
+
+.channel-agent-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.channel-agent-status.status-idle {
+  background: rgba(52, 199, 89, 0.12);
+  color: #1f8a3d;
+}
+
+.channel-agent-status.status-starting,
+.channel-agent-status.status-queued,
+.channel-agent-status.status-running,
+.channel-agent-status.status-stopping {
+  background: rgba(255, 176, 32, 0.15);
+  color: #9a5a00;
+}
+
+.channel-agent-status.status-error {
+  background: rgba(255, 59, 48, 0.12);
+  color: #c91810;
 }
 
 .search-backdrop {

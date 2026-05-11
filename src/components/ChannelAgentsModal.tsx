@@ -1,4 +1,5 @@
 import { Agent, Channel } from "../types";
+import { AgentAvatar } from "./AgentAvatar";
 import { Modal } from "./Modal";
 
 type ChannelAgentsModalProps = {
@@ -10,6 +11,13 @@ type ChannelAgentsModalProps = {
   onCreateAgent: () => void;
   onClose: () => void;
 };
+
+function statusLabel(status: string) {
+  if (status === "idle") return "Online";
+  if (["starting", "queued", "running", "stopping"].includes(status)) return "Working";
+  if (status === "error") return "Error";
+  return status;
+}
 
 export function ChannelAgentsModal({
   open,
@@ -30,19 +38,26 @@ export function ChannelAgentsModal({
       <div className="modal-form">
         <div className="member-editor modal-member-editor channel-agent-picker">
           {agents.length === 0 && <span>No agents yet. Create an agent first.</span>}
-          {agents.map((agent) => (
-            <label key={agent.id}>
-              <input
-                type="checkbox"
-                checked={channelMemberIds.has(agent.id)}
-                onChange={(event) => onSetMember(agent.id, event.target.checked)}
-              />
-              <span className="agent-pick-row">
-                <strong>@{agent.handle}</strong>
-                <small>{agent.display_name} · {agent.runtime} · {agent.status}</small>
-              </span>
-            </label>
-          ))}
+          {agents.map((agent) => {
+            const isMember = channelMemberIds.has(agent.id);
+            return (
+              <label key={agent.id} className={`channel-agent-option ${isMember ? "selected" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={isMember}
+                  onChange={(event) => onSetMember(agent.id, event.target.checked)}
+                />
+                <div className="channel-agent-profile">
+                  <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
+                  <div className="agent-pick-row">
+                    <strong>{agent.display_name}</strong>
+                    <small>@{agent.handle} · {agent.runtime}</small>
+                  </div>
+                </div>
+                <div className={`channel-agent-status status-${agent.status}`}>{statusLabel(agent.status)}</div>
+              </label>
+            );
+          })}
         </div>
         <div className="modal-actions split">
           <button onClick={onCreateAgent}>Create new agent</button>
