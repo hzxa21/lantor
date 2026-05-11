@@ -1,4 +1,5 @@
 import { Bookmark, Hash, MessageSquare, X } from "lucide-react";
+import { useEffect } from "react";
 import type { SavedMessage } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 
@@ -17,6 +18,15 @@ export function SavedMessagesModal({
   onUnsaveItem,
   onClose,
 }: SavedMessagesModalProps) {
+  useEffect(() => {
+    if (!open) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (

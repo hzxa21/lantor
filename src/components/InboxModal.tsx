@@ -1,5 +1,5 @@
 import { Bell, Check, Hash, Inbox, MessageSquare, UserRound } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { InboxItem, InboxKind } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 
@@ -50,6 +50,15 @@ export function InboxModal({
     if (filter === "unread") return items.filter((item) => item.unread);
     return items.filter((item) => item.kind === filter);
   }, [filter, items]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
   if (!open) return null;
 
