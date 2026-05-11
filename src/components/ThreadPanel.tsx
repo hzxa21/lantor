@@ -1,4 +1,4 @@
-import { ArrowDown, Bookmark, MessageSquare, Paperclip, Reply, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, Bookmark, MessageSquare, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
@@ -89,6 +89,7 @@ export function ThreadPanel({
   const [isReplyDragOver, setIsReplyDragOver] = useState(false);
   const [showBackToBottom, setShowBackToBottom] = useState(false);
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
+  const [tapFocusedMessageId, setTapFocusedMessageId] = useState<string | null>(null);
   const replyDragDepthRef = useRef(0);
   const longPressTimerRef = useRef<number | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
@@ -220,6 +221,7 @@ export function ThreadPanel({
     replyDragDepthRef.current = 0;
     setIsReplyDragOver(false);
     setMessageMenu(null);
+    setTapFocusedMessageId(null);
   }, [activeRoot?.id]);
 
   useLayoutEffect(() => {
@@ -276,6 +278,14 @@ export function ThreadPanel({
         onPointerDown={onResizeStart}
       />
       <header>
+        <button
+          type="button"
+          className="thread-mobile-back"
+          onClick={onClose}
+          aria-label={isDm ? "Back to direct message" : "Back to channel"}
+        >
+          <ArrowLeft size={18} />
+        </button>
         <div>
           <h2>
             Thread <span>{channel ? isDm ? `- @${dmAgent?.handle || "agent"}` : `- #${channel.name}` : "- no channel"}</span>
@@ -285,7 +295,7 @@ export function ThreadPanel({
             {unreadCount > 0 ? ` · ${unreadCount} new` : ""}
           </p>
         </div>
-        <button type="button" onClick={onClose} aria-label="Close thread panel"><X size={18} /></button>
+        <button type="button" className="thread-close" onClick={onClose} aria-label="Close thread panel"><X size={18} /></button>
       </header>
 
       <section className="thread-focus">
@@ -298,15 +308,21 @@ export function ThreadPanel({
           {activeRoot && (
             <article
               data-message-id={activeRoot.id}
-              className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${rootSaved ? "saved" : ""}`}
+              className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${tapFocusedMessageId === activeRoot.id ? "tap-focused" : ""} ${rootSaved ? "saved" : ""}`}
               data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
+              onClick={() => {
+                if (activeRoot.sender_role !== "system") setTapFocusedMessageId(activeRoot.id);
+              }}
               onContextMenu={(event) => {
                 if (activeRoot.sender_role === "system") return;
                 event.preventDefault();
                 setMessageMenu({ x: event.clientX, y: event.clientY, message: activeRoot });
               }}
               onPointerDown={(event) => {
-                if (activeRoot.sender_role !== "system") startMessageLongPress(event, activeRoot);
+                if (activeRoot.sender_role !== "system") {
+                  setTapFocusedMessageId(activeRoot.id);
+                  startMessageLongPress(event, activeRoot);
+                }
               }}
               onPointerMove={clearLongPress}
               onPointerUp={clearLongPress}
@@ -432,13 +448,17 @@ export function ThreadPanel({
                 <article
                   key={reply.id}
                   data-message-id={reply.id}
-                  className={replySaved ? "saved" : ""}
+                  className={`${replySaved ? "saved" : ""} ${tapFocusedMessageId === reply.id ? "tap-focused" : ""}`}
                   data-jump-focused={focusedMessageId === reply.id ? "true" : "false"}
+                  onClick={() => setTapFocusedMessageId(reply.id)}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     setMessageMenu({ x: event.clientX, y: event.clientY, message: reply });
                   }}
-                  onPointerDown={(event) => startMessageLongPress(event, reply)}
+                  onPointerDown={(event) => {
+                    setTapFocusedMessageId(reply.id);
+                    startMessageLongPress(event, reply);
+                  }}
                   onPointerMove={clearLongPress}
                   onPointerUp={clearLongPress}
                   onPointerCancel={clearLongPress}

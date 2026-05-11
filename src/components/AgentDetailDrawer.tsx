@@ -1,3 +1,4 @@
+import { ArrowLeft } from "lucide-react";
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { apiInvoke } from "../apiClient";
 import {
@@ -710,6 +711,14 @@ export function AgentDetailDrawer({
         onPointerDown={onResizeStart}
       />
       <header className="agent-drawer-head">
+        <button
+          type="button"
+          className="agent-mobile-back"
+          onClick={onClose}
+          aria-label="Back"
+        >
+          <ArrowLeft size={18} />
+        </button>
         <div>
           <span>Agent</span>
           <h2>@{agent.handle}</h2>
@@ -724,7 +733,7 @@ export function AgentDetailDrawer({
           >
             Delete
           </button>
-          <button type="button" onClick={onClose} aria-label="Close agent detail">×</button>
+          <button type="button" className="agent-close" onClick={onClose} aria-label="Close agent detail">×</button>
         </div>
       </header>
       <div className="agent-drawer-body">

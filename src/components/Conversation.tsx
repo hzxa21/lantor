@@ -1,10 +1,10 @@
 import {
+  ArrowLeft,
   CheckCircle2,
   Flag,
   Hash,
   Bookmark,
   LayoutList,
-  Menu,
   MessageSquare,
   Paperclip,
   Plus,
@@ -125,6 +125,7 @@ export function Conversation({
   const [isComposerDragOver, setIsComposerDragOver] = useState(false);
   const [showChannelActions, setShowChannelActions] = useState(false);
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
+  const [tapFocusedMessageId, setTapFocusedMessageId] = useState<string | null>(null);
   const composerDragDepthRef = useRef(0);
   const longPressTimerRef = useRef<number | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -246,6 +247,7 @@ export function Conversation({
     setIsComposerDragOver(false);
     setShowChannelActions(false);
     setMessageMenu(null);
+    setTapFocusedMessageId(null);
   }, [channel?.id]);
 
   function handleChannelActionsBlur(event: FocusEvent<HTMLDivElement>) {
@@ -304,10 +306,10 @@ export function Conversation({
         <button
           type="button"
           className="mobile-nav-button"
-          aria-label="Open navigation"
+          aria-label="Back to navigation"
           onClick={openMobileSidebar}
         >
-          <Menu size={18} />
+          <ArrowLeft size={18} />
         </button>
         <div className="channel-title">
           {isDm && dmAgent ? (
@@ -453,14 +455,20 @@ export function Conversation({
               <article
                 key={message.id}
                 data-message-id={message.id}
-                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""}`}
+                className={`message-card ${message.id === activeRoot?.id ? "focused" : ""} ${tapFocusedMessageId === message.id ? "tap-focused" : ""} ${isSaved ? "saved" : ""}`}
                 data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
-                onClick={() => setActiveThreadId(message.id)}
+                onClick={() => {
+                  setTapFocusedMessageId(message.id);
+                  setActiveThreadId(message.id);
+                }}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setMessageMenu({ x: event.clientX, y: event.clientY, message });
                 }}
-                onPointerDown={(event) => startMessageLongPress(event, message)}
+                onPointerDown={(event) => {
+                  setTapFocusedMessageId(message.id);
+                  startMessageLongPress(event, message);
+                }}
                 onPointerMove={clearLongPress}
                 onPointerUp={clearLongPress}
                 onPointerCancel={clearLongPress}
