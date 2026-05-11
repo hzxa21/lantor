@@ -4998,6 +4998,7 @@ body.resizing-column * {
 
   .thread header > div,
   .agent-drawer-head > div:not(.agent-drawer-head-actions) {
+    flex: 1 1 auto;
     min-width: 0;
   }
 
@@ -5014,7 +5015,20 @@ body.resizing-column * {
     box-shadow: inset 0 0 0 1px var(--line);
   }
 
-  .thread-close,
+  .thread header .thread-close {
+    display: grid;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 0;
+    place-items: center;
+    border-radius: 13px;
+    background: var(--panel-strong);
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--line);
+  }
+
   .agent-close {
     display: none;
   }
@@ -5025,8 +5039,11 @@ body.resizing-column * {
 
   .thread h2,
   .agent-drawer-head h2 {
+    overflow: hidden;
     font-size: 18px;
     line-height: 22px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .thread header p,
