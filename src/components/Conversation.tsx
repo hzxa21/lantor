@@ -11,6 +11,7 @@ import {
   Send,
   Settings,
   Trash2,
+  Users,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
@@ -334,28 +335,23 @@ export function Conversation({
                 ? dmAgent ? `@${dmAgent.handle} · ${dmAgent.runtime} · ${dmAgent.status}` : "Agent no longer exists"
                 : channel?.description || "Create a channel from the sidebar"}
             </p>
-            {channel && !isDm && (
-              <div className="channel-agent-strip">
-                <span>Agents</span>
-                {channelAgents.length > 0 ? (
-                  channelAgents.slice(0, 5).map((agent) => (
-                    <button key={agent.id} type="button" onClick={openChannelAgentsModal}>
-                      <span className={`mini-dot ${agent.status}`} />
-                      @{agent.handle}
-                    </button>
-                  ))
-                ) : (
-                  <button type="button" className="empty" onClick={openChannelAgentsModal}>No agents</button>
-                )}
-                <button type="button" className="add-channel-agent" onClick={openChannelAgentsModal}>
-                  <Plus size={13} />
-                </button>
-              </div>
-            )}
           </div>
         </div>
         {channel && !isDm && (
           <div className="channel-header-actions" onBlur={handleChannelActionsBlur}>
+            <button
+              type="button"
+              className="channel-agent-count-trigger"
+              title="Manage channel agents"
+              aria-label="Manage channel agents"
+              onClick={() => {
+                setShowChannelActions(false);
+                openChannelAgentsModal();
+              }}
+            >
+              <Users size={16} />
+              <span>{channelAgents.length}</span>
+            </button>
             <button
               type="button"
               className={`channel-action-trigger ${showChannelActions ? "active" : ""}`}
