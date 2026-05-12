@@ -2221,8 +2221,10 @@ body.resizing-column * {
 
 .mention-picker button {
   display: grid;
-  gap: 2px;
-  padding: 9px 10px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
   border-radius: 11px;
   background: transparent;
   color: var(--ink);
@@ -2234,18 +2236,38 @@ body.resizing-column * {
   background: rgba(10, 132, 255, 0.1);
 }
 
-.mention-picker span {
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 700;
+.mention-picker .agent-avatar {
+  align-self: start;
+  margin-top: 1px;
 }
 
-.mention-picker small {
+.mention-picker-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.mention-picker-copy strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 820;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-picker-copy small {
+  overflow: hidden;
   color: var(--muted);
   font-size: 11px;
+  font-weight: 680;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.mention-picker em {
+.mention-picker-copy em {
   display: block;
   overflow: hidden;
   color: #667085;

@@ -575,9 +575,12 @@ export function ThreadPanel({
                     chooseMention(agent);
                   }}
                 >
-                  <span>@{agent.handle}</span>
-                  <small>{agent.display_name} · {agent.role || "agent"} · {agent.runtime} · {agent.status}</small>
-                  {agent.description && <em>{agent.description}</em>}
+                  <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
+                  <span className="mention-picker-copy">
+                    <strong>{agent.display_name}</strong>
+                    <small>@{agent.handle}</small>
+                    {agent.description && <em>{agent.description}</em>}
+                  </span>
                 </button>
               ))}
             </div>
