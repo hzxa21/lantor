@@ -80,6 +80,7 @@ const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
+const DISMISSED_INBOX_ITEMS_STORAGE_KEY = "localslock.dismissedInboxItems";
 
 const RESPONDING_ACTIVITY_KINDS = new Set([
   "thinking",
@@ -502,6 +503,20 @@ function buildAgentPerformance(activities: AgentActivity[], runs: AgentRun[]): A
   };
 }
 
+function readStoredDismissedInboxItems() {
+  try {
+    const stored = window.localStorage.getItem(DISMISSED_INBOX_ITEMS_STORAGE_KEY);
+    if (!stored) return {};
+    const parsed = JSON.parse(stored);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    );
+  } catch {
+    return {};
+  }
+}
+
 function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
@@ -569,7 +584,7 @@ function App() {
   }, [focusedMessageId]);
   const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
-  const [dismissedInboxItems, setDismissedInboxItems] = useState<Record<string, string>>({});
+  const [dismissedInboxItems, setDismissedInboxItems] = useState<Record<string, string>>(readStoredDismissedInboxItems);
   const [locallyUnfollowedThreadIds, setLocallyUnfollowedThreadIds] = useState<Set<string>>(() => new Set());
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
@@ -1007,6 +1022,13 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("localslock.sidebarWidth", String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      DISMISSED_INBOX_ITEMS_STORAGE_KEY,
+      JSON.stringify(dismissedInboxItems),
+    );
+  }, [dismissedInboxItems]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
