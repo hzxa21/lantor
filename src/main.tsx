@@ -2143,12 +2143,19 @@ function App() {
   }
 
   function openInboxItem(item: InboxItem) {
+    const targetThreadId = item.threadId ?? item.messageId;
     if (item.channelId) selectChannel(item.channelId);
-    if (item.threadId) {
-      revealThread(item.threadId);
-      setActiveTab("chat");
+    setSelectedAgentId(null);
+    setActiveTab("chat");
+    if (targetThreadId) {
+      revealThread(targetThreadId);
+    } else {
+      openThread(null);
+      setShowThread(false);
     }
-    if (item.messageId) setFocusedMessageId(item.messageId);
+    if (item.messageId) {
+      setFocusedMessageId(item.messageId);
+    }
     setShowInboxModal(false);
   }
 
