@@ -257,6 +257,7 @@ export type Bootstrap = {
   agents: Agent[];
   messages: Message[];
   saved_messages: SavedMessage[];
+  dismissed_inbox_items: Record<string, string>;
   artifacts: Artifact[];
   tasks: Task[];
   reminders: Reminder[];

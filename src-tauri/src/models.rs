@@ -1,4 +1,6 @@
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -330,6 +332,7 @@ pub(crate) struct Bootstrap {
     pub(crate) agents: Vec<Agent>,
     pub(crate) messages: Vec<Message>,
     pub(crate) saved_messages: Vec<SavedMessage>,
+    pub(crate) dismissed_inbox_items: HashMap<String, DateTime<Utc>>,
     pub(crate) artifacts: Vec<Artifact>,
     pub(crate) tasks: Vec<Task>,
     pub(crate) reminders: Vec<Reminder>,

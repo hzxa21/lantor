@@ -21,6 +21,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::{
     postgres::{PgListener, PgPoolOptions},
@@ -88,6 +89,13 @@ struct WarmCodexRegistry {
 #[derive(Clone, Default)]
 struct WarmClaudeRegistry {
     runtimes: Arc<AsyncMutex<HashMap<Uuid, Arc<WarmClaudeRuntime>>>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DismissInboxItemInput {
+    item_id: String,
+    dismissed_until: DateTime<Utc>,
 }
 
 struct WarmCodexRuntime {
@@ -1338,6 +1346,18 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         r#"
+        create table if not exists owner_inbox_dismissals (
+            item_id text primary key,
+            dismissed_until timestamptz not null,
+            dismissed_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         create table if not exists channel_members (
             channel_id uuid not null references channels(id) on delete cascade,
             agent_id uuid not null references agents(id) on delete cascade,
@@ -1381,6 +1401,7 @@ pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResu
     let agents = load_agents(pool).await?;
     let messages = load_messages(pool).await?;
     let saved_messages = load_saved_messages(pool).await?;
+    let dismissed_inbox_items = load_dismissed_inbox_items(pool).await?;
     let artifacts = load_artifacts(pool).await?;
     let tasks = load_tasks(pool).await?;
     let reminders = load_reminders(pool).await?;
@@ -1399,6 +1420,7 @@ pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResu
         agents,
         messages,
         saved_messages,
+        dismissed_inbox_items,
         artifacts,
         tasks,
         reminders,
@@ -4116,6 +4138,38 @@ async fn mark_channel_read(channel_id: Uuid, state: State<'_, AppState>) -> Comm
     mark_channel_read_in_pool(&state.pool, channel_id).await
 }
 
+#[tauri::command]
+async fn dismiss_inbox_items(
+    items: Vec<DismissInboxItemInput>,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    for item in items {
+        let item_id = item.item_id.trim();
+        if item_id.is_empty() {
+            continue;
+        }
+        sqlx::query(
+            r#"
+            insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
+            values ($1, $2, now())
+            on conflict (item_id) do update set
+                dismissed_until = greatest(
+                    owner_inbox_dismissals.dismissed_until,
+                    excluded.dismissed_until
+                ),
+                dismissed_at = now()
+            "#,
+        )
+        .bind(item_id)
+        .bind(item.dismissed_until)
+        .execute(&state.pool)
+        .await
+        .map_err(to_string)?;
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn mark_channel_read_in_pool(
     pool: &PgPool,
     channel_id: Uuid,
@@ -4671,6 +4725,25 @@ async fn load_saved_messages(pool: &PgPool) -> CommandResult<Vec<SavedMessage>> 
             message_created_at: row.get("message_created_at"),
             created_at: row.get("created_at"),
         })
+        .collect())
+}
+
+async fn load_dismissed_inbox_items(
+    pool: &PgPool,
+) -> CommandResult<HashMap<String, DateTime<Utc>>> {
+    let rows = sqlx::query(
+        r#"
+        select item_id, dismissed_until
+        from owner_inbox_dismissals
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.get("item_id"), row.get("dismissed_until")))
         .collect())
 }
 
@@ -11602,6 +11675,7 @@ pub fn run() {
             delete_message,
             dispatch_agent_work,
             install_supervisor_service,
+            dismiss_inbox_items,
             mark_channel_read,
             open_dm_with_agent,
             retry_agent_work,

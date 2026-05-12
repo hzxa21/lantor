@@ -80,7 +80,6 @@ const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
-const DISMISSED_INBOX_ITEMS_STORAGE_KEY = "localslock.dismissedInboxItems";
 
 const RESPONDING_ACTIVITY_KINDS = new Set([
   "thinking",
@@ -503,20 +502,6 @@ function buildAgentPerformance(activities: AgentActivity[], runs: AgentRun[]): A
   };
 }
 
-function readStoredDismissedInboxItems() {
-  try {
-    const stored = window.localStorage.getItem(DISMISSED_INBOX_ITEMS_STORAGE_KEY);
-    if (!stored) return {};
-    const parsed = JSON.parse(stored);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(
-      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-    );
-  } catch {
-    return {};
-  }
-}
-
 function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
@@ -584,7 +569,7 @@ function App() {
   }, [focusedMessageId]);
   const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
-  const [dismissedInboxItems, setDismissedInboxItems] = useState<Record<string, string>>(readStoredDismissedInboxItems);
+  const [dismissedInboxItems, setDismissedInboxItems] = useState<Record<string, string>>({});
   const [locallyUnfollowedThreadIds, setLocallyUnfollowedThreadIds] = useState<Set<string>>(() => new Set());
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
@@ -1024,11 +1009,8 @@ function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
-    window.localStorage.setItem(
-      DISMISSED_INBOX_ITEMS_STORAGE_KEY,
-      JSON.stringify(dismissedInboxItems),
-    );
-  }, [dismissedInboxItems]);
+    setDismissedInboxItems(data?.dismissed_inbox_items ?? {});
+  }, [data?.dismissed_inbox_items]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -2164,6 +2146,15 @@ function App() {
     setShowSavedModal(false);
   }
 
+  async function persistDismissedInboxItems(items: InboxItem[]) {
+    const dismissals = items.map((item) => ({
+      itemId: item.id,
+      dismissedUntil: item.timestamp,
+    }));
+    if (dismissals.length === 0) return;
+    await apiInvoke("dismiss_inbox_items", { items: dismissals });
+  }
+
   function openInboxItem(item: InboxItem) {
     const targetThreadId = item.threadId ?? item.messageId;
     if (item.channelId) selectChannel(item.channelId);
@@ -2184,6 +2175,7 @@ function App() {
 
   async function markInboxItemRead(item: InboxItem) {
     setDismissedInboxItems((current) => ({ ...current, [item.id]: item.timestamp }));
+    const operations: Promise<unknown>[] = [persistDismissedInboxItems([item])];
     if (item.threadId) {
       setThreadUnreadCounts((current) => {
         if (!current[item.threadId!]) return current;
@@ -2199,11 +2191,12 @@ function App() {
         next.delete(item.channelId!);
         return next;
       });
-      await apiInvoke("mark_channel_read", { channelId: item.channelId });
+      operations.push(apiInvoke("mark_channel_read", { channelId: item.channelId }));
     }
     if (item.reminderId) {
-      await apiInvoke("complete_reminder", { reminderId: item.reminderId });
+      operations.push(apiInvoke("complete_reminder", { reminderId: item.reminderId }));
     }
+    await Promise.all(operations);
     await refresh();
   }
 
@@ -2222,10 +2215,13 @@ function App() {
         channelIds.add(item.channelId);
       }
     }
-    await Promise.all([...channelIds].map((channelId) => apiInvoke("mark_channel_read", { channelId })));
-    await Promise.all(data.reminders
-      .filter((reminder) => reminder.status === "fired")
-      .map((reminder) => apiInvoke("complete_reminder", { reminderId: reminder.id })));
+    await Promise.all([
+      persistDismissedInboxItems(inboxItems),
+      ...[...channelIds].map((channelId) => apiInvoke("mark_channel_read", { channelId })),
+      ...data.reminders
+        .filter((reminder) => reminder.status === "fired")
+        .map((reminder) => apiInvoke("complete_reminder", { reminderId: reminder.id })),
+    ]);
     setChannelAlertIds(new Set());
     setThreadUnreadCounts({});
     await refresh();
