@@ -2156,6 +2156,7 @@ function App() {
     if (item.messageId) {
       setFocusedMessageId(item.messageId);
     }
+    void markInboxItemRead(item);
     setShowInboxModal(false);
   }
 
