@@ -66,6 +66,11 @@ export function visibleChannelDescription(description: string) {
   return description.trim() === "Local channel" ? "" : description;
 }
 
+export function visibleAgentDescription(description: string) {
+  const trimmed = description.trim();
+  return /^local agent\.?$/i.test(trimmed) ? "" : trimmed;
+}
+
 export function presetPrompt(form: AgentForm) {
   const name = form.displayName || form.handle || "$LOCAL_SLOCK_AGENT_HANDLE";
   return [

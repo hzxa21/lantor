@@ -6,7 +6,7 @@ import { copyText } from "../clipboard";
 import { isCompactFollowupMessage } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
-import { formatClockTime, formatTime } from "../ui-utils";
+import { formatClockTime, formatTime, visibleAgentDescription } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
@@ -579,7 +579,7 @@ export function ThreadPanel({
                   <span className="mention-picker-copy">
                     <strong>{agent.display_name}</strong>
                     <small>@{agent.handle}</small>
-                    {agent.description && <em>{agent.description}</em>}
+                    {visibleAgentDescription(agent.description) && <em>{visibleAgentDescription(agent.description)}</em>}
                   </span>
                 </button>
               ))}
