@@ -1278,7 +1278,7 @@ function App() {
       const latest = latestByChannel.get(channel.id);
       const dmAgent = channel.kind === "dm" && channel.dm_agent_id ? agentsById.get(channel.dm_agent_id) : null;
       items.push({
-        id: `${channel.kind}:${channel.id}`,
+        id: `${channel.kind}:${channel.id}:${latest?.id ?? "unread"}`,
         kind: channel.kind === "dm" ? "dm" : "channel",
         title: channel.kind === "dm" ? `DM with @${dmAgent?.handle ?? "agent"}` : `New activity in #${channel.name}`,
         excerpt: latest?.body ?? visibleChannelDescription(channel.description),
@@ -1298,19 +1298,20 @@ function App() {
 
     for (const root of allThreadRootMessages) {
       const latestReply = latestReplyByRoot.get(root.id);
+      const currentMessage = latestReply ?? root;
       const unread = (threadUnreadCounts[root.id] ?? 0) > 0;
       items.push({
-        id: `thread:${root.id}`,
+        id: `thread:${root.id}:${currentMessage.id}`,
         kind: "thread",
-        title: firstLines(root.body, 1),
-        excerpt: latestReply ? `${latestReply.sender_name}: ${latestReply.body}` : root.body,
+        title: firstLines(currentMessage.body, 1),
+        excerpt: latestReply ? `Thread reply to: ${firstLines(root.body, 1)}` : root.body,
         surface: channelLabel(root.channel_id),
-        actor: root.sender_name,
-        timestamp: timestamp(latestReply?.created_at ?? root.created_at),
+        actor: currentMessage.sender_name,
+        timestamp: timestamp(currentMessage.created_at),
         unread,
         channelId: root.channel_id,
         threadId: root.id,
-        messageId: root.id,
+        messageId: currentMessage.id,
         taskId: null,
         reminderId: null,
         replyCount: threadReplyCounts[root.id] ?? 0,
@@ -2147,6 +2148,7 @@ function App() {
       revealThread(item.threadId);
       setActiveTab("chat");
     }
+    if (item.messageId) setFocusedMessageId(item.messageId);
     setShowInboxModal(false);
   }
 
