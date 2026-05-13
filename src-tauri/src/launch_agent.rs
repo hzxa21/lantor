@@ -17,7 +17,7 @@ pub(crate) fn spawn_supervisor_process(database_url: &str) {
 
     if let Err(err) = StdCommand::new(exe)
         .arg("--supervisor")
-        .env("LOCAL_SLOCK_DATABASE_URL", database_url)
+        .env("LANTOR_DATABASE_URL", database_url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -185,7 +185,7 @@ fn render_launch_agent_plist(exe_path: &Path, database_url: &str) -> String {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>LOCAL_SLOCK_DATABASE_URL</key>
+    <key>LANTOR_DATABASE_URL</key>
     <string>{}</string>
   </dict>
   <key>RunAtLoad</key>

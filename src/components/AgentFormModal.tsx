@@ -125,7 +125,7 @@ export function AgentFormModal({
           <input
             value={form.workingDirectory}
             onChange={(event) => onChange({ ...form, workingDirectory: event.target.value })}
-            placeholder="/Users/dylan/Desktop/workspace/localslock/agents/<handle>"
+            placeholder="/Users/dylan/Desktop/workspace/lantor/agents/<handle>"
           />
           <small>{APP_DISPLAY_NAME} loads MEMORY.md from this directory as persistent context when the agent runs.</small>
         </label>

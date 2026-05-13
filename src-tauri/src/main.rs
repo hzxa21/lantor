@@ -59,14 +59,16 @@ use usage::{
     usage_from_runtime_event,
 };
 
-const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/localslock";
+const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/lantor";
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
-const AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
-const SILENT_REPLY_PREFIX: &str = "LOCAL_SLOCK_SILENT_REPLY";
+const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";
+const LEGACY_AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
+const SILENT_REPLY_PREFIX: &str = "LANTOR_SILENT_REPLY";
+const LEGACY_SILENT_REPLY_PREFIX: &str = "LOCAL_SLOCK_SILENT_REPLY";
 pub(crate) const UI_REFRESH_CHANNEL: &str = "lantor_ui_refresh";
 const SUPERVISOR_WAKE_CHANNEL: &str = "lantor_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "lantor://refresh";
-const LOCAL_SLOCK_CONTEXT_TOOL_ENV: &str = "LOCAL_SLOCK_CONTEXT_TOOL";
+const LANTOR_CONTEXT_TOOL_ENV: &str = "LANTOR_CONTEXT_TOOL";
 const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by Lantor]";
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
@@ -158,7 +160,8 @@ struct ClaudeActiveTurn {
 type CommandResult<T> = Result<T, String>;
 
 fn db_url() -> String {
-    env::var("LOCAL_SLOCK_DATABASE_URL")
+    env::var("LANTOR_DATABASE_URL")
+        .or_else(|_| env::var("LOCAL_SLOCK_DATABASE_URL"))
         .or_else(|_| env::var("DATABASE_URL"))
         .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned())
 }
@@ -1399,13 +1402,17 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
 }
 
 fn configured_web_base_url() -> Option<String> {
-    if let Ok(value) = env::var("LOCAL_SLOCK_WEB_PUBLIC_URL") {
+    if let Ok(value) =
+        env::var("LANTOR_WEB_PUBLIC_URL").or_else(|_| env::var("LOCAL_SLOCK_WEB_PUBLIC_URL"))
+    {
         let trimmed = value.trim().trim_end_matches('/').to_owned();
         if !trimmed.is_empty() {
             return Some(trimmed);
         }
     }
-    let bind = env::var("LOCAL_SLOCK_WEB_BIND").ok()?;
+    let bind = env::var("LANTOR_WEB_BIND")
+        .or_else(|_| env::var("LOCAL_SLOCK_WEB_BIND"))
+        .ok()?;
     let addr = bind.trim().parse::<SocketAddr>().ok()?;
     let host = match addr.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_owned(),
@@ -2899,11 +2906,11 @@ async fn ensure_agent_inbox_wake_work_item(
     let context = format!(
         "Lantor agent inbox wake.\n\
          You have unread or processing inbox items. First inspect them with:\n\
-         \"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20\n\
+         \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20\n\
          Then read the item you will handle with:\n\
-         \"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id {inbox_item_id}\n\
+         \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id {inbox_item_id}\n\
          Archive handled or intentionally ignored items with:\n\
-         \"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id <id>\n\
+         \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id <id>\n\
          \n\
          Default reply target for normal assistant text: {target}\n\
          If you handle another inbox item in this same turn, post to that item's channel/thread with channel_message_create instead of relying on the default route.\n\
@@ -6177,7 +6184,10 @@ fn extract_agent_event_json(line: &str) -> Option<&str> {
             break;
         }
     }
-    trimmed.strip_prefix(AGENT_EVENT_PREFIX).map(str::trim)
+    trimmed
+        .strip_prefix(AGENT_EVENT_PREFIX)
+        .or_else(|| trimmed.strip_prefix(LEGACY_AGENT_EVENT_PREFIX))
+        .map(str::trim)
 }
 
 async fn handle_agent_event(
@@ -7715,7 +7725,9 @@ async fn load_streaming_control_context(
 
 fn silent_reply_reason(body: &str) -> Option<String> {
     let first_line = body.trim().lines().next()?.trim().trim_matches('`').trim();
-    let rest = first_line.strip_prefix(SILENT_REPLY_PREFIX)?;
+    let rest = first_line
+        .strip_prefix(SILENT_REPLY_PREFIX)
+        .or_else(|| first_line.strip_prefix(LEGACY_SILENT_REPLY_PREFIX))?;
     if !rest.is_empty()
         && !rest.starts_with(':')
         && !rest
@@ -8184,9 +8196,14 @@ async fn load_channel_agent_roster(
 
 fn configure_agent_context_tool_env(command: &mut Command) {
     if let Ok(exe_path) = env::current_exe() {
-        command.env(LOCAL_SLOCK_CONTEXT_TOOL_ENV, exe_path);
+        command.env(LANTOR_CONTEXT_TOOL_ENV, exe_path);
     }
-    command.env("LOCAL_SLOCK_DATABASE_URL", db_url());
+    command.env("LANTOR_DATABASE_URL", db_url());
+}
+
+fn configure_agent_identity_env(command: &mut Command, agent_id: Uuid, handle: &str) {
+    command.env("LANTOR_AGENT_ID", agent_id.to_string());
+    command.env("LANTOR_AGENT_HANDLE", handle);
 }
 
 fn codex_stream_key(run_id: Uuid, item_id: &str) -> String {
@@ -8641,8 +8658,7 @@ async fn spawn_warm_claude_runtime(
         .arg("--verbose")
         .arg("--permission-mode")
         .arg("bypassPermissions");
-    command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
-    command.env("LOCAL_SLOCK_AGENT_HANDLE", handle);
+    configure_agent_identity_env(&mut command, agent_id, handle);
     configure_agent_context_tool_env(&mut command);
     #[cfg(unix)]
     command.process_group(0);
@@ -8797,8 +8813,7 @@ async fn spawn_warm_codex_runtime(
     command
         .arg("-lc")
         .arg("exec codex app-server --listen stdio://");
-    command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
-    command.env("LOCAL_SLOCK_AGENT_HANDLE", handle);
+    configure_agent_identity_env(&mut command, agent_id, handle);
     configure_agent_context_tool_env(&mut command);
     #[cfg(unix)]
     command.process_group(0);
@@ -10133,7 +10148,7 @@ async fn supervisor_start_agent(
                 .is_none()
                 .then(|| {
                     format!(
-                        "Your agent profile currently has no avatar. If your handle or MEMORY.md gives you a stable identity, you may emit one standalone LOCAL_SLOCK_EVENT profile_update with an avatar like `dicebear:bottts-neutral:{handle}` or another supported DiceBear style. Keep handling the user's request normally and do not send visible chat only for avatar setup."
+                        "Your agent profile currently has no avatar. If your handle or MEMORY.md gives you a stable identity, you may emit one standalone LANTOR_EVENT profile_update with an avatar like `dicebear:bottts-neutral:{handle}` or another supported DiceBear style. Keep handling the user's request normally and do not send visible chat only for avatar setup."
                     )
                 });
             build_work_item_prompt(
@@ -10239,17 +10254,15 @@ async fn supervisor_start_agent(
 
     let mut command = Command::new("/bin/zsh");
     command.arg("-lc").arg(&command_text);
-    command.env("LOCAL_SLOCK_AGENT_ID", agent_id.to_string());
-    command.env("LOCAL_SLOCK_AGENT_HANDLE", &handle);
+    configure_agent_identity_env(&mut command, agent_id, &handle);
     configure_agent_context_tool_env(&mut command);
-    command.env("LOCAL_SLOCK_RUN_ID", run_id.to_string());
-    command.env(
-        "LOCAL_SLOCK_WORK_ITEM_ID",
-        work_item_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(String::new),
-    );
-    command.env("LOCAL_SLOCK_WORK_ITEM_PROMPT", &work_item_prompt);
+    let run_id_value = run_id.to_string();
+    command.env("LANTOR_RUN_ID", run_id_value);
+    let work_item_id_value = work_item_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(String::new);
+    command.env("LANTOR_WORK_ITEM_ID", work_item_id_value);
+    command.env("LANTOR_WORK_ITEM_PROMPT", &work_item_prompt);
     #[cfg(unix)]
     command.process_group(0);
     if !working_directory.is_empty() {
@@ -11955,12 +11968,12 @@ mod tests {
 
         let streaming = build_codex_streaming_prompt(&prompt);
         assert!(streaming.contains("will stream your Codex assistant text"));
-        assert!(streaming.contains("you may emit standalone LOCAL_SLOCK_EVENT control lines"));
+        assert!(streaming.contains("you may emit standalone LANTOR_EVENT control lines"));
         assert!(streaming.contains("artifact_create"));
         assert!(streaming.contains("attachment_create"));
         assert!(streaming.contains("channel_message_create"));
         assert!(streaming.contains("handoff_create"));
-        assert!(streaming.contains("Do not emit legacy LOCAL_SLOCK_EVENT message"));
+        assert!(streaming.contains("Do not emit legacy LANTOR_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
     }
 
@@ -12651,6 +12664,14 @@ mod tests {
     #[test]
     fn extracts_plain_agent_event_lines() {
         assert_eq!(
+            extract_agent_event_json(r#"LANTOR_EVENT {"type":"message","body":"ok"}"#),
+            Some(r#"{"type":"message","body":"ok"}"#)
+        );
+    }
+
+    #[test]
+    fn extracts_legacy_agent_event_lines() {
+        assert_eq!(
             extract_agent_event_json(r#"LOCAL_SLOCK_EVENT {"type":"message","body":"ok"}"#),
             Some(r#"{"type":"message","body":"ok"}"#)
         );
@@ -12660,7 +12681,7 @@ mod tests {
     fn extracts_codex_wrapped_agent_event_lines() {
         assert_eq!(
             extract_agent_event_json(
-                r#"[stderr] LOCAL_SLOCK_EVENT {"type":"message","body":"from tool output"}"#
+                r#"[stderr] LANTOR_EVENT {"type":"message","body":"from tool output"}"#
             ),
             Some(r#"{"type":"message","body":"from tool output"}"#)
         );
@@ -12670,7 +12691,7 @@ mod tests {
     fn extracts_stdout_wrapped_agent_event_lines() {
         assert_eq!(
             extract_agent_event_json(
-                r#"[stdout] LOCAL_SLOCK_EVENT {"type":"message","body":"from final output"}"#
+                r#"[stdout] LANTOR_EVENT {"type":"message","body":"from final output"}"#
             ),
             Some(r#"{"type":"message","body":"from final output"}"#)
         );
@@ -12679,7 +12700,7 @@ mod tests {
     #[test]
     fn ignores_event_examples_embedded_in_instructions() {
         assert!(extract_agent_event_json(
-            r#"[stderr] Reply with: LOCAL_SLOCK_EVENT {"type":"message","body":"..."}"#
+            r#"[stderr] Reply with: LANTOR_EVENT {"type":"message","body":"..."}"#
         )
         .is_none());
     }
@@ -12697,14 +12718,18 @@ mod tests {
     #[test]
     fn detects_silent_reply_marker() {
         assert_eq!(
+            silent_reply_reason("LANTOR_SILENT_REPLY: greeting only"),
+            Some("greeting only".to_owned())
+        );
+        assert_eq!(
             silent_reply_reason("LOCAL_SLOCK_SILENT_REPLY: greeting only"),
             Some("greeting only".to_owned())
         );
         assert_eq!(
-            silent_reply_reason("LOCAL_SLOCK_SILENT_REPLY"),
+            silent_reply_reason("LANTOR_SILENT_REPLY"),
             Some(String::new())
         );
-        assert_eq!(silent_reply_reason("LOCAL_SLOCK_SILENT_REPLYING"), None);
+        assert_eq!(silent_reply_reason("LANTOR_SILENT_REPLYING"), None);
     }
 
     #[test]
@@ -12873,7 +12898,8 @@ mod tests {
     }
 
     async fn test_pool_with_connections(max_connections: u32) -> Option<(PgPool, String)> {
-        let database_url = std::env::var("LOCAL_SLOCK_TEST_DATABASE_URL")
+        let database_url = std::env::var("LANTOR_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("LOCAL_SLOCK_TEST_DATABASE_URL"))
             .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
         let bootstrap_pool = match PgPoolOptions::new()
             .max_connections(1)
@@ -13404,7 +13430,7 @@ mod tests {
                 channel_id,
                 None,
                 stream_key,
-                "LOCAL_SLOCK_SILENT_REPLY: greeting only",
+                "LANTOR_SILENT_REPLY: greeting only",
             )
             .await?;
             assert!(
@@ -13493,7 +13519,7 @@ mod tests {
                 "note": "Look at CI"
             });
             let stream_key = "reminder-run:item-1";
-            let body = format!("I'll remind you.\nLOCAL_SLOCK_EVENT {event}");
+            let body = format!("I'll remind you.\nLANTOR_EVENT {event}");
             let message_id = append_streaming_agent_message(
                 &pool,
                 agent_id,
@@ -13599,7 +13625,7 @@ mod tests {
                 channel_id,
                 Some(root_id),
                 stream_key,
-                &format!("LOCAL_SLOCK_EVENT {event}"),
+                &format!("LANTOR_EVENT {event}"),
             )
             .await?;
 
@@ -13642,7 +13668,7 @@ mod tests {
             let visible_messages = load_messages(&pool).await?;
             assert!(!visible_messages
                 .iter()
-                .any(|message| message.body.contains("LOCAL_SLOCK_EVENT")));
+                .any(|message| message.body.contains("LANTOR_EVENT")));
             assert!(visible_messages.iter().any(|message| message
                 .body
                 .contains("Created artifact: Architecture report")));
@@ -13686,7 +13712,7 @@ mod tests {
                 source_channel_id,
                 None,
                 &stream_key,
-                &format!("好的，我来创建。\n\nLOCAL_SLOCK_EVENT {event}"),
+                &format!("好的，我来创建。\n\nLANTOR_EVENT {event}"),
             )
             .await?;
 
@@ -13720,7 +13746,7 @@ mod tests {
             assert_eq!(member_count, 2);
 
             let leaked_messages: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from messages where body like '%LOCAL_SLOCK_EVENT%'",
+                "select count(*)::bigint from messages where body like '%LANTOR_EVENT%'",
             )
             .fetch_one(&pool)
             .await
@@ -13766,7 +13792,7 @@ mod tests {
                 channel_id,
                 None,
                 stream_key,
-                &format!("LOCAL_SLOCK_EVENT {event}"),
+                &format!("LANTOR_EVENT {event}"),
             )
             .await?;
 

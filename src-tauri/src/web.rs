@@ -103,22 +103,22 @@ struct OwnerProfileRequest {
 }
 
 pub(crate) fn spawn_web_server_if_configured(pool: PgPool, db_url: String) {
-    let Ok(bind) = env::var("LOCAL_SLOCK_WEB_BIND") else {
+    let Ok(bind) = env::var("LANTOR_WEB_BIND").or_else(|_| env::var("LOCAL_SLOCK_WEB_BIND")) else {
         return;
     };
     let bind = bind.trim().to_owned();
     if bind.is_empty() {
         return;
     }
-    let token = env::var("LOCAL_SLOCK_WEB_TOKEN").unwrap_or_default();
+    let token = env::var("LANTOR_WEB_TOKEN")
+        .or_else(|_| env::var("LOCAL_SLOCK_WEB_TOKEN"))
+        .unwrap_or_default();
     let Ok(addr) = bind.parse::<SocketAddr>() else {
-        eprintln!("Lantor web access disabled: invalid LOCAL_SLOCK_WEB_BIND={bind}");
+        eprintln!("Lantor web access disabled: invalid LANTOR_WEB_BIND={bind}");
         return;
     };
     if !is_loopback(addr.ip()) && token.trim().is_empty() {
-        eprintln!(
-            "Lantor web access disabled: non-loopback bind {addr} requires LOCAL_SLOCK_WEB_TOKEN"
-        );
+        eprintln!("Lantor web access disabled: non-loopback bind {addr} requires LANTOR_WEB_TOKEN");
         return;
     }
 
@@ -180,7 +180,7 @@ fn is_loopback(ip: IpAddr) -> bool {
 }
 
 fn web_dist_dir() -> PathBuf {
-    if let Ok(path) = env::var("LOCAL_SLOCK_WEB_DIST") {
+    if let Ok(path) = env::var("LANTOR_WEB_DIST").or_else(|_| env::var("LOCAL_SLOCK_WEB_DIST")) {
         let path = PathBuf::from(path);
         if path.is_dir() {
             return path;
@@ -207,7 +207,7 @@ async fn missing_dist(dist_dir: PathBuf) -> impl IntoResponse {
   <body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 32px;">
     <h1>Lantor Web build not found</h1>
     <p>Expected <code>{}</code>.</p>
-    <p>Run <code>npm run build</code>, then restart Lantor with <code>LOCAL_SLOCK_WEB_BIND</code>.</p>
+    <p>Run <code>npm run build</code>, then restart Lantor with <code>LANTOR_WEB_BIND</code>.</p>
   </body>
 </html>"#,
         dist_dir.display()

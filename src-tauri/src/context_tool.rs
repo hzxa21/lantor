@@ -35,6 +35,17 @@ struct AgentInboxTarget {
     handle: String,
 }
 
+fn agent_env(primary: &str, legacy: &str) -> Option<(String, String)> {
+    env::var(primary)
+        .ok()
+        .map(|value| (primary.to_owned(), value))
+        .or_else(|| {
+            env::var(legacy)
+                .ok()
+                .map(|value| (legacy.to_owned(), value))
+        })
+}
+
 fn arg_value(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
         .find_map(|window| (window[0] == name).then(|| window[1].clone()))
@@ -656,15 +667,18 @@ async fn resolve_agent_workspace_target(
             .fetch_one(pool)
             .await
             .map_err(to_string)?
-    } else if let Ok(agent_id) = env::var("LOCAL_SLOCK_AGENT_ID") {
-        let agent_id = Uuid::parse_str(agent_id.trim())
-            .map_err(|err| format!("invalid LOCAL_SLOCK_AGENT_ID: {err}"))?;
+    } else if let Some((env_name, agent_id)) = agent_env("LANTOR_AGENT_ID", "LOCAL_SLOCK_AGENT_ID")
+    {
+        let agent_id =
+            Uuid::parse_str(agent_id.trim()).map_err(|err| format!("invalid {env_name}: {err}"))?;
         sqlx::query("select id, handle, working_directory from agents where id = $1")
             .bind(agent_id)
             .fetch_one(pool)
             .await
             .map_err(to_string)?
-    } else if let Ok(handle) = env::var("LOCAL_SLOCK_AGENT_HANDLE") {
+    } else if let Some((_env_name, handle)) =
+        agent_env("LANTOR_AGENT_HANDLE", "LOCAL_SLOCK_AGENT_HANDLE")
+    {
         let agent_id = resolve_agent_by_handle(pool, &handle).await?;
         sqlx::query("select id, handle, working_directory from agents where id = $1")
             .bind(agent_id)
@@ -672,9 +686,7 @@ async fn resolve_agent_workspace_target(
             .await
             .map_err(to_string)?
     } else {
-        return Err(
-            "workspace commands require --target @handle or LOCAL_SLOCK_AGENT_ID".to_owned(),
-        );
+        return Err("workspace commands require --target @handle or LANTOR_AGENT_ID".to_owned());
     };
 
     Ok(AgentWorkspaceTarget {
@@ -707,15 +719,18 @@ async fn resolve_agent_inbox_target(
             .fetch_one(pool)
             .await
             .map_err(to_string)?
-    } else if let Ok(agent_id) = env::var("LOCAL_SLOCK_AGENT_ID") {
-        let agent_id = Uuid::parse_str(agent_id.trim())
-            .map_err(|err| format!("invalid LOCAL_SLOCK_AGENT_ID: {err}"))?;
+    } else if let Some((env_name, agent_id)) = agent_env("LANTOR_AGENT_ID", "LOCAL_SLOCK_AGENT_ID")
+    {
+        let agent_id =
+            Uuid::parse_str(agent_id.trim()).map_err(|err| format!("invalid {env_name}: {err}"))?;
         sqlx::query("select id, handle from agents where id = $1")
             .bind(agent_id)
             .fetch_one(pool)
             .await
             .map_err(to_string)?
-    } else if let Ok(handle) = env::var("LOCAL_SLOCK_AGENT_HANDLE") {
+    } else if let Some((_env_name, handle)) =
+        agent_env("LANTOR_AGENT_HANDLE", "LOCAL_SLOCK_AGENT_HANDLE")
+    {
         let agent_id = resolve_agent_by_handle(pool, &handle).await?;
         sqlx::query("select id, handle from agents where id = $1")
             .bind(agent_id)
@@ -723,7 +738,7 @@ async fn resolve_agent_inbox_target(
             .await
             .map_err(to_string)?
     } else {
-        return Err("inbox commands require --target @handle or LOCAL_SLOCK_AGENT_ID".to_owned());
+        return Err("inbox commands require --target @handle or LANTOR_AGENT_ID".to_owned());
     };
 
     Ok(AgentInboxTarget {
@@ -1095,7 +1110,7 @@ pub(crate) async fn agent_context_inbox_list(
             line.push_str(&format!("\n  preview: {preview}"));
         }
         line.push_str(&format!(
-            "\n  read: \"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id {}",
+            "\n  read: \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id {}",
             short_id(id)
         ));
         output.push(line);
@@ -1228,12 +1243,12 @@ pub(crate) async fn agent_context_inbox_read(
     output.push(format!("payload:\n{payload}"));
     if surface != "unknown" {
         output.push(format!(
-            "history_hint=\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool history-read --target {:?} --limit 30",
+            "history_hint=\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool history-read --target {:?} --limit 30",
             surface
         ));
     }
     output.push(format!(
-        "archive_when_done=\"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id {}",
+        "archive_when_done=\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id {}",
         short_id(inbox_id)
     ));
 
@@ -1277,7 +1292,7 @@ pub(crate) async fn agent_context_inbox_archive(
 pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
     if args.is_empty() || has_arg(args, "--help") || has_arg(args, "-h") {
         return Ok(
-            "Lantor agent context tool\n\nCommands:\n  inbox-list [--state active|unread|processing|archived|all] [--limit 20]\n  inbox-read --inbox-id <uuid-or-prefix>\n  inbox-archive --inbox-id <uuid-or-prefix>\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID. Inbox, workspace, and memory commands default to the current LOCAL_SLOCK_AGENT_ID when invoked by an agent."
+            "Lantor agent context tool\n\nCommands:\n  inbox-list [--state active|unread|processing|archived|all] [--limit 20]\n  inbox-read --inbox-id <uuid-or-prefix>\n  inbox-archive --inbox-id <uuid-or-prefix>\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID. Inbox, workspace, and memory commands default to the current LANTOR_AGENT_ID when invoked by an agent."
                 .to_owned(),
         );
     }

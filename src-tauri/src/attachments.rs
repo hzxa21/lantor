@@ -7,7 +7,9 @@ use crate::CommandResult;
 pub(crate) const ATTACHMENT_SIZE_LIMIT: usize = 25 * 1024 * 1024;
 
 fn attachment_root_dir() -> CommandResult<PathBuf> {
-    if let Ok(path) = env::var("LOCAL_SLOCK_ATTACHMENT_DIR") {
+    if let Ok(path) =
+        env::var("LANTOR_ATTACHMENT_DIR").or_else(|_| env::var("LOCAL_SLOCK_ATTACHMENT_DIR"))
+    {
         return Ok(PathBuf::from(path));
     }
     let home = env::var("HOME").map_err(|_| "HOME is not set".to_owned())?;

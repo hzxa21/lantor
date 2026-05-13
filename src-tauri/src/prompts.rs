@@ -12,7 +12,7 @@ fn lantor_operating_policy_prompt() -> &'static str {
     r#"Operating policy:
 - Treat messages as conversation. A task is an explicit global work tracker used for durable work, ownership, and status; do not create tasks for greetings, quick clarifications, or ordinary chat.
 - Prefer the smallest useful surface. Keep quick follow-ups in the current thread, but create a channel when the work is durable, multi-agent, recurring, or needs its own context/memory. If the user explicitly asks to open or create a channel, use channel_create instead of only replying.
-- Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else.
+- Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output exactly `LANTOR_SILENT_REPLY: <short reason>` and nothing else.
 - Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.
 - Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.
 - MEMORY.md is durable recovery context. Keep it concise, index-like, and useful after restart or context compaction."#
@@ -32,45 +32,45 @@ fn lantor_memory_management_prompt() -> &'static str {
 
 fn lantor_context_tools_prompt() -> &'static str {
     r##"Agent context tools:
-- inbox list: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20
-- inbox read: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"
-- inbox archive: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-archive --inbox-id "<uuid-or-prefix>"
-- workspace info: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-info
-- workspace files: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80
-- durable memory: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000
-- history: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20
-- search: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool message-search --query "text" --target "#channel" --limit 20
-- attachment: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"
-- artifact: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
-- agent introspection: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"
-Inbox, workspace, and memory commands default to your own LOCAL_SLOCK_AGENT_ID; add --target "@handle" only when inspecting another visible agent.
+- inbox list: "$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20
+- inbox read: "$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"
+- inbox archive: "$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-archive --inbox-id "<uuid-or-prefix>"
+- workspace info: "$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-info
+- workspace files: "$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80
+- durable memory: "$LANTOR_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000
+- history: "$LANTOR_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20
+- search: "$LANTOR_CONTEXT_TOOL" --agent-context-tool message-search --query "text" --target "#channel" --limit 20
+- attachment: "$LANTOR_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"
+- artifact: "$LANTOR_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
+- agent introspection: "$LANTOR_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"
+Inbox, workspace, and memory commands default to your own LANTOR_AGENT_ID; add --target "@handle" only when inspecting another visible agent.
 When a turn is an inbox wake, first list/read active inbox items, decide which need visible work, and archive handled or intentionally ignored items."##
 }
 
 fn lantor_control_api_prompt() -> &'static str {
-    r#"Standalone LOCAL_SLOCK_EVENT control lines:
-LOCAL_SLOCK_EVENT {"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"<short user-facing status>","detail":"<optional compact detail>"}
-LOCAL_SLOCK_EVENT {"type":"usage","input_tokens":1234,"output_tokens":567,"cost_usd":0.0123}
-LOCAL_SLOCK_EVENT {"type":"memory_append","body":"<durable fact, preference, decision, or handoff>"}
-LOCAL_SLOCK_EVENT {"type":"memory_compact","body":"<full compact MEMORY.md replacement with Role, Key Knowledge, and Active Context>"}
-LOCAL_SLOCK_EVENT {"type":"profile_update","display_name":"<optional>","role":"<optional concise role>","avatar":"<optional emoji, initials, URL, or dicebear:style[:seed]>","description":"<optional capability summary>"}
-LOCAL_SLOCK_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title":"<title>","note":"<optional note>","recurrence":"none|daily|weekly"}
-LOCAL_SLOCK_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
-LOCAL_SLOCK_EVENT {"type":"task_create","channel_id":"<channel uuid>","title":"<short task title>","body":"<root task message>","thread_body":"<first execution update in the task thread>","assign_self":true,"status":"in_progress"}
-LOCAL_SLOCK_EVENT {"type":"task_status","task_number":1,"status":"in_review"}
-LOCAL_SLOCK_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown","title":"<short title>","summary":"<short chat summary>","content":"<full markdown content>","metadata":{}}
-LOCAL_SLOCK_EVENT {"type":"attachment_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","body":"<short message>","files":[{"path":"/absolute/path/to/image.png","name":"image.png","mime_type":"image/png"}]}
-LOCAL_SLOCK_EVENT {"type":"channel_message_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","body":"<message body>"}
-LOCAL_SLOCK_EVENT {"type":"handoff_create","target_agent":"@OtherAgent","channel_id":"<channel uuid>","thread_root_id":"<thread uuid>","reason":"<why this handoff is needed>","body":"<specific request for the target agent>"}
-LOCAL_SLOCK_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
-LOCAL_SLOCK_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
+    r#"Standalone LANTOR_EVENT control lines:
+LANTOR_EVENT {"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"<short user-facing status>","detail":"<optional compact detail>"}
+LANTOR_EVENT {"type":"usage","input_tokens":1234,"output_tokens":567,"cost_usd":0.0123}
+LANTOR_EVENT {"type":"memory_append","body":"<durable fact, preference, decision, or handoff>"}
+LANTOR_EVENT {"type":"memory_compact","body":"<full compact MEMORY.md replacement with Role, Key Knowledge, and Active Context>"}
+LANTOR_EVENT {"type":"profile_update","display_name":"<optional>","role":"<optional concise role>","avatar":"<optional emoji, initials, URL, or dicebear:style[:seed]>","description":"<optional capability summary>"}
+LANTOR_EVENT {"type":"reminder_create","when":"<ISO8601 timestamp>","title":"<title>","note":"<optional note>","recurrence":"none|daily|weekly"}
+LANTOR_EVENT {"type":"reminder_cancel","reminder_id":"<uuid>"}
+LANTOR_EVENT {"type":"task_create","channel_id":"<channel uuid>","title":"<short task title>","body":"<root task message>","thread_body":"<first execution update in the task thread>","assign_self":true,"status":"in_progress"}
+LANTOR_EVENT {"type":"task_status","task_number":1,"status":"in_review"}
+LANTOR_EVENT {"type":"artifact_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","kind":"markdown","title":"<short title>","summary":"<short chat summary>","content":"<full markdown content>","metadata":{}}
+LANTOR_EVENT {"type":"attachment_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","body":"<short message>","files":[{"path":"/absolute/path/to/image.png","name":"image.png","mime_type":"image/png"}]}
+LANTOR_EVENT {"type":"channel_message_create","channel_id":"<channel uuid>","thread_root_id":"<optional uuid>","body":"<message body>"}
+LANTOR_EVENT {"type":"handoff_create","target_agent":"@OtherAgent","channel_id":"<channel uuid>","thread_root_id":"<thread uuid>","reason":"<why this handoff is needed>","body":"<specific request for the target agent>"}
+LANTOR_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
+LANTOR_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
 For profile_update avatar, you may use emoji/initials, an image URL, or a DiceBear spec like `dicebear:bottts-neutral:Hancock`. Choose a stable seed from your handle or memory. Supported DiceBear styles include adventurer, bottts-neutral, identicon, initials, lorelei, notionists, personas, pixel-art, and shapes.
 Use task_create only for durable globally tracked work. Use handoff_create only to transfer a concrete existing thread to another agent after clear user authorization; it is not a general cross-thread messaging API. Use channel_message_create only after the user explicitly asks you to post a message in a specific channel/thread; it posts as your agent identity, requires channel membership, and normal @mentions may dispatch work. Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents. Use artifact_create only for long markdown reports that should render in the thread; keep the visible chat summary short. Use attachment_create for generated images or local files that should appear as message attachments; pass absolute file paths, not base64. Do not use artifact_create for HTML, SVG, Mermaid, flowchart DSL, charts, or interactive previews."#
 }
 
 fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
     format!(
-        "Reply normally only when a visible response is useful. Lantor will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. In warm streaming mode you may emit standalone LOCAL_SLOCK_EVENT control lines for activity, reminders, memory, profile, channel, artifact_create, attachment_create, channel_message_create, handoff_create, usage, durable task_create, or task_status; Lantor consumes those control lines and hides them from chat. Treat channel_message_create as a user-authorized way to post a normal agent message into a specific channel/thread, not as a background notification API. Treat handoff_create as a constrained transfer of one existing thread to another agent after user authorization, not a general message API. Treat channel_create as a normal tool for durable topics, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel. Do not emit legacy LOCAL_SLOCK_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
+        "Reply normally only when a visible response is useful. Lantor will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LANTOR_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. In warm streaming mode you may emit standalone LANTOR_EVENT control lines for activity, reminders, memory, profile, channel, artifact_create, attachment_create, channel_message_create, handoff_create, usage, durable task_create, or task_status; Lantor consumes those control lines and hides them from chat. Treat channel_message_create as a user-authorized way to post a normal agent message into a specific channel/thread, not as a background notification API. Treat handoff_create as a constrained transfer of one existing thread to another agent after user authorization, not a general message API. Treat channel_create as a normal tool for durable topics, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel. Do not emit legacy LANTOR_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
     )
 }
 
@@ -205,7 +205,7 @@ fn build_runtime_standing_prompt(
          \n\
          {}\n\
          \n\
-         Keep user-visible replies concise and include concrete results or blockers. Non-message LOCAL_SLOCK_EVENT control lines are allowed as standalone lines. Do not print legacy LOCAL_SLOCK_EVENT message/task_claim lines unless explicitly asked to debug the legacy runtime path.",
+         Keep user-visible replies concise and include concrete results or blockers. Non-message LANTOR_EVENT control lines are allowed as standalone lines. Do not print legacy LANTOR_EVENT message/task_claim lines unless explicitly asked to debug the legacy runtime path.",
         lantor_operating_policy_prompt(),
         lantor_memory_management_prompt(),
         lantor_context_tools_prompt(),

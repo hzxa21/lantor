@@ -9,7 +9,7 @@ cloud server and stores collaboration state in a local PostgreSQL database.
 ## Current Scope
 
 - Three-pane desktop shell: sidebar, channel/DM conversation, and thread or agent-detail panel.
-- PostgreSQL state store at `postgres://dylan:123456@127.0.0.1:5432/localslock` by default.
+- PostgreSQL state store at `postgres://dylan:123456@127.0.0.1:5432/lantor` by default.
 - Channels, DMs, thread replies, channel-agent membership, tasks, reminders, agent profiles, artifacts, and search.
 - Agent runtime supervision with local Codex, Claude, Kimi, or custom launch commands.
 - Warm agent sessions for supported runtimes, so each agent can keep provider context across turns.
@@ -37,12 +37,12 @@ npm run tauri:dev
 Override the database URL if needed:
 
 ```bash
-LOCAL_SLOCK_DATABASE_URL=postgres://dylan:123456@127.0.0.1:5432/localslock npm run tauri:dev
+LANTOR_DATABASE_URL=postgres://dylan:123456@127.0.0.1:5432/lantor npm run tauri:dev
 ```
 
-Some protocol and storage identifiers still use `LOCAL_SLOCK` or `localslock`
-for backward compatibility with existing databases, agent environments, and
-installed supervisor state.
+Legacy `LOCAL_SLOCK_*` env vars are accepted as migration aliases where they
+affect existing installs or older agent output, but new prompts and examples use
+`LANTOR_*`.
 
 ## Tailscale Web Access MVP
 
@@ -52,15 +52,15 @@ such as an iPhone. It is disabled by default.
 
 ```bash
 npm run build
-LOCAL_SLOCK_WEB_BIND=0.0.0.0:8787 \
-LOCAL_SLOCK_WEB_TOKEN="$(openssl rand -hex 24)" \
+LANTOR_WEB_BIND=0.0.0.0:8787 \
+LANTOR_WEB_TOKEN="$(openssl rand -hex 24)" \
 npm run tauri:dev
 ```
 
 Then open the Mac's Tailscale address from the other device:
 
 ```text
-http://<mac-tailscale-ip>:8787/?token=<LOCAL_SLOCK_WEB_TOKEN>
+http://<mac-tailscale-ip>:8787/?token=<LANTOR_WEB_TOKEN>
 ```
 
 The token is required when binding to a non-loopback address. The web UI uses
@@ -97,33 +97,33 @@ Current agent dispatch is work-item based:
 
 Warm Codex and Claude runtimes should reply with normal assistant text for the
 current channel/thread. Lantor routes that text into the correct chat
-surface. They may also emit standalone `LOCAL_SLOCK_EVENT` control lines for
+surface. They may also emit standalone `LANTOR_EVENT` control lines for
 structured side effects.
 
 Legacy stdout command runtimes are still supported for custom scripts. They can
-print one line to stdout with the `LOCAL_SLOCK_EVENT ` prefix followed by JSON.
+print one line to stdout with the `LANTOR_EVENT ` prefix followed by JSON.
 Non-matching stdout/stderr is preserved only in the run log.
 
 ## Agent Context Tools
 
-The supervisor injects `LOCAL_SLOCK_CONTEXT_TOOL` for read-only context access.
+The supervisor injects `LANTOR_CONTEXT_TOOL` for read-only context access.
 Agents use it to inspect the current workspace, recover context after restart,
 and process inbox wakeups.
 
 Common commands:
 
 ```bash
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-archive --inbox-id "<uuid-or-prefix>"
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-info
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool message-search --query "<text>" --target "#channel" --limit 20
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
-"$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-archive --inbox-id "<uuid-or-prefix>"
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-info
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool message-search --query "<text>" --target "#channel" --limit 20
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"
 ```
 
 Inbox, workspace, and memory commands default to the current agent. Use
@@ -147,7 +147,7 @@ Memory-related control events:
 Warm runtime control events are standalone lines:
 
 ```text
-LOCAL_SLOCK_EVENT {"type":"activity","kind":"thinking","title":"Checking build","detail":"optional detail"}
+LANTOR_EVENT {"type":"activity","kind":"thinking","title":"Checking build","detail":"optional detail"}
 ```
 
 Supported event types:

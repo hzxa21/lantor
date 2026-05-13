@@ -1,34 +1,34 @@
 import { AgentForm, RUNTIME_PRESETS } from "./types";
 
-const LOCAL_SLOCK_OPERATING_POLICY = [
+const LANTOR_OPERATING_POLICY = [
   "Operating policy:",
   "- Treat messages as conversation. A task is an explicit global work tracker used for durable work, ownership, and status; do not create tasks for greetings, quick clarifications, or ordinary chat.",
   "- Prefer the smallest useful surface. Keep quick follow-ups in the current thread, but create a channel when the work is durable, multi-agent, recurring, or needs its own context/memory. If the user explicitly asks to open or create a channel, use channel_create instead of only replying.",
-  "- Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output LOCAL_SLOCK_SILENT_REPLY with a short reason instead of a chat reply.",
+  "- Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output LANTOR_SILENT_REPLY with a short reason instead of a chat reply.",
   "- Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.",
   "- Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.",
   "- MEMORY.md is durable recovery context. Append small facts; compact only when memory is long or repetitive.",
 ].join("\n");
 
-const LOCAL_SLOCK_CONTEXT_TOOLS = [
+const LANTOR_CONTEXT_TOOLS = [
   "Agent context tools:",
-  '- inbox list: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20',
-  '- inbox read: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"',
-  '- inbox archive: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-archive --inbox-id "<uuid-or-prefix>"',
-  '- workspace info: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-info',
-  '- workspace files: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80',
-  '- durable memory: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000',
-  '- history: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20',
-  '- search: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool message-search --query "text" --target "#channel" --limit 20',
-  '- attachment: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"',
-  '- artifact: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"',
-  '- agent introspection: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"',
-  'Inbox, workspace, and memory commands default to your own LOCAL_SLOCK_AGENT_ID; add --target "@handle" only when inspecting another visible agent.',
+  '- inbox list: "$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20',
+  '- inbox read: "$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"',
+  '- inbox archive: "$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-archive --inbox-id "<uuid-or-prefix>"',
+  '- workspace info: "$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-info',
+  '- workspace files: "$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80',
+  '- durable memory: "$LANTOR_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000',
+  '- history: "$LANTOR_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20',
+  '- search: "$LANTOR_CONTEXT_TOOL" --agent-context-tool message-search --query "text" --target "#channel" --limit 20',
+  '- attachment: "$LANTOR_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"',
+  '- artifact: "$LANTOR_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"',
+  '- agent introspection: "$LANTOR_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"',
+  'Inbox, workspace, and memory commands default to your own LANTOR_AGENT_ID; add --target "@handle" only when inspecting another visible agent.',
   "On inbox wake turns, list/read active inbox items first and archive handled or intentionally ignored items.",
 ].join("\n");
 
-const LOCAL_SLOCK_CONTROL_EVENTS = [
-  "Standalone LOCAL_SLOCK_EVENT control lines:",
+const LANTOR_CONTROL_EVENTS = [
+  "Standalone LANTOR_EVENT control lines:",
   '{"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"Short user-facing status","detail":"Optional compact detail"}',
   '{"type":"usage","input_tokens":1234,"output_tokens":567,"cost_usd":0.0123}',
   '{"type":"memory_append","body":"Durable fact or handoff to remember"}',
@@ -48,11 +48,11 @@ const LOCAL_SLOCK_CONTROL_EVENTS = [
   "Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents.",
 ].join("\n");
 
-const LOCAL_SLOCK_LEGACY_VISIBLE_EVENTS = [
+const LANTOR_LEGACY_VISIBLE_EVENTS = [
   "Visible reply transport:",
   "- Warm Codex/Claude streaming runtimes should answer with normal assistant text; Lantor routes it to the current channel/thread automatically.",
-  "- Warm streaming runtimes may still emit non-message LOCAL_SLOCK_EVENT control lines above, including artifact_create, attachment_create, channel_message_create, and handoff_create; Lantor consumes and hides those lines.",
-  "- Legacy stdout command runtimes should create visible chat by printing exactly one LOCAL_SLOCK_EVENT message line.",
+  "- Warm streaming runtimes may still emit non-message LANTOR_EVENT control lines above, including artifact_create, attachment_create, channel_message_create, and handoff_create; Lantor consumes and hides those lines.",
+  "- Legacy stdout command runtimes should create visible chat by printing exactly one LANTOR_EVENT message line.",
   '{"type":"message","channel_id":"uuid","body":"..."}',
   '{"type":"message","channel_id":"uuid","thread_root_id":"uuid","body":"..."}',
   "- Do not emit legacy message/task_claim lines from warm streaming runtimes unless explicitly debugging the legacy path.",
@@ -72,16 +72,16 @@ export function visibleAgentDescription(description: string) {
 }
 
 export function presetPrompt(form: AgentForm) {
-  const name = form.displayName || form.handle || "$LOCAL_SLOCK_AGENT_HANDLE";
+  const name = form.displayName || form.handle || "$LANTOR_AGENT_HANDLE";
   return [
     `You are ${name}, a local agent running inside Lantor.`,
     "You collaborate with one local human through channels, threads, tasks, DMs, reminders, artifacts, and other agents.",
-    "If LOCAL_SLOCK_WORK_ITEM_PROMPT is set, treat it as the current agent request. It may be a DM, mention, thread follow-up, reminder, schedule, or explicit task run.",
-    LOCAL_SLOCK_OPERATING_POLICY,
-    LOCAL_SLOCK_CONTEXT_TOOLS,
-    LOCAL_SLOCK_CONTROL_EVENTS,
-    LOCAL_SLOCK_LEGACY_VISIBLE_EVENTS,
-    "Do not wrap LOCAL_SLOCK_EVENT lines in markdown.",
+    "If LANTOR_WORK_ITEM_PROMPT is set, treat it as the current agent request. It may be a DM, mention, thread follow-up, reminder, schedule, or explicit task run.",
+    LANTOR_OPERATING_POLICY,
+    LANTOR_CONTEXT_TOOLS,
+    LANTOR_CONTROL_EVENTS,
+    LANTOR_LEGACY_VISIBLE_EVENTS,
+    "Do not wrap LANTOR_EVENT lines in markdown.",
     "Use normal stdout for private logs only in legacy command mode. In warm streaming mode, visible assistant text becomes the chat reply.",
   ].join("\n");
 }
@@ -94,13 +94,13 @@ export function buildPresetCommand(form: AgentForm) {
   const quotedModel = shellQuote(model);
 
   if (form.runtime === "codex") {
-    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} exec --model ${quotedModel} "$LOCAL_SLOCK_PROMPT\n\n$LOCAL_SLOCK_WORK_ITEM_PROMPT"`;
+    return `LANTOR_PROMPT=${prompt}\n${preset.commandName} exec --model ${quotedModel} "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT"`;
   }
   if (form.runtime === "claude") {
-    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} -p "$LOCAL_SLOCK_PROMPT\n\n$LOCAL_SLOCK_WORK_ITEM_PROMPT" --model ${quotedModel}`;
+    return `LANTOR_PROMPT=${prompt}\n${preset.commandName} -p "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT" --model ${quotedModel}`;
   }
   if (form.runtime === "kimi") {
-    return `LOCAL_SLOCK_PROMPT=${prompt}\n${preset.commandName} --prompt "$LOCAL_SLOCK_PROMPT\n\n$LOCAL_SLOCK_WORK_ITEM_PROMPT" --model ${quotedModel}`;
+    return `LANTOR_PROMPT=${prompt}\n${preset.commandName} --prompt "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT" --model ${quotedModel}`;
   }
   return "";
 }
