@@ -643,6 +643,103 @@ button,
   height: 8px;
 }
 
+.agent-avatar-profile-anchor {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+
+.agent-avatar-profile-card {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  z-index: 120;
+  display: grid;
+  width: min(230px, calc(100vw - 32px));
+  gap: 3px;
+  padding: 10px 12px 11px;
+  border: 1px solid rgba(20, 22, 28, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 18px 45px rgba(20, 22, 28, 0.2), 0 4px 12px rgba(20, 22, 28, 0.08);
+  color: #1d1d1f;
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  text-align: left;
+  transform: translate(-50%, 4px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+  visibility: hidden;
+}
+
+.agent-avatar-profile-card::after {
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  border-right: 1px solid rgba(20, 22, 28, 0.08);
+  border-bottom: 1px solid rgba(20, 22, 28, 0.08);
+  background: rgba(255, 255, 255, 0.97);
+  content: "";
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.agent-avatar-profile-anchor:hover .agent-avatar-profile-card,
+.agent-avatar-profile-anchor:focus-within .agent-avatar-profile-card {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  visibility: visible;
+}
+
+.agent-avatar-profile-name,
+.agent-avatar-profile-handle,
+.agent-avatar-profile-role,
+.agent-avatar-profile-description,
+.agent-avatar-profile-meta,
+.agent-avatar-profile-hint {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-avatar-profile-name {
+  color: #111113;
+  font-size: 13px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.agent-avatar-profile-handle,
+.agent-avatar-profile-meta {
+  color: rgba(29, 29, 31, 0.58);
+  white-space: nowrap;
+}
+
+.agent-avatar-profile-role {
+  margin-top: 3px;
+  color: rgba(29, 29, 31, 0.82);
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.agent-avatar-profile-description {
+  display: -webkit-box;
+  color: rgba(29, 29, 31, 0.7);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+}
+
+.agent-avatar-profile-hint {
+  margin-top: 5px;
+  color: #0a84ff;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .profile strong {
   display: block;
   font-size: 15px;

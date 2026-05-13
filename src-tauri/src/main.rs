@@ -9967,7 +9967,7 @@ async fn supervisor_start_agent(
 
     let row = sqlx::query(
         r#"
-        select handle, runtime, model, launch_command, working_directory
+        select handle, runtime, model, launch_command, working_directory, avatar
         from agents
         where id = $1
         "#,
@@ -9982,6 +9982,7 @@ async fn supervisor_start_agent(
     let model: String = row.get("model");
     let launch_command: String = row.get("launch_command");
     let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
+    let avatar: Option<String> = row.get("avatar");
     let memory_context = match load_agent_memory_context(&working_directory) {
         Ok(memory_context) => memory_context,
         Err(err) => {
@@ -10026,6 +10027,16 @@ async fn supervisor_start_agent(
             let task_number: Option<i64> = row.get("task_number");
             let thread_root_id: Option<Uuid> = row.get("thread_root_id");
             let available_agents = load_channel_agent_roster(pool, channel_id, agent_id).await?;
+            let agent_profile_hint = avatar
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+                .then(|| {
+                    format!(
+                        "Your agent profile currently has no avatar. If your handle or MEMORY.md gives you a stable identity, you may emit one standalone LOCAL_SLOCK_EVENT profile_update with an avatar like `dicebear:bottts-neutral:{handle}` or another supported DiceBear style. Keep handling the user's request normally and do not send visible chat only for avatar setup."
+                    )
+                });
             build_work_item_prompt(
                 work_item_id,
                 &title,
@@ -10034,6 +10045,7 @@ async fn supervisor_start_agent(
                 task_number,
                 thread_root_id,
                 &available_agents,
+                agent_profile_hint.as_deref(),
             )
         }
         None => String::new(),
@@ -11837,6 +11849,7 @@ mod tests {
             None,
             Some(Uuid::nil()),
             &[],
+            None,
         );
         assert!(prompt.contains("Treat messages as conversation"));
         assert!(prompt.contains(WORK_ITEM_FINISH_PROMPT));
@@ -11850,6 +11863,23 @@ mod tests {
         assert!(streaming.contains("handoff_create"));
         assert!(streaming.contains("Do not emit legacy LOCAL_SLOCK_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
+    }
+
+    #[test]
+    fn work_item_prompt_includes_agent_profile_hint_when_present() {
+        let prompt = build_work_item_prompt(
+            Uuid::nil(),
+            "Handle inbox",
+            "Latest user message: hello",
+            Some("local-slock"),
+            None,
+            Some(Uuid::nil()),
+            &[],
+            Some("Pick a stable DiceBear avatar if the profile is empty."),
+        );
+
+        assert!(prompt.contains("agent_profile_hint:"));
+        assert!(prompt.contains("Pick a stable DiceBear avatar if the profile is empty."));
     }
 
     #[tokio::test]

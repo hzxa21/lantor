@@ -82,6 +82,7 @@ pub(crate) fn build_work_item_prompt(
     task_number: Option<i64>,
     thread_root_id: Option<Uuid>,
     available_agents: &[String],
+    agent_profile_hint: Option<&str>,
 ) -> String {
     let mut lines = vec![
         "Current LocalSlock inbox processing turn:".to_owned(),
@@ -109,6 +110,13 @@ pub(crate) fn build_work_item_prompt(
     }
     lines.push(local_slock_operating_policy_prompt().to_owned());
     lines.push(local_slock_memory_management_prompt().to_owned());
+    if let Some(agent_profile_hint) = agent_profile_hint {
+        let agent_profile_hint = agent_profile_hint.trim();
+        if !agent_profile_hint.is_empty() {
+            lines.push("agent_profile_hint:".to_owned());
+            lines.push(agent_profile_hint.to_owned());
+        }
+    }
     if !context.trim().is_empty() {
         lines.push("context:".to_owned());
         lines.push(context.trim().to_owned());

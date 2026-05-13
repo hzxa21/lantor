@@ -3,10 +3,15 @@ import type { Style } from "@dicebear/core";
 import type { Agent } from "../types";
 
 type AgentAvatarProps = {
-  agent: Pick<Agent, "handle" | "display_name" | "status"> & Partial<Pick<Agent, "id" | "runtime" | "avatar">>;
+  agent: Pick<Agent, "handle" | "display_name" | "status"> &
+    Partial<Pick<Agent, "id" | "runtime" | "model" | "role" | "avatar" | "description">>;
   size?: "sm" | "md" | "lg";
   className?: string;
   title?: string;
+};
+
+type AgentAvatarWithProfileProps = AgentAvatarProps & {
+  clickHint?: string;
 };
 
 const IDENTICON_SIZE = 5;
@@ -89,6 +94,16 @@ function isImageAvatar(value: string) {
   return /^https?:\/\//i.test(value) || /^data:image\//i.test(value);
 }
 
+function compactProfileText(value: string | null | undefined, fallback: string) {
+  const trimmed = value?.trim();
+  if (!trimmed) return fallback;
+  return trimmed.length > 110 ? `${trimmed.slice(0, 107).trimEnd()}...` : trimmed;
+}
+
+function statusLabel(status: string) {
+  return status.replace(/_/g, " ");
+}
+
 export function AgentAvatar({ agent, size = "md", className = "", title }: AgentAvatarProps) {
   const seedText = agent.id || `${agent.handle}:${agent.display_name}:${agent.runtime ?? ""}`;
   const identicon = generateIdenticon(seedText);
@@ -148,6 +163,33 @@ export function AgentAvatar({ agent, size = "md", className = "", title }: Agent
           ))}
         </span>
       )}
+    </span>
+  );
+}
+
+export function AgentAvatarWithProfile({
+  agent,
+  size = "md",
+  className = "",
+  clickHint = "Click to open details",
+}: AgentAvatarWithProfileProps) {
+  const role = compactProfileText(agent.role, `${agent.runtime ?? "agent"} agent`);
+  const description = compactProfileText(agent.description, "No profile description yet.");
+  const runtimeModel = [agent.runtime, agent.model].filter(Boolean).join(" / ");
+
+  return (
+    <span className="agent-avatar-profile-anchor">
+      <AgentAvatar agent={agent} size={size} className={className} />
+      <span className="agent-avatar-profile-card" aria-hidden="true">
+        <span className="agent-avatar-profile-name">{agent.display_name}</span>
+        <span className="agent-avatar-profile-handle">@{agent.handle}</span>
+        <span className="agent-avatar-profile-role">{role}</span>
+        <span className="agent-avatar-profile-description">{description}</span>
+        <span className="agent-avatar-profile-meta">
+          {runtimeModel || "runtime unknown"} · {statusLabel(agent.status)}
+        </span>
+        <span className="agent-avatar-profile-hint">{clickHint}</span>
+      </span>
     </span>
   );
 }

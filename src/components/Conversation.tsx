@@ -21,7 +21,7 @@ import { isCompactFollowupMessage } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatClockTime, formatTime, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
-import { AgentAvatar } from "./AgentAvatar";
+import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
@@ -321,11 +321,10 @@ export function Conversation({
             <button
               type="button"
               className="hash-card dm-card dm-agent-detail-trigger"
-              title={`View @${dmAgent.handle} details`}
               aria-label={`View @${dmAgent.handle} details`}
               onClick={() => openAgentDetail(dmAgent)}
             >
-              <AgentAvatar agent={dmAgent} />
+              <AgentAvatarWithProfile agent={dmAgent} />
             </button>
           ) : (
             <span className="hash-card">
@@ -483,13 +482,13 @@ export function Conversation({
                   <button
                     type="button"
                     className="message-agent-avatar-trigger"
-                    title={`View @${messageAgent.handle} details`}
+                    aria-label={`View @${messageAgent.handle} details`}
                     onClick={(event) => {
                       event.stopPropagation();
                       openAgentDetail(messageAgent);
                     }}
                   >
-                    <AgentAvatar agent={messageAgent} />
+                    <AgentAvatarWithProfile agent={messageAgent} />
                   </button>
                 ) : (
                   <div className="avatar">{message.sender_name.slice(0, 1)}</div>

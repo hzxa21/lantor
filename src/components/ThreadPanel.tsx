@@ -7,7 +7,7 @@ import { isCompactFollowupMessage } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatClockTime, formatTime, visibleAgentDescription } from "../ui-utils";
-import { AgentAvatar } from "./AgentAvatar";
+import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
@@ -344,13 +344,13 @@ export function ThreadPanel({
                     <button
                       type="button"
                       className="message-agent-avatar-trigger"
-                      title={`View @${rootAgent.handle} details`}
+                      aria-label={`View @${rootAgent.handle} details`}
                       onClick={(event) => {
                         event.stopPropagation();
                         openAgentDetail(rootAgent);
                       }}
                     >
-                      <AgentAvatar agent={rootAgent} />
+                      <AgentAvatarWithProfile agent={rootAgent} />
                     </button>
                   ) : (
                     <div className="avatar">{activeRoot.sender_name.slice(0, 1)}</div>
@@ -488,13 +488,13 @@ export function ThreadPanel({
                     <button
                       type="button"
                       className="message-agent-avatar-trigger"
-                      title={`View @${replyAgent.handle} details`}
+                      aria-label={`View @${replyAgent.handle} details`}
                       onClick={(event) => {
                         event.stopPropagation();
                         openAgentDetail(replyAgent);
                       }}
                     >
-                      <AgentAvatar agent={replyAgent} />
+                      <AgentAvatarWithProfile agent={replyAgent} />
                     </button>
                   ) : (
                     <div className="avatar">{reply.sender_name.slice(0, 1)}</div>
