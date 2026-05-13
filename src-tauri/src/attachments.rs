@@ -14,7 +14,7 @@ fn attachment_root_dir() -> CommandResult<PathBuf> {
     Ok(PathBuf::from(home)
         .join("Library")
         .join("Application Support")
-        .join("LocalSlock")
+        .join("Lantor")
         .join("attachments"))
 }
 

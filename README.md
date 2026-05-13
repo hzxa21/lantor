@@ -1,8 +1,8 @@
-# LocalSlock
+# Lantor
 
-Local-only Slock-style desktop console for one human and multiple local agents.
+Local-first agent workspace for one human and multiple local agents.
 
-LocalSlock is a macOS desktop app built around channels, threads, DMs, tasks,
+Lantor is a macOS desktop app built around channels, threads, DMs, tasks,
 agent profiles, reminders, artifacts, and local file attachments. It has no
 cloud server and stores collaboration state in a local PostgreSQL database.
 
@@ -21,7 +21,7 @@ cloud server and stores collaboration state in a local PostgreSQL database.
 Attachments are stored on disk under:
 
 ```text
-~/Library/Application Support/LocalSlock/attachments/<message_id>/<attachment_id>.<ext>
+~/Library/Application Support/Lantor/attachments/<message_id>/<attachment_id>.<ext>
 ```
 
 Postgres stores attachment metadata such as original name, MIME type, file size,
@@ -40,9 +40,13 @@ Override the database URL if needed:
 LOCAL_SLOCK_DATABASE_URL=postgres://dylan:123456@127.0.0.1:5432/localslock npm run tauri:dev
 ```
 
+Some protocol and storage identifiers still use `LOCAL_SLOCK` or `localslock`
+for backward compatibility with existing databases, agent environments, and
+installed supervisor state.
+
 ## Tailscale Web Access MVP
 
-LocalSlock can optionally expose a browser-accessible web UI from the same
+Lantor can optionally expose a browser-accessible web UI from the same
 desktop process. This is intended for private Tailscale access from devices
 such as an iPhone. It is disabled by default.
 
@@ -68,7 +72,7 @@ and an SSE stream for live refresh events. Desktop Tauri still uses native IPC.
 The Runtime panel can install a user LaunchAgent at:
 
 ```text
-~/Library/LaunchAgents/local.localslock.supervisor.plist
+~/Library/LaunchAgents/local.lantor.supervisor.plist
 ```
 
 That lets macOS keep the `--supervisor` process alive via `launchctl`.
@@ -92,7 +96,7 @@ Current agent dispatch is work-item based:
 - Retry creates a new queued work item instead of mutating historical state.
 
 Warm Codex and Claude runtimes should reply with normal assistant text for the
-current channel/thread. LocalSlock routes that text into the correct chat
+current channel/thread. Lantor routes that text into the correct chat
 surface. They may also emit standalone `LOCAL_SLOCK_EVENT` control lines for
 structured side effects.
 
@@ -189,7 +193,7 @@ message attachments:
 }
 ```
 
-Pass absolute file paths, not base64. LocalSlock copies the files into its own
+Pass absolute file paths, not base64. Lantor copies the files into its own
 attachment store and records metadata in Postgres.
 
 ### Example: Handoff
@@ -231,7 +235,7 @@ path.
 
 ## Agent Activity Feed
 
-LocalSlock persists agent activity in `agent_activities` instead of deriving it
+Lantor persists agent activity in `agent_activities` instead of deriving it
 from run logs. The feed is queryable product state and can link activity to an
 agent, run, message, task, artifact, reminder, or handoff. It is used for:
 
@@ -252,7 +256,7 @@ and `Custom`.
 Presets:
 
 - generate a shell command for the selected CLI and model;
-- include the LocalSlock operating policy, context tools, and control-event API;
+- include the Lantor operating policy, context tools, and control-event API;
 - show a command preview before applying;
 - leave the final command editable;
 - assume the selected CLI binary is already installed and on `PATH`.

@@ -63,9 +63,9 @@ const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/local
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
 const AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
 const SILENT_REPLY_PREFIX: &str = "LOCAL_SLOCK_SILENT_REPLY";
-pub(crate) const UI_REFRESH_CHANNEL: &str = "localslock_ui_refresh";
-const SUPERVISOR_WAKE_CHANNEL: &str = "localslock_supervisor_wake";
-const UI_REFRESH_EVENT: &str = "localslock://refresh";
+pub(crate) const UI_REFRESH_CHANNEL: &str = "lantor_ui_refresh";
+const SUPERVISOR_WAKE_CHANNEL: &str = "lantor_supervisor_wake";
+const UI_REFRESH_EVENT: &str = "lantor://refresh";
 const LOCAL_SLOCK_CONTEXT_TOOL_ENV: &str = "LOCAL_SLOCK_CONTEXT_TOOL";
 const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by Lantor]";
@@ -427,10 +427,10 @@ fn spawn_reminder_worker(pool: PgPool) {
     tauri::async_runtime::spawn(async move {
         loop {
             if let Err(err) = process_due_reminders(&pool).await {
-                eprintln!("LocalSlock reminder worker failed: {err}");
+                eprintln!("Lantor reminder worker failed: {err}");
             }
             if let Err(err) = process_due_agent_schedules(&pool).await {
-                eprintln!("LocalSlock schedule worker failed: {err}");
+                eprintln!("Lantor schedule worker failed: {err}");
             }
             sleep(Duration::from_secs(15)).await;
         }
@@ -705,13 +705,13 @@ fn spawn_ui_refresh_listener(app: tauri::AppHandle, database_url: String) {
             match PgListener::connect(&database_url).await {
                 Ok(mut listener) => {
                     if let Err(err) = listener.listen(UI_REFRESH_CHANNEL).await {
-                        eprintln!("LocalSlock UI refresh listener failed to listen: {err}");
+                        eprintln!("Lantor UI refresh listener failed to listen: {err}");
                     } else {
                         loop {
                             let first_payload = match listener.recv().await {
                                 Ok(notification) => notification.payload().to_owned(),
                                 Err(err) => {
-                                    eprintln!("LocalSlock UI refresh listener disconnected: {err}");
+                                    eprintln!("Lantor UI refresh listener disconnected: {err}");
                                     break;
                                 }
                             };
@@ -723,9 +723,7 @@ fn spawn_ui_refresh_listener(app: tauri::AppHandle, database_url: String) {
                                         payloads.push(notification.payload().to_owned());
                                     }
                                     Ok(Err(err)) => {
-                                        eprintln!(
-                                            "LocalSlock UI refresh listener disconnected: {err}"
-                                        );
+                                        eprintln!("Lantor UI refresh listener disconnected: {err}");
                                         disconnected = true;
                                         break;
                                     }
@@ -749,7 +747,7 @@ fn spawn_ui_refresh_listener(app: tauri::AppHandle, database_url: String) {
                     }
                 }
                 Err(err) => {
-                    eprintln!("LocalSlock UI refresh listener failed to connect: {err}");
+                    eprintln!("Lantor UI refresh listener failed to connect: {err}");
                 }
             }
             sleep(Duration::from_secs(2)).await;
@@ -2899,7 +2897,7 @@ async fn ensure_agent_inbox_wake_work_item(
         _ => "unknown target".to_owned(),
     };
     let context = format!(
-        "LocalSlock agent inbox wake.\n\
+        "Lantor agent inbox wake.\n\
          You have unread or processing inbox items. First inspect them with:\n\
          \"$LOCAL_SLOCK_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20\n\
          Then read the item you will handle with:\n\
@@ -4331,7 +4329,7 @@ async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
         group by c.id, c.name, c.description, c.kind, c.dm_agent_id
         order by
           case
-            when c.kind = 'channel' and c.name = 'local-slock' then 0
+            when c.kind = 'channel' and c.name = 'lantor' then 0
             when c.kind = 'channel' then 1
             else 2
           end,
@@ -8855,7 +8853,7 @@ async fn spawn_warm_codex_runtime(
             "id": initialize_id,
             "params": {
                 "clientInfo": {
-                    "name": "localslock",
+                    "name": "lantor",
                     "title": "Lantor",
                     "version": env!("CARGO_PKG_VERSION")
                 },
@@ -9067,7 +9065,7 @@ async fn run_supervisor() -> CommandResult<()> {
             _ = sleep(Duration::from_secs(2)) => {}
             notification = listener.recv() => {
                 if let Err(err) = notification {
-                    eprintln!("LocalSlock supervisor wake listener disconnected: {err}");
+                    eprintln!("Lantor supervisor wake listener disconnected: {err}");
                     listener = PgListener::connect(&database_url).await.map_err(to_string)?;
                     listener.listen(SUPERVISOR_WAKE_CHANNEL).await.map_err(to_string)?;
                 }
@@ -11748,9 +11746,9 @@ pub fn run() {
             .connect(&database_url)
             .await
     })
-    .expect("failed to connect LocalSlock Postgres database");
+    .expect("failed to connect Lantor Postgres database");
 
-    tauri::async_runtime::block_on(migrate(&pool)).expect("failed to initialize LocalSlock schema");
+    tauri::async_runtime::block_on(migrate(&pool)).expect("failed to initialize Lantor schema");
     launch_agent::spawn_supervisor_process(&database_url);
     let state_db_url = database_url.clone();
     let reminder_pool = pool.clone();
@@ -11809,7 +11807,7 @@ pub fn run() {
             update_task_status
         ])
         .run(tauri::generate_context!())
-        .expect("error while running LocalSlock");
+        .expect("error while running Lantor");
 }
 
 fn main() {
@@ -11833,7 +11831,7 @@ fn main() {
 
     if args.iter().any(|arg| arg == "--supervisor") {
         if let Err(err) = tauri::async_runtime::block_on(run_supervisor()) {
-            eprintln!("LocalSlock supervisor stopped: {err}");
+            eprintln!("Lantor supervisor stopped: {err}");
         }
     } else {
         run();
@@ -11888,7 +11886,7 @@ mod tests {
 
     #[test]
     fn memory_context_is_bounded_and_preserves_tail() {
-        let dir = std::env::temp_dir().join(format!("localslock-memory-test-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lantor-memory-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create temp memory dir");
         let memory_path = dir.join("MEMORY.md");
         let memory = format!(
@@ -11902,7 +11900,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
 
         let context = context.expect("memory should load");
-        assert!(context.contains("LocalSlock omitted"));
+        assert!(context.contains("Lantor omitted"));
         assert!(context.contains("important tail survives"));
         assert!(context.chars().count() < AGENT_MEMORY_CONTEXT_LIMIT + 1_000);
     }
@@ -11925,8 +11923,7 @@ mod tests {
 
     #[test]
     fn ensure_agent_workspace_creates_index_memory_template_and_notes_dir() {
-        let dir =
-            std::env::temp_dir().join(format!("localslock-memory-template-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("lantor-memory-template-{}", Uuid::new_v4()));
         ensure_agent_workspace(dir.to_str().expect("utf8 temp dir"), "template-agent")
             .expect("ensure workspace");
 
@@ -11947,7 +11944,7 @@ mod tests {
             Uuid::nil(),
             "Review the change",
             "Latest user message: please review",
-            Some("local-slock"),
+            Some("lantor"),
             None,
             Some(Uuid::nil()),
             &[],
@@ -11973,7 +11970,7 @@ mod tests {
             Uuid::nil(),
             "Handle inbox",
             "Latest user message: hello",
-            Some("local-slock"),
+            Some("lantor"),
             None,
             Some(Uuid::nil()),
             &[],
@@ -12050,7 +12047,7 @@ mod tests {
             return;
         };
         let workspace =
-            std::env::temp_dir().join(format!("localslock-workspace-tool-{}", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("lantor-workspace-tool-{}", Uuid::new_v4()));
         let result: Result<(), String> = async {
             std::fs::create_dir_all(workspace.join("notes")).map_err(|err| err.to_string())?;
             std::fs::write(
@@ -12075,7 +12072,7 @@ mod tests {
                 "@workspace-agent".to_owned(),
             ];
             let workspace_info = agent_context_workspace_info(&pool, &target_args).await?;
-            assert!(workspace_info.contains("LocalSlock workspace for @workspace-agent"));
+            assert!(workspace_info.contains("Lantor workspace for @workspace-agent"));
             assert!(workspace_info.contains("memory_exists=true"));
             assert!(workspace_info.contains("MEMORY.md"));
 
@@ -12210,10 +12207,10 @@ mod tests {
             .map_err(|err| err.to_string())?;
 
             let dir =
-                std::env::temp_dir().join(format!("localslock-attachment-test-{}", Uuid::new_v4()));
+                std::env::temp_dir().join(format!("lantor-attachment-test-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
             let source_path = dir.join("generated.png");
-            let source_bytes = b"\x89PNG\r\n\x1a\nlocalslock-test-image";
+            let source_bytes = b"\x89PNG\r\n\x1a\nlantor-test-image";
             std::fs::write(&source_path, source_bytes).map_err(|err| err.to_string())?;
 
             handle_agent_event(
@@ -12398,7 +12395,7 @@ mod tests {
             assert_eq!(work_item.get::<String, _>("status"), "queued");
             assert!(work_item
                 .get::<String, _>("context")
-                .contains("LocalSlock agent inbox wake"));
+                .contains("Lantor agent inbox wake"));
             assert_eq!(work_item.get::<String, _>("inbox_kind"), "handoff");
             assert_eq!(work_item.get::<String, _>("inbox_state"), "processing");
             let target_work_items: i64 = sqlx::query_scalar(
@@ -12885,16 +12882,16 @@ mod tests {
         {
             Ok(pool) => pool,
             Err(err) => {
-                eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
+                eprintln!("skipping postgres-backed Lantor DM test: {err}");
                 return None;
             }
         };
-        let schema = format!("localslock_test_{}", Uuid::new_v4().simple());
+        let schema = format!("lantor_test_{}", Uuid::new_v4().simple());
         if let Err(err) = sqlx::query(&format!(r#"create schema "{schema}""#))
             .execute(&bootstrap_pool)
             .await
         {
-            eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
+            eprintln!("skipping postgres-backed Lantor DM test: {err}");
             bootstrap_pool.close().await;
             return None;
         }
@@ -12917,12 +12914,12 @@ mod tests {
         {
             Ok(pool) => pool,
             Err(err) => {
-                eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
+                eprintln!("skipping postgres-backed Lantor DM test: {err}");
                 return None;
             }
         };
         if let Err(err) = migrate(&pool).await {
-            eprintln!("skipping postgres-backed LocalSlock DM test: {err}");
+            eprintln!("skipping postgres-backed Lantor DM test: {err}");
             let _ = sqlx::query(&format!(r#"drop schema if exists "{schema}" cascade"#))
                 .execute(&pool)
                 .await;
@@ -13034,8 +13031,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
-            let dir =
-                std::env::temp_dir().join(format!("localslock-memory-write-{}", Uuid::new_v4()));
+            let dir = std::env::temp_dir().join(format!("lantor-memory-write-{}", Uuid::new_v4()));
             sqlx::query("update agents set working_directory = $2 where id = $1")
                 .bind(agent_id)
                 .bind(dir.to_string_lossy().to_string())
@@ -13200,7 +13196,7 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             let image_path =
-                std::env::temp_dir().join(format!("localslock-vision-{}.png", Uuid::new_v4()));
+                std::env::temp_dir().join(format!("lantor-vision-{}.png", Uuid::new_v4()));
             std::fs::write(&image_path, b"fake image bytes").map_err(|err| err.to_string())?;
             let attachment_id: Uuid = sqlx::query_scalar(
                 r#"
@@ -13679,7 +13675,7 @@ mod tests {
             .map_err(|err| err.to_string())?;
             let event = json!({
                 "type": "channel_create",
-                "name": "slock-ui-design",
+                "name": "lantor-ui-design",
                 "description": "讨论 SLock UI 设计后续工作",
                 "agent_handles": ["hancock"]
             });
@@ -13705,7 +13701,7 @@ mod tests {
             assert_eq!(visible_body, "好的，我来创建。");
 
             let channel_id: Uuid =
-                sqlx::query_scalar("select id from channels where name = 'slock-ui-design'")
+                sqlx::query_scalar("select id from channels where name = 'lantor-ui-design'")
                     .fetch_one(&pool)
                     .await
                     .map_err(|err| err.to_string())?;
@@ -14226,7 +14222,7 @@ mod tests {
                 ],
             )
             .await?;
-            assert!(list.contains("LocalSlock inbox for @inbox-tool"));
+            assert!(list.contains("Lantor inbox for @inbox-tool"));
             assert!(list.contains("kind=dm"));
             assert!(list.contains("please inspect inbox tools"));
 
@@ -14256,7 +14252,7 @@ mod tests {
                 ],
             )
             .await?;
-            assert!(archived.contains("Archived LocalSlock inbox item"));
+            assert!(archived.contains("Archived Lantor inbox item"));
             let state: String =
                 sqlx::query_scalar("select state from agent_inbox_items where id = $1")
                     .bind(inbox_id)
@@ -14295,7 +14291,7 @@ mod tests {
                 &pool,
                 channel_id,
                 None,
-                "LocalSlock README needs a quick review",
+                "Lantor README needs a quick review",
                 false,
                 vec![],
             )
@@ -14303,7 +14299,7 @@ mod tests {
             let message_id: Uuid =
                 sqlx::query_scalar("select id from messages where channel_id = $1 and body = $2")
                     .bind(channel_id)
-                    .bind("LocalSlock README needs a quick review")
+                    .bind("Lantor README needs a quick review")
                     .fetch_one(&pool)
                     .await
                     .map_err(|err| err.to_string())?;
@@ -14437,7 +14433,7 @@ mod tests {
                 "Process inbox: 我补充一下：这个复现只在 thread 里出现"
             );
             let context: String = work_items[0].get("context");
-            assert!(context.contains("LocalSlock agent inbox wake"));
+            assert!(context.contains("Lantor agent inbox wake"));
             assert!(context.contains("inbox-read"));
             assert!(work_items[0]
                 .get::<String, _>("body_preview")
@@ -15229,7 +15225,7 @@ mod tests {
                 where w.agent_id = $1
                   and w.channel_id = $2
                   and w.title = 'Process inbox: Daily check'
-                  and w.context like '%LocalSlock agent inbox wake%'
+                  and w.context like '%Lantor agent inbox wake%'
                   and i.kind = 'schedule_due'
                 "#,
             )

@@ -27,6 +27,7 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
+          "$HOME/Library/Application Support/Lantor/attachments/**",
           "$HOME/Library/Application Support/LocalSlock/attachments/**"
         ]
       }

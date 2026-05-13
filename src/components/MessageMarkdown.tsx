@@ -9,6 +9,8 @@ type MessageMarkdownProps = {
 
 const INLINE_CODE_SPLIT = /(`[^`\n]*(?:`|$))/g;
 const FENCE_SPLIT = /(```[\s\S]*?(?:```|$))/g;
+const LOCAL_ENTITY_PATH_PREFIX = "/lantor/";
+const LEGACY_LOCAL_ENTITY_PATH_PREFIX = "/localslock/";
 
 function encodeLocalPath(value: string) {
   return encodeURIComponent(value.replace(/^[@#]/, ""));
@@ -17,13 +19,13 @@ function encodeLocalPath(value: string) {
 function linkifyPlainText(value: string) {
   return value
     .replace(/(^|[\s([{])@([A-Za-z][A-Za-z0-9_-]{1,31})(?=$|[\s.,;:!?)\]}])/g, (_match, prefix, handle) => (
-      `${prefix}[@${handle}](/localslock/agent/${encodeLocalPath(handle)})`
+      `${prefix}[@${handle}](${LOCAL_ENTITY_PATH_PREFIX}agent/${encodeLocalPath(handle)})`
     ))
     .replace(/(^|[\s([{])#([A-Za-z][A-Za-z0-9_-]{1,63})(?=$|[\s.,;:!?)\]}])/g, (_match, prefix, channel) => (
-      `${prefix}[#${channel}](/localslock/channel/${encodeLocalPath(channel)})`
+      `${prefix}[#${channel}](${LOCAL_ENTITY_PATH_PREFIX}channel/${encodeLocalPath(channel)})`
     ))
     .replace(/(^|[\s([{])task #([0-9]+)(?=$|[\s.,;:!?)\]}])/gi, (_match, prefix, taskNumber) => (
-      `${prefix}[task #${taskNumber}](/localslock/task/${taskNumber})`
+      `${prefix}[task #${taskNumber}](${LOCAL_ENTITY_PATH_PREFIX}task/${taskNumber})`
     ));
 }
 
@@ -75,7 +77,10 @@ export function MessageMarkdown({ body }: MessageMarkdownProps) {
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ children, href, ...props }) => {
-            const isLocalLink = href?.startsWith("/localslock/");
+            const isLocalLink = Boolean(
+              href?.startsWith(LOCAL_ENTITY_PATH_PREFIX) ||
+                href?.startsWith(LEGACY_LOCAL_ENTITY_PATH_PREFIX),
+            );
             return (
               <a
                 {...props}

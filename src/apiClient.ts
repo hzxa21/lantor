@@ -1,8 +1,9 @@
 import { convertFileSrc, invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 
-const UI_REFRESH_EVENT = "localslock://refresh";
-const WEB_TOKEN_STORAGE_KEY = "localslock.webToken";
+const UI_REFRESH_EVENT = "lantor://refresh";
+const WEB_TOKEN_STORAGE_KEY = "lantor.webToken";
+const LEGACY_WEB_TOKEN_STORAGE_KEY = "localslock.webToken";
 
 declare global {
   interface Window {
@@ -22,7 +23,9 @@ function webToken() {
     window.localStorage.setItem(WEB_TOKEN_STORAGE_KEY, tokenFromUrl);
     return tokenFromUrl;
   }
-  return window.localStorage.getItem(WEB_TOKEN_STORAGE_KEY) || "";
+  return window.localStorage.getItem(WEB_TOKEN_STORAGE_KEY)
+    || window.localStorage.getItem(LEGACY_WEB_TOKEN_STORAGE_KEY)
+    || "";
 }
 
 function apiPath(command: string) {
@@ -36,7 +39,7 @@ export async function apiInvoke<T>(command: string, args: Record<string, unknown
 
   const headers: Record<string, string> = {};
   const token = webToken();
-  if (token) headers["x-local-slock-token"] = token;
+  if (token) headers["x-lantor-token"] = token;
 
   const response = command === "bootstrap"
     ? await fetch(apiPath("bootstrap"), { headers })
@@ -70,11 +73,11 @@ export async function subscribeBackendEvents(handler: (payload: string) => void)
   const token = webToken();
   const url = token ? `/api/events?token=${encodeURIComponent(token)}` : "/api/events";
   const source = new EventSource(url);
-  source.addEventListener("localslock", (event) => {
+  source.addEventListener("lantor", (event) => {
     handler((event as MessageEvent<string>).data);
   });
   source.onerror = () => {
-    console.error("LocalSlock web event stream disconnected");
+    console.error("Lantor web event stream disconnected");
   };
   return () => source.close();
 }

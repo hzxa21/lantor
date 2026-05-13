@@ -112,12 +112,12 @@ pub(crate) fn spawn_web_server_if_configured(pool: PgPool, db_url: String) {
     }
     let token = env::var("LOCAL_SLOCK_WEB_TOKEN").unwrap_or_default();
     let Ok(addr) = bind.parse::<SocketAddr>() else {
-        eprintln!("LocalSlock web access disabled: invalid LOCAL_SLOCK_WEB_BIND={bind}");
+        eprintln!("Lantor web access disabled: invalid LOCAL_SLOCK_WEB_BIND={bind}");
         return;
     };
     if !is_loopback(addr.ip()) && token.trim().is_empty() {
         eprintln!(
-            "LocalSlock web access disabled: non-loopback bind {addr} requires LOCAL_SLOCK_WEB_TOKEN"
+            "Lantor web access disabled: non-loopback bind {addr} requires LOCAL_SLOCK_WEB_TOKEN"
         );
         return;
     }
@@ -132,13 +132,13 @@ pub(crate) fn spawn_web_server_if_configured(pool: PgPool, db_url: String) {
         let app = web_router(state, dist_dir);
         match TcpListener::bind(addr).await {
             Ok(listener) => {
-                eprintln!("LocalSlock web access listening on http://{addr}");
+                eprintln!("Lantor web access listening on http://{addr}");
                 if let Err(err) = axum::serve(listener, app).await {
-                    eprintln!("LocalSlock web access stopped: {err}");
+                    eprintln!("Lantor web access stopped: {err}");
                 }
             }
             Err(err) => {
-                eprintln!("LocalSlock web access failed to bind {addr}: {err}");
+                eprintln!("Lantor web access failed to bind {addr}: {err}");
             }
         }
     });
@@ -371,7 +371,7 @@ async fn api_events(
                 loop {
                     match listener.recv().await {
                         Ok(notification) => {
-                            yield Ok(Event::default().event("localslock").data(notification.payload().to_owned()));
+                            yield Ok(Event::default().event("lantor").data(notification.payload().to_owned()));
                         }
                         Err(err) => {
                             yield Ok(Event::default().event("error").data(err.to_string()));
@@ -455,7 +455,8 @@ fn require_auth(
         .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or_default();
     let explicit = headers
-        .get("x-local-slock-token")
+        .get("x-lantor-token")
+        .or_else(|| headers.get("x-local-slock-token"))
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     if bearer == token || explicit == token || query_token == Some(token) {

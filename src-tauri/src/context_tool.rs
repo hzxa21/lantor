@@ -330,7 +330,7 @@ pub(crate) async fn agent_context_history_read(
     };
 
     let mut output = vec![format!(
-        "LocalSlock history for {} ({} message{})",
+        "Lantor history for {} ({} message{})",
         target.label,
         rows.len(),
         if rows.len() == 1 { "" } else { "s" }
@@ -408,7 +408,7 @@ pub(crate) async fn agent_context_message_search(
     };
 
     let mut output = vec![format!(
-        "LocalSlock message search for {:?} ({} result{})",
+        "Lantor message search for {:?} ({} result{})",
         query,
         rows.len(),
         if rows.len() == 1 { "" } else { "s" }
@@ -465,7 +465,7 @@ pub(crate) async fn agent_context_attachment_info(
         format!("#{channel_name}")
     };
     let mut output = vec![
-        format!("LocalSlock attachment {}", row.get::<Uuid, _>("id")),
+        format!("Lantor attachment {}", row.get::<Uuid, _>("id")),
         format!("message_id={}", row.get::<Uuid, _>("message_id")),
         format!("surface={surface}"),
         format!("name=\"{}\"", row.get::<String, _>("original_name")),
@@ -627,7 +627,7 @@ pub(crate) async fn agent_context_artifact_read_in_pool(
         Uuid::parse_str(raw_id.trim()).map_err(|err| format!("invalid artifact id: {err}"))?;
     let artifact = load_artifact(pool, artifact_id).await?;
     Ok(format!(
-        "LocalSlock artifact {}\nkind={}\ntitle={}\nsummary={}\nmessage_id={}\nchannel_id={}\nthread_root_id={}\ncreator=@{}\nmetadata={}\n\n{}",
+        "Lantor artifact {}\nkind={}\ntitle={}\nsummary={}\nmessage_id={}\nchannel_id={}\nthread_root_id={}\ncreator=@{}\nmetadata={}\n\n{}",
         artifact.id,
         artifact.kind,
         artifact.title,
@@ -809,7 +809,7 @@ async fn resolve_inbox_item_id(pool: &PgPool, agent_id: Uuid, raw_id: &str) -> C
 
 async fn notify_context_tool_refresh(pool: &PgPool, reason: &str) {
     let _ = sqlx::query("select pg_notify($1, $2)")
-        .bind("localslock_ui_refresh")
+        .bind("lantor_ui_refresh")
         .bind(serde_json::json!({ "type": "refresh", "reason": reason }).to_string())
         .execute(pool)
         .await;
@@ -905,7 +905,7 @@ pub(crate) async fn agent_context_workspace_info(
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_else(|err| format!("unavailable: {err}"));
     let mut output = vec![
-        format!("LocalSlock workspace for @{}", target.handle),
+        format!("Lantor workspace for @{}", target.handle),
         format!("agent_id={}", target.id),
         format!("working_directory=\"{}\"", workspace.display()),
         format!("context_tool_cwd=\"{}\"", cwd.replace('"', "\\\"")),
@@ -936,7 +936,7 @@ pub(crate) async fn agent_context_memory_read(
     let memory = memory_path(&workspace);
     if !memory.exists() {
         return Ok(format!(
-            "LocalSlock MEMORY.md for @{}\nmemory_path=\"{}\"\nmemory_exists=false",
+            "Lantor MEMORY.md for @{}\nmemory_path=\"{}\"\nmemory_exists=false",
             target.handle,
             memory.display()
         ));
@@ -952,7 +952,7 @@ pub(crate) async fn agent_context_memory_read(
     let body = fs::read_to_string(&memory).map_err(to_string)?;
     let compacted = compact_chars_middle(body.trim(), limit);
     Ok(format!(
-        "LocalSlock MEMORY.md for @{}\nmemory_path=\"{}\"\nbytes={}\nchars_returned={}\n\n{}",
+        "Lantor MEMORY.md for @{}\nmemory_path=\"{}\"\nbytes={}\nchars_returned={}\n\n{}",
         target.handle,
         memory.display(),
         metadata.len(),
@@ -969,7 +969,7 @@ pub(crate) async fn agent_context_workspace_list(
     let workspace = workspace_path(&target)?;
     if !workspace.exists() {
         return Ok(format!(
-            "LocalSlock workspace list for @{}\nworking_directory=\"{}\"\nworkspace_exists=false",
+            "Lantor workspace list for @{}\nworking_directory=\"{}\"\nworkspace_exists=false",
             target.handle,
             workspace.display()
         ));
@@ -993,7 +993,7 @@ pub(crate) async fn agent_context_workspace_list(
     let mut entries = Vec::new();
     collect_workspace_entries(&workspace, &workspace, 1, max_depth, limit, &mut entries);
     let mut output = vec![format!(
-        "LocalSlock workspace list for @{}\nworking_directory=\"{}\"\nmax_depth={} limit={} returned={}",
+        "Lantor workspace list for @{}\nworking_directory=\"{}\"\nmax_depth={} limit={} returned={}",
         target.handle,
         workspace.display(),
         max_depth,
@@ -1048,7 +1048,7 @@ pub(crate) async fn agent_context_inbox_list(
     .map_err(to_string)?;
 
     let mut output = vec![format!(
-        "LocalSlock inbox for @{}\nstate={} limit={} returned={}",
+        "Lantor inbox for @{}\nstate={} limit={} returned={}",
         target.handle,
         state_label,
         limit,
@@ -1175,7 +1175,7 @@ pub(crate) async fn agent_context_inbox_read(
     let payload = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_owned());
     let body_preview = compact_chars_middle(row.get::<String, _>("body_preview").trim(), 1200);
     let mut output = vec![
-        format!("LocalSlock inbox item {}", row.get::<Uuid, _>("id")),
+        format!("Lantor inbox item {}", row.get::<Uuid, _>("id")),
         format!("agent=@{}", target.handle),
         format!("short_id={}", short_id(inbox_id)),
         format!("kind={}", row.get::<String, _>("kind")),
@@ -1266,7 +1266,7 @@ pub(crate) async fn agent_context_inbox_archive(
     .map_err(to_string)?;
     notify_context_tool_refresh(pool, "inbox_archived").await;
     Ok(format!(
-        "Archived LocalSlock inbox item {} for @{} kind={} title={:?}",
+        "Archived Lantor inbox item {} for @{} kind={} title={:?}",
         short_id(row.get("id")),
         target.handle,
         row.get::<String, _>("kind"),
@@ -1277,7 +1277,7 @@ pub(crate) async fn agent_context_inbox_archive(
 pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
     if args.is_empty() || has_arg(args, "--help") || has_arg(args, "-h") {
         return Ok(
-            "LocalSlock agent context tool\n\nCommands:\n  inbox-list [--state active|unread|processing|archived|all] [--limit 20]\n  inbox-read --inbox-id <uuid-or-prefix>\n  inbox-archive --inbox-id <uuid-or-prefix>\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID. Inbox, workspace, and memory commands default to the current LOCAL_SLOCK_AGENT_ID when invoked by an agent."
+            "Lantor agent context tool\n\nCommands:\n  inbox-list [--state active|unread|processing|archived|all] [--limit 20]\n  inbox-read --inbox-id <uuid-or-prefix>\n  inbox-archive --inbox-id <uuid-or-prefix>\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID. Inbox, workspace, and memory commands default to the current LOCAL_SLOCK_AGENT_ID when invoked by an agent."
                 .to_owned(),
         );
     }

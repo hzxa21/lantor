@@ -6,11 +6,12 @@ use std::{
 
 use crate::{models::LaunchAgentStatus, to_string, CommandResult};
 
-const LAUNCH_AGENT_LABEL: &str = "local.localslock.supervisor";
+const LAUNCH_AGENT_LABEL: &str = "local.lantor.supervisor";
+const LEGACY_LAUNCH_AGENT_LABEL: &str = "local.localslock.supervisor";
 
 pub(crate) fn spawn_supervisor_process(database_url: &str) {
     let Ok(exe) = env::current_exe() else {
-        eprintln!("failed to resolve current executable for LocalSlock supervisor");
+        eprintln!("failed to resolve current executable for Lantor supervisor");
         return;
     };
 
@@ -22,7 +23,7 @@ pub(crate) fn spawn_supervisor_process(database_url: &str) {
         .stderr(Stdio::null())
         .spawn()
     {
-        eprintln!("failed to spawn LocalSlock supervisor: {err}");
+        eprintln!("failed to spawn Lantor supervisor: {err}");
     }
 }
 
@@ -62,10 +63,18 @@ pub(crate) fn install_supervisor_service(database_url: &str) -> CommandResult<La
 
     let domain = launch_agent_domain()?;
     let service = launch_agent_service_target(&domain);
+    let legacy_service = launch_agent_service_target_for_label(&domain, LEGACY_LAUNCH_AGENT_LABEL);
     let _ = StdCommand::new("launchctl")
         .arg("bootout")
         .arg(&service)
         .output();
+    let _ = StdCommand::new("launchctl")
+        .arg("bootout")
+        .arg(&legacy_service)
+        .output();
+    remove_plist_if_exists(&launch_agent_plist_path_for_label(
+        LEGACY_LAUNCH_AGENT_LABEL,
+    )?)?;
 
     run_launchctl(&["bootstrap", &domain, &plist_path.to_string_lossy()])?;
     run_launchctl(&["kickstart", "-k", &service])?;
@@ -76,27 +85,43 @@ pub(crate) fn install_supervisor_service(database_url: &str) -> CommandResult<La
 pub(crate) fn uninstall_supervisor_service() -> CommandResult<LaunchAgentStatus> {
     let domain = launch_agent_domain()?;
     let service = launch_agent_service_target(&domain);
+    let legacy_service = launch_agent_service_target_for_label(&domain, LEGACY_LAUNCH_AGENT_LABEL);
     let _ = StdCommand::new("launchctl")
         .arg("bootout")
         .arg(&service)
         .output();
+    let _ = StdCommand::new("launchctl")
+        .arg("bootout")
+        .arg(&legacy_service)
+        .output();
 
-    let plist_path = launch_agent_plist_path()?;
-    match fs::remove_file(&plist_path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err.to_string()),
-    }
+    remove_plist_if_exists(&launch_agent_plist_path()?)?;
+    remove_plist_if_exists(&launch_agent_plist_path_for_label(
+        LEGACY_LAUNCH_AGENT_LABEL,
+    )?)?;
 
     load_launch_agent_status()
 }
 
+fn remove_plist_if_exists(plist_path: &Path) -> CommandResult<()> {
+    match fs::remove_file(plist_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.to_string()),
+    }
+    Ok(())
+}
+
 fn launch_agent_plist_path() -> CommandResult<PathBuf> {
+    launch_agent_plist_path_for_label(LAUNCH_AGENT_LABEL)
+}
+
+fn launch_agent_plist_path_for_label(label: &str) -> CommandResult<PathBuf> {
     let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
     Ok(PathBuf::from(home)
         .join("Library")
         .join("LaunchAgents")
-        .join(format!("{LAUNCH_AGENT_LABEL}.plist")))
+        .join(format!("{label}.plist")))
 }
 
 fn launch_agent_domain() -> CommandResult<String> {
@@ -115,7 +140,11 @@ fn launch_agent_domain() -> CommandResult<String> {
 }
 
 fn launch_agent_service_target(domain: &str) -> String {
-    format!("{domain}/{LAUNCH_AGENT_LABEL}")
+    launch_agent_service_target_for_label(domain, LAUNCH_AGENT_LABEL)
+}
+
+fn launch_agent_service_target_for_label(domain: &str, label: &str) -> String {
+    format!("{domain}/{label}")
 }
 
 fn run_launchctl(args: &[&str]) -> CommandResult<()> {
@@ -173,8 +202,8 @@ fn render_launch_agent_plist(exe_path: &Path, database_url: &str) -> String {
         xml_escape(LAUNCH_AGENT_LABEL),
         xml_escape(&exe_path.to_string_lossy()),
         xml_escape(database_url),
-        xml_escape("/tmp/localslock-supervisor.out.log"),
-        xml_escape("/tmp/localslock-supervisor.err.log"),
+        xml_escape("/tmp/lantor-supervisor.out.log"),
+        xml_escape("/tmp/lantor-supervisor.err.log"),
     )
 }
 

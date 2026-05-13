@@ -8,7 +8,7 @@ pub(crate) const AGENT_MEMORY_CONTEXT_LIMIT: usize = 16 * 1024;
 
 pub(crate) const WORK_ITEM_FINISH_PROMPT: &str = "Finish behavior: warm streaming runtimes should answer with normal assistant text; legacy stdout command runtimes should use the visible reply event template from the turn context. Only update task status when this request is tied to an explicit task number.";
 
-fn local_slock_operating_policy_prompt() -> &'static str {
+fn lantor_operating_policy_prompt() -> &'static str {
     r#"Operating policy:
 - Treat messages as conversation. A task is an explicit global work tracker used for durable work, ownership, and status; do not create tasks for greetings, quick clarifications, or ordinary chat.
 - Prefer the smallest useful surface. Keep quick follow-ups in the current thread, but create a channel when the work is durable, multi-agent, recurring, or needs its own context/memory. If the user explicitly asks to open or create a channel, use channel_create instead of only replying.
@@ -18,7 +18,7 @@ fn local_slock_operating_policy_prompt() -> &'static str {
 - MEMORY.md is durable recovery context. Keep it concise, index-like, and useful after restart or context compaction."#
 }
 
-fn local_slock_memory_management_prompt() -> &'static str {
+fn lantor_memory_management_prompt() -> &'static str {
     r#"Workspace memory:
 - Your working directory is your persistent agent-owned workspace. Files there survive across turns and runtime restarts; use it for MEMORY.md, notes/, artifacts, code checkouts, and task-specific files.
 - MEMORY.md is the entry point to your durable knowledge, not a dumping ground. Keep it concise and index-like: role, links to important notes, and current Active Context.
@@ -30,7 +30,7 @@ fn local_slock_memory_management_prompt() -> &'static str {
 - Use memory_append for small durable facts and memory_compact for a full cleaned MEMORY.md replacement that preserves the index structure."#
 }
 
-fn local_slock_context_tools_prompt() -> &'static str {
+fn lantor_context_tools_prompt() -> &'static str {
     r##"Agent context tools:
 - inbox list: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20
 - inbox read: "$LOCAL_SLOCK_CONTEXT_TOOL" --agent-context-tool inbox-read --inbox-id "<uuid-or-prefix>"
@@ -47,7 +47,7 @@ Inbox, workspace, and memory commands default to your own LOCAL_SLOCK_AGENT_ID; 
 When a turn is an inbox wake, first list/read active inbox items, decide which need visible work, and archive handled or intentionally ignored items."##
 }
 
-fn local_slock_control_api_prompt() -> &'static str {
+fn lantor_control_api_prompt() -> &'static str {
     r#"Standalone LOCAL_SLOCK_EVENT control lines:
 LOCAL_SLOCK_EVENT {"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"<short user-facing status>","detail":"<optional compact detail>"}
 LOCAL_SLOCK_EVENT {"type":"usage","input_tokens":1234,"output_tokens":567,"cost_usd":0.0123}
@@ -70,7 +70,7 @@ Use task_create only for durable globally tracked work. Use handoff_create only 
 
 fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
     format!(
-        "Reply normally only when a visible response is useful. LocalSlock will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. In warm streaming mode you may emit standalone LOCAL_SLOCK_EVENT control lines for activity, reminders, memory, profile, channel, artifact_create, attachment_create, channel_message_create, handoff_create, usage, durable task_create, or task_status; LocalSlock consumes those control lines and hides them from chat. Treat channel_message_create as a user-authorized way to post a normal agent message into a specific channel/thread, not as a background notification API. Treat handoff_create as a constrained transfer of one existing thread to another agent after user authorization, not a general message API. Treat channel_create as a normal tool for durable topics, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel. Do not emit legacy LOCAL_SLOCK_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
+        "Reply normally only when a visible response is useful. Lantor will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LOCAL_SLOCK_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. In warm streaming mode you may emit standalone LOCAL_SLOCK_EVENT control lines for activity, reminders, memory, profile, channel, artifact_create, attachment_create, channel_message_create, handoff_create, usage, durable task_create, or task_status; Lantor consumes those control lines and hides them from chat. Treat channel_message_create as a user-authorized way to post a normal agent message into a specific channel/thread, not as a background notification API. Treat handoff_create as a constrained transfer of one existing thread to another agent after user authorization, not a general message API. Treat channel_create as a normal tool for durable topics, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel. Do not emit legacy LOCAL_SLOCK_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
     )
 }
 
@@ -85,7 +85,7 @@ pub(crate) fn build_work_item_prompt(
     agent_profile_hint: Option<&str>,
 ) -> String {
     let mut lines = vec![
-        "Current LocalSlock inbox processing turn:".to_owned(),
+        "Current Lantor inbox processing turn:".to_owned(),
         format!("id: {work_item_id}"),
         format!("title: {title}"),
     ];
@@ -104,12 +104,12 @@ pub(crate) fn build_work_item_prompt(
             lines.push(format!("- {agent}"));
         }
         lines.push(
-            "If you need input from another agent, mention their @handle in your visible reply. LocalSlock will dispatch them in this same thread. Use this sparingly, and never mention yourself for delegation."
+            "If you need input from another agent, mention their @handle in your visible reply. Lantor will dispatch them in this same thread. Use this sparingly, and never mention yourself for delegation."
                 .to_owned(),
         );
     }
-    lines.push(local_slock_operating_policy_prompt().to_owned());
-    lines.push(local_slock_memory_management_prompt().to_owned());
+    lines.push(lantor_operating_policy_prompt().to_owned());
+    lines.push(lantor_memory_management_prompt().to_owned());
     if let Some(agent_profile_hint) = agent_profile_hint {
         let agent_profile_hint = agent_profile_hint.trim();
         if !agent_profile_hint.is_empty() {
@@ -121,8 +121,8 @@ pub(crate) fn build_work_item_prompt(
         lines.push("context:".to_owned());
         lines.push(context.trim().to_owned());
     }
-    lines.push(local_slock_context_tools_prompt().to_owned());
-    lines.push(local_slock_control_api_prompt().to_owned());
+    lines.push(lantor_context_tools_prompt().to_owned());
+    lines.push(lantor_control_api_prompt().to_owned());
     lines.push(WORK_ITEM_FINISH_PROMPT.to_owned());
     lines.join("\n")
 }
@@ -168,7 +168,7 @@ pub(crate) fn ensure_agent_workspace(working_directory: &str, handle: &str) -> C
         return Ok(());
     }
     let template = format!(
-        "# @{handle}\n\n## Role\nLocalSlock agent.\n\n## Key Knowledge\n- Add links to durable notes here, for example `notes/user-preferences.md`, `notes/channels.md`, `notes/work-log.md`, or domain-specific notes.\n\n## Active Context\n- Currently working on: none.\n- Last interaction: workspace initialized.\n\n## Memory Policy\n- Keep this file concise and index-like. Put detailed durable knowledge in `notes/` and link it above.\n- Record stable user preferences, project context, domain knowledge, work history, channel context, and collaboration patterns.\n- Before long-running work, update Active Context with a compact resume point; after significant work, update the relevant note and this index if needed.\n",
+        "# @{handle}\n\n## Role\nLantor agent.\n\n## Key Knowledge\n- Add links to durable notes here, for example `notes/user-preferences.md`, `notes/channels.md`, `notes/work-log.md`, or domain-specific notes.\n\n## Active Context\n- Currently working on: none.\n- Last interaction: workspace initialized.\n\n## Memory Policy\n- Keep this file concise and index-like. Put detailed durable knowledge in `notes/` and link it above.\n- Record stable user preferences, project context, domain knowledge, work history, channel context, and collaboration patterns.\n- Before long-running work, update Active Context with a compact resume point; after significant work, update the relevant note and this index if needed.\n",
     );
     fs::write(memory_path, template).map_err(|err| err.to_string())?;
     Ok(())
@@ -191,11 +191,11 @@ fn build_runtime_standing_prompt(
     memory_context: Option<&str>,
 ) -> String {
     let mut prompt = format!(
-        "You are @{handle}, a local agent running inside LocalSlock.\n\
+        "You are @{handle}, a local agent running inside Lantor.\n\
          You collaborate with one local human through channels, threads, tasks, and DMs.\n\
          {transport_note}\n\
-         LocalSlock keeps one warm runtime session per agent so previous turns remain in provider context; channel and thread are delivered as message envelope fields, not as separate runtime sessions.\n\
-         Each wake turn may contain a compact inbox processing prompt instead of a full request. Use inbox-list, inbox-read, and inbox-archive to pull pending items, decide what deserves a visible reply or action, and clear items you handled or intentionally ignored. Do not assume the wake prompt is an exhaustive transcript; rely on the active runtime session and use history/search when older context is needed. Use workspace-info, workspace-list, and memory-read when you need to recover your current LocalSlock workspace or inspect durable MEMORY.md beyond the injected prompt excerpt.\n\
+         Lantor keeps one warm runtime session per agent so previous turns remain in provider context; channel and thread are delivered as message envelope fields, not as separate runtime sessions.\n\
+         Each wake turn may contain a compact inbox processing prompt instead of a full request. Use inbox-list, inbox-read, and inbox-archive to pull pending items, decide what deserves a visible reply or action, and clear items you handled or intentionally ignored. Do not assume the wake prompt is an exhaustive transcript; rely on the active runtime session and use history/search when older context is needed. Use workspace-info, workspace-list, and memory-read when you need to recover your current Lantor workspace or inspect durable MEMORY.md beyond the injected prompt excerpt.\n\
          \n\
          {}\n\
          \n\
@@ -206,10 +206,10 @@ fn build_runtime_standing_prompt(
          {}\n\
          \n\
          Keep user-visible replies concise and include concrete results or blockers. Non-message LOCAL_SLOCK_EVENT control lines are allowed as standalone lines. Do not print legacy LOCAL_SLOCK_EVENT message/task_claim lines unless explicitly asked to debug the legacy runtime path.",
-        local_slock_operating_policy_prompt(),
-        local_slock_memory_management_prompt(),
-        local_slock_context_tools_prompt(),
-        local_slock_control_api_prompt(),
+        lantor_operating_policy_prompt(),
+        lantor_memory_management_prompt(),
+        lantor_context_tools_prompt(),
+        lantor_control_api_prompt(),
     );
     if let Some(memory_context) = memory_context.filter(|context| !context.trim().is_empty()) {
         prompt.push_str("\n\n");
@@ -220,7 +220,7 @@ fn build_runtime_standing_prompt(
 
 pub(crate) fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
     if legacy_prompt.trim().is_empty() {
-        return "No current LocalSlock agent request is assigned. Reply with a short ready status."
+        return "No current Lantor agent request is assigned. Reply with a short ready status."
             .to_owned();
     }
     legacy_prompt.replace(
@@ -231,7 +231,7 @@ pub(crate) fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
 
 pub(crate) fn build_claude_streaming_prompt(legacy_prompt: &str) -> String {
     if legacy_prompt.trim().is_empty() {
-        return "No current LocalSlock agent request is assigned. Reply with a short ready status."
+        return "No current Lantor agent request is assigned. Reply with a short ready status."
             .to_owned();
     }
     legacy_prompt.replace(
@@ -243,7 +243,7 @@ pub(crate) fn build_claude_streaming_prompt(legacy_prompt: &str) -> String {
 pub(crate) fn codex_developer_instructions(handle: &str, memory_context: Option<&str>) -> String {
     build_runtime_standing_prompt(
         handle,
-        "LocalSlock is connected to Codex through the official app-server JSON protocol and streams your assistant text into chat automatically.",
+        "Lantor is connected to Codex through the official app-server JSON protocol and streams your assistant text into chat automatically.",
         memory_context,
     )
 }
@@ -251,7 +251,7 @@ pub(crate) fn codex_developer_instructions(handle: &str, memory_context: Option<
 pub(crate) fn claude_system_prompt(handle: &str, memory_context: Option<&str>) -> String {
     build_runtime_standing_prompt(
         handle,
-        "LocalSlock is connected to Claude through Claude Code stream-json and streams your assistant text into chat automatically.",
+        "Lantor is connected to Claude through Claude Code stream-json and streams your assistant text into chat automatically.",
         memory_context,
     )
 }

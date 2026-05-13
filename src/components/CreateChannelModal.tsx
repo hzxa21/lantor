@@ -27,7 +27,7 @@ export function CreateChannelModal({
             onKeyDown={(event) => {
               if (event.key === "Enter") onSubmit();
             }}
-            placeholder="local-slock"
+            placeholder="lantor"
           />
         </label>
         <div className="modal-actions">

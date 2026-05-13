@@ -43,15 +43,15 @@ const LOCAL_SLOCK_CONTROL_EVENTS = [
   '{"type":"channel_message_create","channel_id":"uuid","thread_root_id":"optional uuid","body":"Message body"}',
   '{"type":"handoff_create","target_agent":"@Vegapunk","channel_id":"uuid","thread_root_id":"uuid","reason":"why this handoff is needed","body":"specific request"}',
   '{"type":"channel_create","name":"short-topic","description":"why this channel exists","agent_handles":["@Hancock"]}',
-  '{"type":"channel_invite","channel":"local-slock","agent_handles":["@Vegapunk"]}',
+  '{"type":"channel_invite","channel":"lantor","agent_handles":["@Vegapunk"]}',
   "Use channel_message_create only after the user explicitly asks you to post in a specific channel/thread. It posts as your agent identity, requires channel membership, and normal @mentions may dispatch work.",
   "Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents.",
 ].join("\n");
 
 const LOCAL_SLOCK_LEGACY_VISIBLE_EVENTS = [
   "Visible reply transport:",
-  "- Warm Codex/Claude streaming runtimes should answer with normal assistant text; LocalSlock routes it to the current channel/thread automatically.",
-  "- Warm streaming runtimes may still emit non-message LOCAL_SLOCK_EVENT control lines above, including artifact_create, attachment_create, channel_message_create, and handoff_create; LocalSlock consumes and hides those lines.",
+  "- Warm Codex/Claude streaming runtimes should answer with normal assistant text; Lantor routes it to the current channel/thread automatically.",
+  "- Warm streaming runtimes may still emit non-message LOCAL_SLOCK_EVENT control lines above, including artifact_create, attachment_create, channel_message_create, and handoff_create; Lantor consumes and hides those lines.",
   "- Legacy stdout command runtimes should create visible chat by printing exactly one LOCAL_SLOCK_EVENT message line.",
   '{"type":"message","channel_id":"uuid","body":"..."}',
   '{"type":"message","channel_id":"uuid","thread_root_id":"uuid","body":"..."}',
@@ -74,7 +74,7 @@ export function visibleAgentDescription(description: string) {
 export function presetPrompt(form: AgentForm) {
   const name = form.displayName || form.handle || "$LOCAL_SLOCK_AGENT_HANDLE";
   return [
-    `You are ${name}, a local agent running inside LocalSlock.`,
+    `You are ${name}, a local agent running inside Lantor.`,
     "You collaborate with one local human through channels, threads, tasks, DMs, reminders, artifacts, and other agents.",
     "If LOCAL_SLOCK_WORK_ITEM_PROMPT is set, treat it as the current agent request. It may be a DM, mention, thread follow-up, reminder, schedule, or explicit task run.",
     LOCAL_SLOCK_OPERATING_POLICY,

@@ -13,5 +13,5 @@ pub(crate) fn compact_chars_middle(value: &str, limit: usize) -> String {
         .iter()
         .skip(chars.len().saturating_sub(tail_len))
         .collect::<String>();
-    format!("{head}\n\n[... LocalSlock omitted {omitted} chars to keep agent context bounded ...]\n\n{tail}")
+    format!("{head}\n\n[... Lantor omitted {omitted} chars to keep agent context bounded ...]\n\n{tail}")
 }

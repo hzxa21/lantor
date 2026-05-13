@@ -82,7 +82,14 @@ const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
-const CHANNEL_THREAD_MEMORY_STORAGE_KEY = "localslock.channelThreadMemory";
+const CHANNEL_THREAD_MEMORY_STORAGE_KEY = "lantor.channelThreadMemory";
+const LEGACY_CHANNEL_THREAD_MEMORY_STORAGE_KEY = "localslock.channelThreadMemory";
+const THREAD_PANEL_WIDTH_STORAGE_KEY = "lantor.threadPanelWidth";
+const LEGACY_THREAD_PANEL_WIDTH_STORAGE_KEY = "localslock.threadPanelWidth";
+const AGENT_DRAWER_WIDTH_STORAGE_KEY = "lantor.agentDrawerWidth";
+const LEGACY_AGENT_DRAWER_WIDTH_STORAGE_KEY = "localslock.agentDrawerWidth";
+const SIDEBAR_WIDTH_STORAGE_KEY = "lantor.sidebarWidth";
+const LEGACY_SIDEBAR_WIDTH_STORAGE_KEY = "localslock.sidebarWidth";
 
 const RESPONDING_ACTIVITY_KINDS = new Set([
   "thinking",
@@ -121,7 +128,8 @@ type ConfirmRequest = {
 type ActiveTab = "chat" | "tasks";
 
 type MobileHistoryState = {
-  __localslockMobileUi: true;
+  __lantorMobileUi?: true;
+  __localslockMobileUi?: true;
   index: number;
   activeChannelId: string;
   activeThreadId: string | null;
@@ -271,7 +279,7 @@ function isMobileViewport() {
 function isMobileHistoryState(value: unknown): value is MobileHistoryState {
   if (!value || typeof value !== "object") return false;
   const state = value as Record<string, unknown>;
-  return state.__localslockMobileUi === true
+  return (state.__lantorMobileUi === true || state.__localslockMobileUi === true)
     && typeof state.index === "number"
     && typeof state.activeChannelId === "string"
     && (state.activeThreadId === null || typeof state.activeThreadId === "string")
@@ -414,7 +422,8 @@ function updateComposerDraftRecord(
 
 function loadChannelThreadMemory(): ChannelThreadMemory {
   try {
-    const raw = window.localStorage.getItem(CHANNEL_THREAD_MEMORY_STORAGE_KEY);
+    const raw = window.localStorage.getItem(CHANNEL_THREAD_MEMORY_STORAGE_KEY)
+      ?? window.localStorage.getItem(LEGACY_CHANNEL_THREAD_MEMORY_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
@@ -425,6 +434,11 @@ function loadChannelThreadMemory(): ChannelThreadMemory {
   } catch {
     return {};
   }
+}
+
+function getStoredNumber(primaryKey: string, legacyKey: string, fallback: number) {
+  const stored = window.localStorage.getItem(primaryKey) ?? window.localStorage.getItem(legacyKey);
+  return stored ? Number(stored) : fallback;
 }
 
 async function attachmentUploads(attachments: DraftAttachment[]) {
@@ -562,22 +576,31 @@ function App() {
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [runtimeChecks, setRuntimeChecks] = useState<Record<string, RuntimeCheck>>({});
   const [threadPanelWidth, setThreadPanelWidth] = useState(() => {
-    const stored = window.localStorage.getItem("localslock.threadPanelWidth");
-    const value = stored ? Number(stored) : DEFAULT_THREAD_PANEL_WIDTH;
+    const value = getStoredNumber(
+      THREAD_PANEL_WIDTH_STORAGE_KEY,
+      LEGACY_THREAD_PANEL_WIDTH_STORAGE_KEY,
+      DEFAULT_THREAD_PANEL_WIDTH,
+    );
     return Number.isFinite(value)
       ? Math.min(maxThreadPanelWidth(), Math.max(MIN_THREAD_PANEL_WIDTH, value))
       : DEFAULT_THREAD_PANEL_WIDTH;
   });
   const [agentDrawerWidth, setAgentDrawerWidth] = useState(() => {
-    const stored = window.localStorage.getItem("localslock.agentDrawerWidth");
-    const value = stored ? Number(stored) : DEFAULT_AGENT_DRAWER_WIDTH;
+    const value = getStoredNumber(
+      AGENT_DRAWER_WIDTH_STORAGE_KEY,
+      LEGACY_AGENT_DRAWER_WIDTH_STORAGE_KEY,
+      DEFAULT_AGENT_DRAWER_WIDTH,
+    );
     return Number.isFinite(value)
       ? Math.min(maxAgentDrawerWidth(), Math.max(MIN_AGENT_DRAWER_WIDTH, value))
       : DEFAULT_AGENT_DRAWER_WIDTH;
   });
   const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const stored = window.localStorage.getItem("localslock.sidebarWidth");
-    const value = stored ? Number(stored) : DEFAULT_SIDEBAR_WIDTH;
+    const value = getStoredNumber(
+      SIDEBAR_WIDTH_STORAGE_KEY,
+      LEGACY_SIDEBAR_WIDTH_STORAGE_KEY,
+      DEFAULT_SIDEBAR_WIDTH,
+    );
     return Number.isFinite(value)
       ? Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, value))
       : DEFAULT_SIDEBAR_WIDTH;
@@ -611,7 +634,7 @@ function App() {
 
   function buildMobileHistoryState(index = mobileHistoryIndexRef.current): MobileHistoryState {
     return {
-      __localslockMobileUi: true,
+      __lantorMobileUi: true,
       index,
       activeChannelId,
       activeThreadId,
@@ -1029,15 +1052,15 @@ function App() {
   }, [activeThreadId]);
 
   useEffect(() => {
-    window.localStorage.setItem("localslock.threadPanelWidth", String(threadPanelWidth));
+    window.localStorage.setItem(THREAD_PANEL_WIDTH_STORAGE_KEY, String(threadPanelWidth));
   }, [threadPanelWidth]);
 
   useEffect(() => {
-    window.localStorage.setItem("localslock.agentDrawerWidth", String(agentDrawerWidth));
+    window.localStorage.setItem(AGENT_DRAWER_WIDTH_STORAGE_KEY, String(agentDrawerWidth));
   }, [agentDrawerWidth]);
 
   useEffect(() => {
-    window.localStorage.setItem("localslock.sidebarWidth", String(sidebarWidth));
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
   }, [sidebarWidth]);
 
   useEffect(() => {
