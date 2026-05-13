@@ -1808,6 +1808,14 @@ function App() {
     });
   }
 
+  function restoreRememberedThreadForChannel(channelId: string) {
+    const nextThreadId = rememberedThreadForChannel(channelId);
+    openThread(nextThreadId, channelId);
+    if (!isMobileViewport()) {
+      setShowThread(Boolean(nextThreadId));
+    }
+  }
+
   function selectChannel(channelId: string) {
     const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
     setActiveChannelId(channelId);
@@ -1816,7 +1824,7 @@ function App() {
     if (nextChannel?.kind === "dm") {
       setActiveTab("chat");
     }
-    openThread(rememberedThreadForChannel(channelId), channelId);
+    restoreRememberedThreadForChannel(channelId);
   }
 
   function openThread(threadId: string | null, channelId = activeChannelId) {
@@ -2111,7 +2119,7 @@ function App() {
       const channelId = await apiInvoke<string>("open_dm_with_agent", { agentId: agent.id });
       await refresh();
       setActiveChannelId(channelId);
-      openThread(rememberedThreadForChannel(channelId), channelId);
+      restoreRememberedThreadForChannel(channelId);
       setActiveTab("chat");
       setTaskDraft("");
       setSelectedAgentId(null);
