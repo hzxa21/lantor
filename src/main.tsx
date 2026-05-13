@@ -80,6 +80,7 @@ const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
+const CHANNEL_THREAD_MEMORY_STORAGE_KEY = "localslock.channelThreadMemory";
 
 const RESPONDING_ACTIVITY_KINDS = new Set([
   "thinking",
@@ -381,6 +382,8 @@ type ComposerDraftState = {
   attachments: DraftAttachment[];
 };
 
+type ChannelThreadMemory = Record<string, string | null>;
+
 const EMPTY_COMPOSER_DRAFT: ComposerDraftState = {
   text: "",
   attachments: [],
@@ -405,6 +408,21 @@ function updateComposerDraftRecord(
     next[key] = nextDraft;
   }
   return next;
+}
+
+function loadChannelThreadMemory(): ChannelThreadMemory {
+  try {
+    const raw = window.localStorage.getItem(CHANNEL_THREAD_MEMORY_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .filter(([channelId, threadId]) => channelId && (threadId === null || typeof threadId === "string")),
+    ) as ChannelThreadMemory;
+  } catch {
+    return {};
+  }
 }
 
 async function attachmentUploads(attachments: DraftAttachment[]) {
@@ -506,6 +524,7 @@ function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [channelThreadMemory, setChannelThreadMemory] = useState<ChannelThreadMemory>(() => loadChannelThreadMemory());
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
   const [rootComposerDrafts, setRootComposerDrafts] = useState<Record<string, ComposerDraftState>>({});
   const [replyComposerDrafts, setReplyComposerDrafts] = useState<Record<string, ComposerDraftState>>({});
@@ -1009,6 +1028,10 @@ function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
+    window.localStorage.setItem(CHANNEL_THREAD_MEMORY_STORAGE_KEY, JSON.stringify(channelThreadMemory));
+  }, [channelThreadMemory]);
+
+  useEffect(() => {
     setDismissedInboxItems(data?.dismissed_inbox_items ?? {});
   }, [data?.dismissed_inbox_items]);
 
@@ -1077,7 +1100,7 @@ function App() {
     const message = data.messages.find((item) => item.id === messageId || item.id.startsWith(messageId));
     if (!message) return;
     selectChannel(message.channel_id);
-    revealThread(message.thread_root_id ?? message.id);
+    revealThread(message.thread_root_id ?? message.id, message.channel_id);
     setFocusedMessageId(message.id);
     setActiveTab("chat");
     window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
@@ -1718,9 +1741,10 @@ function App() {
       onConfirm: async () => {
         await mutate("delete_channel", { channelId: channelToDelete.id });
         setShowChannelSettingsModal(false);
+        forgetChannelThread(channelToDelete.id);
         if (activeChannelId === channelToDelete.id) {
           setActiveChannelId(fallbackChannelId);
-          setActiveThreadId(null);
+          openThread(rememberedThreadForChannel(fallbackChannelId), fallbackChannelId);
         }
       },
     });
@@ -1742,6 +1766,48 @@ function App() {
     updateReplyComposerDraft(activeThreadId, (current) => ({ ...current, text: value }));
   }
 
+  function defaultThreadForChannel(channelId: string) {
+    const repliedRootIds = new Set(
+      visibleMessages
+        .filter((message) => message.channel_id === channelId && message.thread_root_id)
+        .map((message) => message.thread_root_id),
+    );
+    return visibleMessages.find((m) => m.channel_id === channelId && !m.thread_root_id && repliedRootIds.has(m.id))?.id ?? null;
+  }
+
+  function rootThreadBelongsToChannel(channelId: string, threadId: string) {
+    return visibleMessages.some((message) => message.channel_id === channelId && !message.thread_root_id && message.id === threadId);
+  }
+
+  function rememberedThreadForChannel(channelId: string) {
+    if (!Object.prototype.hasOwnProperty.call(channelThreadMemory, channelId)) {
+      return defaultThreadForChannel(channelId);
+    }
+    const rememberedThreadId = channelThreadMemory[channelId];
+    if (!rememberedThreadId) return null;
+    return rootThreadBelongsToChannel(channelId, rememberedThreadId)
+      ? rememberedThreadId
+      : defaultThreadForChannel(channelId);
+  }
+
+  function rememberChannelThread(channelId: string | null | undefined, threadId: string | null) {
+    if (!channelId) return;
+    setChannelThreadMemory((current) => {
+      if (current[channelId] === threadId) return current;
+      return { ...current, [channelId]: threadId };
+    });
+  }
+
+  function forgetChannelThread(channelId: string | null | undefined) {
+    if (!channelId) return;
+    setChannelThreadMemory((current) => {
+      if (!Object.prototype.hasOwnProperty.call(current, channelId)) return current;
+      const next = { ...current };
+      delete next[channelId];
+      return next;
+    });
+  }
+
   function selectChannel(channelId: string) {
     const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
     setActiveChannelId(channelId);
@@ -1750,17 +1816,12 @@ function App() {
     if (nextChannel?.kind === "dm") {
       setActiveTab("chat");
     }
-    const repliedRootIds = new Set(
-      visibleMessages
-        .filter((message) => message.channel_id === channelId && message.thread_root_id)
-        .map((message) => message.thread_root_id),
-    );
-    const first = visibleMessages.find((m) => m.channel_id === channelId && !m.thread_root_id && repliedRootIds.has(m.id));
-    openThread(first?.id ?? null);
+    openThread(rememberedThreadForChannel(channelId), channelId);
   }
 
-  function openThread(threadId: string | null) {
+  function openThread(threadId: string | null, channelId = activeChannelId) {
     setActiveThreadId(threadId);
+    rememberChannelThread(channelId, threadId);
     setFocusedMessageId(null);
     if (!threadId) return;
     setThreadUnreadCounts((current) => {
@@ -1771,8 +1832,8 @@ function App() {
     });
   }
 
-  function revealThread(threadId: string | null) {
-    openThread(threadId);
+  function revealThread(threadId: string | null, channelId = activeChannelId) {
+    openThread(threadId, channelId);
     if (threadId) setShowThread(true);
   }
 
@@ -1993,9 +2054,10 @@ function App() {
         await mutate("delete_agent", { agentId: agent.id });
         if (editingAgentId === agent.id) setEditingAgentId(null);
         if (selectedAgentId === agent.id) setSelectedAgentId(null);
+        if (agentDm) forgetChannelThread(agentDm.id);
         if (agentDm && activeChannelId === agentDm.id) {
           setActiveChannelId(fallbackChannelId ?? "");
-          setActiveThreadId(null);
+          openThread(rememberedThreadForChannel(fallbackChannelId ?? ""), fallbackChannelId ?? "");
         }
       },
     });
@@ -2049,7 +2111,7 @@ function App() {
       const channelId = await apiInvoke<string>("open_dm_with_agent", { agentId: agent.id });
       await refresh();
       setActiveChannelId(channelId);
-      setActiveThreadId(null);
+      openThread(rememberedThreadForChannel(channelId), channelId);
       setActiveTab("chat");
       setTaskDraft("");
       setSelectedAgentId(null);
@@ -2111,14 +2173,14 @@ function App() {
 
   function openTask(task: Task) {
     setActiveChannelId(task.channel_id);
-    revealThread(task.message_id);
+    revealThread(task.message_id, task.channel_id);
     setActiveTab("chat");
   }
 
   function openWorkItem(item: AgentWorkItem) {
     if (item.channel_id) setActiveChannelId(item.channel_id);
     if (item.thread_root_id) {
-      revealThread(item.thread_root_id);
+      revealThread(item.thread_root_id, item.channel_id ?? activeChannelId);
       setActiveTab("chat");
     }
     const agent = data?.agents.find((candidate) => candidate.id === item.agent_id);
@@ -2132,7 +2194,7 @@ function App() {
     }
     if (result.channelId) selectChannel(result.channelId);
     if (result.threadId) {
-      revealThread(result.threadId);
+      revealThread(result.threadId, result.channelId ?? activeChannelId);
       setActiveTab("chat");
     }
     setShowSearchModal(false);
@@ -2140,7 +2202,7 @@ function App() {
 
   function openSavedMessage(item: SavedMessage) {
     selectChannel(item.channel_id);
-    revealThread(item.thread_root_id ?? item.message_id);
+    revealThread(item.thread_root_id ?? item.message_id, item.channel_id);
     setFocusedMessageId(item.message_id);
     setActiveTab("chat");
     setShowSavedModal(false);
@@ -2161,9 +2223,9 @@ function App() {
     setSelectedAgentId(null);
     setActiveTab("chat");
     if (targetThreadId) {
-      revealThread(targetThreadId);
+      revealThread(targetThreadId, item.channelId ?? activeChannelId);
     } else {
-      openThread(null);
+      openThread(null, item.channelId ?? activeChannelId);
       setShowThread(false);
     }
     if (item.messageId) {
