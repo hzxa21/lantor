@@ -670,10 +670,12 @@ button,
   position: fixed;
   z-index: 1400;
   display: grid;
-  width: min(230px, calc(100vw - 32px));
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  width: min(252px, calc(100vw - 32px));
   max-height: calc(100vh - 24px);
-  gap: 3px;
-  padding: 10px 12px 11px;
+  gap: 10px;
+  padding: 10px;
   border: 1px solid rgba(20, 22, 28, 0.08);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.97);
@@ -688,6 +690,16 @@ button,
   transform: translateY(4px);
   transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
   visibility: hidden;
+}
+
+.agent-avatar-profile-image {
+  margin-top: 1px;
+}
+
+.agent-avatar-profile-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
 }
 
 .agent-avatar-profile-card::after {
@@ -725,9 +737,7 @@ button,
 .agent-avatar-profile-name,
 .agent-avatar-profile-handle,
 .agent-avatar-profile-role,
-.agent-avatar-profile-description,
-.agent-avatar-profile-meta,
-.agent-avatar-profile-hint {
+.agent-avatar-profile-description {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -742,15 +752,14 @@ button,
 }
 
 .agent-avatar-profile-handle,
-.agent-avatar-profile-meta {
+.agent-avatar-profile-role {
   color: rgba(29, 29, 31, 0.58);
   white-space: nowrap;
 }
 
 .agent-avatar-profile-role {
-  margin-top: 3px;
-  color: rgba(29, 29, 31, 0.82);
-  font-weight: 680;
+  margin-top: 1px;
+  font-weight: 620;
   white-space: nowrap;
 }
 
@@ -760,13 +769,6 @@ button,
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   white-space: normal;
-}
-
-.agent-avatar-profile-hint {
-  margin-top: 5px;
-  color: #0a84ff;
-  font-weight: 700;
-  white-space: nowrap;
 }
 
 .profile strong {

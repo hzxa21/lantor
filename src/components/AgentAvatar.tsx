@@ -11,10 +11,6 @@ type AgentAvatarProps = {
   title?: string;
 };
 
-type AgentAvatarWithProfileProps = AgentAvatarProps & {
-  clickHint?: string;
-};
-
 type ProfilePopoverPosition = {
   left: number;
   top: number;
@@ -25,8 +21,8 @@ type ProfilePopoverPosition = {
 const IDENTICON_SIZE = 5;
 const IDENTICON_MIRROR_WIDTH = Math.ceil(IDENTICON_SIZE / 2);
 const DEFAULT_DICEBEAR_STYLE = "bottts-neutral";
-const PROFILE_POPOVER_WIDTH = 230;
-const PROFILE_POPOVER_ESTIMATED_HEIGHT = 150;
+const PROFILE_POPOVER_WIDTH = 252;
+const PROFILE_POPOVER_ESTIMATED_HEIGHT = 116;
 const PROFILE_POPOVER_GAP = 10;
 const PROFILE_POPOVER_VIEWPORT_MARGIN = 12;
 const DICEBEAR_STYLE_LOADERS = {
@@ -106,14 +102,10 @@ function isImageAvatar(value: string) {
   return /^https?:\/\//i.test(value) || /^data:image\//i.test(value);
 }
 
-function compactProfileText(value: string | null | undefined, fallback: string) {
+function compactProfileText(value: string | null | undefined, fallback = "") {
   const trimmed = value?.trim();
   if (!trimmed) return fallback;
   return trimmed.length > 110 ? `${trimmed.slice(0, 107).trimEnd()}...` : trimmed;
-}
-
-function statusLabel(status: string) {
-  return status.replace(/_/g, " ");
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -215,14 +207,12 @@ export function AgentAvatarWithProfile({
   agent,
   size = "md",
   className = "",
-  clickHint = "Click to open details",
-}: AgentAvatarWithProfileProps) {
+}: AgentAvatarProps) {
   const anchorRef = useRef<HTMLSpanElement>(null);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [profilePosition, setProfilePosition] = useState<ProfilePopoverPosition | null>(null);
-  const role = compactProfileText(agent.role, `${agent.runtime ?? "agent"} agent`);
-  const description = compactProfileText(agent.description, "No profile description yet.");
-  const runtimeModel = [agent.runtime, agent.model].filter(Boolean).join(" / ");
+  const role = compactProfileText(agent.role);
+  const description = compactProfileText(agent.description);
   const updateProfilePosition = useCallback(() => {
     const rect = anchorRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -254,14 +244,13 @@ export function AgentAvatarWithProfile({
               } as CSSProperties
             }
           >
-            <span className="agent-avatar-profile-name">{agent.display_name}</span>
-            <span className="agent-avatar-profile-handle">@{agent.handle}</span>
-            <span className="agent-avatar-profile-role">{role}</span>
-            <span className="agent-avatar-profile-description">{description}</span>
-            <span className="agent-avatar-profile-meta">
-              {runtimeModel || "runtime unknown"} · {statusLabel(agent.status)}
+            <AgentAvatar agent={agent} size="md" className="agent-avatar-profile-image" />
+            <span className="agent-avatar-profile-copy">
+              <span className="agent-avatar-profile-name">{agent.display_name}</span>
+              <span className="agent-avatar-profile-handle">@{agent.handle}</span>
+              {role ? <span className="agent-avatar-profile-role">{role}</span> : null}
+              {description ? <span className="agent-avatar-profile-description">{description}</span> : null}
             </span>
-            <span className="agent-avatar-profile-hint">{clickHint}</span>
           </span>,
           document.body,
         )
