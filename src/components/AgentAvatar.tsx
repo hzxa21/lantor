@@ -1,4 +1,5 @@
-import type { CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
+import type { Style } from "@dicebear/core";
 import type { Agent } from "../types";
 
 type AgentAvatarProps = {
@@ -10,6 +11,20 @@ type AgentAvatarProps = {
 
 const IDENTICON_SIZE = 5;
 const IDENTICON_MIRROR_WIDTH = Math.ceil(IDENTICON_SIZE / 2);
+const DEFAULT_DICEBEAR_STYLE = "bottts-neutral";
+const DICEBEAR_STYLE_LOADERS = {
+  adventurer: () => import("@dicebear/adventurer"),
+  "bottts-neutral": () => import("@dicebear/bottts-neutral"),
+  identicon: () => import("@dicebear/identicon"),
+  initials: () => import("@dicebear/initials"),
+  lorelei: () => import("@dicebear/lorelei"),
+  notionists: () => import("@dicebear/notionists"),
+  personas: () => import("@dicebear/personas"),
+  "pixel-art": () => import("@dicebear/pixel-art"),
+  shapes: () => import("@dicebear/shapes"),
+} as const;
+type DiceBearStyleName = keyof typeof DICEBEAR_STYLE_LOADERS;
+type DiceBearStyle = Style<Record<string, unknown>>;
 
 function hashSeed(seed: string) {
   let hash = 2166136261;
@@ -49,14 +64,69 @@ function generateIdenticon(seedText: string) {
   };
 }
 
+function normalizeDiceBearStyle(style: string) {
+  const normalized = style
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .replace(/[_\s]+/g, "-")
+    .toLowerCase();
+  return normalized in DICEBEAR_STYLE_LOADERS
+    ? (normalized as DiceBearStyleName)
+    : DEFAULT_DICEBEAR_STYLE;
+}
+
+function parseDiceBearAvatar(value: string, fallbackSeed: string) {
+  const trimmed = value.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower !== "dicebear" && !lower.startsWith("dicebear:")) return null;
+  const [, rawStyle = DEFAULT_DICEBEAR_STYLE, ...seedParts] = trimmed.split(":");
+  const style = normalizeDiceBearStyle(rawStyle || DEFAULT_DICEBEAR_STYLE);
+  const seed = seedParts.join(":").trim() || fallbackSeed;
+  return { style, seed };
+}
+
+function isImageAvatar(value: string) {
+  return /^https?:\/\//i.test(value) || /^data:image\//i.test(value);
+}
+
 export function AgentAvatar({ agent, size = "md", className = "", title }: AgentAvatarProps) {
   const seedText = agent.id || `${agent.handle}:${agent.display_name}:${agent.runtime ?? ""}`;
   const identicon = generateIdenticon(seedText);
   const customAvatar = agent.avatar?.trim();
+  const diceBearSpec = customAvatar ? parseDiceBearAvatar(customAvatar, seedText) : null;
+  const [diceBearAvatar, setDiceBearAvatar] = useState<string | null>(null);
   const style = {
     "--avatar-color": identicon.foreground,
     "--avatar-bg": identicon.background,
   } as CSSProperties;
+
+  useEffect(() => {
+    if (!diceBearSpec) {
+      setDiceBearAvatar(null);
+      return;
+    }
+
+    let cancelled = false;
+    setDiceBearAvatar(null);
+    Promise.all([
+      import("@dicebear/core"),
+      DICEBEAR_STYLE_LOADERS[diceBearSpec.style](),
+    ])
+      .then(([{ createAvatar }, styleDefinition]) => {
+        if (cancelled) return;
+        const avatar = createAvatar(styleDefinition as unknown as DiceBearStyle, {
+          seed: diceBearSpec.seed,
+        });
+        setDiceBearAvatar(avatar.toDataUri());
+      })
+      .catch(() => {
+        if (!cancelled) setDiceBearAvatar(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [diceBearSpec?.seed, diceBearSpec?.style]);
 
   return (
     <span
@@ -65,7 +135,11 @@ export function AgentAvatar({ agent, size = "md", className = "", title }: Agent
       title={title}
       aria-hidden={!title}
     >
-      {customAvatar ? (
+      {diceBearAvatar ? (
+        <img className="agent-avatar-image" src={diceBearAvatar} alt="" aria-hidden="true" />
+      ) : customAvatar && !diceBearSpec && isImageAvatar(customAvatar) ? (
+        <img className="agent-avatar-image" src={customAvatar} alt="" aria-hidden="true" />
+      ) : customAvatar && !diceBearSpec ? (
         <span className="agent-avatar-glyph" aria-hidden="true">{customAvatar.slice(0, 2)}</span>
       ) : (
         <span className="agent-avatar-pixels" aria-hidden="true">

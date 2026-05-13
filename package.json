@@ -11,6 +11,16 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@dicebear/adventurer": "^9.4.2",
+    "@dicebear/bottts-neutral": "^9.4.2",
+    "@dicebear/core": "^9.4.2",
+    "@dicebear/identicon": "^9.4.2",
+    "@dicebear/initials": "^9.4.2",
+    "@dicebear/lorelei": "^9.4.2",
+    "@dicebear/notionists": "^9.4.2",
+    "@dicebear/personas": "^9.4.2",
+    "@dicebear/pixel-art": "^9.4.2",
+    "@dicebear/shapes": "^9.4.2",
     "@tauri-apps/api": "^2.5.0",
     "@vitejs/plugin-react": "^4.4.1",
     "lucide-react": "^0.508.0",

@@ -33,7 +33,7 @@ const LOCAL_SLOCK_CONTROL_EVENTS = [
   '{"type":"usage","input_tokens":1234,"output_tokens":567,"cost_usd":0.0123}',
   '{"type":"memory_append","body":"Durable fact or handoff to remember"}',
   '{"type":"memory_compact","body":"Full compact MEMORY.md replacement"}',
-  '{"type":"profile_update","display_name":"Name","role":"specialist role","avatar":"H","description":"What this agent is good at"}',
+  '{"type":"profile_update","display_name":"Name","role":"specialist role","avatar":"dicebear:bottts-neutral:Hancock","description":"What this agent is good at"}',
   '{"type":"reminder_create","when":"ISO8601 timestamp","title":"Follow-up title","note":"optional note","recurrence":"none|daily|weekly"}',
   '{"type":"reminder_cancel","reminder_id":"uuid"}',
   '{"type":"task_create","channel_id":"uuid","title":"Short task title","body":"Root task message","thread_body":"First execution update","assign_self":true,"status":"in_progress"}',
