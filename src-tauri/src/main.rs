@@ -10149,7 +10149,7 @@ async fn supervisor_start_agent(
                 .is_none()
                 .then(|| {
                     format!(
-                        "Your agent profile currently has no avatar. If your handle or MEMORY.md gives you a stable identity, you may emit one standalone LANTOR_EVENT profile_update with an avatar like `dicebear:bottts-neutral:{handle}` or another supported DiceBear style. Keep handling the user's request normally and do not send visible chat only for avatar setup."
+                        "Your agent profile currently has no avatar. If your handle or MEMORY.md gives you a stable identity, you may emit one standalone LANTOR_EVENT profile_update with an avatar like `dicebear:notionists:{handle}` or another supported DiceBear style. Keep handling the user's request normally and do not send visible chat only for avatar setup."
                     )
                 });
             build_work_item_prompt(

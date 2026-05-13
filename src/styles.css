@@ -891,7 +891,8 @@ button,
 }
 
 .hash-card.dm-card {
-  background: linear-gradient(135deg, #0a84ff, #64d2ff);
+  background: transparent;
+  color: inherit;
   font-weight: 800;
 }
 
@@ -900,6 +901,12 @@ button,
   width: 100%;
   height: 100%;
   place-items: center;
+}
+
+.hash-card.dm-card .agent-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
 }
 
 .dm-agent-detail-trigger:hover .agent-avatar {

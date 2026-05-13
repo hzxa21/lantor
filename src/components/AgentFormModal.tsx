@@ -96,7 +96,7 @@ export function AgentFormModal({
             <input
               value={form.avatar}
               onChange={(event) => onChange({ ...form, avatar: event.target.value })}
-              placeholder="emoji, initials, URL, or dicebear:bottts-neutral"
+              placeholder="emoji, initials, URL, or dicebear:notionists"
             />
           </label>
         </div>

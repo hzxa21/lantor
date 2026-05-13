@@ -21,7 +21,7 @@ type ProfilePopoverPosition = {
 
 const IDENTICON_SIZE = 5;
 const IDENTICON_MIRROR_WIDTH = Math.ceil(IDENTICON_SIZE / 2);
-const DEFAULT_DICEBEAR_STYLE = "bottts-neutral";
+const DEFAULT_DICEBEAR_STYLE = "notionists";
 const PROFILE_POPOVER_WIDTH = 252;
 const PROFILE_POPOVER_ESTIMATED_HEIGHT = 116;
 const PROFILE_POPOVER_GAP = 10;
@@ -29,6 +29,7 @@ const PROFILE_POPOVER_VIEWPORT_MARGIN = 12;
 const DICEBEAR_STYLE_LOADERS = {
   adventurer: () => import("@dicebear/adventurer"),
   "bottts-neutral": () => import("@dicebear/bottts-neutral"),
+  dylan: () => import("@dicebear/dylan"),
   identicon: () => import("@dicebear/identicon"),
   initials: () => import("@dicebear/initials"),
   lorelei: () => import("@dicebear/lorelei"),
