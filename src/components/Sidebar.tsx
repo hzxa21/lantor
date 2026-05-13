@@ -196,8 +196,8 @@ export function Sidebar({
                   <strong>{agent.display_name}</strong>
                   <span>@{agent.handle} · {agent.status}</span>
                 </div>
+                {badge && <strong className="dm-badge">{badge}</strong>}
                 <Circle className={`dot ${agent.status}`} size={10} />
-                {badge && <strong>{badge}</strong>}
               </button>
             </div>
           );

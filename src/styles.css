@@ -404,10 +404,10 @@ button,
 
 .dm {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 10px auto;
+  grid-template-columns: minmax(0, 1fr) 34px 10px;
   width: 100%;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 9px 11px 9px 0;
   border-radius: 0 14px 14px 0;
   text-align: left;
@@ -438,9 +438,27 @@ button,
   opacity: 0.62;
 }
 
-.dm.selected > strong,
-.dm-row.selected .dm > strong {
-  background: rgba(10, 132, 255, 0.08);
+.dm .dot {
+  justify-self: end;
+}
+
+.dm-badge {
+  justify-self: end;
+  min-width: 20px;
+  max-width: 34px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--badge);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 14px;
+  text-align: center;
+}
+
+.dm.selected .dm-badge,
+.dm-row.selected .dm .dm-badge {
+  background: rgba(10, 132, 255, 0.1);
   color: #0a84ff;
 }
 
@@ -5009,15 +5027,17 @@ body.resizing-column * {
   }
 
   .workspace-switch {
+    flex: 1 1 auto;
+    min-width: 0;
     padding: 8px 12px 8px 8px;
     border-radius: 14px;
     gap: 9px;
   }
 
   .workspace-switch-logo {
-    width: 24px;
-    height: 24px;
-    border-radius: 7px;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
   }
 
   .workspace-switch strong {

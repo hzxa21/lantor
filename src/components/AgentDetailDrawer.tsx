@@ -281,7 +281,7 @@ export function AgentDetailDrawer({
   const [workspaceLoadingPath, setWorkspaceLoadingPath] = useState<string | null>(null);
   const [workspacePreview, setWorkspacePreview] = useState<AgentWorkspaceFile | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
-  const [activeDetailTab, setActiveDetailTab] = useState<AgentDetailTab>("profile");
+  const [activeDetailTab, setActiveDetailTab] = useState<AgentDetailTab>("activity");
   const deleteDisabled = Boolean(activeRun);
   const workspacePath = agent.working_directory.trim();
   const rootWorkspaceEntries = workspaceNodes[""] ?? agent.workspace_entries ?? [];
@@ -294,7 +294,7 @@ export function AgentDetailDrawer({
   const visibleAgentReminders = liveAgentReminders.slice(0, 8);
 
   useEffect(() => {
-    setActiveDetailTab("profile");
+    setActiveDetailTab("activity");
     setExpandedWorkspaceDirs(new Set());
     setWorkspaceNodes({ "": agent.workspace_entries ?? [] });
     setWorkspaceLoadingPath(null);
