@@ -14,7 +14,7 @@ import {
   Bootstrap,
   Channel,
 } from "../types";
-import { AgentAvatarWithProfile } from "./AgentAvatar";
+import { AgentAvatar } from "./AgentAvatar";
 
 type SidebarProps = {
   data: Bootstrap;
@@ -167,7 +167,7 @@ export function Sidebar({
                 aria-label={`Open DM with @${agent.handle}`}
                 onClick={() => item ? selectChannel(item.id) : openDmWithAgent(agent)}
               >
-                <AgentAvatarWithProfile agent={agent} size="sm" clickHint="Click to open DM" />
+                <AgentAvatar agent={agent} size="sm" />
               </button>
               <button
                 type="button"
