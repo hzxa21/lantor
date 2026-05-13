@@ -429,9 +429,33 @@ button,
   width: 34px;
   height: 42px;
   place-items: center;
+  padding: 0;
+  border: 0;
   border-radius: 14px;
   background: transparent;
-  cursor: default;
+  color: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.dm-row:hover .dm-avatar-shell,
+.dm-avatar-shell:hover,
+.dm-avatar-shell:focus-visible {
+  background: rgba(10, 132, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.18);
+}
+
+.dm-row.selected .dm-avatar-shell,
+.dm-row.selected .dm-avatar-shell:hover,
+.dm-row.selected .dm-avatar-shell:focus-visible {
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.dm-row:hover .dm-avatar-shell .agent-avatar,
+.dm-avatar-shell:hover .agent-avatar,
+.dm-avatar-shell:focus-visible .agent-avatar {
+  transform: translateY(-1px) scale(1.04);
 }
 
 .dm-avatar-shell .agent-avatar::after {
@@ -650,12 +674,11 @@ button,
 }
 
 .agent-avatar-profile-card {
-  position: absolute;
-  bottom: calc(100% + 10px);
-  left: 50%;
-  z-index: 120;
+  position: fixed;
+  z-index: 1400;
   display: grid;
   width: min(230px, calc(100vw - 32px));
+  max-height: calc(100vh - 24px);
   gap: 3px;
   padding: 10px 12px 11px;
   border: 1px solid rgba(20, 22, 28, 0.08);
@@ -666,30 +689,43 @@ button,
   font-size: 12px;
   line-height: 1.35;
   opacity: 0;
+  overflow: hidden;
   pointer-events: none;
   text-align: left;
-  transform: translate(-50%, 4px);
+  transform: translateY(4px);
   transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
   visibility: hidden;
 }
 
 .agent-avatar-profile-card::after {
   position: absolute;
-  bottom: -5px;
-  left: 50%;
+  left: var(--agent-avatar-profile-arrow-left, 50%);
   width: 10px;
   height: 10px;
-  border-right: 1px solid rgba(20, 22, 28, 0.08);
-  border-bottom: 1px solid rgba(20, 22, 28, 0.08);
   background: rgba(255, 255, 255, 0.97);
   content: "";
   transform: translateX(-50%) rotate(45deg);
 }
 
-.agent-avatar-profile-anchor:hover .agent-avatar-profile-card,
-.agent-avatar-profile-anchor:focus-within .agent-avatar-profile-card {
+.agent-avatar-profile-card-above::after {
+  bottom: -5px;
+  border-right: 1px solid rgba(20, 22, 28, 0.08);
+  border-bottom: 1px solid rgba(20, 22, 28, 0.08);
+}
+
+.agent-avatar-profile-card-below {
+  transform: translateY(-4px);
+}
+
+.agent-avatar-profile-card-below::after {
+  top: -5px;
+  border-top: 1px solid rgba(20, 22, 28, 0.08);
+  border-left: 1px solid rgba(20, 22, 28, 0.08);
+}
+
+.agent-avatar-profile-card-visible {
   opacity: 1;
-  transform: translate(-50%, 0);
+  transform: translateY(0);
   visibility: visible;
 }
 

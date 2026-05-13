@@ -14,7 +14,7 @@ import {
   Bootstrap,
   Channel,
 } from "../types";
-import { AgentAvatar } from "./AgentAvatar";
+import { AgentAvatarWithProfile } from "./AgentAvatar";
 
 type SidebarProps = {
   data: Bootstrap;
@@ -161,9 +161,14 @@ export function Sidebar({
               key={agent.id}
               className={`dm-row ${item?.id === channel?.id ? "selected" : ""} ${badge ? "has-unread" : ""}`}
             >
-              <div className="dm-avatar-shell" aria-hidden="true">
-                <AgentAvatar agent={agent} size="sm" />
-              </div>
+              <button
+                type="button"
+                className="dm-avatar-shell"
+                aria-label={`Open DM with @${agent.handle}`}
+                onClick={() => item ? selectChannel(item.id) : openDmWithAgent(agent)}
+              >
+                <AgentAvatarWithProfile agent={agent} size="sm" clickHint="Click to open DM" />
+              </button>
               <button
                 type="button"
                 className="dm"
