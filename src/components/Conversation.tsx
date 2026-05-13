@@ -17,6 +17,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
+import { APP_DISPLAY_NAME } from "../branding";
 import { isCompactFollowupMessage } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
@@ -154,7 +155,7 @@ export function Conversation({
     ? isDm
       ? `DM with @${dmAgent?.handle || "agent"}`
       : `#${channel.name}`
-    : "LocalSlock";
+    : APP_DISPLAY_NAME;
   function isMessageListAtBottom(element: HTMLDivElement) {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 32;
   }

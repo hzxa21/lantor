@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowLeft, Bookmark, MessageSquare, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
+import { APP_DISPLAY_NAME } from "../branding";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
 import { isCompactFollowupMessage } from "../message-grouping";
@@ -108,7 +109,7 @@ export function ThreadPanel({
     ? isDm
       ? `Thread in DM with @${dmAgent?.handle || "agent"}`
       : `Thread in #${channel.name}`
-    : "LocalSlock thread";
+    : `${APP_DISPLAY_NAME} thread`;
   const {
     mentionState,
     mentionIndex,

@@ -139,16 +139,33 @@ button,
 }
 
 .workspace-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 13px 17px;
+  display: grid;
+  gap: 2px;
+  padding: 12px 15px 13px;
   border-radius: var(--radius-lg);
   background: rgba(0, 0, 0, 0.88);
   color: #fff;
-  font-size: 19px;
-  font-weight: 700;
   box-shadow: 0 14px 28px rgba(0, 0, 0, 0.14);
+}
+
+.workspace-switch strong,
+.workspace-switch span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-switch strong {
+  font-size: 19px;
+  font-weight: 760;
+}
+
+.workspace-switch span {
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .quick-actions {
@@ -4984,7 +5001,14 @@ body.resizing-column * {
   .workspace-switch {
     padding: 10px 12px;
     border-radius: 14px;
+  }
+
+  .workspace-switch strong {
     font-size: 17px;
+  }
+
+  .workspace-switch span {
+    max-width: 210px;
   }
 
   .mobile-sidebar-close {

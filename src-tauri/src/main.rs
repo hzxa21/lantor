@@ -68,7 +68,7 @@ const SUPERVISOR_WAKE_CHANNEL: &str = "localslock_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "localslock://refresh";
 const LOCAL_SLOCK_CONTEXT_TOOL_ENV: &str = "LOCAL_SLOCK_CONTEXT_TOOL";
 const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
-const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by LocalSlock]";
+const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by Lantor]";
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
 const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -320,7 +320,7 @@ async fn insert_system_message(
     let message_id: Uuid = sqlx::query_scalar(
         r#"
         insert into messages (channel_id, thread_root_id, sender_name, sender_role, body, is_task)
-        values ($1, $2, 'LocalSlock', 'system', $3, false)
+        values ($1, $2, 'Lantor', 'system', $3, false)
         returning id
         "#,
     )
@@ -2160,9 +2160,9 @@ async fn dispatch_agent_work(
                         .map(|line| line.chars().take(120).collect())
                 })
                 .filter(|line: &String| !line.trim().is_empty())
-                .unwrap_or_else(|| "LocalSlock agent request".to_owned())
+                .unwrap_or_else(|| "Lantor agent request".to_owned())
             }
-            None => "LocalSlock agent request".to_owned(),
+            None => "Lantor agent request".to_owned(),
         };
     }
 
@@ -4687,7 +4687,7 @@ pub(crate) async fn agent_workspace_read_file_in_pool(
             boundary -= 1;
         }
         content.truncate(boundary);
-        content.push_str("\n\n[preview truncated by LocalSlock]");
+        content.push_str("\n\n[preview truncated by Lantor]");
     }
 
     let name = file_path
@@ -8141,7 +8141,7 @@ fn effective_launch_command(
         return launch_command.trim().to_owned();
     }
 
-    "printf 'LocalSlock placeholder runtime. Configure launch_command to run a real agent.\\n'; sleep 3600"
+    "printf 'Lantor placeholder runtime. Configure launch_command to run a real agent.\\n'; sleep 3600"
         .to_owned()
 }
 
@@ -8856,7 +8856,7 @@ async fn spawn_warm_codex_runtime(
             "params": {
                 "clientInfo": {
                     "name": "localslock",
-                    "title": "LocalSlock",
+                    "title": "Lantor",
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": {
@@ -11765,7 +11765,7 @@ pub fn run() {
             web::spawn_web_server_if_configured(reminder_pool.clone(), database_url.clone());
             spawn_reminder_worker(reminder_pool.clone());
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title("LocalSlock");
+                let _ = window.set_title("Lantor");
             }
             Ok(())
         })

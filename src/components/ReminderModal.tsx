@@ -1,5 +1,6 @@
 import { Bell, Check, Clock3, Repeat2, TimerReset, X } from "lucide-react";
 import type { Channel, Reminder } from "../types";
+import { APP_DISPLAY_NAME } from "../branding";
 import { formatTime } from "../ui-utils";
 import { Modal } from "./Modal";
 
@@ -103,7 +104,7 @@ export function ReminderModal({
           <input
             value={title}
             onChange={(event) => onTitleChange(event.target.value)}
-            placeholder="What should LocalSlock remind you about?"
+            placeholder={`What should ${APP_DISPLAY_NAME} remind you about?`}
           />
           <textarea
             value={note}

@@ -1,6 +1,7 @@
 import { Activity, ArrowLeft, Bot, CalendarDays, FileText, Hash, LayoutList, MessageSquare, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { SearchResult, SearchScope, SearchTimeRange } from "../types";
+import { APP_DISPLAY_NAME } from "../branding";
 
 type SearchModalProps = {
   open: boolean;
@@ -153,7 +154,7 @@ export function SearchModal({
           {!query.trim() && (
             <div className="search-empty">
               <Search size={32} />
-              <h3>Search LocalSlock</h3>
+              <h3>Search {APP_DISPLAY_NAME}</h3>
               <p>Use filters to narrow by message, channel, task, agent, agent turn, or activity.</p>
             </div>
           )}

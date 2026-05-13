@@ -12,6 +12,7 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { apiInvoke, isTauriRuntime, subscribeBackendEvents } from "./apiClient";
+import { APP_DISPLAY_NAME } from "./branding";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
 import type { AgentPerformance } from "./components/AgentDetailDrawer";
 import { AgentFormModal } from "./components/AgentFormModal";
@@ -305,7 +306,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("LocalSlock UI crashed", error, info);
+    console.error(`${APP_DISPLAY_NAME} UI crashed`, error, info);
     this.setState({ info });
   }
 
@@ -319,14 +320,14 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
     return (
       <main className="fatal-shell">
         <section className="fatal-card" role="alert">
-          <p className="eyebrow">LocalSlock UI crashed</p>
+          <p className="eyebrow">{APP_DISPLAY_NAME} UI crashed</p>
           <h1>Frontend render failed</h1>
           <p>
             The backend is still running. Reload the app to recover; the details below are kept
             visible so this does not become a blank window.
           </p>
           <div className="fatal-actions">
-            <button type="button" onClick={() => window.location.reload()}>Reload LocalSlock</button>
+            <button type="button" onClick={() => window.location.reload()}>Reload {APP_DISPLAY_NAME}</button>
           </div>
           <pre>{details}</pre>
         </section>
@@ -669,7 +670,7 @@ function App() {
       });
   }
 
-  function requestRefresh(fallback = "Failed to refresh LocalSlock state") {
+  function requestRefresh(fallback = `Failed to refresh ${APP_DISPLAY_NAME} state`) {
     if (refreshTimerRef.current !== null) return;
     refreshTimerRef.current = window.setTimeout(() => {
       refreshTimerRef.current = null;
@@ -681,7 +682,7 @@ function App() {
     messageDeltaBufferRef.current.delete(message.id);
     setData((current) => {
       if (!current) {
-        requestRefresh("Failed to refresh LocalSlock state after message update");
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after message update`);
         return current;
       }
       const existingIndex = current.messages.findIndex((item) => item.id === message.id);
@@ -703,7 +704,7 @@ function App() {
     messageDeltaBufferRef.current = new Map();
     setData((current) => {
       if (!current) {
-        requestRefresh("Failed to refresh LocalSlock state after message delta");
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after message delta`);
         return current;
       }
       let missing = false;
@@ -721,7 +722,7 @@ function App() {
         }
       }
       if (missing) {
-        requestRefresh("Failed to refresh LocalSlock state after message delta");
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after message delta`);
       }
       if (!changed) return current;
       return { ...current, messages };
@@ -744,7 +745,7 @@ function App() {
     messageDeltaBufferRef.current.delete(messageId);
     setData((current) => {
       if (!current) {
-        requestRefresh("Failed to refresh LocalSlock state after message deletion");
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after message deletion`);
         return current;
       }
       return { ...current, messages: current.messages.filter((item) => item.id !== messageId) };
@@ -754,7 +755,7 @@ function App() {
   function applyActivityUpsert(activity: AgentActivity) {
     setData((current) => {
       if (!current) {
-        requestRefresh("Failed to refresh LocalSlock state after activity update");
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after activity update`);
         return current;
       }
       const existingIndex = current.agent_activities.findIndex((item) => item.id === activity.id);
@@ -769,7 +770,7 @@ function App() {
   function applyAgentRunUpsert(patch: Omit<AgentRun, "log"> & { log?: string }) {
     setData((current) => {
       if (!current) {
-        requestRefresh("Failed to refresh LocalSlock state after run update");
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after run update`);
         return current;
       }
       const existing = current.agent_runs.find((item) => item.id === patch.id);
@@ -788,7 +789,7 @@ function App() {
   function applyWorkItemUpsert(patch: Omit<AgentWorkItem, "context"> & { context?: string }) {
     setData((current) => {
       if (!current) {
-        requestRefresh("Failed to refresh LocalSlock state after agent request update");
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after agent request update`);
         return current;
       }
       const existing = current.agent_work_items.find((item) => item.id === patch.id);
@@ -807,12 +808,12 @@ function App() {
 
   function applyArtifactUpsert(artifact: Artifact) {
     if (!artifact || typeof artifact.id !== "string" || typeof artifact.message_id !== "string") {
-      requestRefresh("Failed to refresh LocalSlock state after artifact update");
+      requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after artifact update`);
       return;
     }
     setData((current) => {
       if (!current) {
-        requestRefresh("Failed to refresh LocalSlock state after artifact update");
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after artifact update`);
         return current;
       }
       const currentArtifacts = Array.isArray(current.artifacts) ? current.artifacts : [];
@@ -848,7 +849,7 @@ function App() {
   function handleBackendEvent(payload: unknown) {
     try {
       if (typeof payload !== "string") {
-        requestRefresh("Failed to refresh LocalSlock state after backend update");
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after backend update`);
         return;
       }
       const parsed = JSON.parse(payload) as UiBackendEvent;
@@ -886,11 +887,11 @@ function App() {
         applyArtifactUpsert(parsed.artifact);
         return;
       }
-      requestRefresh("Failed to refresh LocalSlock state after backend update");
+      requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after backend update`);
     } catch (err) {
-      setAppError(errorMessage(err, "Failed to apply LocalSlock backend update"));
-      console.error("Failed to apply LocalSlock backend update", err, payload);
-      requestRefresh("Failed to refresh LocalSlock state after backend update");
+      setAppError(errorMessage(err, `Failed to apply ${APP_DISPLAY_NAME} backend update`));
+      console.error(`Failed to apply ${APP_DISPLAY_NAME} backend update`, err, payload);
+      requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after backend update`);
     }
   }
 
@@ -908,7 +909,7 @@ function App() {
 
   useEffect(() => {
     refresh().catch((err) => {
-      setAppError(errorMessage(err, "Failed to load LocalSlock state"));
+      setAppError(errorMessage(err, `Failed to load ${APP_DISPLAY_NAME} state`));
       console.error(err);
     });
     refreshRuntimeChecks().catch((err) => {
@@ -947,7 +948,7 @@ function App() {
         unlisten = handler;
       })
       .catch((err) => {
-        setAppError(errorMessage(err, "Failed to subscribe to LocalSlock updates"));
+        setAppError(errorMessage(err, `Failed to subscribe to ${APP_DISPLAY_NAME} updates`));
         console.error(err);
       });
     return () => {
@@ -963,7 +964,7 @@ function App() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      requestRefresh("Failed to refresh LocalSlock state");
+      requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state`);
     }, 5000);
     return () => window.clearInterval(timer);
   }, []);
@@ -1301,7 +1302,7 @@ function App() {
     }
 
     const channelLabel = (channelId: string | null) => {
-      if (!channelId) return "LocalSlock";
+      if (!channelId) return APP_DISPLAY_NAME;
       const target = channelsById.get(channelId);
       if (!target) return "Unknown";
       if (target.kind === "dm") {
@@ -2430,7 +2431,7 @@ function App() {
   }
 
   if (!data) {
-    return <div className="boot">Opening LocalSlock...</div>;
+    return <div className="boot">Opening {APP_DISPLAY_NAME}...</div>;
   }
 
   return (

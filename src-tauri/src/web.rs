@@ -203,11 +203,11 @@ async fn missing_dist(dist_dir: PathBuf) -> impl IntoResponse {
     let body = format!(
         r#"<!doctype html>
 <html>
-  <head><title>LocalSlock Web</title></head>
+  <head><title>Lantor Web</title></head>
   <body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 32px;">
-    <h1>LocalSlock Web build not found</h1>
+    <h1>Lantor Web build not found</h1>
     <p>Expected <code>{}</code>.</p>
-    <p>Run <code>npm run build</code>, then restart LocalSlock with <code>LOCAL_SLOCK_WEB_BIND</code>.</p>
+    <p>Run <code>npm run build</code>, then restart Lantor with <code>LOCAL_SLOCK_WEB_BIND</code>.</p>
   </body>
 </html>"#,
         dist_dir.display()
@@ -465,7 +465,7 @@ fn require_auth(
             StatusCode::UNAUTHORIZED,
             Json(ApiError {
                 ok: false,
-                message: "missing or invalid LocalSlock web token".to_owned(),
+                message: "missing or invalid Lantor web token".to_owned(),
             }),
         )
             .into_response())

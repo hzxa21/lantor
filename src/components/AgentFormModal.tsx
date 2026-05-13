@@ -1,5 +1,6 @@
 import { Modal } from "./Modal";
 import { AgentForm, RuntimeCheck, modelOptionsForRuntime } from "../types";
+import { APP_DISPLAY_NAME } from "../branding";
 
 type AgentFormModalProps = {
   open: boolean;
@@ -126,7 +127,7 @@ export function AgentFormModal({
             onChange={(event) => onChange({ ...form, workingDirectory: event.target.value })}
             placeholder="/Users/dylan/Desktop/workspace/localslock/agents/<handle>"
           />
-          <small>LocalSlock loads MEMORY.md from this directory as persistent context when the agent runs.</small>
+          <small>{APP_DISPLAY_NAME} loads MEMORY.md from this directory as persistent context when the agent runs.</small>
         </label>
         <div className="modal-actions">
           <button onClick={onCancel}>Cancel</button>

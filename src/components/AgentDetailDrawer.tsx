@@ -1,6 +1,7 @@
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { apiInvoke } from "../apiClient";
+import { APP_DISPLAY_NAME } from "../branding";
 import {
   Agent,
   AgentActivity,
@@ -482,7 +483,7 @@ export function AgentDetailDrawer({
           <div>
             <h4>Agent-managed routines</h4>
             <p>
-              Reminders are created from conversation intent by the agent through LocalSlock APIs.
+              Reminders are created from conversation intent by the agent through {APP_DISPLAY_NAME} APIs.
               They are shown here as read-only agent state instead of a manual user reminder form.
             </p>
           </div>

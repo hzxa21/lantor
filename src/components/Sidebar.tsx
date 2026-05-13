@@ -15,6 +15,7 @@ import {
   Channel,
   OwnerProfile,
 } from "../types";
+import { APP_DISPLAY_NAME, APP_TAGLINE } from "../branding";
 import { AgentAvatar } from "./AgentAvatar";
 
 type SidebarProps = {
@@ -76,7 +77,10 @@ export function Sidebar({
         onPointerDown={onResizeStart}
       />
       <section className="workspace">
-        <div className="workspace-switch">LocalSlock</div>
+        <div className="workspace-switch">
+          <strong>{APP_DISPLAY_NAME}</strong>
+          <span>{APP_TAGLINE}</span>
+        </div>
         <button
           type="button"
           className="mobile-sidebar-close"
