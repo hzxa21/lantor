@@ -59,7 +59,7 @@ use usage::{
     usage_from_runtime_event,
 };
 
-const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/lantor";
+const DEFAULT_DATABASE_URL: &str = "postgres://lantor:lantor@127.0.0.1:5432/lantor";
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
 const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";
 const SILENT_REPLY_PREFIX: &str = "LANTOR_SILENT_REPLY";
@@ -74,6 +74,19 @@ const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
 const AGENT_WORKSPACE_PREVIEW_LIMIT: u64 = 256 * 1024;
+
+fn expand_home_path(value: &str) -> String {
+    let value = value.trim();
+    if value == "~" {
+        return env::var("HOME").unwrap_or_else(|_| value.to_owned());
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home).join(rest).to_string_lossy().to_string();
+        }
+    }
+    value.to_owned()
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -1823,8 +1836,8 @@ async fn create_agent(
         .filter(|value| !value.is_empty())
         .unwrap_or("Local agent");
     let daily_budget_micros = daily_budget_micros.unwrap_or_default().max(0);
-    let working_directory = working_directory.trim();
-    ensure_agent_workspace(working_directory, normalized_handle)?;
+    let working_directory = expand_home_path(&working_directory);
+    ensure_agent_workspace(&working_directory, normalized_handle)?;
 
     let agent_id: Uuid = sqlx::query_scalar(
         r#"
@@ -1854,7 +1867,7 @@ async fn create_agent(
     .bind(avatar)
     .bind(description)
     .bind(launch_command.trim())
-    .bind(working_directory)
+    .bind(&working_directory)
     .bind(daily_budget_micros)
     .fetch_one(&state.pool)
     .await
@@ -1914,8 +1927,8 @@ async fn update_agent(
                 .unwrap_or_else(|| "A".to_owned())
         });
     let daily_budget_micros = daily_budget_micros.unwrap_or_default().max(0);
-    let working_directory = working_directory.trim();
-    ensure_agent_workspace(working_directory, normalized_handle)?;
+    let working_directory = expand_home_path(&working_directory);
+    ensure_agent_workspace(&working_directory, normalized_handle)?;
 
     sqlx::query(
         r#"
@@ -1942,7 +1955,7 @@ async fn update_agent(
     .bind(avatar)
     .bind(description.trim())
     .bind(launch_command.trim())
-    .bind(working_directory)
+    .bind(&working_directory)
     .bind(daily_budget_micros)
     .execute(&state.pool)
     .await

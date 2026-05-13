@@ -39,8 +39,9 @@ back into the chat surface.
 
 **Storage**
 
-- PostgreSQL state store at `postgres://dylan:123456@127.0.0.1:5432/lantor`
-  by default. Override with `LANTOR_DATABASE_URL`.
+- PostgreSQL state store configured with `LANTOR_DATABASE_URL`. The checked-in
+  local development default is `postgres://lantor:lantor@127.0.0.1:5432/lantor`.
+  Use your own credentials outside throwaway local development.
 - Attachments are stored on disk under:
 
   ```text
@@ -54,14 +55,20 @@ back into the chat surface.
 
 ```bash
 npm install
+psql postgres -c "create role lantor login password 'lantor';"
+psql postgres -c "create database lantor owner lantor;"
 npm run tauri:dev
 ```
 
 Override the database URL when needed:
 
 ```bash
-LANTOR_DATABASE_URL=postgres://dylan:123456@127.0.0.1:5432/lantor npm run tauri:dev
+LANTOR_DATABASE_URL=postgres://<user>:<password>@127.0.0.1:5432/lantor npm run tauri:dev
 ```
+
+See `.env.example` for the supported local environment variables. Shells do not
+load that file automatically; export the variables or use your preferred env
+loader.
 
 ## Tailscale Web Access (optional)
 

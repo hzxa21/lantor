@@ -3,3 +3,7 @@ dist/
 src-tauri/target/
 .DS_Store
 *.log
+agents/
+.env
+.env.*
+!.env.example

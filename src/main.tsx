@@ -448,7 +448,7 @@ async function attachmentUploads(attachments: DraftAttachment[]) {
 
 function defaultAgentWorkspace(handle: string) {
   const normalized = handle.trim().replace(/^@/, "").replace(/[^A-Za-z0-9_-]/g, "-");
-  return normalized ? `/Users/dylan/Desktop/workspace/lantor/agents/${normalized}` : "";
+  return normalized ? `~/Library/Application Support/Lantor/agents/${normalized}` : "";
 }
 
 function numericMetadata(value: unknown) {
