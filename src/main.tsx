@@ -83,13 +83,9 @@ const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
 const CHANNEL_THREAD_MEMORY_STORAGE_KEY = "lantor.channelThreadMemory";
-const LEGACY_CHANNEL_THREAD_MEMORY_STORAGE_KEY = "localslock.channelThreadMemory";
 const THREAD_PANEL_WIDTH_STORAGE_KEY = "lantor.threadPanelWidth";
-const LEGACY_THREAD_PANEL_WIDTH_STORAGE_KEY = "localslock.threadPanelWidth";
 const AGENT_DRAWER_WIDTH_STORAGE_KEY = "lantor.agentDrawerWidth";
-const LEGACY_AGENT_DRAWER_WIDTH_STORAGE_KEY = "localslock.agentDrawerWidth";
 const SIDEBAR_WIDTH_STORAGE_KEY = "lantor.sidebarWidth";
-const LEGACY_SIDEBAR_WIDTH_STORAGE_KEY = "localslock.sidebarWidth";
 
 const RESPONDING_ACTIVITY_KINDS = new Set([
   "thinking",
@@ -129,7 +125,6 @@ type ActiveTab = "chat" | "tasks";
 
 type MobileHistoryState = {
   __lantorMobileUi?: true;
-  __localslockMobileUi?: true;
   index: number;
   activeChannelId: string;
   activeThreadId: string | null;
@@ -279,7 +274,7 @@ function isMobileViewport() {
 function isMobileHistoryState(value: unknown): value is MobileHistoryState {
   if (!value || typeof value !== "object") return false;
   const state = value as Record<string, unknown>;
-  return (state.__lantorMobileUi === true || state.__localslockMobileUi === true)
+  return state.__lantorMobileUi === true
     && typeof state.index === "number"
     && typeof state.activeChannelId === "string"
     && (state.activeThreadId === null || typeof state.activeThreadId === "string")
@@ -422,8 +417,7 @@ function updateComposerDraftRecord(
 
 function loadChannelThreadMemory(): ChannelThreadMemory {
   try {
-    const raw = window.localStorage.getItem(CHANNEL_THREAD_MEMORY_STORAGE_KEY)
-      ?? window.localStorage.getItem(LEGACY_CHANNEL_THREAD_MEMORY_STORAGE_KEY);
+    const raw = window.localStorage.getItem(CHANNEL_THREAD_MEMORY_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
@@ -436,8 +430,8 @@ function loadChannelThreadMemory(): ChannelThreadMemory {
   }
 }
 
-function getStoredNumber(primaryKey: string, legacyKey: string, fallback: number) {
-  const stored = window.localStorage.getItem(primaryKey) ?? window.localStorage.getItem(legacyKey);
+function getStoredNumber(key: string, fallback: number) {
+  const stored = window.localStorage.getItem(key);
   return stored ? Number(stored) : fallback;
 }
 
@@ -578,7 +572,6 @@ function App() {
   const [threadPanelWidth, setThreadPanelWidth] = useState(() => {
     const value = getStoredNumber(
       THREAD_PANEL_WIDTH_STORAGE_KEY,
-      LEGACY_THREAD_PANEL_WIDTH_STORAGE_KEY,
       DEFAULT_THREAD_PANEL_WIDTH,
     );
     return Number.isFinite(value)
@@ -588,7 +581,6 @@ function App() {
   const [agentDrawerWidth, setAgentDrawerWidth] = useState(() => {
     const value = getStoredNumber(
       AGENT_DRAWER_WIDTH_STORAGE_KEY,
-      LEGACY_AGENT_DRAWER_WIDTH_STORAGE_KEY,
       DEFAULT_AGENT_DRAWER_WIDTH,
     );
     return Number.isFinite(value)
@@ -598,7 +590,6 @@ function App() {
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const value = getStoredNumber(
       SIDEBAR_WIDTH_STORAGE_KEY,
-      LEGACY_SIDEBAR_WIDTH_STORAGE_KEY,
       DEFAULT_SIDEBAR_WIDTH,
     );
     return Number.isFinite(value)

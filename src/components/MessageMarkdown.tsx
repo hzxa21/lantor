@@ -10,7 +10,6 @@ type MessageMarkdownProps = {
 const INLINE_CODE_SPLIT = /(`[^`\n]*(?:`|$))/g;
 const FENCE_SPLIT = /(```[\s\S]*?(?:```|$))/g;
 const LOCAL_ENTITY_PATH_PREFIX = "/lantor/";
-const LEGACY_LOCAL_ENTITY_PATH_PREFIX = "/localslock/";
 
 function encodeLocalPath(value: string) {
   return encodeURIComponent(value.replace(/^[@#]/, ""));
@@ -77,10 +76,7 @@ export function MessageMarkdown({ body }: MessageMarkdownProps) {
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ children, href, ...props }) => {
-            const isLocalLink = Boolean(
-              href?.startsWith(LOCAL_ENTITY_PATH_PREFIX) ||
-                href?.startsWith(LEGACY_LOCAL_ENTITY_PATH_PREFIX),
-            );
+            const isLocalLink = Boolean(href?.startsWith(LOCAL_ENTITY_PATH_PREFIX));
             return (
               <a
                 {...props}

@@ -62,9 +62,7 @@ use usage::{
 const DEFAULT_DATABASE_URL: &str = "postgres://dylan:123456@127.0.0.1:5432/lantor";
 const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
 const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";
-const LEGACY_AGENT_EVENT_PREFIX: &str = "LOCAL_SLOCK_EVENT ";
 const SILENT_REPLY_PREFIX: &str = "LANTOR_SILENT_REPLY";
-const LEGACY_SILENT_REPLY_PREFIX: &str = "LOCAL_SLOCK_SILENT_REPLY";
 pub(crate) const UI_REFRESH_CHANNEL: &str = "lantor_ui_refresh";
 const SUPERVISOR_WAKE_CHANNEL: &str = "lantor_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "lantor://refresh";
@@ -161,7 +159,6 @@ type CommandResult<T> = Result<T, String>;
 
 fn db_url() -> String {
     env::var("LANTOR_DATABASE_URL")
-        .or_else(|_| env::var("LOCAL_SLOCK_DATABASE_URL"))
         .or_else(|_| env::var("DATABASE_URL"))
         .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned())
 }
@@ -1402,17 +1399,13 @@ async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
 }
 
 fn configured_web_base_url() -> Option<String> {
-    if let Ok(value) =
-        env::var("LANTOR_WEB_PUBLIC_URL").or_else(|_| env::var("LOCAL_SLOCK_WEB_PUBLIC_URL"))
-    {
+    if let Ok(value) = env::var("LANTOR_WEB_PUBLIC_URL") {
         let trimmed = value.trim().trim_end_matches('/').to_owned();
         if !trimmed.is_empty() {
             return Some(trimmed);
         }
     }
-    let bind = env::var("LANTOR_WEB_BIND")
-        .or_else(|_| env::var("LOCAL_SLOCK_WEB_BIND"))
-        .ok()?;
+    let bind = env::var("LANTOR_WEB_BIND").ok()?;
     let addr = bind.trim().parse::<SocketAddr>().ok()?;
     let host = match addr.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_owned(),
@@ -6184,10 +6177,7 @@ fn extract_agent_event_json(line: &str) -> Option<&str> {
             break;
         }
     }
-    trimmed
-        .strip_prefix(AGENT_EVENT_PREFIX)
-        .or_else(|| trimmed.strip_prefix(LEGACY_AGENT_EVENT_PREFIX))
-        .map(str::trim)
+    trimmed.strip_prefix(AGENT_EVENT_PREFIX).map(str::trim)
 }
 
 async fn handle_agent_event(
@@ -7725,9 +7715,7 @@ async fn load_streaming_control_context(
 
 fn silent_reply_reason(body: &str) -> Option<String> {
     let first_line = body.trim().lines().next()?.trim().trim_matches('`').trim();
-    let rest = first_line
-        .strip_prefix(SILENT_REPLY_PREFIX)
-        .or_else(|| first_line.strip_prefix(LEGACY_SILENT_REPLY_PREFIX))?;
+    let rest = first_line.strip_prefix(SILENT_REPLY_PREFIX)?;
     if !rest.is_empty()
         && !rest.starts_with(':')
         && !rest
@@ -11952,7 +11940,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_prompt_replaces_legacy_finish_contract() {
+    fn streaming_prompt_replaces_stdout_finish_contract() {
         let prompt = build_work_item_prompt(
             Uuid::nil(),
             "Review the change",
@@ -11973,7 +11961,7 @@ mod tests {
         assert!(streaming.contains("attachment_create"));
         assert!(streaming.contains("channel_message_create"));
         assert!(streaming.contains("handoff_create"));
-        assert!(streaming.contains("Do not emit legacy LANTOR_EVENT message"));
+        assert!(streaming.contains("Do not emit LANTOR_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
     }
 
@@ -12670,14 +12658,6 @@ mod tests {
     }
 
     #[test]
-    fn extracts_legacy_agent_event_lines() {
-        assert_eq!(
-            extract_agent_event_json(r#"LOCAL_SLOCK_EVENT {"type":"message","body":"ok"}"#),
-            Some(r#"{"type":"message","body":"ok"}"#)
-        );
-    }
-
-    #[test]
     fn extracts_codex_wrapped_agent_event_lines() {
         assert_eq!(
             extract_agent_event_json(
@@ -12719,10 +12699,6 @@ mod tests {
     fn detects_silent_reply_marker() {
         assert_eq!(
             silent_reply_reason("LANTOR_SILENT_REPLY: greeting only"),
-            Some("greeting only".to_owned())
-        );
-        assert_eq!(
-            silent_reply_reason("LOCAL_SLOCK_SILENT_REPLY: greeting only"),
             Some("greeting only".to_owned())
         );
         assert_eq!(
@@ -12899,7 +12875,6 @@ mod tests {
 
     async fn test_pool_with_connections(max_connections: u32) -> Option<(PgPool, String)> {
         let database_url = std::env::var("LANTOR_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("LOCAL_SLOCK_TEST_DATABASE_URL"))
             .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
         let bootstrap_pool = match PgPoolOptions::new()
             .max_connections(1)

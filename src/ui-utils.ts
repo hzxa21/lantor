@@ -48,14 +48,14 @@ const LANTOR_CONTROL_EVENTS = [
   "Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents.",
 ].join("\n");
 
-const LANTOR_LEGACY_VISIBLE_EVENTS = [
+const LANTOR_VISIBLE_REPLY_TRANSPORT = [
   "Visible reply transport:",
   "- Warm Codex/Claude streaming runtimes should answer with normal assistant text; Lantor routes it to the current channel/thread automatically.",
   "- Warm streaming runtimes may still emit non-message LANTOR_EVENT control lines above, including artifact_create, attachment_create, channel_message_create, and handoff_create; Lantor consumes and hides those lines.",
-  "- Legacy stdout command runtimes should create visible chat by printing exactly one LANTOR_EVENT message line.",
+  "- Stdout command runtimes should create visible chat by printing exactly one LANTOR_EVENT message line.",
   '{"type":"message","channel_id":"uuid","body":"..."}',
   '{"type":"message","channel_id":"uuid","thread_root_id":"uuid","body":"..."}',
-  "- Do not emit legacy message/task_claim lines from warm streaming runtimes unless explicitly debugging the legacy path.",
+  "- Do not emit message/task_claim lines from warm streaming runtimes unless explicitly debugging the stdout command path.",
 ].join("\n");
 
 export function shellQuote(value: string) {
@@ -80,9 +80,9 @@ export function presetPrompt(form: AgentForm) {
     LANTOR_OPERATING_POLICY,
     LANTOR_CONTEXT_TOOLS,
     LANTOR_CONTROL_EVENTS,
-    LANTOR_LEGACY_VISIBLE_EVENTS,
+    LANTOR_VISIBLE_REPLY_TRANSPORT,
     "Do not wrap LANTOR_EVENT lines in markdown.",
-    "Use normal stdout for private logs only in legacy command mode. In warm streaming mode, visible assistant text becomes the chat reply.",
+    "Use normal stdout for private logs only in stdout command mode. In warm streaming mode, visible assistant text becomes the chat reply.",
   ].join("\n");
 }
 

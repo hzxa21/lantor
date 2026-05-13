@@ -6,7 +6,7 @@ use crate::{text::compact_chars_middle, CommandResult};
 
 pub(crate) const AGENT_MEMORY_CONTEXT_LIMIT: usize = 16 * 1024;
 
-pub(crate) const WORK_ITEM_FINISH_PROMPT: &str = "Finish behavior: warm streaming runtimes should answer with normal assistant text; legacy stdout command runtimes should use the visible reply event template from the turn context. Only update task status when this request is tied to an explicit task number.";
+pub(crate) const WORK_ITEM_FINISH_PROMPT: &str = "Finish behavior: warm streaming runtimes should answer with normal assistant text; stdout command runtimes should use the visible reply event template from the turn context. Only update task status when this request is tied to an explicit task number.";
 
 fn lantor_operating_policy_prompt() -> &'static str {
     r#"Operating policy:
@@ -70,7 +70,7 @@ Use task_create only for durable globally tracked work. Use handoff_create only 
 
 fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
     format!(
-        "Reply normally only when a visible response is useful. Lantor will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LANTOR_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. In warm streaming mode you may emit standalone LANTOR_EVENT control lines for activity, reminders, memory, profile, channel, artifact_create, attachment_create, channel_message_create, handoff_create, usage, durable task_create, or task_status; Lantor consumes those control lines and hides them from chat. Treat channel_message_create as a user-authorized way to post a normal agent message into a specific channel/thread, not as a background notification API. Treat handoff_create as a constrained transfer of one existing thread to another agent after user authorization, not a general message API. Treat channel_create as a normal tool for durable topics, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel. Do not emit legacy LANTOR_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the legacy runtime path."
+        "Reply normally only when a visible response is useful. Lantor will stream your {runtime_name} assistant text into the correct channel/thread automatically. If the latest user message is only a greeting, acknowledgement, thanks, emoji, or non-actionable chatter, output exactly `LANTOR_SILENT_REPLY: <short reason>` and nothing else. Keep visible thread messages high-density: final results, decisions, blockers, user questions, and handoffs only. Do not narrate every intermediate step in chat. In warm streaming mode you may emit standalone LANTOR_EVENT control lines for activity, reminders, memory, profile, channel, artifact_create, attachment_create, channel_message_create, handoff_create, usage, durable task_create, or task_status; Lantor consumes those control lines and hides them from chat. Treat channel_message_create as a user-authorized way to post a normal agent message into a specific channel/thread, not as a background notification API. Treat handoff_create as a constrained transfer of one existing thread to another agent after user authorization, not a general message API. Treat channel_create as a normal tool for durable topics, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel. Do not emit LANTOR_EVENT message/task_claim lines in this streaming mode unless explicitly asked to debug the stdout command path."
     )
 }
 
@@ -205,7 +205,7 @@ fn build_runtime_standing_prompt(
          \n\
          {}\n\
          \n\
-         Keep user-visible replies concise and include concrete results or blockers. Non-message LANTOR_EVENT control lines are allowed as standalone lines. Do not print legacy LANTOR_EVENT message/task_claim lines unless explicitly asked to debug the legacy runtime path.",
+         Keep user-visible replies concise and include concrete results or blockers. Non-message LANTOR_EVENT control lines are allowed as standalone lines. Do not print LANTOR_EVENT message/task_claim lines unless explicitly asked to debug the stdout command path.",
         lantor_operating_policy_prompt(),
         lantor_memory_management_prompt(),
         lantor_context_tools_prompt(),
@@ -218,23 +218,23 @@ fn build_runtime_standing_prompt(
     prompt
 }
 
-pub(crate) fn build_codex_streaming_prompt(legacy_prompt: &str) -> String {
-    if legacy_prompt.trim().is_empty() {
+pub(crate) fn build_codex_streaming_prompt(prompt: &str) -> String {
+    if prompt.trim().is_empty() {
         return "No current Lantor agent request is assigned. Reply with a short ready status."
             .to_owned();
     }
-    legacy_prompt.replace(
+    prompt.replace(
         WORK_ITEM_FINISH_PROMPT,
         &streaming_reply_contract_prompt("Codex"),
     )
 }
 
-pub(crate) fn build_claude_streaming_prompt(legacy_prompt: &str) -> String {
-    if legacy_prompt.trim().is_empty() {
+pub(crate) fn build_claude_streaming_prompt(prompt: &str) -> String {
+    if prompt.trim().is_empty() {
         return "No current Lantor agent request is assigned. Reply with a short ready status."
             .to_owned();
     }
-    legacy_prompt.replace(
+    prompt.replace(
         WORK_ITEM_FINISH_PROMPT,
         &streaming_reply_contract_prompt("Claude"),
     )

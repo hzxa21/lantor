@@ -3,7 +3,6 @@ import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 
 const UI_REFRESH_EVENT = "lantor://refresh";
 const WEB_TOKEN_STORAGE_KEY = "lantor.webToken";
-const LEGACY_WEB_TOKEN_STORAGE_KEY = "localslock.webToken";
 
 declare global {
   interface Window {
@@ -23,9 +22,7 @@ function webToken() {
     window.localStorage.setItem(WEB_TOKEN_STORAGE_KEY, tokenFromUrl);
     return tokenFromUrl;
   }
-  return window.localStorage.getItem(WEB_TOKEN_STORAGE_KEY)
-    || window.localStorage.getItem(LEGACY_WEB_TOKEN_STORAGE_KEY)
-    || "";
+  return window.localStorage.getItem(WEB_TOKEN_STORAGE_KEY) || "";
 }
 
 function apiPath(command: string) {

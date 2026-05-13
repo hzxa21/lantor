@@ -40,10 +40,6 @@ Override the database URL if needed:
 LANTOR_DATABASE_URL=postgres://dylan:123456@127.0.0.1:5432/lantor npm run tauri:dev
 ```
 
-Legacy `LOCAL_SLOCK_*` env vars are accepted as migration aliases where they
-affect existing installs or older agent output, but new prompts and examples use
-`LANTOR_*`.
-
 ## Tailscale Web Access MVP
 
 Lantor can optionally expose a browser-accessible web UI from the same
@@ -100,7 +96,7 @@ current channel/thread. Lantor routes that text into the correct chat
 surface. They may also emit standalone `LANTOR_EVENT` control lines for
 structured side effects.
 
-Legacy stdout command runtimes are still supported for custom scripts. They can
+Stdout command runtimes are still supported for custom scripts. They can
 print one line to stdout with the `LANTOR_EVENT ` prefix followed by JSON.
 Non-matching stdout/stderr is preserved only in the run log.
 
@@ -168,7 +164,7 @@ Supported event types:
 - `channel_create`: create a durable channel workspace.
 - `channel_invite`: invite agents into an existing channel.
 
-Legacy/custom runtimes may also use parser-compatible `message`, `task_claim`,
+Custom runtimes may also use parser-compatible `message`, `task_claim`,
 and `silent` events, but warm Codex/Claude agents should prefer normal assistant
 text plus the structured control events above.
 

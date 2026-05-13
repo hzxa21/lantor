@@ -35,17 +35,6 @@ struct AgentInboxTarget {
     handle: String,
 }
 
-fn agent_env(primary: &str, legacy: &str) -> Option<(String, String)> {
-    env::var(primary)
-        .ok()
-        .map(|value| (primary.to_owned(), value))
-        .or_else(|| {
-            env::var(legacy)
-                .ok()
-                .map(|value| (legacy.to_owned(), value))
-        })
-}
-
 fn arg_value(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
         .find_map(|window| (window[0] == name).then(|| window[1].clone()))
@@ -667,18 +656,15 @@ async fn resolve_agent_workspace_target(
             .fetch_one(pool)
             .await
             .map_err(to_string)?
-    } else if let Some((env_name, agent_id)) = agent_env("LANTOR_AGENT_ID", "LOCAL_SLOCK_AGENT_ID")
-    {
-        let agent_id =
-            Uuid::parse_str(agent_id.trim()).map_err(|err| format!("invalid {env_name}: {err}"))?;
+    } else if let Ok(agent_id) = env::var("LANTOR_AGENT_ID") {
+        let agent_id = Uuid::parse_str(agent_id.trim())
+            .map_err(|err| format!("invalid LANTOR_AGENT_ID: {err}"))?;
         sqlx::query("select id, handle, working_directory from agents where id = $1")
             .bind(agent_id)
             .fetch_one(pool)
             .await
             .map_err(to_string)?
-    } else if let Some((_env_name, handle)) =
-        agent_env("LANTOR_AGENT_HANDLE", "LOCAL_SLOCK_AGENT_HANDLE")
-    {
+    } else if let Ok(handle) = env::var("LANTOR_AGENT_HANDLE") {
         let agent_id = resolve_agent_by_handle(pool, &handle).await?;
         sqlx::query("select id, handle, working_directory from agents where id = $1")
             .bind(agent_id)
@@ -719,18 +705,15 @@ async fn resolve_agent_inbox_target(
             .fetch_one(pool)
             .await
             .map_err(to_string)?
-    } else if let Some((env_name, agent_id)) = agent_env("LANTOR_AGENT_ID", "LOCAL_SLOCK_AGENT_ID")
-    {
-        let agent_id =
-            Uuid::parse_str(agent_id.trim()).map_err(|err| format!("invalid {env_name}: {err}"))?;
+    } else if let Ok(agent_id) = env::var("LANTOR_AGENT_ID") {
+        let agent_id = Uuid::parse_str(agent_id.trim())
+            .map_err(|err| format!("invalid LANTOR_AGENT_ID: {err}"))?;
         sqlx::query("select id, handle from agents where id = $1")
             .bind(agent_id)
             .fetch_one(pool)
             .await
             .map_err(to_string)?
-    } else if let Some((_env_name, handle)) =
-        agent_env("LANTOR_AGENT_HANDLE", "LOCAL_SLOCK_AGENT_HANDLE")
-    {
+    } else if let Ok(handle) = env::var("LANTOR_AGENT_HANDLE") {
         let agent_id = resolve_agent_by_handle(pool, &handle).await?;
         sqlx::query("select id, handle from agents where id = $1")
             .bind(agent_id)

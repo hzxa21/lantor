@@ -103,16 +103,14 @@ struct OwnerProfileRequest {
 }
 
 pub(crate) fn spawn_web_server_if_configured(pool: PgPool, db_url: String) {
-    let Ok(bind) = env::var("LANTOR_WEB_BIND").or_else(|_| env::var("LOCAL_SLOCK_WEB_BIND")) else {
+    let Ok(bind) = env::var("LANTOR_WEB_BIND") else {
         return;
     };
     let bind = bind.trim().to_owned();
     if bind.is_empty() {
         return;
     }
-    let token = env::var("LANTOR_WEB_TOKEN")
-        .or_else(|_| env::var("LOCAL_SLOCK_WEB_TOKEN"))
-        .unwrap_or_default();
+    let token = env::var("LANTOR_WEB_TOKEN").unwrap_or_default();
     let Ok(addr) = bind.parse::<SocketAddr>() else {
         eprintln!("Lantor web access disabled: invalid LANTOR_WEB_BIND={bind}");
         return;
@@ -180,7 +178,7 @@ fn is_loopback(ip: IpAddr) -> bool {
 }
 
 fn web_dist_dir() -> PathBuf {
-    if let Ok(path) = env::var("LANTOR_WEB_DIST").or_else(|_| env::var("LOCAL_SLOCK_WEB_DIST")) {
+    if let Ok(path) = env::var("LANTOR_WEB_DIST") {
         let path = PathBuf::from(path);
         if path.is_dir() {
             return path;
@@ -456,7 +454,6 @@ fn require_auth(
         .unwrap_or_default();
     let explicit = headers
         .get("x-lantor-token")
-        .or_else(|| headers.get("x-local-slock-token"))
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     if bearer == token || explicit == token || query_token == Some(token) {

@@ -7,7 +7,6 @@ use std::{
 use crate::{models::LaunchAgentStatus, to_string, CommandResult};
 
 const LAUNCH_AGENT_LABEL: &str = "local.lantor.supervisor";
-const LEGACY_LAUNCH_AGENT_LABEL: &str = "local.localslock.supervisor";
 
 pub(crate) fn spawn_supervisor_process(database_url: &str) {
     let Ok(exe) = env::current_exe() else {
@@ -63,18 +62,10 @@ pub(crate) fn install_supervisor_service(database_url: &str) -> CommandResult<La
 
     let domain = launch_agent_domain()?;
     let service = launch_agent_service_target(&domain);
-    let legacy_service = launch_agent_service_target_for_label(&domain, LEGACY_LAUNCH_AGENT_LABEL);
     let _ = StdCommand::new("launchctl")
         .arg("bootout")
         .arg(&service)
         .output();
-    let _ = StdCommand::new("launchctl")
-        .arg("bootout")
-        .arg(&legacy_service)
-        .output();
-    remove_plist_if_exists(&launch_agent_plist_path_for_label(
-        LEGACY_LAUNCH_AGENT_LABEL,
-    )?)?;
 
     run_launchctl(&["bootstrap", &domain, &plist_path.to_string_lossy()])?;
     run_launchctl(&["kickstart", "-k", &service])?;
@@ -85,20 +76,12 @@ pub(crate) fn install_supervisor_service(database_url: &str) -> CommandResult<La
 pub(crate) fn uninstall_supervisor_service() -> CommandResult<LaunchAgentStatus> {
     let domain = launch_agent_domain()?;
     let service = launch_agent_service_target(&domain);
-    let legacy_service = launch_agent_service_target_for_label(&domain, LEGACY_LAUNCH_AGENT_LABEL);
     let _ = StdCommand::new("launchctl")
         .arg("bootout")
         .arg(&service)
         .output();
-    let _ = StdCommand::new("launchctl")
-        .arg("bootout")
-        .arg(&legacy_service)
-        .output();
 
     remove_plist_if_exists(&launch_agent_plist_path()?)?;
-    remove_plist_if_exists(&launch_agent_plist_path_for_label(
-        LEGACY_LAUNCH_AGENT_LABEL,
-    )?)?;
 
     load_launch_agent_status()
 }
