@@ -1,2 +1,2 @@
 export const APP_DISPLAY_NAME = "Lantor";
-export const APP_TAGLINE = "Orchestrate agents. Land work.";
+export const APP_TAGLINE = "Land work";

@@ -77,8 +77,8 @@ export function Sidebar({
         onPointerDown={onResizeStart}
       />
       <section className="workspace">
-        <div className="workspace-switch">
-          <strong>{APP_DISPLAY_NAME}</strong>
+        <div className="workspace-switch" aria-label={`${APP_DISPLAY_NAME}. ${APP_TAGLINE}`}>
+          <strong>{APP_DISPLAY_NAME}.</strong>
           <span>{APP_TAGLINE}</span>
         </div>
         <button

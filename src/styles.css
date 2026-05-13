@@ -139,9 +139,11 @@ button,
 }
 
 .workspace-switch {
-  display: grid;
-  gap: 2px;
-  padding: 12px 15px 13px;
+  display: inline-flex;
+  align-items: baseline;
+  max-width: 100%;
+  gap: 4px;
+  padding: 12px 15px;
   border-radius: var(--radius-lg);
   background: rgba(0, 0, 0, 0.88);
   color: #fff;
@@ -158,13 +160,13 @@ button,
 }
 
 .workspace-switch strong {
-  font-size: 19px;
+  font-size: 18px;
   font-weight: 760;
 }
 
 .workspace-switch span {
-  color: rgba(255, 255, 255, 0.66);
-  font-size: 11px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -5008,7 +5010,7 @@ body.resizing-column * {
   }
 
   .workspace-switch span {
-    max-width: 210px;
+    font-size: 12px;
   }
 
   .mobile-sidebar-close {
