@@ -43,8 +43,8 @@ use models::{
     Agent, AgentActivity, AgentRun, AgentRunPatch, AgentSchedule, AgentWorkItem,
     AgentWorkItemPatch, AgentWorkspaceEntry, AgentWorkspaceFile, AgentWorkspaceListing, Artifact,
     AttachmentUpload, Bootstrap, Channel, ChannelMember, LaunchAgentStatus, Message,
-    MessageAttachment, Reminder, RuntimeCheck, SavedMessage, SupervisorCommand, SupervisorStatus,
-    Task,
+    MessageAttachment, OwnerProfile, Reminder, RuntimeCheck, SavedMessage, SupervisorCommand,
+    SupervisorStatus, Task,
 };
 use prompts::{
     build_claude_streaming_prompt, build_codex_streaming_prompt, build_work_item_prompt,
@@ -764,6 +764,29 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     sqlx::query(
         r#"
+        create table if not exists owner_profile (
+            id integer primary key default 1 check (id = 1),
+            display_name text not null default 'Dylan',
+            avatar text not null default 'D',
+            description text not null default 'local owner',
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        insert into owner_profile (id, display_name, avatar, description)
+        values (1, 'Dylan', 'D', 'local owner')
+        on conflict (id) do nothing
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         create table if not exists agents (
             id uuid primary key default gen_random_uuid(),
             handle text not null unique,
@@ -1396,6 +1419,7 @@ fn configured_web_base_url() -> Option<String> {
 }
 
 pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResult<Bootstrap> {
+    let owner_profile = load_owner_profile(pool).await?;
     let channels = load_channels(pool).await?;
     let channel_members = load_channel_members(pool).await?;
     let agents = load_agents(pool).await?;
@@ -1415,6 +1439,7 @@ pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResu
     Ok(Bootstrap {
         db_url,
         web_base_url: configured_web_base_url(),
+        owner_profile,
         channels,
         channel_members,
         agents,
@@ -1610,6 +1635,49 @@ async fn set_channel_agent_membership(
     )
     .await?;
 
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_owner_profile(
+    display_name: String,
+    avatar: String,
+    description: String,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    update_owner_profile_in_pool(&state.pool, display_name, avatar, description).await
+}
+
+pub(crate) async fn update_owner_profile_in_pool(
+    pool: &PgPool,
+    display_name: String,
+    avatar: String,
+    description: String,
+) -> CommandResult<()> {
+    let display_name = display_name.trim();
+    if display_name.is_empty() {
+        return Err("display name is empty".to_owned());
+    }
+
+    sqlx::query(
+        r#"
+        insert into owner_profile (id, display_name, avatar, description, updated_at)
+        values (1, $1, $2, $3, now())
+        on conflict (id) do update set
+            display_name = excluded.display_name,
+            avatar = excluded.avatar,
+            description = excluded.description,
+            updated_at = now()
+        "#,
+    )
+    .bind(display_name)
+    .bind(avatar.trim())
+    .bind(description.trim())
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    let _ = notify_ui_refresh(pool, "owner_profile_updated").await;
     Ok(())
 }
 
@@ -3456,15 +3524,23 @@ pub(crate) async fn send_owner_message_in_pool(
         return Err("direct messages do not support tasks".to_owned());
     }
 
+    let owner_display_name =
+        sqlx::query_scalar::<_, String>("select display_name from owner_profile where id = 1")
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(to_string)?
+            .unwrap_or_else(|| "Dylan".to_owned());
+
     let msg_id: Uuid = sqlx::query_scalar(
         r#"
         insert into messages (channel_id, thread_root_id, sender_name, sender_role, body, is_task)
-        values ($1, $2, 'Dylan', 'owner', $3, $4)
+        values ($1, $2, $3, 'owner', $4, $5)
         returning id
         "#,
     )
     .bind(channel_id)
     .bind(thread_root_id)
+    .bind(owner_display_name)
     .bind(body.trim())
     .bind(as_task)
     .fetch_one(&mut *tx)
@@ -4209,6 +4285,31 @@ async fn update_thread_followed(
     .map_err(to_string)?;
 
     Ok(())
+}
+
+async fn load_owner_profile(pool: &PgPool) -> CommandResult<OwnerProfile> {
+    let row = sqlx::query(
+        r#"
+        select display_name, avatar, description
+        from owner_profile
+        where id = 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(row
+        .map(|row| OwnerProfile {
+            display_name: row.get("display_name"),
+            avatar: row.get("avatar"),
+            description: row.get("description"),
+        })
+        .unwrap_or_else(|| OwnerProfile {
+            display_name: "Dylan".to_owned(),
+            avatar: "D".to_owned(),
+            description: "local owner".to_owned(),
+        }))
 }
 
 async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
@@ -11702,6 +11803,7 @@ pub fn run() {
             update_agent_schedule_status,
             update_channel,
             update_message,
+            update_owner_profile,
             update_thread_followed,
             update_task_title,
             update_task_status

@@ -29,7 +29,8 @@ use crate::models::AttachmentUpload;
 use crate::{
     agent_workspace_list_in_pool, agent_workspace_read_file_in_pool, complete_reminder_in_pool,
     load_artifact, load_bootstrap, mark_channel_read_in_pool, open_dm_with_agent_in_pool,
-    send_owner_message_in_pool, set_message_saved_in_pool, to_string, UI_REFRESH_CHANNEL,
+    send_owner_message_in_pool, set_message_saved_in_pool, to_string, update_owner_profile_in_pool,
+    UI_REFRESH_CHANNEL,
 };
 
 #[derive(Clone)]
@@ -93,6 +94,14 @@ struct AgentWorkspaceRequest {
     path: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerProfileRequest {
+    display_name: String,
+    avatar: String,
+    description: String,
+}
+
 pub(crate) fn spawn_web_server_if_configured(pool: PgPool, db_url: String) {
     let Ok(bind) = env::var("LOCAL_SLOCK_WEB_BIND") else {
         return;
@@ -144,6 +153,7 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
         .route("/api/attachments/{attachment_id}", get(api_attachment))
         .route("/api/send_message", post(api_send_message))
         .route("/api/set_message_saved", post(api_set_message_saved))
+        .route("/api/update_owner_profile", post(api_update_owner_profile))
         .route("/api/mark_channel_read", post(api_mark_channel_read))
         .route("/api/complete_reminder", post(api_complete_reminder))
         .route("/api/artifact_read", post(api_artifact_read))
@@ -237,6 +247,23 @@ async fn api_send_message(
         &request.body,
         request.as_task,
         request.attachments.unwrap_or_default(),
+    )
+    .await
+    .map(|_| Json(json!({ "ok": true })))
+    .map_err(api_error)
+}
+
+async fn api_update_owner_profile(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Json(request): Json<OwnerProfileRequest>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&state, &headers, None)?;
+    update_owner_profile_in_pool(
+        &state.pool,
+        request.display_name,
+        request.avatar,
+        request.description,
     )
     .await
     .map(|_| Json(json!({ "ok": true })))

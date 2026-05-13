@@ -40,6 +40,12 @@ export type Agent = {
   daily_budget_micros: number;
 };
 
+export type OwnerProfile = {
+  display_name: string;
+  avatar: string;
+  description: string;
+};
+
 export type Channel = {
   id: string;
   name: string;
@@ -252,6 +258,7 @@ export type RuntimeCheck = {
 export type Bootstrap = {
   db_url: string;
   web_base_url: string | null;
+  owner_profile: OwnerProfile;
   channels: Channel[];
   channel_members: ChannelMember[];
   agents: Agent[];

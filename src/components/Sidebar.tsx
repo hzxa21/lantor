@@ -13,6 +13,7 @@ import {
   Agent,
   Bootstrap,
   Channel,
+  OwnerProfile,
 } from "../types";
 import { AgentAvatar } from "./AgentAvatar";
 
@@ -28,9 +29,21 @@ type SidebarProps = {
   selectChannel: (channelId: string) => void;
   openCreateAgentModal: () => void;
   openDmWithAgent: (agent: Agent) => void;
+  openOwnerProfileModal: () => void;
   onMobileClose?: () => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
+
+function ownerAsAvatarAgent(profile: OwnerProfile) {
+  return {
+    id: "owner-profile",
+    handle: "owner",
+    display_name: profile.display_name,
+    status: "idle",
+    avatar: profile.avatar,
+    description: profile.description,
+  };
+}
 
 export function Sidebar({
   data,
@@ -44,6 +57,7 @@ export function Sidebar({
   selectChannel,
   openCreateAgentModal,
   openDmWithAgent,
+  openOwnerProfileModal,
   onMobileClose,
   onResizeStart,
 }: SidebarProps) {
@@ -189,13 +203,13 @@ export function Sidebar({
         )}
       </section>
 
-      <section className="profile">
-        <div className="avatar human">D</div>
+      <button type="button" className="profile" onClick={openOwnerProfileModal}>
+        <AgentAvatar agent={ownerAsAvatarAgent(data.owner_profile)} size="md" showStatus={false} />
         <div>
-          <strong>Dylan</strong>
-          <span>local owner</span>
+          <strong>{data.owner_profile.display_name}</strong>
+          <span>{data.owner_profile.description || "local owner"}</span>
         </div>
-      </section>
+      </button>
     </aside>
   );
 }

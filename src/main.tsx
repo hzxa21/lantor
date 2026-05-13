@@ -22,6 +22,7 @@ import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { InboxModal } from "./components/InboxModal";
 import type { RespondingIndicatorItem } from "./components/RespondingIndicator";
+import { OwnerProfileModal, ownerProfileToForm, type OwnerProfileForm } from "./components/OwnerProfileModal";
 import { SavedMessagesModal } from "./components/SavedMessagesModal";
 import { SearchModal } from "./components/SearchModal";
 import { Sidebar } from "./components/Sidebar";
@@ -536,6 +537,11 @@ function App() {
   const [newChannel, setNewChannel] = useState("");
   const [channelNameDraft, setChannelNameDraft] = useState("");
   const [channelDescriptionDraft, setChannelDescriptionDraft] = useState("");
+  const [ownerProfileDraft, setOwnerProfileDraft] = useState<OwnerProfileForm>({
+    displayName: "Dylan",
+    avatar: "D",
+    description: "local owner",
+  });
   const [agentDraft, setAgentDraft] = useState<AgentForm>(EMPTY_AGENT_FORM);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [agentEdit, setAgentEdit] = useState<AgentForm>(EMPTY_AGENT_FORM);
@@ -547,6 +553,7 @@ function App() {
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showInboxModal, setShowInboxModal] = useState(false);
   const [showSavedModal, setShowSavedModal] = useState(false);
+  const [showOwnerProfileModal, setShowOwnerProfileModal] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
@@ -911,6 +918,11 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!data || showOwnerProfileModal) return;
+    setOwnerProfileDraft(ownerProfileToForm(data.owner_profile));
+  }, [data?.owner_profile, showOwnerProfileModal]);
+
+  useEffect(() => {
     function isFileDrag(event: DragEvent) {
       return Array.from(event.dataTransfer?.types ?? []).includes("Files");
     }
@@ -1063,6 +1075,7 @@ function App() {
         showSearchModal ||
         showInboxModal ||
         showSavedModal ||
+        showOwnerProfileModal ||
         Boolean(editingAgentId);
       if (event.key === "Escape" && !modalOpen && !isTextInput(event.target)) {
         if (selectedAgentId) {
@@ -1085,6 +1098,7 @@ function App() {
     showCreateAgentModal,
     showCreateChannelModal,
     showInboxModal,
+    showOwnerProfileModal,
     showSavedModal,
     showSearchModal,
     showThread,
@@ -1730,6 +1744,16 @@ function App() {
     setShowChannelSettingsModal(false);
   }
 
+  async function saveOwnerProfile() {
+    if (!ownerProfileDraft.displayName.trim()) return;
+    await mutate("update_owner_profile", {
+      displayName: ownerProfileDraft.displayName,
+      avatar: ownerProfileDraft.avatar,
+      description: ownerProfileDraft.description,
+    });
+    setShowOwnerProfileModal(false);
+  }
+
   async function deleteChannel() {
     if (!channel) return;
     const channelToDelete = channel;
@@ -1874,7 +1898,7 @@ function App() {
       id,
       channel_id: channelId,
       thread_root_id: threadRootId,
-      sender_name: "Dylan",
+      sender_name: data?.owner_profile.display_name || "Dylan",
       sender_role: "owner",
       body,
       is_task: asTask,
@@ -2447,6 +2471,11 @@ function App() {
           setShowMobileSidebar(false);
           openDmWithAgent(agent);
         }}
+        openOwnerProfileModal={() => {
+          setOwnerProfileDraft(ownerProfileToForm(data.owner_profile));
+          setShowMobileSidebar(false);
+          setShowOwnerProfileModal(true);
+        }}
         onMobileClose={closeMobileSidebar}
         onResizeStart={startSidebarResize}
       />
@@ -2486,6 +2515,17 @@ function App() {
         onOpenItem={openSavedMessage}
         onUnsaveItem={unsaveSavedMessage}
         onClose={() => setShowSavedModal(false)}
+      />
+
+      <OwnerProfileModal
+        open={showOwnerProfileModal}
+        form={ownerProfileDraft}
+        onChange={setOwnerProfileDraft}
+        onCancel={() => {
+          setOwnerProfileDraft(ownerProfileToForm(data.owner_profile));
+          setShowOwnerProfileModal(false);
+        }}
+        onSubmit={saveOwnerProfile}
       />
 
       <Conversation

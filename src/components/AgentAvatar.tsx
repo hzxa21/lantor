@@ -9,6 +9,7 @@ type AgentAvatarProps = {
   size?: "sm" | "md" | "lg";
   className?: string;
   title?: string;
+  showStatus?: boolean;
 };
 
 type ProfilePopoverPosition = {
@@ -140,7 +141,7 @@ function getProfilePopoverPosition(rect: DOMRect): ProfilePopoverPosition {
   return { left, top, arrowLeft, placement };
 }
 
-export function AgentAvatar({ agent, size = "md", className = "", title }: AgentAvatarProps) {
+export function AgentAvatar({ agent, size = "md", className = "", title, showStatus = true }: AgentAvatarProps) {
   const seedText = agent.id || `${agent.handle}:${agent.display_name}:${agent.runtime ?? ""}`;
   const identicon = generateIdenticon(seedText);
   const customAvatar = agent.avatar?.trim();
@@ -182,6 +183,7 @@ export function AgentAvatar({ agent, size = "md", className = "", title }: Agent
   return (
     <span
       className={`avatar agent-avatar agent-avatar-${size} status-${agent.status} ${className}`.trim()}
+      data-show-status={showStatus ? "true" : "false"}
       style={style}
       title={title}
       aria-hidden={!title}

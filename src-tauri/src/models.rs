@@ -34,6 +34,13 @@ pub(crate) struct Agent {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct OwnerProfile {
+    pub(crate) display_name: String,
+    pub(crate) avatar: String,
+    pub(crate) description: String,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct AgentWorkspaceEntry {
     pub(crate) name: String,
     pub(crate) path: String,
@@ -327,6 +334,7 @@ pub(crate) struct SupervisorCommand {
 pub(crate) struct Bootstrap {
     pub(crate) db_url: String,
     pub(crate) web_base_url: Option<String>,
+    pub(crate) owner_profile: OwnerProfile,
     pub(crate) channels: Vec<Channel>,
     pub(crate) channel_members: Vec<ChannelMember>,
     pub(crate) agents: Vec<Agent>,
