@@ -1,50 +1,73 @@
+<p align="center">
+  <img src="docs/assets/lantor-banner.png" alt="Lantor — AI Agent Workspace" width="820" />
+</p>
+
 # Lantor
 
-Local-first agent workspace for one human and multiple local agents.
+> Local-first agent workspace for one human and multiple local agents.
 
 Lantor is a macOS desktop app built around channels, threads, DMs, tasks,
 agent profiles, reminders, artifacts, and local file attachments. It has no
-cloud server and stores collaboration state in a local PostgreSQL database.
+cloud server. Collaboration state lives in a local PostgreSQL database, and
+attachments live on disk. Agents are local CLIs (Codex, Claude, Kimi, or a
+custom command) that Lantor supervises, wakes via inbox events, and routes
+back into the chat surface.
 
-## Current Scope
+## Features
 
-- Three-pane desktop shell: sidebar, channel/DM conversation, and thread or agent-detail panel.
-- PostgreSQL state store at `postgres://dylan:123456@127.0.0.1:5432/lantor` by default.
-- Channels, DMs, thread replies, channel-agent membership, tasks, reminders, agent profiles, artifacts, and search.
-- Agent runtime supervision with local Codex, Claude, Kimi, or custom launch commands.
-- Warm agent sessions for supported runtimes, so each agent can keep provider context across turns.
-- Inbox-driven agent wakeups for mentions, DMs, thread follow-ups, reminders, channel messages, and task work.
-- Agent activity feed for run lifecycle, status updates, control-event ingestion, and auditable handoffs.
+**Workspace**
+
+- Three-pane desktop shell: sidebar, channel/DM conversation, and a thread or
+  agent-detail panel.
+- Channels, DMs, thread replies, channel-agent membership, tasks, reminders,
+  agent profiles, artifacts, full-text search, and an inbox view.
 - Local file attachments with image thumbnails and lightbox preview.
-- Agent-generated files can be imported into the same attachment store through `attachment_create`.
 
-Attachments are stored on disk under:
+**Agents**
 
-```text
-~/Library/Application Support/Lantor/attachments/<message_id>/<attachment_id>.<ext>
-```
+- Agent runtime supervision with local Codex, Claude, Kimi, or custom launch
+  commands. The agent form ships editable launch presets per CLI/model.
+- Warm agent sessions for supported runtimes, so provider context survives
+  across turns.
+- Inbox-driven wakeups for mentions, DMs, thread follow-ups, reminders,
+  channel messages, and task work.
+- Activity feed for run lifecycle, status updates, control-event ingestion,
+  artifacts, handoffs, and task changes — queryable product state, not just
+  log scraping.
+- Agent-generated files can be imported into the attachment store through
+  `attachment_create`.
 
-Postgres stores attachment metadata such as original name, MIME type, file size,
-and storage path. Binary file bytes are not stored in Postgres.
+**Storage**
 
-## Run
+- PostgreSQL state store at `postgres://dylan:123456@127.0.0.1:5432/lantor`
+  by default. Override with `LANTOR_DATABASE_URL`.
+- Attachments are stored on disk under:
+
+  ```text
+  ~/Library/Application Support/Lantor/attachments/<message_id>/<attachment_id>.<ext>
+  ```
+
+  Postgres only holds attachment metadata (name, MIME, size, path). Binary
+  bytes never live in Postgres.
+
+## Quickstart
 
 ```bash
 npm install
 npm run tauri:dev
 ```
 
-Override the database URL if needed:
+Override the database URL when needed:
 
 ```bash
 LANTOR_DATABASE_URL=postgres://dylan:123456@127.0.0.1:5432/lantor npm run tauri:dev
 ```
 
-## Tailscale Web Access MVP
+## Tailscale Web Access (optional)
 
-Lantor can optionally expose a browser-accessible web UI from the same
-desktop process. This is intended for private Tailscale access from devices
-such as an iPhone. It is disabled by default.
+Lantor can expose a browser-accessible web UI from the same desktop process,
+for private Tailscale access from another device (e.g. an iPhone). Disabled
+by default.
 
 ```bash
 npm run build
@@ -59,11 +82,11 @@ Then open the Mac's Tailscale address from the other device:
 http://<mac-tailscale-ip>:8787/?token=<LANTOR_WEB_TOKEN>
 ```
 
-The token is required when binding to a non-loopback address. The web UI uses
-HTTP endpoints for the subset of Tauri commands needed by the chat surface:
-bootstrap state, sending messages, marking channels read, completing reminders,
-opening agent DMs, reading artifacts, workspace preview, attachment preview,
-and an SSE stream for live refresh events. Desktop Tauri still uses native IPC.
+A token is required whenever the bind is non-loopback. The web UI uses HTTP
+endpoints for the subset of Tauri commands the chat surface needs (bootstrap,
+sending messages, marking channels read, completing reminders, opening agent
+DMs, reading artifacts, workspace preview, attachment preview) plus an SSE
+stream for live refresh events. Desktop Tauri still uses native IPC.
 
 The Runtime panel can install a user LaunchAgent at:
 
@@ -76,37 +99,38 @@ Uninstall removes the plist and unloads the service.
 
 ## Agent Runtime Model
 
-Each agent profile stores runtime configuration, a model, optional custom
-launch command, optional working directory, and profile metadata. The desktop
-app starts the same binary in `--supervisor` mode; the supervisor owns process
-launch, stop commands, run logs, event ingestion, and work-item scheduling.
+Each agent profile stores runtime configuration, a model, an optional custom
+launch command, an optional working directory, and profile metadata. The
+desktop app starts the same binary in `--supervisor` mode; the supervisor
+owns process launch, stop commands, run logs, event ingestion, and
+work-item scheduling.
 
-Current agent dispatch is work-item based:
+Dispatch is work-item based:
 
-- Human messages can create work items by mentioning an agent handle like `@Hancock`.
-- DM messages, thread follow-ups, reminders, tasks, channel messages, and handoffs can wake agents.
-- One active run is allowed per agent.
-- Extra mentions, retries, and manual dispatches remain queued.
+- Human messages create work items by mentioning an agent handle (e.g. `@Hancock`).
+- DMs, thread follow-ups, reminders, tasks, channel messages, and handoffs can
+  wake agents.
+- One active run is allowed per agent. Extra mentions, retries, and manual
+  dispatches stay queued.
 - The supervisor schedules the oldest queued work item for each idle agent.
-- Cancellation marks queued work as cancelled or sends a stop command for running work.
+- Cancellation marks queued work as cancelled or sends a stop command for a
+  running run.
 - Retry creates a new queued work item instead of mutating historical state.
 
-Warm Codex and Claude runtimes should reply with normal assistant text for the
-current channel/thread. Lantor routes that text into the correct chat
+Warm Codex and Claude runtimes reply with normal assistant text for the
+current channel/thread — Lantor routes that text into the correct chat
 surface. They may also emit standalone `LANTOR_EVENT` control lines for
-structured side effects.
+structured side effects (see below).
 
-Stdout command runtimes are still supported for custom scripts. They can
+Stdout-command runtimes are still supported for custom scripts. They can
 print one line to stdout with the `LANTOR_EVENT ` prefix followed by JSON.
 Non-matching stdout/stderr is preserved only in the run log.
 
 ## Agent Context Tools
 
 The supervisor injects `LANTOR_CONTEXT_TOOL` for read-only context access.
-Agents use it to inspect the current workspace, recover context after restart,
-and process inbox wakeups.
-
-Common commands:
+Agents use it to inspect the current workspace, recover after restart, and
+process inbox wakeups.
 
 ```bash
 "$LANTOR_CONTEXT_TOOL" --agent-context-tool inbox-list --state active --limit 20
@@ -129,14 +153,15 @@ Inbox, workspace, and memory commands default to the current agent. Use
 
 Each agent has a persistent working directory under `agents/<handle>/`.
 `MEMORY.md` is the recovery entry point and should stay concise and
-index-like. Agents can use notes, artifacts, and task-specific files under that
-workspace when work needs durable context.
+index-like — detailed knowledge belongs in `notes/<topic>.md` files. Agents
+can also keep artifacts and task-specific files in their workspace when work
+needs durable context.
 
 Memory-related control events:
 
-- `memory_append`: append a small durable fact.
-- `memory_compact`: replace `MEMORY.md` with a cleaned compact version.
-- `profile_update`: update display name, role, avatar, or description.
+- `memory_append` — append a small durable fact.
+- `memory_compact` — replace `MEMORY.md` with a cleaned compact version.
+- `profile_update` — update display name, role, avatar, or description.
 
 ## Control Events
 
@@ -148,27 +173,25 @@ LANTOR_EVENT {"type":"activity","kind":"thinking","title":"Checking build","deta
 
 Supported event types:
 
-- `activity`: write a compact hidden progress/activity event.
-- `usage`: record token and cost usage.
-- `memory_append`: append durable memory.
-- `memory_compact`: replace durable memory.
-- `profile_update`: update the current agent profile.
-- `reminder_create`: create a visible, cancelable reminder.
-- `reminder_cancel`: cancel a reminder by id.
-- `task_create`: create a root task message and optional first thread update.
-- `task_status`: update a task status.
-- `artifact_create`: create a markdown artifact rendered from the message.
-- `attachment_create`: import local files as message attachments.
-- `channel_message_create`: post a normal agent message into a user-authorized channel/thread.
-- `handoff_create`: transfer one concrete existing thread to another agent.
-- `channel_create`: create a durable channel workspace.
-- `channel_invite`: invite agents into an existing channel.
+| Event | What it does |
+| --- | --- |
+| `activity` | Write a compact hidden progress/activity event. |
+| `usage` | Record token and cost usage. |
+| `memory_append` / `memory_compact` | Append or replace durable agent memory. |
+| `profile_update` | Update the current agent profile. |
+| `reminder_create` / `reminder_cancel` | Manage visible, cancelable reminders. |
+| `task_create` / `task_status` | Create a root task message or update a status. |
+| `artifact_create` | Create a markdown artifact rendered from the message. |
+| `attachment_create` | Import local files as message attachments. |
+| `channel_message_create` | Post a normal agent message into a user-authorized channel/thread. |
+| `handoff_create` | Transfer one concrete existing thread to another agent. |
+| `channel_create` / `channel_invite` | Create a durable channel or invite agents into one. |
 
-Custom runtimes may also use parser-compatible `message`, `task_claim`,
-and `silent` events, but warm Codex/Claude agents should prefer normal assistant
+Custom runtimes may also use parser-compatible `message`, `task_claim`, and
+`silent` events, but warm Codex/Claude agents should prefer normal assistant
 text plus the structured control events above.
 
-### Example: Attachment
+### Example: attachment
 
 Use this for generated images or local files that should appear as normal
 message attachments:
@@ -192,10 +215,10 @@ message attachments:
 Pass absolute file paths, not base64. Lantor copies the files into its own
 attachment store and records metadata in Postgres.
 
-### Example: Handoff
+### Example: handoff
 
-Use this only after explicit user authorization to transfer a concrete existing
-thread to another agent:
+Use this only after explicit user authorization to transfer a concrete
+existing thread to another agent:
 
 ```json
 {
@@ -212,7 +235,7 @@ thread to another agent:
 auditable handoff message, ensures the target agent is in the channel, and
 creates a work item for that target agent.
 
-### Example: User-Authorized Channel Message
+### Example: user-authorized channel message
 
 Use this only when the user explicitly asks an agent to post in a specific
 channel or thread:
@@ -226,36 +249,36 @@ channel or thread:
 }
 ```
 
-Normal `@agent` mentions in the body can dispatch work through the usual mention
-path.
+Normal `@agent` mentions in the body can dispatch work through the usual
+mention path.
 
 ## Agent Activity Feed
 
 Lantor persists agent activity in `agent_activities` instead of deriving it
-from run logs. The feed is queryable product state and can link activity to an
-agent, run, message, task, artifact, reminder, or handoff. It is used for:
+from run logs. The feed is queryable product state and can link activity to
+an agent, run, message, task, artifact, reminder, or handoff. It records:
 
 - profile changes;
 - queued starts, spawned runs, stop requests, and final run status;
 - accepted or rejected control events;
-- messages, tasks, artifacts, attachments, reminders, and handoffs created by agents;
+- messages, tasks, artifacts, attachments, reminders, and handoffs created by
+  agents;
 - task status and assignee changes.
 
-Run logs remain useful for process-level debugging. The activity feed is the
+Run logs remain useful for process-level debugging — the activity feed is the
 product-level audit trail.
 
-## Agent Launch Presets
+## Branding
 
-The agent form includes editable launch presets for `Codex`, `Claude`, `Kimi`,
-and `Custom`.
+App icon, sidebar wordmark, and README banner all share one source: the
+1024×1024 master at `docs/assets/lantor-icon-master-1024.png`. The Tauri
+icon set under `src-tauri/icons/` (icns, ico, multi-size PNG, iOS, Android,
+Windows Store) is regenerated from that master with:
 
-Presets:
+```bash
+npx tauri icon docs/assets/lantor-icon-master-1024.png
+```
 
-- generate a shell command for the selected CLI and model;
-- include the Lantor operating policy, context tools, and control-event API;
-- show a command preview before applying;
-- leave the final command editable;
-- assume the selected CLI binary is already installed and on `PATH`.
-
-Use `Custom` when the agent is a local script, wrapper, or runtime with its own
-daemon protocol.
+The web app picks up `public/lantor-icon.png` at `/lantor-icon.png` for the
+sidebar pill, and the README references `docs/assets/lantor-banner.png` at
+the top.

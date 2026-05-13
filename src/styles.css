@@ -139,26 +139,36 @@ button,
 }
 
 .workspace-switch {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   max-width: 100%;
-  padding: 12px 15px;
+  padding: 10px 15px 10px 10px;
   border-radius: var(--radius-lg);
-  background: rgba(0, 0, 0, 0.88);
-  color: #fff;
-  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.14);
+  background: #ffffff;
+  color: var(--ink);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
+}
+
+.workspace-switch-logo {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: cover;
+  display: block;
 }
 
 .workspace-switch strong {
-  display: block;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.workspace-switch strong {
   font-size: 18px;
   font-weight: 760;
+  letter-spacing: -0.01em;
 }
 
 .quick-actions {
@@ -4992,8 +5002,15 @@ body.resizing-column * {
   }
 
   .workspace-switch {
-    padding: 10px 12px;
+    padding: 8px 12px 8px 8px;
     border-radius: 14px;
+    gap: 9px;
+  }
+
+  .workspace-switch-logo {
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
   }
 
   .workspace-switch strong {

@@ -78,6 +78,7 @@ export function Sidebar({
       />
       <section className="workspace">
         <div className="workspace-switch" aria-label={APP_DISPLAY_NAME}>
+          <img className="workspace-switch-logo" src="/lantor-icon.png" alt="" aria-hidden="true" />
           <strong>{APP_DISPLAY_NAME}</strong>
         </div>
         <button
