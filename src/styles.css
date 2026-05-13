@@ -139,10 +139,8 @@ button,
 }
 
 .workspace-switch {
-  display: inline-flex;
-  align-items: baseline;
+  display: block;
   max-width: 100%;
-  gap: 4px;
   padding: 12px 15px;
   border-radius: var(--radius-lg);
   background: rgba(0, 0, 0, 0.88);
@@ -150,8 +148,7 @@ button,
   box-shadow: 0 14px 28px rgba(0, 0, 0, 0.14);
 }
 
-.workspace-switch strong,
-.workspace-switch span {
+.workspace-switch strong {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -162,12 +159,6 @@ button,
 .workspace-switch strong {
   font-size: 18px;
   font-weight: 760;
-}
-
-.workspace-switch span {
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 13px;
-  font-weight: 650;
 }
 
 .quick-actions {
@@ -5007,10 +4998,6 @@ body.resizing-column * {
 
   .workspace-switch strong {
     font-size: 17px;
-  }
-
-  .workspace-switch span {
-    font-size: 12px;
   }
 
   .mobile-sidebar-close {

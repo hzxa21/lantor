@@ -15,7 +15,7 @@ import {
   Channel,
   OwnerProfile,
 } from "../types";
-import { APP_DISPLAY_NAME, APP_TAGLINE } from "../branding";
+import { APP_DISPLAY_NAME } from "../branding";
 import { AgentAvatar } from "./AgentAvatar";
 
 type SidebarProps = {
@@ -77,9 +77,8 @@ export function Sidebar({
         onPointerDown={onResizeStart}
       />
       <section className="workspace">
-        <div className="workspace-switch" aria-label={`${APP_DISPLAY_NAME}. ${APP_TAGLINE}`}>
-          <strong>{APP_DISPLAY_NAME}.</strong>
-          <span>{APP_TAGLINE}</span>
+        <div className="workspace-switch" aria-label={APP_DISPLAY_NAME}>
+          <strong>{APP_DISPLAY_NAME}</strong>
         </div>
         <button
           type="button"
