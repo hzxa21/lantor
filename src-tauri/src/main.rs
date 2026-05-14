@@ -73,6 +73,7 @@ const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
 const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
+const CODEX_CONTEXT_ROTATE_INPUT_TOKENS: i64 = 100_000;
 const AGENT_WORKSPACE_PREVIEW_LIMIT: u64 = 256 * 1024;
 
 fn expand_home_path(value: &str) -> String {
@@ -2501,6 +2502,31 @@ async fn agent_has_active_or_pending_start(pool: &PgPool, agent_id: Uuid) -> Com
     Ok(pending_start.is_some())
 }
 
+async fn codex_context_rotation_candidate(
+    pool: &PgPool,
+    agent_id: Uuid,
+) -> CommandResult<Option<(Uuid, i64)>> {
+    let row = sqlx::query(
+        r#"
+        select id, input_tokens
+        from agent_runs
+        where agent_id = $1
+          and stopped_at is not null
+        order by stopped_at desc
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(row.and_then(|row| {
+        let input_tokens = row.get("input_tokens");
+        (input_tokens >= CODEX_CONTEXT_ROTATE_INPUT_TOKENS).then(|| (row.get("id"), input_tokens))
+    }))
+}
+
 async fn enqueue_agent_work_if_available(
     pool: &PgPool,
     agent_id: Uuid,
@@ -2835,25 +2861,6 @@ async fn ensure_agent_inbox_wake_work_item(
     pool: &PgPool,
     agent_id: Uuid,
 ) -> CommandResult<Option<(Uuid, bool)>> {
-    let existing_work_item_id: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        select id
-        from agent_work_items
-        where agent_id = $1
-          and source_kind = 'inbox_wake'
-          and status in ('queued', 'running', 'cancelling')
-        order by created_at desc
-        limit 1
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(to_string)?;
-    if let Some(existing_work_item_id) = existing_work_item_id {
-        return Ok(Some((existing_work_item_id, false)));
-    }
-
     let row = sqlx::query(
         r#"
         select
@@ -2911,10 +2918,9 @@ async fn ensure_agent_inbox_wake_work_item(
     };
     let context = format!(
         "Lantor agent inbox wake.\n\
-         You have unread or processing inbox items. First inspect them with:\n\
-         \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20\n\
-         Then read the item you will handle with:\n\
-         \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id {inbox_item_id}\n\
+         The default inbox item below is already selected for this turn. Handle it directly from this context when enough detail is present.\n\
+         Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id {inbox_item_id} only if you need the full source message or metadata.\n\
+         Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20 only if you need to choose among multiple active inbox items.\n\
          Archive handled or intentionally ignored items with:\n\
          \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id <id>\n\
          \n\
@@ -8772,14 +8778,26 @@ async fn get_or_spawn_warm_codex_runtime(
     working_directory: &str,
     memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
+    let rotation_candidate = codex_context_rotation_candidate(pool, agent_id).await?;
     if let Some(runtime) = {
         let runtimes = registry.runtimes.lock().await;
         runtimes.get(&agent_id).cloned()
     } {
-        if runtime.state.lock().await.alive {
+        let mut state = runtime.state.lock().await;
+        if state.alive && rotation_candidate.is_some() && state.active.is_none() {
+            state.alive = false;
+            drop(state);
+            if let Some(pid) = runtime.pid {
+                let _ = terminate_process_group(pid).await;
+            }
+            remove_warm_codex_runtime_if_same(registry, agent_id, &runtime).await;
+        } else if state.alive {
+            drop(state);
             return Ok(runtime);
+        } else {
+            drop(state);
+            registry.runtimes.lock().await.remove(&agent_id);
         }
-        registry.runtimes.lock().await.remove(&agent_id);
     }
 
     let runtime = spawn_warm_codex_runtime(
@@ -8882,8 +8900,29 @@ async fn spawn_warm_codex_runtime(
     .await?;
     codex_write_json(&mut stdin, json!({ "method": "initialized" })).await?;
 
-    let existing_thread_id = load_runtime_thread_id(pool, agent_id, "codex").await?;
+    let rotation_candidate = codex_context_rotation_candidate(pool, agent_id).await?;
+    let existing_thread_id = if rotation_candidate.is_some() {
+        None
+    } else {
+        load_runtime_thread_id(pool, agent_id, "codex").await?
+    };
     let mut attempted_resume = existing_thread_id.is_some();
+    if let Some((run_id, input_tokens)) = rotation_candidate {
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            None,
+            "run",
+            "Codex context rotated",
+            json!({
+                "previous_run_id": run_id,
+                "input_tokens": input_tokens,
+                "threshold": CODEX_CONTEXT_ROTATE_INPUT_TOKENS
+            })
+            .to_string(),
+        )
+        .await?;
+    }
     if let Some(thread_id) = existing_thread_id {
         codex_write_json(
             &mut stdin,
@@ -11038,9 +11077,16 @@ async fn wait_for_warm_codex_process(
     let _ =
         finish_warm_codex_active_turn(&pool, agent_id, &runtime, false, Some(detail.clone())).await;
     let _ = sqlx::query(
-        "update runtime_sessions set status = 'stopped', updated_at = now() where agent_id = $1 and runtime = 'codex'",
+        r#"
+        update runtime_sessions
+        set status = 'stopped', updated_at = now()
+        where agent_id = $1
+          and runtime = 'codex'
+          and provider_thread_id = $2
+        "#,
     )
     .bind(agent_id)
+    .bind(&runtime.thread_id)
     .execute(&pool)
     .await;
     let _ = record_agent_activity(
@@ -14105,7 +14151,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inbox_wake_reschedules_unread_items_after_current_wake_finishes() {
+    async fn inbox_wake_creates_work_items_without_serializing_unread_items() {
         let Some((pool, schema)) = test_pool().await else {
             return;
         };
@@ -14141,7 +14187,7 @@ mod tests {
             .fetch_all(&pool)
             .await
             .map_err(|err| err.to_string())?;
-            assert_eq!(initial_work_items.len(), 1);
+            assert_eq!(initial_work_items.len(), 2);
 
             let state_counts = sqlx::query(
                 r#"
@@ -14156,8 +14202,8 @@ mod tests {
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
-            assert_eq!(state_counts.get::<Option<i64>, _>("processing"), Some(1));
-            assert_eq!(state_counts.get::<Option<i64>, _>("unread"), Some(1));
+            assert_eq!(state_counts.get::<Option<i64>, _>("processing"), Some(2));
+            assert_eq!(state_counts.get::<Option<i64>, _>("unread"), Some(0));
 
             sqlx::query("update agent_work_items set status = 'done' where id = $1")
                 .bind(initial_work_items[0])

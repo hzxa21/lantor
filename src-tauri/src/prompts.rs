@@ -44,7 +44,7 @@ fn lantor_context_tools_prompt() -> &'static str {
 - artifact: "$LANTOR_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
 - agent introspection: "$LANTOR_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"
 Inbox, workspace, and memory commands default to your own LANTOR_AGENT_ID; add --target "@handle" only when inspecting another visible agent.
-When a turn is an inbox wake, first list/read active inbox items, decide which need visible work, and archive handled or intentionally ignored items."##
+When a turn contains a default inbox item or source_message, handle that item directly from the provided context when possible. Use inbox-list or inbox-read when you need missing details, need to choose among multiple active items, or are handling a different item. Archive handled or intentionally ignored inbox items."##
 }
 
 fn lantor_control_api_prompt() -> &'static str {
@@ -195,7 +195,7 @@ fn build_runtime_standing_prompt(
          You collaborate with one local human through channels, threads, tasks, and DMs.\n\
          {transport_note}\n\
          Lantor keeps one warm runtime session per agent so previous turns remain in provider context; channel and thread are delivered as message envelope fields, not as separate runtime sessions.\n\
-         Each wake turn may contain a compact inbox processing prompt instead of a full request. Use inbox-list, inbox-read, and inbox-archive to pull pending items, decide what deserves a visible reply or action, and clear items you handled or intentionally ignored. Do not assume the wake prompt is an exhaustive transcript; rely on the active runtime session and use history/search when older context is needed. Use workspace-info, workspace-list, and memory-read when you need to recover your current Lantor workspace or inspect durable MEMORY.md beyond the injected prompt excerpt.\n\
+         Each wake turn may contain a compact inbox processing prompt instead of a full request. Handle the default inbox item directly from that prompt when it has enough detail; use inbox-read only for missing source details, and inbox-list only when you need to choose among multiple active items. Archive handled or intentionally ignored items. Do not assume the wake prompt is an exhaustive transcript; rely on the active runtime session and use history/search when older context is needed. Use workspace-info, workspace-list, and memory-read when you need to recover your current Lantor workspace or inspect durable MEMORY.md beyond the injected prompt excerpt.\n\
          \n\
          {}\n\
          \n\
