@@ -811,6 +811,21 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    sqlx::query(
+        r#"
+        update agent_activities
+        set kind = 'run',
+            phase = 'runtime',
+            status = 'warning',
+            title = 'Runtime warning',
+            summary = 'Runtime warning'
+        where upper(coalesce(metadata->>'level', '')) in ('WARN', 'WARNING')
+          and coalesce(metadata->>'target', '') like 'codex_%'
+          and title in ('Thinking', 'Error output', 'Runtime output', 'Runtime warning')
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         r#"
@@ -1198,6 +1213,33 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
                 else metadata
             end
         where summary = '' or metadata = '{}'::jsonb
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        delete from agent_activities
+        where upper(coalesce(metadata->>'level', '')) in ('WARN', 'WARNING')
+          and (
+              (
+                  metadata->>'target' = 'codex_core_plugins::manifest'
+                  and coalesce(metadata #>> '{fields,message}', metadata->>'message', '') like 'ignoring interface.defaultPrompt:%'
+              )
+              or (
+                  metadata->>'target' = 'codex_core_skills::loader'
+                  and coalesce(metadata #>> '{fields,message}', metadata->>'message', '') in (
+                      'ignoring interface.icon_small: icon path must not contain ''..''',
+                      'ignoring interface.icon_large: icon path must not contain ''..'''
+                  )
+              )
+              or (
+                  metadata->>'target' = 'codex_core::session::turn'
+                  and coalesce(metadata #>> '{fields,message}', metadata->>'message', '') = 'after_agent hook failed; continuing'
+                  and coalesce(metadata #>> '{fields,hook_name}', metadata->>'hook_name', '') = 'legacy_notify'
+                  and coalesce(metadata #>> '{fields,error}', metadata->>'error', '') like '%No such file or directory%'
+              )
+          )
         "#,
     )
     .execute(pool)
@@ -6110,6 +6152,8 @@ fn activity_status(kind: &str, title: &str) -> &'static str {
         || lowered.contains("rejected")
     {
         "error"
+    } else if lowered.contains("warning") {
+        "warning"
     } else if lowered.contains("cancel") || lowered.contains("stop") || lowered.contains("stopping")
     {
         "warning"
@@ -6439,6 +6483,14 @@ fn structured_log_message(value: &Value) -> Option<&str> {
         .or_else(|| structured_log_string(value, "message"))
 }
 
+fn structured_log_field_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value
+        .get("fields")
+        .and_then(|fields| fields.get(key))
+        .and_then(Value::as_str)
+        .or_else(|| structured_log_string(value, key))
+}
+
 fn structured_log_detail(
     value: &Value,
     level: &str,
@@ -6471,6 +6523,37 @@ fn is_ignored_codex_manifest_warning(
             .is_some_and(|message| message.starts_with("ignoring interface.defaultPrompt:"))
 }
 
+fn is_ignored_codex_skill_loader_warning(
+    level: &str,
+    target: Option<&str>,
+    message: Option<&str>,
+) -> bool {
+    matches!(level.to_ascii_uppercase().as_str(), "WARN" | "WARNING")
+        && target == Some("codex_core_skills::loader")
+        && message.map(str::trim).is_some_and(|message| {
+            matches!(
+                message,
+                "ignoring interface.icon_small: icon path must not contain '..'"
+                    | "ignoring interface.icon_large: icon path must not contain '..'"
+            )
+        })
+}
+
+fn is_ignored_codex_legacy_notify_warning(
+    value: &Value,
+    level: &str,
+    target: Option<&str>,
+    message: Option<&str>,
+) -> bool {
+    matches!(level.to_ascii_uppercase().as_str(), "WARN" | "WARNING")
+        && target == Some("codex_core::session::turn")
+        && message.map(str::trim) == Some("after_agent hook failed; continuing")
+        && structured_log_field_string(value, "hook_name") == Some("legacy_notify")
+        && structured_log_field_string(value, "error")
+            .map(str::trim)
+            .is_some_and(|error| error.contains("No such file or directory"))
+}
+
 fn classify_structured_stderr_log(
     line: &str,
 ) -> Option<Option<(&'static str, &'static str, String)>> {
@@ -6488,6 +6571,12 @@ fn classify_structured_stderr_log(
     let target = structured_log_string(&value, "target");
     let message = structured_log_message(&value);
     if is_ignored_codex_manifest_warning(level, target, message) {
+        return Some(None);
+    }
+    if is_ignored_codex_skill_loader_warning(level, target, message) {
+        return Some(None);
+    }
+    if is_ignored_codex_legacy_notify_warning(&value, level, target, message) {
         return Some(None);
     }
 
@@ -6510,10 +6599,8 @@ fn classify_agent_output_activity(
     }
 
     let lower = trimmed.to_lowercase();
-    if label == "stderr" {
-        if let Some(activity) = classify_structured_stderr_log(trimmed) {
-            return activity;
-        }
+    if let Some(activity) = classify_structured_stderr_log(trimmed) {
+        return activity;
     }
 
     let is_error = label == "stderr"
@@ -9439,7 +9526,7 @@ async fn spawn_warm_codex_runtime(
     let mut command = Command::new("/bin/zsh");
     command
         .arg("-lc")
-        .arg("exec codex app-server --listen stdio://");
+        .arg("exec codex app-server --listen stdio:// -c 'notify=[]'");
     configure_agent_identity_env(&mut command, agent_id, handle);
     configure_agent_context_tool_env(&mut command);
     #[cfg(unix)]
@@ -12531,7 +12618,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_streaming_agent_message, build_codex_streaming_prompt,
+        activity_status, append_streaming_agent_message, build_codex_streaming_prompt,
         build_streaming_work_item_prompt, build_work_item_prompt, capped_stream_delta,
         claim_agent_event, claim_next_supervisor_command, classify_agent_output_activity,
         claude_message_text, claude_result_error, claude_stream_event_activity,
@@ -13480,6 +13567,28 @@ mod tests {
         .to_string();
 
         assert_eq!(classify_agent_output_activity("stderr", &line), None);
+        assert_eq!(classify_agent_output_activity("stdout", &line), None);
+    }
+
+    #[test]
+    fn ignores_known_codex_skill_loader_icon_warning() {
+        for message in [
+            "ignoring interface.icon_small: icon path must not contain '..'",
+            "ignoring interface.icon_large: icon path must not contain '..'",
+        ] {
+            let line = json!({
+                "timestamp": "2026-05-14T13:05:55.340546Z",
+                "level": "WARN",
+                "fields": {
+                    "message": message
+                },
+                "target": "codex_core_skills::loader"
+            })
+            .to_string();
+
+            assert_eq!(classify_agent_output_activity("stderr", &line), None);
+            assert_eq!(classify_agent_output_activity("stdout", &line), None);
+        }
     }
 
     #[test]
@@ -13502,6 +13611,55 @@ mod tests {
         assert_eq!(detail["level"], "WARN");
         assert_eq!(detail["target"], "codex_core_plugins::manifest");
         assert_eq!(detail["message"], "plugin manifest used a deprecated field");
+
+        let stdout_activity =
+            classify_agent_output_activity("stdout", &line).expect("warning should be classified");
+        assert_eq!(stdout_activity.0, "run");
+        assert_eq!(stdout_activity.1, "Runtime warning");
+    }
+
+    #[test]
+    fn ignores_known_codex_legacy_notify_hook_warning() {
+        let line = json!({
+            "timestamp": "2026-05-14T13:16:30.388210Z",
+            "level": "WARN",
+            "fields": {
+                "error": "No such file or directory (os error 2)",
+                "hook_name": "legacy_notify",
+                "message": "after_agent hook failed; continuing",
+                "turn_id": "019e26a1-7ad5-7642-af8a-e042a0738a84"
+            },
+            "target": "codex_core::session::turn"
+        })
+        .to_string();
+
+        assert_eq!(classify_agent_output_activity("stderr", &line), None);
+    }
+
+    #[test]
+    fn maps_structured_warning_with_error_words_to_runtime_warning() {
+        let line = json!({
+            "timestamp": "2026-05-14T13:16:30.388210Z",
+            "level": "WARN",
+            "fields": {
+                "error": "retryable operation failed once",
+                "message": "operation failed; continuing"
+            },
+            "target": "codex_core::session::turn"
+        })
+        .to_string();
+        let activity =
+            classify_agent_output_activity("stderr", &line).expect("warning should be classified");
+
+        assert_eq!(activity.0, "run");
+        assert_eq!(activity.1, "Runtime warning");
+        assert_eq!(activity_status(activity.0, activity.1), "warning");
+    }
+
+    #[test]
+    fn marks_runtime_warning_activity_as_warning_status() {
+        assert_eq!(activity_status("run", "Runtime warning"), "warning");
+        assert_eq!(activity_status("error", "Error output"), "error");
     }
 
     #[test]
