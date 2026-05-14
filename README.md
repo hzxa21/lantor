@@ -75,7 +75,6 @@ Storage stays local:
 - [Control events](docs/control-events.md)
 - [Tailscale web access](docs/web-access.md)
 - [Agent activity feed](docs/activity-feed.md)
-- [Branding and icons](docs/branding.md)
 
 ## Development
 
