@@ -47,9 +47,9 @@ use models::{
     SupervisorStatus, Task,
 };
 use prompts::{
-    build_claude_streaming_prompt, build_codex_streaming_prompt, build_work_item_prompt,
-    claude_system_prompt, codex_developer_instructions, ensure_agent_workspace,
-    load_agent_memory_context, prepend_memory_context,
+    build_claude_streaming_prompt, build_codex_streaming_prompt, build_streaming_work_item_prompt,
+    build_work_item_prompt, claude_system_prompt, codex_developer_instructions,
+    ensure_agent_workspace, load_agent_memory_context, prepend_memory_context,
 };
 #[cfg(test)]
 use prompts::{AGENT_MEMORY_CONTEXT_LIMIT, WORK_ITEM_FINISH_PROMPT};
@@ -73,7 +73,7 @@ const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
 const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
-const CODEX_CONTEXT_ROTATE_INPUT_TOKENS: i64 = 100_000;
+const CODEX_CONTEXT_ROTATE_INPUT_TOKENS: i64 = 50_000;
 const AGENT_WORKSPACE_PREVIEW_LIMIT: u64 = 256 * 1024;
 
 fn expand_home_path(value: &str) -> String {
@@ -9633,15 +9633,6 @@ async fn steer_warm_codex_turn_if_same_surface(
         format!("[codex] turn/steer work_item={work_item_id}\n"),
     )
     .await?;
-    record_agent_activity(
-        pool,
-        Some(agent_id),
-        Some(active_run_id),
-        "dispatch",
-        "Follow-up added",
-        work_item_id.to_string(),
-    )
-    .await?;
     Ok(true)
 }
 
@@ -10137,6 +10128,8 @@ async fn supervisor_start_agent(
     let launch_command: String = row.get("launch_command");
     let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
     let avatar: Option<String> = row.get("avatar");
+    let is_warm_streaming_runtime =
+        runtime.eq_ignore_ascii_case("codex") || runtime.eq_ignore_ascii_case("claude");
     let memory_context = match load_agent_memory_context(&working_directory) {
         Ok(memory_context) => memory_context,
         Err(err) => {
@@ -10191,16 +10184,29 @@ async fn supervisor_start_agent(
                         "Your agent profile currently has no avatar. If your handle or MEMORY.md gives you a stable identity, you may emit one standalone LANTOR_EVENT profile_update with an avatar like `dicebear:notionists:{handle}` or another supported DiceBear style. Keep handling the user's request normally and do not send visible chat only for avatar setup."
                     )
                 });
-            build_work_item_prompt(
-                work_item_id,
-                &title,
-                &context,
-                channel_name.as_deref(),
-                task_number,
-                thread_root_id,
-                &available_agents,
-                agent_profile_hint.as_deref(),
-            )
+            if is_warm_streaming_runtime {
+                build_streaming_work_item_prompt(
+                    work_item_id,
+                    &title,
+                    &context,
+                    channel_name.as_deref(),
+                    task_number,
+                    thread_root_id,
+                    &available_agents,
+                    agent_profile_hint.as_deref(),
+                )
+            } else {
+                build_work_item_prompt(
+                    work_item_id,
+                    &title,
+                    &context,
+                    channel_name.as_deref(),
+                    task_number,
+                    thread_root_id,
+                    &available_agents,
+                    agent_profile_hint.as_deref(),
+                )
+            }
         }
         None => String::new(),
     };
@@ -11901,9 +11907,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_streaming_agent_message, build_codex_streaming_prompt, build_work_item_prompt,
-        capped_stream_delta, claim_agent_event, claim_next_supervisor_command, claude_message_text,
-        claude_result_error, claude_stream_event_activity, claude_system_prompt, claude_text_delta,
+        append_streaming_agent_message, build_codex_streaming_prompt,
+        build_streaming_work_item_prompt, build_work_item_prompt, capped_stream_delta,
+        claim_agent_event, claim_next_supervisor_command, claude_message_text, claude_result_error,
+        claude_stream_event_activity, claude_system_prompt, claude_text_delta,
         codex_item_started_activity, codex_turn_id_from_value,
         consume_streaming_agent_control_lines,
         context_tool::{
@@ -12022,6 +12029,27 @@ mod tests {
         assert!(streaming.contains("handoff_create"));
         assert!(streaming.contains("Do not emit LANTOR_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
+    }
+
+    #[test]
+    fn streaming_work_item_prompt_omits_repeated_standing_context() {
+        let prompt = build_streaming_work_item_prompt(
+            Uuid::nil(),
+            "Review the change",
+            "Latest user message: please review",
+            Some("lantor"),
+            None,
+            Some(Uuid::nil()),
+            &[],
+            None,
+        );
+
+        assert!(prompt.contains("Standing instructions are already installed"));
+        assert!(prompt.contains("Latest user message: please review"));
+        assert!(prompt.contains(WORK_ITEM_FINISH_PROMPT));
+        assert!(!prompt.contains("Operating policy:"));
+        assert!(!prompt.contains("Agent context tools:"));
+        assert!(!prompt.contains("Standalone LANTOR_EVENT control lines:"));
     }
 
     #[test]
@@ -14299,6 +14327,8 @@ mod tests {
             .await?;
             assert!(read.contains("source_message:"));
             assert!(read.contains("please inspect inbox tools"));
+            assert!(read.contains(&format!("--target \"{dm_channel_id}")));
+            assert!(!read.contains("--target \"dm:"));
             assert!(read.contains("archive_when_done="));
 
             let archived = agent_context_inbox_archive(

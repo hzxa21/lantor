@@ -768,6 +768,14 @@ fn inbox_surface_label(
     }
 }
 
+fn inbox_history_target(channel_id: Uuid, thread_root_id: Option<Uuid>) -> String {
+    if let Some(thread_root_id) = thread_root_id {
+        format!("{channel_id}:{}", short_id(thread_root_id))
+    } else {
+        channel_id.to_string()
+    }
+}
+
 async fn resolve_inbox_item_id(pool: &PgPool, agent_id: Uuid, raw_id: &str) -> CommandResult<Uuid> {
     let raw_id = raw_id.trim().trim_start_matches("inbox:");
     if raw_id.is_empty() {
@@ -1224,7 +1232,13 @@ pub(crate) async fn agent_context_inbox_read(
         ));
     }
     output.push(format!("payload:\n{payload}"));
-    if surface != "unknown" {
+    if let Some(channel_id) = row.get::<Option<Uuid>, _>("channel_id") {
+        let history_target = inbox_history_target(channel_id, thread_root_id);
+        output.push(format!(
+            "history_hint=\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool history-read --target {:?} --limit 30",
+            history_target
+        ));
+    } else if surface != "unknown" {
         output.push(format!(
             "history_hint=\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool history-read --target {:?} --limit 30",
             surface
@@ -1275,7 +1289,7 @@ pub(crate) async fn agent_context_inbox_archive(
 pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
     if args.is_empty() || has_arg(args, "--help") || has_arg(args, "-h") {
         return Ok(
-            "Lantor agent context tool\n\nCommands:\n  inbox-list [--state active|unread|processing|archived|all] [--limit 20]\n  inbox-read --inbox-id <uuid-or-prefix>\n  inbox-archive --inbox-id <uuid-or-prefix>\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, or a channel UUID. Inbox, workspace, and memory commands default to the current LANTOR_AGENT_ID when invoked by an agent."
+            "Lantor agent context tool\n\nCommands:\n  inbox-list [--state active|unread|processing|archived|all] [--limit 20]\n  inbox-read --inbox-id <uuid-or-prefix>\n  inbox-archive --inbox-id <uuid-or-prefix>\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, channel UUID, or channel UUID:<message-id-prefix>. Inbox, workspace, and memory commands default to the current LANTOR_AGENT_ID when invoked by an agent."
                 .to_owned(),
         );
     }

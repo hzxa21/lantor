@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{text::compact_chars_middle, CommandResult};
 
-pub(crate) const AGENT_MEMORY_CONTEXT_LIMIT: usize = 16 * 1024;
+pub(crate) const AGENT_MEMORY_CONTEXT_LIMIT: usize = 8 * 1024;
 
 pub(crate) const WORK_ITEM_FINISH_PROMPT: &str = "Finish behavior: warm streaming runtimes should answer with normal assistant text; stdout command runtimes should use the visible reply event template from the turn context. Only update task status when this request is tied to an explicit task number.";
 
@@ -74,7 +74,7 @@ fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
     )
 }
 
-pub(crate) fn build_work_item_prompt(
+fn build_work_item_prompt_inner(
     work_item_id: Uuid,
     title: &str,
     context: &str,
@@ -83,6 +83,7 @@ pub(crate) fn build_work_item_prompt(
     thread_root_id: Option<Uuid>,
     available_agents: &[String],
     agent_profile_hint: Option<&str>,
+    include_standing_context: bool,
 ) -> String {
     let mut lines = vec![
         "Current Lantor inbox processing turn:".to_owned(),
@@ -105,11 +106,15 @@ pub(crate) fn build_work_item_prompt(
         }
         lines.push(
             "If you need input from another agent, mention their @handle in your visible reply. Lantor will dispatch them in this same thread. Use this sparingly, and never mention yourself for delegation."
-                .to_owned(),
+            .to_owned(),
         );
     }
-    lines.push(lantor_operating_policy_prompt().to_owned());
-    lines.push(lantor_memory_management_prompt().to_owned());
+    if include_standing_context {
+        lines.push(lantor_operating_policy_prompt().to_owned());
+        lines.push(lantor_memory_management_prompt().to_owned());
+    } else {
+        lines.push("Standing instructions are already installed for this warm runtime. Handle the current request directly, use Lantor context tools only when needed, archive handled inbox items, and keep visible replies concise.".to_owned());
+    }
     if let Some(agent_profile_hint) = agent_profile_hint {
         let agent_profile_hint = agent_profile_hint.trim();
         if !agent_profile_hint.is_empty() {
@@ -121,10 +126,58 @@ pub(crate) fn build_work_item_prompt(
         lines.push("context:".to_owned());
         lines.push(context.trim().to_owned());
     }
-    lines.push(lantor_context_tools_prompt().to_owned());
-    lines.push(lantor_control_api_prompt().to_owned());
+    if include_standing_context {
+        lines.push(lantor_context_tools_prompt().to_owned());
+        lines.push(lantor_control_api_prompt().to_owned());
+    }
     lines.push(WORK_ITEM_FINISH_PROMPT.to_owned());
     lines.join("\n")
+}
+
+pub(crate) fn build_work_item_prompt(
+    work_item_id: Uuid,
+    title: &str,
+    context: &str,
+    channel_name: Option<&str>,
+    task_number: Option<i64>,
+    thread_root_id: Option<Uuid>,
+    available_agents: &[String],
+    agent_profile_hint: Option<&str>,
+) -> String {
+    build_work_item_prompt_inner(
+        work_item_id,
+        title,
+        context,
+        channel_name,
+        task_number,
+        thread_root_id,
+        available_agents,
+        agent_profile_hint,
+        true,
+    )
+}
+
+pub(crate) fn build_streaming_work_item_prompt(
+    work_item_id: Uuid,
+    title: &str,
+    context: &str,
+    channel_name: Option<&str>,
+    task_number: Option<i64>,
+    thread_root_id: Option<Uuid>,
+    available_agents: &[String],
+    agent_profile_hint: Option<&str>,
+) -> String {
+    build_work_item_prompt_inner(
+        work_item_id,
+        title,
+        context,
+        channel_name,
+        task_number,
+        thread_root_id,
+        available_agents,
+        agent_profile_hint,
+        false,
+    )
 }
 
 pub(crate) fn load_agent_memory_context(working_directory: &str) -> CommandResult<Option<String>> {
