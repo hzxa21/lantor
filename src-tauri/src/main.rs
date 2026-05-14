@@ -5953,9 +5953,17 @@ async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity
             detail,
             metadata::text as metadata,
             created_at
-        from agent_activities
+        from (
+            select
+                agent_activities.*,
+                row_number() over (
+                    partition by coalesce(agent_id::text, nullif(agent_handle, ''), 'unknown')
+                    order by created_at desc
+                ) as activity_rank
+            from agent_activities
+        ) ranked
+        where activity_rank <= 80
         order by created_at desc
-        limit 80
         "#,
     )
     .fetch_all(pool)
@@ -6420,6 +6428,78 @@ fn truncate_activity_detail(value: &str) -> String {
     out
 }
 
+fn structured_log_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
+}
+
+fn structured_log_message(value: &Value) -> Option<&str> {
+    value
+        .pointer("/fields/message")
+        .and_then(Value::as_str)
+        .or_else(|| structured_log_string(value, "message"))
+}
+
+fn structured_log_detail(
+    value: &Value,
+    level: &str,
+    target: Option<&str>,
+    message: Option<&str>,
+) -> String {
+    let mut detail = serde_json::Map::new();
+    detail.insert("level".to_owned(), json!(level));
+    if let Some(target) = target.map(str::trim).filter(|target| !target.is_empty()) {
+        detail.insert("target".to_owned(), json!(target));
+    }
+    if let Some(message) = message.map(str::trim).filter(|message| !message.is_empty()) {
+        detail.insert("message".to_owned(), json!(message));
+    }
+    if detail.len() > 1 {
+        return Value::Object(detail).to_string();
+    }
+    truncate_activity_detail(&value.to_string())
+}
+
+fn is_ignored_codex_manifest_warning(
+    level: &str,
+    target: Option<&str>,
+    message: Option<&str>,
+) -> bool {
+    matches!(level.to_ascii_uppercase().as_str(), "WARN" | "WARNING")
+        && target == Some("codex_core_plugins::manifest")
+        && message
+            .map(str::trim)
+            .is_some_and(|message| message.starts_with("ignoring interface.defaultPrompt:"))
+}
+
+fn classify_structured_stderr_log(
+    line: &str,
+) -> Option<Option<(&'static str, &'static str, String)>> {
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return None;
+    };
+    if !value.is_object() {
+        return None;
+    }
+    let Some(level) = structured_log_string(&value, "level") else {
+        return None;
+    };
+
+    let level = level.trim();
+    let target = structured_log_string(&value, "target");
+    let message = structured_log_message(&value);
+    if is_ignored_codex_manifest_warning(level, target, message) {
+        return Some(None);
+    }
+
+    let detail = structured_log_detail(&value, level, target, message);
+    match level.to_ascii_uppercase().as_str() {
+        "ERROR" => Some(Some(("error", "Runtime error", detail))),
+        "WARN" | "WARNING" => Some(Some(("run", "Runtime warning", detail))),
+        "DEBUG" | "TRACE" | "INFO" => Some(None),
+        _ => Some(Some(("run", "Runtime log", detail))),
+    }
+}
+
 fn classify_agent_output_activity(
     label: &str,
     line: &str,
@@ -6430,6 +6510,12 @@ fn classify_agent_output_activity(
     }
 
     let lower = trimmed.to_lowercase();
+    if label == "stderr" {
+        if let Some(activity) = classify_structured_stderr_log(trimmed) {
+            return activity;
+        }
+    }
+
     let is_error = label == "stderr"
         && [
             "error",
@@ -6444,6 +6530,15 @@ fn classify_agent_output_activity(
         .any(|needle| lower.contains(needle));
     if is_error {
         return Some(("error", "Error output", truncate_activity_detail(trimmed)));
+    }
+
+    let is_warning = label == "stderr"
+        && (lower.contains("warning")
+            || lower.contains("warn:")
+            || lower.contains("level=warn")
+            || lower.contains("\"level\":\"warn\""));
+    if is_warning {
+        return Some(("run", "Runtime warning", truncate_activity_detail(trimmed)));
     }
 
     let is_tool = [
@@ -6482,6 +6577,10 @@ fn classify_agent_output_activity(
     .any(|needle| lower.contains(needle));
     if is_action {
         return Some(("acting", "Acting", truncate_activity_detail(trimmed)));
+    }
+
+    if label == "stderr" {
+        return Some(("run", "Runtime output", truncate_activity_detail(trimmed)));
     }
 
     Some(("thinking", "Thinking", truncate_activity_detail(trimmed)))
@@ -12434,10 +12533,10 @@ mod tests {
     use super::{
         append_streaming_agent_message, build_codex_streaming_prompt,
         build_streaming_work_item_prompt, build_work_item_prompt, capped_stream_delta,
-        claim_agent_event, claim_next_supervisor_command, claude_message_text, claude_result_error,
-        claude_stream_event_activity, claude_system_prompt, claude_text_delta,
-        codex_item_started_activity, codex_turn_id_from_value,
-        consume_streaming_agent_control_lines,
+        claim_agent_event, claim_next_supervisor_command, classify_agent_output_activity,
+        claude_message_text, claude_result_error, claude_stream_event_activity,
+        claude_system_prompt, claude_text_delta, codex_item_started_activity,
+        codex_turn_id_from_value, consume_streaming_agent_control_lines,
         context_tool::{
             agent_context_agent_inspect, agent_context_artifact_read_in_pool,
             agent_context_attachment_info, agent_context_history_read, agent_context_inbox_archive,
@@ -12460,7 +12559,7 @@ mod tests {
         STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
     use uuid::Uuid;
 
@@ -13366,6 +13465,59 @@ mod tests {
         assert_eq!(metadata["pid"], "123");
         assert_eq!(metadata["thread_id"], "abc");
         assert_eq!(metadata["duration_ms"], 42);
+    }
+
+    #[test]
+    fn ignores_known_codex_manifest_default_prompt_warning() {
+        let line = json!({
+            "timestamp": "2026-05-14T13:05:55.340546Z",
+            "level": "WARN",
+            "fields": {
+                "message": "ignoring interface.defaultPrompt: maximum length exceeded"
+            },
+            "target": "codex_core_plugins::manifest"
+        })
+        .to_string();
+
+        assert_eq!(classify_agent_output_activity("stderr", &line), None);
+    }
+
+    #[test]
+    fn maps_structured_stderr_warning_to_runtime_warning() {
+        let line = json!({
+            "timestamp": "2026-05-14T13:05:55.340546Z",
+            "level": "WARN",
+            "fields": {
+                "message": "plugin manifest used a deprecated field"
+            },
+            "target": "codex_core_plugins::manifest"
+        })
+        .to_string();
+        let activity =
+            classify_agent_output_activity("stderr", &line).expect("warning should be classified");
+
+        assert_eq!(activity.0, "run");
+        assert_eq!(activity.1, "Runtime warning");
+        let detail: Value = serde_json::from_str(&activity.2).expect("structured detail");
+        assert_eq!(detail["level"], "WARN");
+        assert_eq!(detail["target"], "codex_core_plugins::manifest");
+        assert_eq!(detail["message"], "plugin manifest used a deprecated field");
+    }
+
+    #[test]
+    fn maps_unclassified_stderr_to_runtime_output_not_thinking() {
+        assert_eq!(
+            classify_agent_output_activity("stderr", "runtime heartbeat"),
+            Some(("run", "Runtime output", "runtime heartbeat".to_owned()))
+        );
+        assert_eq!(
+            classify_agent_output_activity("stdout", "model is considering options"),
+            Some((
+                "thinking",
+                "Thinking",
+                "model is considering options".to_owned()
+            ))
+        );
     }
 
     #[test]

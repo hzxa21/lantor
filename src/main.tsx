@@ -82,6 +82,7 @@ const MIN_CONVERSATION_WIDTH = 360;
 const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const ACTIVITY_HISTORY_LIMIT_PER_AGENT = 80;
 const DEFAULT_OWNER_DISPLAY_NAME = "Me";
 const DEFAULT_OWNER_AVATAR = "M";
 const DEFAULT_OWNER_DESCRIPTION = "local owner";
@@ -191,6 +192,23 @@ function activityStateForIndicator(activity: AgentActivity | null) {
 
 function activityMatchesAgent(activity: AgentActivity, agent: Agent) {
   return activity.agent_id === agent.id || activity.agent_handle === agent.handle;
+}
+
+function activityOwnerKey(activity: AgentActivity) {
+  return activity.agent_id ?? `handle:${activity.agent_handle || "unknown"}`;
+}
+
+function limitActivitiesPerAgent(activities: AgentActivity[]) {
+  const counts = new Map<string, number>();
+  return [...activities]
+    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+    .filter((activity) => {
+      const key = activityOwnerKey(activity);
+      const count = counts.get(key) ?? 0;
+      if (count >= ACTIVITY_HISTORY_LIMIT_PER_AGENT) return false;
+      counts.set(key, count + 1);
+      return true;
+    });
 }
 
 function isRespondingActivity(activity: AgentActivity) {
@@ -818,8 +836,7 @@ function App() {
       const agent_activities = existingIndex >= 0
         ? current.agent_activities.map((item) => item.id === activity.id ? activity : item)
         : [activity, ...current.agent_activities];
-      agent_activities.sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
-      return { ...current, agent_activities: agent_activities.slice(0, 80) };
+      return { ...current, agent_activities: limitActivitiesPerAgent(agent_activities) };
     });
   }
 

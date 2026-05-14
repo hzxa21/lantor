@@ -648,7 +648,7 @@ export function AgentDetailDrawer({
       <>
         <section className="detail-section live-activity-section">
           <div className="detail-section-head">
-            <h4>Live activity</h4>
+            <h4>Recent activity</h4>
             {activities.length > 0 && <span>Latest {activities.length}</span>}
           </div>
           {activities.length === 0 && <p className="empty-mini">No activity yet.</p>}
