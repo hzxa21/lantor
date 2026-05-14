@@ -17,7 +17,7 @@ and currently targets macOS.
 ## Highlights
 
 - Three-pane chat workspace with channels, DMs, threads, tasks, reminders, and search.
-- Local agent supervision for Codex, Claude, Kimi, or custom commands.
+- Local agent supervision for Codex, Claude, or custom commands.
 - Warm agent sessions for supported runtimes, preserving provider context across wakeups.
 - Inbox-driven dispatch for mentions, DMs, thread follow-ups, reminders, channel messages, tasks, and handoffs.
 - Structured agent side effects through `LANTOR_EVENT` control lines.

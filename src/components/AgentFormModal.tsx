@@ -80,7 +80,6 @@ export function AgentFormModal({
       <select value={form.runtime} onChange={(event) => onRuntimeChange(event.target.value)}>
         <option value="codex">Codex</option>
         <option value="claude">Claude</option>
-        <option value="kimi">Kimi</option>
       </select>
     </label>
   );

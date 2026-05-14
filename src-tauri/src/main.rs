@@ -1488,7 +1488,6 @@ async fn check_runtime(runtime: String) -> CommandResult<RuntimeCheck> {
     let command = match runtime.as_str() {
         "codex" => "codex",
         "claude" => "claude",
-        "kimi" => "kimi",
         _ => {
             return Ok(RuntimeCheck {
                 runtime,

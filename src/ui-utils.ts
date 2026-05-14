@@ -107,9 +107,6 @@ export function buildPresetCommand(form: AgentForm) {
   if (form.runtime === "claude") {
     return `LANTOR_PROMPT=${prompt}\n${preset.commandName} -p "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT" --model ${quotedModel}`;
   }
-  if (form.runtime === "kimi") {
-    return `LANTOR_PROMPT=${prompt}\n${preset.commandName} --prompt "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT" --model ${quotedModel}`;
-  }
   return "";
 }
 

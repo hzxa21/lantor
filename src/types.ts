@@ -361,12 +361,6 @@ export const RUNTIME_PRESETS: Record<string, { label: string; defaultModel: stri
     commandName: "claude",
     models: ["sonnet", "opus", "haiku"],
   },
-  kimi: {
-    label: "Kimi",
-    defaultModel: "kimi-k2",
-    commandName: "kimi",
-    models: ["kimi-k2", "kimi-k2-turbo"],
-  },
 };
 
 const MODEL_LABELS: Record<string, string> = {
