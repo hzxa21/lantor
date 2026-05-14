@@ -38,7 +38,7 @@ function RuntimePreflight({ check }: { check: RuntimeCheck | undefined }) {
 }
 
 function seedForAgentForm(form: AgentForm) {
-  const seed = [form.handle, form.displayName, form.role]
+  const seed = [form.handle, form.displayName]
     .map((value) => value.trim())
     .filter(Boolean)
     .join(":");
@@ -132,7 +132,7 @@ export function AgentFormModal({
               <AgentAvatar agent={previewAgent} size="lg" showStatus={false} />
               <div>
                 <strong>{previewName}</strong>
-                <span>{modelLabel(form.model)} · @{previewHandle}</span>
+                <span>{modelLabel(form.model)}</span>
               </div>
             </div>
             <div className="two-col">
@@ -162,33 +162,6 @@ export function AgentFormModal({
             <RuntimePreflight check={runtimeChecks[form.runtime]} />
             <details className="agent-advanced-settings">
               <summary>Advanced</summary>
-              <div className="two-col">
-                <label>
-                  <span>Mention handle</span>
-                  <input
-                    value={form.handle}
-                    onChange={(event) => onChange({ ...form, handle: event.target.value })}
-                    placeholder="auto from name"
-                  />
-                </label>
-                <label>
-                  <span>Role</span>
-                  <input
-                    value={form.role}
-                    onChange={(event) => onChange({ ...form, role: event.target.value })}
-                    placeholder="agent"
-                  />
-                </label>
-              </div>
-              <label>
-                <span>Daily budget</span>
-                <input
-                  value={form.dailyBudgetUsd}
-                  inputMode="decimal"
-                  onChange={(event) => onChange({ ...form, dailyBudgetUsd: event.target.value })}
-                  placeholder="USD per day"
-                />
-              </label>
               <label>
                 <span>Workspace directory</span>
                 <input
@@ -201,55 +174,26 @@ export function AgentFormModal({
           </>
         ) : (
           <>
-            <div className="two-col">
-              <label>
-                <span>Mention handle</span>
-                <input
-                  autoFocus
-                  value={form.handle}
-                  onChange={(event) => onChange({ ...form, handle: event.target.value })}
-                  placeholder="@agent"
-                />
-              </label>
-              <label>
-                <span>Display name</span>
-                <input
-                  value={form.displayName}
-                  onChange={(event) => onChange({ ...form, displayName: event.target.value })}
-                  placeholder="display name"
-                />
-              </label>
-            </div>
+            <label>
+              <span>Name</span>
+              <input
+                autoFocus
+                value={form.displayName}
+                onChange={(event) => onChange({ ...form, displayName: event.target.value })}
+                placeholder="Agent name"
+              />
+            </label>
             <div className="two-col">
               {runtimeSelect}
               {modelSelect}
             </div>
             {isCodex && <div className="two-col">{codexControls}</div>}
-            <div className="two-col">
-              <label>
-                <span>Role</span>
-                <input
-                  value={form.role}
-                  onChange={(event) => onChange({ ...form, role: event.target.value })}
-                  placeholder="reviewer, builder, analyst"
-                />
-              </label>
-              <label>
-                <span>Avatar</span>
-                <AvatarInput
-                  value={form.avatar}
-                  seedHint={seedForAgentForm(form)}
-                  onChange={(avatar) => onChange({ ...form, avatar })}
-                />
-              </label>
-            </div>
             <label>
-              <span>Daily budget</span>
-              <input
-                value={form.dailyBudgetUsd}
-                inputMode="decimal"
-                onChange={(event) => onChange({ ...form, dailyBudgetUsd: event.target.value })}
-                placeholder="USD per day, blank = unlimited"
+              <span>Avatar</span>
+              <AvatarInput
+                value={form.avatar}
+                seedHint={seedForAgentForm(form)}
+                onChange={(avatar) => onChange({ ...form, avatar })}
               />
             </label>
             <RuntimePreflight check={runtimeChecks[form.runtime]} />
