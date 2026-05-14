@@ -12742,6 +12742,7 @@ mod tests {
         assert!(prompt.contains("Before long-running work, update Active Context"));
         assert!(prompt.contains("Turn startup sequence:"));
         assert!(prompt.contains("Use history-read or message-search only when"));
+        assert!(prompt.contains("Reply briefly to direct greetings"));
         assert!(prompt.contains("Agent context tools"));
         assert!(prompt.contains("inbox-list"));
         assert!(prompt.contains("[target=... msg=... time=... type=...]"));
@@ -12783,6 +12784,8 @@ mod tests {
 
         let streaming = build_codex_streaming_prompt(&prompt);
         assert!(streaming.contains("will stream your Codex assistant text"));
+        assert!(streaming.contains("Reply briefly to direct greetings"));
+        assert!(streaming.contains("pure acknowledgement"));
         assert!(streaming.contains("you may emit standalone LANTOR_EVENT control lines"));
         assert!(streaming.contains("artifact_create"));
         assert!(streaming.contains("attachment_create"));
