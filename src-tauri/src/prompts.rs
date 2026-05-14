@@ -44,7 +44,17 @@ fn lantor_context_tools_prompt() -> &'static str {
 - artifact: "$LANTOR_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"
 - agent introspection: "$LANTOR_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"
 Inbox, workspace, and memory commands default to your own LANTOR_AGENT_ID; add --target "@handle" only when inspecting another visible agent.
+Inbox, history, and search message rows use `[target=... msg=... time=... type=...] sender: body` headers. The target is the message surface, and msg is the short source message id.
 When a turn contains a default inbox item or source_message, handle that item directly from the provided context when possible. Use inbox-list or inbox-read when you need missing details, need to choose among multiple active items, or are handling a different item. Archive handled or intentionally ignored inbox items."##
+}
+
+fn lantor_turn_startup_sequence_prompt() -> &'static str {
+    r#"Turn startup sequence:
+1. If this turn already includes a concrete inbox message or live follow-up, classify it first: quick reply, blocker question, or work.
+2. If the provided header, preview, and current runtime context are enough, handle the message directly. Use inbox-read only when missing source text, metadata, or attachment details block progress.
+3. Use history-read or message-search only when older channel/thread context, a prior decision, or a user reference to earlier discussion is needed.
+4. Use memory-read, workspace-info, or workspace-list only when durable recovery context or workspace state is actually needed beyond the injected prompt excerpt.
+5. Complete useful work and verification before stopping. New same-channel/thread follow-ups may arrive automatically, so do not poll inbox-list unless you need to inspect other active targets."#
 }
 
 fn lantor_live_delivery_prompt() -> &'static str {
@@ -267,8 +277,11 @@ fn build_runtime_standing_prompt(
          \n\
          {}\n\
          \n\
+         {}\n\
+         \n\
          Keep user-visible replies concise and include concrete results or blockers. Non-message LANTOR_EVENT control lines are allowed as standalone lines. Do not print LANTOR_EVENT message/task_claim lines unless explicitly asked to debug the stdout command path.",
         lantor_operating_policy_prompt(),
+        lantor_turn_startup_sequence_prompt(),
         lantor_memory_management_prompt(),
         lantor_context_tools_prompt(),
         lantor_live_delivery_prompt(),

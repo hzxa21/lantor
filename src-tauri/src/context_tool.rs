@@ -222,42 +222,57 @@ async fn resolve_agent_context_target(
     })
 }
 
-fn format_context_message_row(row: &PgRow, include_channel: bool) -> String {
+fn format_context_message_target(row: &PgRow, target_label: Option<&str>) -> String {
+    if let Some(target_label) = target_label {
+        return target_label.to_owned();
+    }
+    let channel_name = row
+        .try_get::<String, _>("channel_name")
+        .unwrap_or_else(|_| "unknown".to_owned());
+    let channel_kind = row
+        .try_get::<String, _>("channel_kind")
+        .unwrap_or_else(|_| "channel".to_owned());
+    let thread_root_id = row
+        .try_get::<Option<Uuid>, _>("thread_root_id")
+        .ok()
+        .flatten();
+    let mut target = if channel_kind == "dm" {
+        format!("dm:{channel_name}")
+    } else {
+        format!("#{channel_name}")
+    };
+    if let Some(thread_root_id) = thread_root_id {
+        target.push(':');
+        target.push_str(&short_id(thread_root_id));
+    }
+    target
+}
+
+fn format_context_message_row(row: &PgRow, target_label: Option<&str>) -> String {
     let id: Uuid = row.get("id");
     let sender_name: String = row.get("sender_name");
     let sender_role: String = row.get("sender_role");
     let body: String = row.get("body");
     let created_at: DateTime<Utc> = row.get("created_at");
-    let thread_root_id: Option<Uuid> = row.get("thread_root_id");
     let task_number: Option<i64> = row.get("task_number");
     let task_status: Option<String> = row.get("task_status");
-    let body = compact_chars_middle(&body, AGENT_CONTEXT_TOOL_MESSAGE_LIMIT).replace('\n', "\n  ");
-    let mut head = format!(
-        "[{}] id={} sender={}({})",
-        created_at.to_rfc3339(),
+    let target = format_context_message_target(row, target_label);
+    let body = compact_chars_middle(&body, AGENT_CONTEXT_TOOL_MESSAGE_LIMIT).replace('\n', " ");
+    let mut output = format!(
+        "[target={} msg={} time={} type={}] {}: {}",
+        target,
         short_id(id),
+        created_at.to_rfc3339(),
+        sender_role,
         sender_name,
-        sender_role
+        body
     );
-    if include_channel {
-        let channel_name: String = row.get("channel_name");
-        let channel_kind: String = row.get("channel_kind");
-        if channel_kind == "dm" {
-            head.push_str(&format!(" surface=dm:{channel_name}"));
-        } else {
-            head.push_str(&format!(" surface=#{channel_name}"));
-        }
-    }
-    if let Some(thread_root_id) = thread_root_id {
-        head.push_str(&format!(" thread={}", short_id(thread_root_id)));
-    }
     if let Some(task_number) = task_number {
-        head.push_str(&format!(
-            " task=#{task_number}({})",
+        output.push_str(&format!(
+            " [task #{task_number} status={}]",
             task_status.unwrap_or_else(|| "unknown".to_owned())
         ));
     }
-    let mut output = format!("{head}\n  {body}");
     if let Ok(attachment_summary) = row.try_get::<String, _>("attachment_summary") {
         if !attachment_summary.trim().is_empty() {
             output.push_str("\n  attachments:");
@@ -336,7 +351,7 @@ pub(crate) async fn agent_context_history_read(
         if rows.len() == 1 { "" } else { "s" }
     )];
     for row in rows.into_iter().rev() {
-        output.push(format_context_message_row(&row, false));
+        output.push(format_context_message_row(&row, Some(&target.label)));
     }
     Ok(output.join("\n\n"))
 }
@@ -414,7 +429,7 @@ pub(crate) async fn agent_context_message_search(
         if rows.len() == 1 { "" } else { "s" }
     )];
     for row in rows {
-        output.push(format_context_message_row(&row, true));
+        output.push(format_context_message_row(&row, None));
     }
     Ok(output.join("\n\n"))
 }

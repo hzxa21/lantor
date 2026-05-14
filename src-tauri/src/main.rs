@@ -12740,8 +12740,11 @@ mod tests {
         assert!(prompt.contains("notes/<topic>.md"));
         assert!(prompt.contains("stable user preferences"));
         assert!(prompt.contains("Before long-running work, update Active Context"));
+        assert!(prompt.contains("Turn startup sequence:"));
+        assert!(prompt.contains("Use history-read or message-search only when"));
         assert!(prompt.contains("Agent context tools"));
         assert!(prompt.contains("inbox-list"));
+        assert!(prompt.contains("[target=... msg=... time=... type=...]"));
         assert!(prompt.contains("Live inbox delivery"));
         assert!(prompt.contains("Persistent memory: prefer concise replies"));
     }
@@ -12940,6 +12943,8 @@ mod tests {
             let history = agent_context_history_read(&pool, &history_args).await?;
             assert!(history.contains("root message with needle"));
             assert!(history.contains("reply inside thread"));
+            assert!(history.contains("[target=#context-tools:"));
+            assert!(history.contains(" type=owner] Dylan: root message with needle"));
             assert!(!history.contains("separate root message"));
 
             let search_args = vec![
@@ -12951,7 +12956,7 @@ mod tests {
             ];
             let search = agent_context_message_search(&pool, &search_args).await?;
             assert!(search.contains("root message with needle"));
-            assert!(search.contains("surface=#context-tools"));
+            assert!(search.contains("[target=#context-tools msg="));
             Ok(())
         }
         .await;
