@@ -22,6 +22,8 @@ pub(crate) struct Agent {
     pub(crate) status: String,
     pub(crate) runtime: String,
     pub(crate) model: String,
+    pub(crate) reasoning_effort: String,
+    pub(crate) service_tier: String,
     pub(crate) avatar: String,
     pub(crate) description: String,
     pub(crate) launch_command: String,

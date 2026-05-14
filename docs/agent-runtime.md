@@ -1,8 +1,9 @@
 # Agent Runtime Model
 
 Lantor runs agents as local processes. Each agent profile stores runtime
-configuration, a model, an optional custom launch command, an optional working
-directory, and profile metadata. The desktop app starts the same binary in
+configuration, a model, Codex reasoning and speed preferences, an optional
+custom launch command, an optional working directory, and profile metadata. The
+desktop app starts the same binary in
 `--supervisor` mode; the supervisor owns process launch, stop commands, run
 logs, event ingestion, and work-item scheduling.
 

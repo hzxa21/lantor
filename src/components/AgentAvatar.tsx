@@ -21,7 +21,7 @@ type ProfilePopoverPosition = {
 
 const IDENTICON_SIZE = 5;
 const IDENTICON_MIRROR_WIDTH = Math.ceil(IDENTICON_SIZE / 2);
-const DEFAULT_DICEBEAR_STYLE = "notionists";
+const DEFAULT_DICEBEAR_STYLE = "dylan";
 const PROFILE_POPOVER_WIDTH = 252;
 const PROFILE_POPOVER_ESTIMATED_HEIGHT = 116;
 const PROFILE_POPOVER_GAP = 10;

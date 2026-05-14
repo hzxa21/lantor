@@ -1,7 +1,7 @@
-import { Sparkles } from "lucide-react";
 import { useMemo } from "react";
 import type { OwnerProfile } from "../types";
 import { AgentAvatar } from "./AgentAvatar";
+import { AvatarInput } from "./AvatarInput";
 import { Modal } from "./Modal";
 
 export type OwnerProfileForm = {
@@ -72,20 +72,11 @@ export function OwnerProfileModal({
           </label>
           <label>
             <span>Avatar</span>
-            <div className="profile-avatar-input">
-              <input
-                value={form.avatar}
-                onChange={(event) => onChange({ ...form, avatar: event.target.value })}
-                placeholder="emoji, initials, URL, or dicebear:lorelei"
-              />
-              <button
-                type="button"
-                title="Generate DiceBear avatar"
-                onClick={() => onChange({ ...form, avatar: `dicebear:lorelei:${seedForProfile(form)}` })}
-              >
-                <Sparkles size={16} />
-              </button>
-            </div>
+            <AvatarInput
+              value={form.avatar}
+              seedHint={seedForProfile(form)}
+              onChange={(avatar) => onChange({ ...form, avatar })}
+            />
           </label>
         </div>
         <label>

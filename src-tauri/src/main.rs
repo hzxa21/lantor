@@ -833,6 +833,16 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    sqlx::query(
+        "alter table agents add column if not exists reasoning_effort text not null default 'medium'",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "alter table agents add column if not exists service_tier text not null default ''",
+    )
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         r#"
@@ -1793,6 +1803,38 @@ pub(crate) async fn open_dm_with_agent_in_pool(
     Ok(channel_id.to_string())
 }
 
+fn normalize_reasoning_effort(runtime: &str, value: Option<&str>) -> CommandResult<String> {
+    if !runtime.eq_ignore_ascii_case("codex") {
+        return Ok(String::new());
+    }
+    let effort = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("medium")
+        .to_ascii_lowercase();
+    match effort.as_str() {
+        "low" | "medium" | "high" | "xhigh" => Ok(effort),
+        _ => Err(format!("invalid Codex reasoning effort: {effort}")),
+    }
+}
+
+fn normalize_service_tier(runtime: &str, value: Option<&str>) -> CommandResult<String> {
+    if !runtime.eq_ignore_ascii_case("codex") {
+        return Ok(String::new());
+    }
+    let tier = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match tier.as_str() {
+        "" | "default" => Ok(String::new()),
+        "standard" => Ok(String::new()),
+        "fast" => Ok(tier),
+        _ => Err(format!("invalid Codex speed tier: {tier}")),
+    }
+}
+
 #[tauri::command]
 async fn create_agent(
     handle: String,
@@ -1800,6 +1842,8 @@ async fn create_agent(
     role: Option<String>,
     runtime: String,
     model: String,
+    reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     avatar: Option<String>,
     description: Option<String>,
     launch_command: String,
@@ -1841,14 +1885,18 @@ async fn create_agent(
     let daily_budget_micros = daily_budget_micros.unwrap_or_default().max(0);
     let working_directory = expand_home_path(&working_directory);
     ensure_agent_workspace(&working_directory, normalized_handle)?;
+    let runtime = runtime.trim();
+    let model = model.trim();
+    let reasoning_effort = normalize_reasoning_effort(runtime, reasoning_effort.as_deref())?;
+    let service_tier = normalize_service_tier(runtime, service_tier.as_deref())?;
 
     let agent_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agents (
             handle, display_name, role, status, runtime, model, avatar, description,
-            launch_command, working_directory, daily_budget_micros
+            launch_command, working_directory, daily_budget_micros, reasoning_effort, service_tier
         )
-        values ($1, $2, $3, 'idle', $4, $5, $6, $7, $8, $9, $10)
+        values ($1, $2, $3, 'idle', $4, $5, $6, $7, $8, $9, $10, $11, $12)
         on conflict (handle) do update set
             display_name = excluded.display_name,
             role = excluded.role,
@@ -1858,20 +1906,24 @@ async fn create_agent(
             description = excluded.description,
             launch_command = excluded.launch_command,
             working_directory = excluded.working_directory,
-            daily_budget_micros = excluded.daily_budget_micros
+            daily_budget_micros = excluded.daily_budget_micros,
+            reasoning_effort = excluded.reasoning_effort,
+            service_tier = excluded.service_tier
         returning id
         "#,
     )
     .bind(normalized_handle)
     .bind(display_name)
     .bind(role)
-    .bind(runtime.trim())
-    .bind(model.trim())
+    .bind(runtime)
+    .bind(model)
     .bind(avatar)
     .bind(description)
     .bind(launch_command.trim())
     .bind(&working_directory)
     .bind(daily_budget_micros)
+    .bind(&reasoning_effort)
+    .bind(&service_tier)
     .fetch_one(&state.pool)
     .await
     .map_err(to_string)?;
@@ -1881,7 +1933,10 @@ async fn create_agent(
         None,
         "profile",
         "Agent profile saved",
-        format!("runtime={} model={}", runtime.trim(), model.trim()),
+        format!(
+            "runtime={} model={} reasoning_effort={} service_tier={}",
+            runtime, model, reasoning_effort, service_tier
+        ),
     )
     .await?;
 
@@ -1896,6 +1951,8 @@ async fn update_agent(
     role: Option<String>,
     runtime: String,
     model: String,
+    reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     avatar: Option<String>,
     description: String,
     launch_command: String,
@@ -1932,6 +1989,10 @@ async fn update_agent(
     let daily_budget_micros = daily_budget_micros.unwrap_or_default().max(0);
     let working_directory = expand_home_path(&working_directory);
     ensure_agent_workspace(&working_directory, normalized_handle)?;
+    let runtime = runtime.trim();
+    let model = model.trim();
+    let reasoning_effort = normalize_reasoning_effort(runtime, reasoning_effort.as_deref())?;
+    let service_tier = normalize_service_tier(runtime, service_tier.as_deref())?;
 
     sqlx::query(
         r#"
@@ -1945,7 +2006,9 @@ async fn update_agent(
             description = $8,
             launch_command = $9,
             working_directory = $10,
-            daily_budget_micros = $11
+            daily_budget_micros = $11,
+            reasoning_effort = $12,
+            service_tier = $13
         where id = $1
         "#,
     )
@@ -1953,13 +2016,15 @@ async fn update_agent(
     .bind(normalized_handle)
     .bind(display_name)
     .bind(role)
-    .bind(runtime.trim())
-    .bind(model.trim())
+    .bind(runtime)
+    .bind(model)
     .bind(avatar)
     .bind(description.trim())
     .bind(launch_command.trim())
     .bind(&working_directory)
     .bind(daily_budget_micros)
+    .bind(&reasoning_effort)
+    .bind(&service_tier)
     .execute(&state.pool)
     .await
     .map_err(to_string)?;
@@ -1969,7 +2034,10 @@ async fn update_agent(
         None,
         "profile",
         "Agent profile updated",
-        format!("runtime={} model={}", runtime.trim(), model.trim()),
+        format!(
+            "runtime={} model={} reasoning_effort={} service_tier={}",
+            runtime, model, reasoning_effort, service_tier
+        ),
     )
     .await?;
 
@@ -4820,6 +4888,8 @@ async fn load_agents(pool: &PgPool) -> CommandResult<Vec<Agent>> {
             status,
             runtime,
             model,
+            reasoning_effort,
+            service_tier,
             avatar,
             description,
             launch_command,
@@ -4846,6 +4916,8 @@ async fn load_agents(pool: &PgPool) -> CommandResult<Vec<Agent>> {
                 status: row.get("status"),
                 runtime: row.get("runtime"),
                 model: row.get("model"),
+                reasoning_effort: row.get("reasoning_effort"),
+                service_tier: row.get("service_tier"),
                 avatar: row.get("avatar"),
                 description: row.get("description"),
                 launch_command: row.get("launch_command"),
@@ -8827,6 +8899,19 @@ fn codex_model_value(model: &str) -> Value {
     }
 }
 
+fn apply_codex_runtime_options(params: &mut Value, reasoning_effort: &str, service_tier: &str) {
+    if let Some(object) = params.as_object_mut() {
+        let reasoning_effort = reasoning_effort.trim();
+        if !reasoning_effort.is_empty() {
+            object.insert("reasoningEffort".to_owned(), json!(reasoning_effort));
+        }
+        let service_tier = service_tier.trim();
+        if !service_tier.is_empty() {
+            object.insert("serviceTier".to_owned(), json!(service_tier));
+        }
+    }
+}
+
 fn claude_stream_key(run_id: Uuid) -> String {
     format!("{run_id}:claude-assistant")
 }
@@ -9181,6 +9266,8 @@ async fn get_or_spawn_warm_codex_runtime(
     agent_id: Uuid,
     handle: &str,
     model: &str,
+    reasoning_effort: &str,
+    service_tier: &str,
     working_directory: &str,
     memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
@@ -9212,6 +9299,8 @@ async fn get_or_spawn_warm_codex_runtime(
         agent_id,
         handle,
         model,
+        reasoning_effort,
+        service_tier,
         working_directory,
         memory_context,
     )
@@ -9230,6 +9319,8 @@ async fn spawn_warm_codex_runtime(
     agent_id: Uuid,
     handle: &str,
     model: &str,
+    reasoning_effort: &str,
+    service_tier: &str,
     working_directory: &str,
     memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
@@ -9330,38 +9421,42 @@ async fn spawn_warm_codex_runtime(
         .await?;
     }
     if let Some(thread_id) = existing_thread_id {
+        let mut params = json!({
+            "threadId": thread_id.clone(),
+            "model": model_value.clone(),
+            "cwd": cwd.clone(),
+            "approvalPolicy": "never",
+            "sandbox": "danger-full-access",
+            "developerInstructions": developer_instructions.clone(),
+            "persistExtendedHistory": true
+        });
+        apply_codex_runtime_options(&mut params, reasoning_effort, service_tier);
         codex_write_json(
             &mut stdin,
             json!({
                 "method": "thread/resume",
                 "id": thread_request_id,
-                "params": {
-                    "threadId": thread_id.clone(),
-                    "model": model_value.clone(),
-                    "cwd": cwd.clone(),
-                    "approvalPolicy": "never",
-                    "sandbox": "danger-full-access",
-                    "developerInstructions": developer_instructions.clone(),
-                    "persistExtendedHistory": true
-                }
+                "params": params
             }),
         )
         .await?;
     } else {
+        let mut params = json!({
+            "model": model_value.clone(),
+            "cwd": cwd.clone(),
+            "approvalPolicy": "never",
+            "sandbox": "danger-full-access",
+            "developerInstructions": developer_instructions.clone(),
+            "experimentalRawEvents": false,
+            "persistExtendedHistory": true
+        });
+        apply_codex_runtime_options(&mut params, reasoning_effort, service_tier);
         codex_write_json(
             &mut stdin,
             json!({
                 "method": "thread/start",
                 "id": thread_request_id,
-                "params": {
-                    "model": model_value.clone(),
-                    "cwd": cwd.clone(),
-                    "approvalPolicy": "never",
-                    "sandbox": "danger-full-access",
-                    "developerInstructions": developer_instructions.clone(),
-                    "experimentalRawEvents": false,
-                    "persistExtendedHistory": true
-                }
+                "params": params
             }),
         )
         .await?;
@@ -9381,20 +9476,22 @@ async fn spawn_warm_codex_runtime(
                     attempted_resume = false;
                     thread_request_id = next_request_id;
                     next_request_id += 1;
+                    let mut params = json!({
+                        "model": model_value.clone(),
+                        "cwd": cwd.clone(),
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                        "developerInstructions": developer_instructions.clone(),
+                        "experimentalRawEvents": false,
+                        "persistExtendedHistory": true
+                    });
+                    apply_codex_runtime_options(&mut params, reasoning_effort, service_tier);
                     codex_write_json(
                         &mut stdin,
                         json!({
                             "method": "thread/start",
                             "id": thread_request_id,
-                            "params": {
-                                "model": model_value.clone(),
-                                "cwd": cwd.clone(),
-                                "approvalPolicy": "never",
-                                "sandbox": "danger-full-access",
-                                "developerInstructions": developer_instructions.clone(),
-                                "experimentalRawEvents": false,
-                                "persistExtendedHistory": true
-                            }
+                            "params": params
                         }),
                     )
                     .await?;
@@ -10049,6 +10146,8 @@ async fn supervisor_start_codex_streaming_agent(
     work_item_id: Option<Uuid>,
     handle: String,
     model: String,
+    reasoning_effort: String,
+    service_tier: String,
     working_directory: String,
     work_item_prompt: String,
     memory_context: Option<String>,
@@ -10061,6 +10160,8 @@ async fn supervisor_start_codex_streaming_agent(
         agent_id,
         &handle,
         &model,
+        &reasoning_effort,
+        &service_tier,
         &working_directory,
         memory_context.as_deref(),
     )
@@ -10228,22 +10329,24 @@ async fn supervisor_start_codex_streaming_agent(
     let model_value = codex_model_value(&model);
     let write_result = {
         let mut stdin = runtime.stdin.lock().await;
+        let mut params = json!({
+            "threadId": runtime.thread_id.clone(),
+            "input": [{
+                "type": "text",
+                "text": codex_prompt,
+                "text_elements": []
+            }],
+            "cwd": cwd,
+            "approvalPolicy": "never",
+            "model": model_value
+        });
+        apply_codex_runtime_options(&mut params, &reasoning_effort, &service_tier);
         codex_write_json(
             &mut stdin,
             json!({
                 "method": "turn/start",
                 "id": request_id,
-                "params": {
-                    "threadId": runtime.thread_id.clone(),
-                    "input": [{
-                        "type": "text",
-                        "text": codex_prompt,
-                        "text_elements": []
-                    }],
-                    "cwd": cwd,
-                    "approvalPolicy": "never",
-                    "model": model_value
-                }
+                "params": params
             }),
         )
         .await
@@ -10518,7 +10621,7 @@ async fn supervisor_start_agent(
 
     let row = sqlx::query(
         r#"
-        select handle, runtime, model, launch_command, working_directory, avatar
+        select handle, runtime, model, reasoning_effort, service_tier, launch_command, working_directory, avatar
         from agents
         where id = $1
         "#,
@@ -10531,6 +10634,8 @@ async fn supervisor_start_agent(
     let handle: String = row.get("handle");
     let runtime: String = row.get("runtime");
     let model: String = row.get("model");
+    let reasoning_effort: String = row.get("reasoning_effort");
+    let service_tier: String = row.get("service_tier");
     let launch_command: String = row.get("launch_command");
     let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
     let avatar: Option<String> = row.get("avatar");
@@ -10587,7 +10692,7 @@ async fn supervisor_start_agent(
                 .is_none()
                 .then(|| {
                     format!(
-                        "Your agent profile currently has no avatar. If your handle or MEMORY.md gives you a stable identity, you may emit one standalone LANTOR_EVENT profile_update with an avatar like `dicebear:notionists:{handle}` or another supported DiceBear style. Keep handling the user's request normally and do not send visible chat only for avatar setup."
+                        "Your agent profile currently has no avatar. If your handle or MEMORY.md gives you a stable identity, you may emit one standalone LANTOR_EVENT profile_update with an avatar like `dicebear:dylan:{handle}`. Keep handling the user's request normally and do not send visible chat only for avatar setup."
                     )
                 });
             if is_warm_streaming_runtime {
@@ -10624,6 +10729,8 @@ async fn supervisor_start_agent(
             work_item_id,
             handle,
             model,
+            reasoning_effort,
+            service_tier,
             working_directory,
             work_item_prompt,
             memory_context,

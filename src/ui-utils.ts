@@ -33,7 +33,7 @@ const LANTOR_CONTROL_EVENTS = [
   '{"type":"usage","input_tokens":1234,"output_tokens":567,"cost_usd":0.0123}',
   '{"type":"memory_append","body":"Durable fact or handoff to remember"}',
   '{"type":"memory_compact","body":"Full compact MEMORY.md replacement"}',
-  '{"type":"profile_update","display_name":"Name","role":"specialist role","avatar":"dicebear:notionists:Hancock","description":"What this agent is good at"}',
+  '{"type":"profile_update","display_name":"Name","role":"specialist role","avatar":"dicebear:dylan:Hancock","description":"What this agent is good at"}',
   '{"type":"reminder_create","when":"ISO8601 timestamp","title":"Follow-up title","note":"optional note","recurrence":"none|daily|weekly"}',
   '{"type":"reminder_cancel","reminder_id":"uuid"}',
   '{"type":"task_create","channel_id":"uuid","title":"Short task title","body":"Root task message","thread_body":"First execution update","assign_self":true,"status":"in_progress"}',
@@ -94,7 +94,15 @@ export function buildPresetCommand(form: AgentForm) {
   const quotedModel = shellQuote(model);
 
   if (form.runtime === "codex") {
-    return `LANTOR_PROMPT=${prompt}\n${preset.commandName} exec --model ${quotedModel} "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT"`;
+    const configArgs = [
+      form.reasoningEffort.trim() ? `model_reasoning_effort="${form.reasoningEffort.trim()}"` : "",
+      form.serviceTier.trim() ? `service_tier="${form.serviceTier.trim()}"` : "",
+    ]
+      .filter(Boolean)
+      .map((arg) => `-c ${shellQuote(arg)}`)
+      .join(" ");
+    const configSuffix = configArgs ? ` ${configArgs}` : "";
+    return `LANTOR_PROMPT=${prompt}\n${preset.commandName} exec --model ${quotedModel}${configSuffix} "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT"`;
   }
   if (form.runtime === "claude") {
     return `LANTOR_PROMPT=${prompt}\n${preset.commandName} -p "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT" --model ${quotedModel}`;

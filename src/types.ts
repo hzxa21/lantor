@@ -29,6 +29,8 @@ export type Agent = {
   status: string;
   runtime: string;
   model: string;
+  reasoning_effort: string;
+  service_tier: string;
   avatar: string;
   description: string;
   launch_command: string;
@@ -319,6 +321,8 @@ export type AgentForm = {
   avatar: string;
   runtime: string;
   model: string;
+  reasoningEffort: string;
+  serviceTier: string;
   description: string;
   launchCommand: string;
   workingDirectory: string;
@@ -332,6 +336,8 @@ export const EMPTY_AGENT_FORM: AgentForm = {
   avatar: "",
   runtime: "codex",
   model: "gpt-5.5",
+  reasoningEffort: "medium",
+  serviceTier: "",
   description: "",
   launchCommand: "",
   workingDirectory: "",
@@ -363,8 +369,31 @@ export const RUNTIME_PRESETS: Record<string, { label: string; defaultModel: stri
   },
 };
 
+const MODEL_LABELS: Record<string, string> = {
+  "gpt-5.5": "GPT-5.5",
+  "gpt-5.4": "GPT-5.4",
+  "gpt-5.4-mini": "GPT-5.4 Mini",
+  "gpt-5.3-codex": "GPT-5.3 Codex",
+};
+
+export const CODEX_REASONING_EFFORTS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra High" },
+] as const;
+
+export const CODEX_SERVICE_TIERS = [
+  { value: "", label: "Standard" },
+  { value: "fast", label: "Fast" },
+] as const;
+
 export function modelOptionsForRuntime(runtime: string, currentModel = "") {
   const models = RUNTIME_PRESETS[runtime]?.models ?? [];
   if (!currentModel || models.includes(currentModel)) return models;
   return [currentModel, ...models];
+}
+
+export function modelLabel(model: string) {
+  return MODEL_LABELS[model] ?? model;
 }

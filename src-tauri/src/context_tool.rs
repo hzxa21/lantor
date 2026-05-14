@@ -493,8 +493,8 @@ pub(crate) async fn agent_context_agent_inspect(
     let agent_id = resolve_agent_by_handle(pool, &target).await?;
     let agent = sqlx::query(
         r#"
-        select handle, display_name, role, status, runtime, model, avatar, description,
-               working_directory, daily_budget_micros
+        select handle, display_name, role, status, runtime, model, reasoning_effort, service_tier,
+               avatar, description, working_directory, daily_budget_micros
         from agents
         where id = $1
         "#,
@@ -513,6 +513,11 @@ pub(crate) async fn agent_context_agent_inspect(
             "runtime={}/{}",
             agent.get::<String, _>("runtime"),
             agent.get::<String, _>("model")
+        ),
+        format!(
+            "codex_options=reasoning_effort:{} service_tier:{}",
+            agent.get::<String, _>("reasoning_effort"),
+            agent.get::<String, _>("service_tier")
         ),
         format!("description={}", agent.get::<String, _>("description")),
         format!(

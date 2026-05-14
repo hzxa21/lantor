@@ -157,11 +157,11 @@ export function Sidebar({
               className={`section-collapse ${collapsedSections.dms ? "collapsed" : ""}`}
               onClick={() => toggleSection("dms")}
               aria-expanded={!collapsedSections.dms}
-              title={collapsedSections.dms ? "Show direct messages" : "Hide direct messages"}
+              title={collapsedSections.dms ? "Show agents" : "Hide agents"}
             >
               <ChevronDown size={14} />
             </button>
-            <span>Direct Messages</span>
+            <span>Agents</span>
           </div>
           <button onClick={openCreateAgentModal} title="Add agent"><Plus size={18} /></button>
         </div>
@@ -203,7 +203,7 @@ export function Sidebar({
           );
         })}
         {!collapsedSections.dms && data.agents.length === 0 && (
-          <div className="empty-mini">Add an agent to start a direct message.</div>
+          <div className="empty-mini">Add an agent to start chatting.</div>
         )}
       </section>
 

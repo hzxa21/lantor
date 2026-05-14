@@ -16,6 +16,7 @@ import { APP_DISPLAY_NAME } from "./branding";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
 import type { AgentPerformance } from "./components/AgentDetailDrawer";
 import { AgentFormModal } from "./components/AgentFormModal";
+import { randomDylanAvatarSpec } from "./avatar-utils";
 import { ChannelAgentsModal } from "./components/ChannelAgentsModal";
 import { ChannelSettingsModal } from "./components/ChannelSettingsModal";
 import { ConfirmModal } from "./components/ConfirmModal";
@@ -451,6 +452,44 @@ function defaultAgentWorkspace(handle: string) {
   return normalized ? `~/Library/Application Support/Lantor/agents/${normalized}` : "";
 }
 
+function newAgentDraft(): AgentForm {
+  return {
+    ...EMPTY_AGENT_FORM,
+    avatar: randomDylanAvatarSpec("new-agent"),
+  };
+}
+
+function normalizeAgentHandle(value: string) {
+  const cleaned = value
+    .trim()
+    .replace(/^@/, "")
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  const withLeadingLetter = /^[A-Za-z]/.test(cleaned)
+    ? cleaned
+    : cleaned
+      ? `Agent-${cleaned}`
+      : "Agent";
+  return withLeadingLetter.length === 1 ? `${withLeadingLetter}Agent` : withLeadingLetter;
+}
+
+function availableAgentHandle(preferred: string, agents: Agent[], currentAgentId?: string) {
+  const base = normalizeAgentHandle(preferred);
+  const existing = new Set(
+    agents
+      .filter((agent) => agent.id !== currentAgentId)
+      .map((agent) => agent.handle.toLowerCase()),
+  );
+  if (!existing.has(base.toLowerCase())) return base;
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    const suffixText = String(suffix);
+    const next = `${base.slice(0, Math.max(1, 32 - suffixText.length))}${suffixText}`;
+    if (!existing.has(next.toLowerCase())) return next;
+  }
+  return `${base.slice(0, 24)}${Date.now().toString().slice(-8)}`;
+}
+
 function numericMetadata(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -551,7 +590,7 @@ function App() {
     avatar: "D",
     description: "local owner",
   });
-  const [agentDraft, setAgentDraft] = useState<AgentForm>(EMPTY_AGENT_FORM);
+  const [agentDraft, setAgentDraft] = useState<AgentForm>(() => newAgentDraft());
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [agentEdit, setAgentEdit] = useState<AgentForm>(EMPTY_AGENT_FORM);
   const [showThread, setShowThread] = useState(() => window.innerWidth > MOBILE_BREAKPOINT);
@@ -1979,13 +2018,15 @@ function App() {
   }
 
   async function createAgent() {
-    const handle = agentDraft.handle.trim().replace(/^@/, "");
-    if (!handle) return;
+    const preferredHandle = agentDraft.handle.trim() || agentDraft.displayName.trim();
+    if (!preferredHandle) return;
+    const handle = availableAgentHandle(preferredHandle, data?.agents ?? []);
+    const displayName = agentDraft.displayName.trim() || handle;
     const nextForm = {
       ...agentDraft,
       handle,
-      displayName: agentDraft.displayName || handle,
-      launchCommand: buildPresetCommand({ ...agentDraft, handle, displayName: agentDraft.displayName || handle }),
+      displayName,
+      launchCommand: buildPresetCommand({ ...agentDraft, handle, displayName }),
       workingDirectory: agentDraft.workingDirectory.trim() || defaultAgentWorkspace(handle),
     };
     const agentId = await apiInvoke<string>("create_agent", {
@@ -1994,6 +2035,8 @@ function App() {
       role: nextForm.role,
       runtime: nextForm.runtime,
       model: nextForm.model,
+      reasoningEffort: nextForm.reasoningEffort,
+      serviceTier: nextForm.serviceTier,
       avatar: nextForm.avatar,
       description: nextForm.description,
       launchCommand: nextForm.launchCommand,
@@ -2010,7 +2053,7 @@ function App() {
       }
     }
     await refresh();
-    setAgentDraft(EMPTY_AGENT_FORM);
+    setAgentDraft(newAgentDraft());
     setShowCreateAgentModal(false);
   }
 
@@ -2025,6 +2068,8 @@ function App() {
       ...agentDraft,
       runtime,
       model: preset && shouldReplaceModel ? preset.defaultModel : agentDraft.model,
+      reasoningEffort: runtime === "codex" ? agentDraft.reasoningEffort || "medium" : agentDraft.reasoningEffort,
+      serviceTier: runtime === "codex" ? agentDraft.serviceTier : "",
     });
   }
 
@@ -2039,6 +2084,8 @@ function App() {
       ...agentEdit,
       runtime,
       model: preset && shouldReplaceModel ? preset.defaultModel : agentEdit.model,
+      reasoningEffort: runtime === "codex" ? agentEdit.reasoningEffort || "medium" : agentEdit.reasoningEffort,
+      serviceTier: runtime === "codex" ? agentEdit.serviceTier : "",
     });
   }
 
@@ -2051,6 +2098,8 @@ function App() {
       avatar: agent.avatar || "",
       runtime: agent.runtime,
       model: agent.model,
+      reasoningEffort: agent.reasoning_effort || "medium",
+      serviceTier: agent.service_tier || "",
       description: agent.description,
       launchCommand: agent.launch_command,
       workingDirectory: agent.working_directory,
@@ -2059,13 +2108,18 @@ function App() {
   }
 
   async function saveAgent() {
-    if (!editingAgentId || !agentEdit.handle.trim()) return;
-    const handle = agentEdit.handle.trim().replace(/^@/, "");
+    if (!editingAgentId || !(agentEdit.handle.trim() || agentEdit.displayName.trim())) return;
+    const handle = availableAgentHandle(
+      agentEdit.handle.trim() || agentEdit.displayName.trim(),
+      data?.agents ?? [],
+      editingAgentId,
+    );
+    const displayName = agentEdit.displayName.trim() || handle;
     const nextForm = {
       ...agentEdit,
       handle,
-      displayName: agentEdit.displayName || handle,
-      launchCommand: buildPresetCommand({ ...agentEdit, handle, displayName: agentEdit.displayName || handle }),
+      displayName,
+      launchCommand: buildPresetCommand({ ...agentEdit, handle, displayName }),
       workingDirectory: agentEdit.workingDirectory.trim(),
     };
     await mutate("update_agent", {
@@ -2075,6 +2129,8 @@ function App() {
       role: nextForm.role,
       runtime: nextForm.runtime,
       model: nextForm.model,
+      reasoningEffort: nextForm.reasoningEffort,
+      serviceTier: nextForm.serviceTier,
       avatar: nextForm.avatar,
       description: nextForm.description,
       launchCommand: nextForm.launchCommand,
@@ -2479,6 +2535,7 @@ function App() {
         }}
         selectChannel={selectChannel}
         openCreateAgentModal={() => {
+          setAgentDraft(newAgentDraft());
           setShowMobileSidebar(false);
           setShowCreateAgentModal(true);
         }}
@@ -2692,6 +2749,7 @@ function App() {
         channelMemberIds={channelMemberIds}
         onSetMember={setChannelMember}
         onCreateAgent={() => {
+          setAgentDraft(newAgentDraft());
           setShowChannelAgentsModal(false);
           setShowCreateAgentModal(true);
         }}
@@ -2704,9 +2762,13 @@ function App() {
         form={agentDraft}
         runtimeChecks={runtimeChecks}
         submitLabel="Add agent"
+        createMode
         onChange={setAgentDraft}
         onRuntimeChange={updateDraftRuntime}
-        onCancel={() => setShowCreateAgentModal(false)}
+        onCancel={() => {
+          setAgentDraft(newAgentDraft());
+          setShowCreateAgentModal(false);
+        }}
         onSubmit={createAgent}
       />
 

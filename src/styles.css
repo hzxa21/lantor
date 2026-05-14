@@ -2742,6 +2742,7 @@ body.resizing-column * {
   gap: 16px;
 }
 
+.agent-form-preview,
 .owner-profile-preview {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2753,6 +2754,8 @@ body.resizing-column * {
   background: #fff;
 }
 
+.agent-form-preview strong,
+.agent-form-preview span,
 .owner-profile-preview strong,
 .owner-profile-preview span {
   display: block;
@@ -2761,6 +2764,7 @@ body.resizing-column * {
   text-overflow: ellipsis;
 }
 
+.agent-form-preview strong,
 .owner-profile-preview strong {
   color: var(--ink);
   font-size: 18px;
@@ -2768,6 +2772,7 @@ body.resizing-column * {
   white-space: nowrap;
 }
 
+.agent-form-preview span,
 .owner-profile-preview span {
   margin-top: 3px;
   color: var(--muted);
@@ -2776,13 +2781,13 @@ body.resizing-column * {
   white-space: nowrap;
 }
 
-.profile-avatar-input {
+.avatar-input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 42px;
   gap: 8px;
 }
 
-.profile-avatar-input button {
+.avatar-input button {
   display: grid;
   place-items: center;
   border: 1px solid rgba(10, 132, 255, 0.16);
@@ -2791,8 +2796,8 @@ body.resizing-column * {
   color: var(--accent);
 }
 
-.profile-avatar-input button:hover,
-.profile-avatar-input button:focus-visible {
+.avatar-input button:hover,
+.avatar-input button:focus-visible {
   background: rgba(10, 132, 255, 0.13);
   outline: none;
 }
@@ -2838,6 +2843,34 @@ body.resizing-column * {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+.three-col {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.agent-advanced-settings {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-advanced-settings summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.agent-advanced-settings[open] summary {
+  margin-bottom: 12px;
+}
+
+.agent-advanced-settings[open] {
+  padding-top: 2px;
 }
 
 .modal-actions {
@@ -5016,6 +5049,11 @@ body.resizing-column * {
   .sidebar-resize-handle,
   .thread-resize-handle {
     display: none;
+  }
+
+  .two-col,
+  .three-col {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .workspace {
