@@ -77,6 +77,9 @@ const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
 const CODEX_CONTEXT_ROTATE_INPUT_TOKENS: i64 = 50_000;
 const AGENT_WORKSPACE_PREVIEW_LIMIT: u64 = 256 * 1024;
+const DEFAULT_OWNER_DISPLAY_NAME: &str = "Me";
+const DEFAULT_OWNER_AVATAR: &str = "M";
+const DEFAULT_OWNER_DESCRIPTION: &str = "local owner";
 
 fn expand_home_path(value: &str) -> String {
     let value = value.trim();
@@ -780,8 +783,8 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         r#"
         create table if not exists owner_profile (
             id integer primary key default 1 check (id = 1),
-            display_name text not null default 'Dylan',
-            avatar text not null default 'D',
+            display_name text not null default 'Me',
+            avatar text not null default 'M',
             description text not null default 'local owner',
             updated_at timestamptz not null default now()
         )
@@ -791,8 +794,18 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
     sqlx::query(
         r#"
+        alter table owner_profile
+            alter column display_name set default 'Me',
+            alter column avatar set default 'M',
+            alter column description set default 'local owner'
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
         insert into owner_profile (id, display_name, avatar, description)
-        values (1, 'Dylan', 'D', 'local owner')
+        values (1, 'Me', 'M', 'local owner')
         on conflict (id) do nothing
         "#,
     )
@@ -4019,7 +4032,7 @@ pub(crate) async fn send_owner_message_in_pool(
             .fetch_optional(&mut *tx)
             .await
             .map_err(to_string)?
-            .unwrap_or_else(|| "Dylan".to_owned());
+            .unwrap_or_else(|| DEFAULT_OWNER_DISPLAY_NAME.to_owned());
 
     let msg_id: Uuid = sqlx::query_scalar(
         r#"
@@ -4796,9 +4809,9 @@ async fn load_owner_profile(pool: &PgPool) -> CommandResult<OwnerProfile> {
             description: row.get("description"),
         })
         .unwrap_or_else(|| OwnerProfile {
-            display_name: "Dylan".to_owned(),
-            avatar: "D".to_owned(),
-            description: "local owner".to_owned(),
+            display_name: DEFAULT_OWNER_DISPLAY_NAME.to_owned(),
+            avatar: DEFAULT_OWNER_AVATAR.to_owned(),
+            description: DEFAULT_OWNER_DESCRIPTION.to_owned(),
         }))
 }
 

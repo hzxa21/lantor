@@ -82,6 +82,9 @@ const MIN_CONVERSATION_WIDTH = 360;
 const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const DEFAULT_OWNER_DISPLAY_NAME = "Me";
+const DEFAULT_OWNER_AVATAR = "M";
+const DEFAULT_OWNER_DESCRIPTION = "local owner";
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
 const CHANNEL_THREAD_MEMORY_STORAGE_KEY = "lantor.channelThreadMemory";
 const THREAD_PANEL_WIDTH_STORAGE_KEY = "lantor.threadPanelWidth";
@@ -586,9 +589,9 @@ function App() {
   const [channelNameDraft, setChannelNameDraft] = useState("");
   const [channelDescriptionDraft, setChannelDescriptionDraft] = useState("");
   const [ownerProfileDraft, setOwnerProfileDraft] = useState<OwnerProfileForm>({
-    displayName: "Dylan",
-    avatar: "D",
-    description: "local owner",
+    displayName: DEFAULT_OWNER_DISPLAY_NAME,
+    avatar: DEFAULT_OWNER_AVATAR,
+    description: DEFAULT_OWNER_DESCRIPTION,
   });
   const [agentDraft, setAgentDraft] = useState<AgentForm>(() => newAgentDraft());
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
@@ -1952,7 +1955,7 @@ function App() {
       id,
       channel_id: channelId,
       thread_root_id: threadRootId,
-      sender_name: data?.owner_profile.display_name || "Dylan",
+      sender_name: data?.owner_profile.display_name || DEFAULT_OWNER_DISPLAY_NAME,
       sender_role: "owner",
       body,
       is_task: asTask,

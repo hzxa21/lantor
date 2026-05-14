@@ -10,7 +10,11 @@ import {
   AgentWorkspaceEntry,
   AgentWorkspaceFile,
   AgentWorkspaceListing,
+  CODEX_REASONING_EFFORTS,
+  CODEX_SERVICE_TIERS,
   Reminder,
+  RUNTIME_PRESETS,
+  modelLabel,
 } from "../types";
 import { AgentAvatar } from "./AgentAvatar";
 import { MessageMarkdown } from "./MessageMarkdown";
@@ -252,6 +256,24 @@ function workspaceEntryPath(entry: AgentWorkspaceEntry) {
   return entry.relative_path || entry.name;
 }
 
+function runtimeLabel(runtime: string) {
+  return RUNTIME_PRESETS[runtime]?.label ?? runtime;
+}
+
+function codexReasoningEffortLabel(value: string) {
+  return CODEX_REASONING_EFFORTS.find((effort) => effort.value === value)?.label ?? (value || "Medium");
+}
+
+function codexServiceTierLabel(value: string) {
+  return CODEX_SERVICE_TIERS.find((tier) => tier.value === value)?.label ?? (value || "Standard");
+}
+
+function agentModelSummary(agent: Agent) {
+  const base = `${runtimeLabel(agent.runtime)} · ${modelLabel(agent.model)}`;
+  if (agent.runtime !== "codex") return base;
+  return `${base} · ${codexReasoningEffortLabel(agent.reasoning_effort)} intelligence · ${codexServiceTierLabel(agent.service_tier)} speed`;
+}
+
 function isMarkdownWorkspaceFile(file: AgentWorkspaceFile) {
   return file.language === "markdown" || /\.(md|markdown)$/i.test(file.name);
 }
@@ -410,8 +432,37 @@ export function AgentDetailDrawer({
   }
 
   function renderProfilePanel() {
+    const isCodex = agent.runtime === "codex";
     return (
       <>
+        <section className="detail-section model-section">
+          <div className="detail-section-head">
+            <h4>Model</h4>
+            <span>{runtimeLabel(agent.runtime)}</span>
+          </div>
+          <div className="detail-grid">
+            <div>
+              <span>Runtime</span>
+              <code>{runtimeLabel(agent.runtime)}</code>
+            </div>
+            <div>
+              <span>Model</span>
+              <code>{modelLabel(agent.model)}</code>
+            </div>
+            {isCodex && (
+              <>
+                <div>
+                  <span>Intelligence</span>
+                  <code>{codexReasoningEffortLabel(agent.reasoning_effort)}</code>
+                </div>
+                <div>
+                  <span>Speed</span>
+                  <code>{codexServiceTierLabel(agent.service_tier)}</code>
+                </div>
+              </>
+            )}
+          </div>
+        </section>
         <section className="detail-grid">
           <div>
             <span>Workspace</span>
@@ -743,7 +794,7 @@ export function AgentDetailDrawer({
             <AgentAvatar agent={agent} size="lg" />
             <div>
               <h3>{agent.display_name}</h3>
-              <p>@{agent.handle} · {agent.runtime} · {agent.model}</p>
+              <p>@{agent.handle} · {agentModelSummary(agent)}</p>
               {phase && (
                 <div className="agent-phase-line">
                   <span className={`phase-badge ${phaseClass(phase.kind)}`}>{phase.label}</span>
