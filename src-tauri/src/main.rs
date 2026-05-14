@@ -3261,8 +3261,7 @@ fn inbox_wake_context(items: &[InboxWakeItem], other_active: &[InboxWakeSummary]
         "The message headers below include target, source message id, created time, sender type/name, and preview. Handle directly from them when enough detail is present.".to_owned(),
         "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id <id> only if the preview/header is insufficient and you need a full source message or metadata.".to_owned(),
         "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20 only if you need to inspect or choose among other active inbox items.".to_owned(),
-        "Archive handled or intentionally ignored items with:".to_owned(),
-        "\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id <id>".to_owned(),
+        "Current work-item inbox item(s) are archived automatically when this work item finishes; use inbox-archive only for unrelated or extra active items you intentionally clear.".to_owned(),
         String::new(),
         format!("Default reply target for normal assistant text: {target}"),
         "If you handle another inbox item in this same turn with a different target, post to that item's channel/thread with channel_message_create instead of relying on the default route.".to_owned(),
@@ -3311,8 +3310,7 @@ fn build_steer_followup_prompt(items: &[InboxWakeItem]) -> String {
         "Same-channel/thread live inbox follow-up.".to_owned(),
         "Treat the message header(s) below as newer input for the active turn.".to_owned(),
         format!("Default reply target for normal assistant text: {target}"),
-        "Archive handled or intentionally ignored inbox items with:".to_owned(),
-        "\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id <id>".to_owned(),
+        "Current work-item inbox item(s) are archived automatically when the active turn finishes; use inbox-archive only for unrelated or extra active items you intentionally clear.".to_owned(),
         String::new(),
     ];
 
@@ -3410,7 +3408,7 @@ async fn sync_inbox_for_work_item(pool: &PgPool, work_item_id: Uuid) -> CommandR
     let status: String = row.get("status");
     let inbox_state = match status.as_str() {
         "queued" | "running" | "cancelling" => "processing",
-        "done" | "failed" | "cancelled" => "archived",
+        "done" | "failed" | "cancelled" | "silent" => "archived",
         _ => "processing",
     };
     sqlx::query(
@@ -12898,7 +12896,8 @@ mod tests {
         assert!(prompt.contains("Default reply target for normal assistant text: #support:"));
         assert!(prompt.contains(&format!("msg={}", short_id(source_message_id))));
         assert!(prompt.contains(&format!("inbox_id: {inbox_id}")));
-        assert!(prompt.contains("inbox-archive --inbox-id <id>"));
+        assert!(prompt.contains("archived automatically"));
+        assert!(!prompt.contains("inbox-archive --inbox-id <id>"));
         assert!(!prompt.contains("Current Lantor inbox processing turn:"));
         assert!(!prompt.contains("title: Handle follow-up"));
         assert!(!prompt.contains("kind: owner_thread_followup"));
@@ -14447,6 +14446,21 @@ mod tests {
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
+            let inbox_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_inbox_items (
+                    agent_id, channel_id, kind, state, title, body_preview, work_item_id
+                )
+                values ($1, $2, 'dm', 'processing', 'hello', 'hi', $3)
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(work_item_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
             let stream_key = "silent-run:item-1";
             let message_id = append_streaming_agent_message(
                 &pool,
@@ -14482,6 +14496,13 @@ mod tests {
                     .await
                     .map_err(|err| err.to_string())?;
             assert_eq!(status, "silent");
+            let inbox_state: String =
+                sqlx::query_scalar("select state from agent_inbox_items where id = $1")
+                    .bind(inbox_item_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(inbox_state, "archived");
             Ok(())
         }
         .await;
@@ -15432,7 +15453,9 @@ mod tests {
             assert!(read.contains("please inspect inbox tools"));
             assert!(read.contains(&format!("--target \"{dm_channel_id}")));
             assert!(!read.contains("--target \"dm:"));
-            assert!(read.contains("archive_when_done="));
+            assert!(read
+                .contains("archive_note=linked work-item inbox items are archived automatically"));
+            assert!(!read.contains("archive_when_done="));
 
             let archived = agent_context_inbox_archive(
                 &pool,

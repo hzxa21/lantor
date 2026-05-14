@@ -1264,10 +1264,16 @@ pub(crate) async fn agent_context_inbox_read(
             surface
         ));
     }
-    output.push(format!(
-        "archive_when_done=\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id {}",
-        short_id(inbox_id)
-    ));
+    if row.get::<Option<Uuid>, _>("work_item_id").is_some() {
+        output.push(
+            "archive_note=linked work-item inbox items are archived automatically when the work item finishes; do not call inbox-archive for normal completion".to_owned(),
+        );
+    } else {
+        output.push(format!(
+            "archive_if_cleared=\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id {}",
+            short_id(inbox_id)
+        ));
+    }
 
     Ok(output.join("\n\n"))
 }
