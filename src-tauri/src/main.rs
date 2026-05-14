@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::{
-    postgres::{PgListener, PgPoolOptions},
+    postgres::{PgListener, PgPoolOptions, PgRow},
     PgPool, Row,
 };
 use tauri::{Emitter, Manager, State};
@@ -70,6 +70,7 @@ const LANTOR_CONTEXT_TOOL_ENV: &str = "LANTOR_CONTEXT_TOOL";
 const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by Lantor]";
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
+const INBOX_WAKE_BATCH_LIMIT: i64 = 8;
 const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
@@ -2690,6 +2691,31 @@ struct AgentInboxItemInput<'a> {
     payload: Value,
 }
 
+#[derive(Clone)]
+struct InboxWakeItem {
+    id: Uuid,
+    channel_id: Option<Uuid>,
+    channel_name: Option<String>,
+    channel_kind: Option<String>,
+    thread_root_id: Option<Uuid>,
+    source_message_id: Option<Uuid>,
+    task_id: Option<Uuid>,
+    kind: String,
+    priority: i32,
+    title: String,
+    body_preview: String,
+}
+
+impl InboxWakeItem {
+    fn target(&self) -> String {
+        format_inbox_target(
+            self.channel_kind.as_deref(),
+            self.channel_name.as_deref(),
+            self.thread_root_id,
+        )
+    }
+}
+
 async fn create_agent_inbox_item(
     pool: &PgPool,
     input: AgentInboxItemInput<'_>,
@@ -2778,6 +2804,17 @@ async fn attach_work_item_to_inbox(
     inbox_item_id: Uuid,
     work_item_id: Uuid,
 ) -> CommandResult<()> {
+    attach_work_item_to_inboxes(pool, &[inbox_item_id], work_item_id).await
+}
+
+async fn attach_work_item_to_inboxes(
+    pool: &PgPool,
+    inbox_item_ids: &[Uuid],
+    work_item_id: Uuid,
+) -> CommandResult<()> {
+    if inbox_item_ids.is_empty() {
+        return Ok(());
+    }
     sqlx::query(
         r#"
         update agent_inbox_items
@@ -2785,11 +2822,278 @@ async fn attach_work_item_to_inbox(
             state = 'processing',
             updated_at = now(),
             archived_at = null
+        where id = any($1::uuid[])
+        "#,
+    )
+    .bind(inbox_item_ids)
+    .bind(work_item_id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    Ok(())
+}
+
+fn format_inbox_target(
+    channel_kind: Option<&str>,
+    channel_name: Option<&str>,
+    thread_root_id: Option<Uuid>,
+) -> String {
+    match (channel_kind, channel_name, thread_root_id) {
+        (Some("dm"), Some(name), Some(thread_root_id)) => {
+            format!("dm:{name}:{}", short_id(thread_root_id))
+        }
+        (Some("dm"), Some(name), None) => format!("dm:{name}"),
+        (_, Some(name), Some(thread_root_id)) => format!("#{name}:{}", short_id(thread_root_id)),
+        (_, Some(name), None) => format!("#{name}"),
+        _ => "unknown target".to_owned(),
+    }
+}
+
+fn inbox_wake_item_from_row(row: &PgRow) -> InboxWakeItem {
+    InboxWakeItem {
+        id: row.get("id"),
+        channel_id: row.get("channel_id"),
+        channel_name: row.get("channel_name"),
+        channel_kind: row.get("channel_kind"),
+        thread_root_id: row.get("thread_root_id"),
+        source_message_id: row.get("source_message_id"),
+        task_id: row.get("task_id"),
+        kind: row.get("kind"),
+        priority: row.get("priority"),
+        title: row.get("title"),
+        body_preview: row.get("body_preview"),
+    }
+}
+
+async fn next_unread_inbox_wake_item(
+    pool: &PgPool,
+    agent_id: Uuid,
+) -> CommandResult<Option<InboxWakeItem>> {
+    let row = sqlx::query(
+        r#"
+        select
+            i.id,
+            i.channel_id,
+            c.name as channel_name,
+            c.kind as channel_kind,
+            i.thread_root_id,
+            i.source_message_id,
+            i.task_id,
+            i.kind,
+            i.priority,
+            i.title,
+            i.body_preview
+        from agent_inbox_items i
+        left join channels c on c.id = i.channel_id
+        where i.agent_id = $1
+          and i.state = 'unread'
+        order by i.priority desc, i.created_at asc
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(row.as_ref().map(inbox_wake_item_from_row))
+}
+
+async fn load_unread_inbox_wake_batch(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+) -> CommandResult<Vec<InboxWakeItem>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            i.id,
+            i.channel_id,
+            c.name as channel_name,
+            c.kind as channel_kind,
+            i.thread_root_id,
+            i.source_message_id,
+            i.task_id,
+            i.kind,
+            i.priority,
+            i.title,
+            i.body_preview
+        from agent_inbox_items i
+        left join channels c on c.id = i.channel_id
+        where i.agent_id = $1
+          and i.state = 'unread'
+          and i.channel_id is not distinct from $2
+          and i.thread_root_id is not distinct from $3
+        order by i.priority desc, i.created_at asc
+        limit $4
+        "#,
+    )
+    .bind(agent_id)
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(INBOX_WAKE_BATCH_LIMIT)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows.iter().map(inbox_wake_item_from_row).collect())
+}
+
+async fn load_inbox_wake_items_for_work_item(
+    pool: &PgPool,
+    work_item_id: Uuid,
+) -> CommandResult<Vec<InboxWakeItem>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            i.id,
+            i.channel_id,
+            c.name as channel_name,
+            c.kind as channel_kind,
+            i.thread_root_id,
+            i.source_message_id,
+            i.task_id,
+            i.kind,
+            i.priority,
+            i.title,
+            i.body_preview
+        from agent_inbox_items i
+        left join channels c on c.id = i.channel_id
+        where i.work_item_id = $1
+        order by i.priority desc, i.created_at asc
+        "#,
+    )
+    .bind(work_item_id)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows.iter().map(inbox_wake_item_from_row).collect())
+}
+
+async fn find_queued_inbox_wake_work_item_for_surface(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+) -> CommandResult<Option<Uuid>> {
+    sqlx::query_scalar(
+        r#"
+        select id
+        from agent_work_items
+        where agent_id = $1
+          and source_kind = 'inbox_wake'
+          and status = 'queued'
+          and channel_id is not distinct from $2
+          and thread_root_id is not distinct from $3
+        order by created_at asc
+        limit 1
+        "#,
+    )
+    .bind(agent_id)
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)
+}
+
+fn inbox_wake_work_item_title(items: &[InboxWakeItem]) -> String {
+    let Some(primary) = items.first() else {
+        return "Process inbox".to_owned();
+    };
+    if items.len() == 1 {
+        format!("Process inbox: {}", primary.title)
+    } else {
+        format!(
+            "Process inbox: {} (+{} more)",
+            primary.title,
+            items.len() - 1
+        )
+    }
+}
+
+fn inbox_wake_context(items: &[InboxWakeItem]) -> String {
+    let Some(primary) = items.first() else {
+        return "Lantor agent inbox wake.".to_owned();
+    };
+    let target = primary.target();
+    let mut lines = vec![
+        "Lantor agent inbox wake.".to_owned(),
+        if items.len() == 1 {
+            "The default inbox item below is already selected for this turn. Handle it directly from this context when enough detail is present.".to_owned()
+        } else {
+            format!(
+                "This turn batches {} inbox items from the same channel/thread target. Handle them together when possible.",
+                items.len()
+            )
+        },
+        "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id <id> only if you need a full source message or metadata.".to_owned(),
+        "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20 only if you need to choose among other active inbox items.".to_owned(),
+        "Archive handled or intentionally ignored items with:".to_owned(),
+        "\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id <id>".to_owned(),
+        String::new(),
+        format!("Default reply target for normal assistant text: {target}"),
+        "If you handle another inbox item in this same turn with a different target, post to that item's channel/thread with channel_message_create instead of relying on the default route.".to_owned(),
+        String::new(),
+    ];
+
+    if items.len() == 1 {
+        lines.push("Default inbox item:".to_owned());
+    } else {
+        lines.push("Batched inbox items:".to_owned());
+    }
+    for (index, item) in items.iter().enumerate() {
+        if items.len() > 1 {
+            lines.push(format!("{}. target: {}", index + 1, item.target()));
+        }
+        lines.push(format!("- id: {}", item.id));
+        lines.push(format!("- kind: {}", item.kind));
+        lines.push(format!("- priority: {}", item.priority));
+        lines.push(format!("- title: {}", item.title));
+        lines.push(format!(
+            "- preview: {}",
+            compact_chars_middle(&item.body_preview, DISPATCH_MESSAGE_BODY_LIMIT)
+        ));
+        if index + 1 < items.len() {
+            lines.push(String::new());
+        }
+    }
+
+    lines.join("\n")
+}
+
+async fn refresh_inbox_wake_work_item(
+    pool: &PgPool,
+    work_item_id: Uuid,
+    items: &[InboxWakeItem],
+) -> CommandResult<()> {
+    let Some(primary) = items.first() else {
+        return Ok(());
+    };
+    sqlx::query(
+        r#"
+        update agent_work_items
+        set channel_id = $2,
+            thread_root_id = $3,
+            source_message_id = $4,
+            inbox_item_id = $5,
+            task_id = $6,
+            title = $7,
+            context = $8,
+            updated_at = now()
         where id = $1
         "#,
     )
-    .bind(inbox_item_id)
     .bind(work_item_id)
+    .bind(primary.channel_id)
+    .bind(primary.thread_root_id)
+    .bind(primary.source_message_id)
+    .bind(primary.id)
+    .bind(primary.task_id)
+    .bind(inbox_wake_work_item_title(items))
+    .bind(inbox_wake_context(items))
     .execute(pool)
     .await
     .map_err(to_string)?;
@@ -2813,7 +3117,7 @@ fn prepend_inbox_context(inbox_item_id: Uuid, kind: &str, context: &str) -> Stri
 async fn sync_inbox_for_work_item(pool: &PgPool, work_item_id: Uuid) -> CommandResult<()> {
     let row = sqlx::query(
         r#"
-        select agent_id, inbox_item_id, source_kind, status
+        select agent_id, source_kind, status
         from agent_work_items
         where id = $1
         "#,
@@ -2826,10 +3130,6 @@ async fn sync_inbox_for_work_item(pool: &PgPool, work_item_id: Uuid) -> CommandR
         return Ok(());
     };
     let agent_id: Uuid = row.get("agent_id");
-    let inbox_item_id: Option<Uuid> = row.get("inbox_item_id");
-    let Some(inbox_item_id) = inbox_item_id else {
-        return Ok(());
-    };
     let source_kind: String = row.get("source_kind");
     let status: String = row.get("status");
     let inbox_state = match status.as_str() {
@@ -2843,10 +3143,10 @@ async fn sync_inbox_for_work_item(pool: &PgPool, work_item_id: Uuid) -> CommandR
         set state = $2,
             updated_at = now(),
             archived_at = case when $2 = 'archived' then now() else null end
-        where id = $1
+        where work_item_id = $1
         "#,
     )
-    .bind(inbox_item_id)
+    .bind(work_item_id)
     .bind(inbox_state)
     .execute(pool)
     .await
@@ -2861,80 +3161,55 @@ async fn ensure_agent_inbox_wake_work_item(
     pool: &PgPool,
     agent_id: Uuid,
 ) -> CommandResult<Option<(Uuid, bool)>> {
-    let row = sqlx::query(
-        r#"
-        select
-            i.id,
-            i.channel_id,
-            c.name as channel_name,
-            c.kind as channel_kind,
-            i.thread_root_id,
-            i.source_message_id,
-            i.task_id,
-            i.kind,
-            i.priority,
-            i.title,
-            i.body_preview,
-            i.created_at
-        from agent_inbox_items i
-        left join channels c on c.id = i.channel_id
-        where i.agent_id = $1
-          and i.state = 'unread'
-        order by i.priority desc, i.created_at asc
-        limit 1
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(to_string)?;
-    let Some(row) = row else {
+    let Some(primary) = next_unread_inbox_wake_item(pool, agent_id).await? else {
         return Ok(None);
     };
+    let mut batch =
+        load_unread_inbox_wake_batch(pool, agent_id, primary.channel_id, primary.thread_root_id)
+            .await?;
+    if batch.is_empty() {
+        batch.push(primary);
+    }
+    let inbox_item_ids: Vec<Uuid> = batch.iter().map(|item| item.id).collect();
 
-    let inbox_item_id: Uuid = row.get("id");
-    let channel_id: Option<Uuid> = row.get("channel_id");
-    let channel_name: Option<String> = row.get("channel_name");
-    let channel_kind: Option<String> = row.get("channel_kind");
-    let thread_root_id: Option<Uuid> = row.get("thread_root_id");
-    let source_message_id: Option<Uuid> = row.get("source_message_id");
-    let task_id: Option<Uuid> = row.get("task_id");
-    let kind: String = row.get("kind");
-    let priority: i32 = row.get("priority");
-    let title: String = row.get("title");
-    let body_preview: String = row.get("body_preview");
-    let target = match (
-        channel_kind.as_deref(),
-        channel_name.as_deref(),
-        thread_root_id,
-    ) {
-        (Some("dm"), Some(name), Some(thread_root_id)) => {
-            format!("dm:{name}:{}", short_id(thread_root_id))
-        }
-        (Some("dm"), Some(name), None) => format!("dm:{name}"),
-        (_, Some(name), Some(thread_root_id)) => format!("#{name}:{}", short_id(thread_root_id)),
-        (_, Some(name), None) => format!("#{name}"),
-        _ => "unknown target".to_owned(),
-    };
-    let context = format!(
-        "Lantor agent inbox wake.\n\
-         The default inbox item below is already selected for this turn. Handle it directly from this context when enough detail is present.\n\
-         Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id {inbox_item_id} only if you need the full source message or metadata.\n\
-         Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20 only if you need to choose among multiple active inbox items.\n\
-         Archive handled or intentionally ignored items with:\n\
-         \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id <id>\n\
-         \n\
-         Default reply target for normal assistant text: {target}\n\
-         If you handle another inbox item in this same turn, post to that item's channel/thread with channel_message_create instead of relying on the default route.\n\
-         \n\
-         Default inbox item:\n\
-         - id: {inbox_item_id}\n\
-         - kind: {kind}\n\
-         - priority: {priority}\n\
-         - title: {title}\n\
-         - preview: {}",
-        compact_chars_middle(&body_preview, DISPATCH_MESSAGE_BODY_LIMIT)
-    );
+    if let Some(existing_work_item_id) = find_queued_inbox_wake_work_item_for_surface(
+        pool,
+        agent_id,
+        batch[0].channel_id,
+        batch[0].thread_root_id,
+    )
+    .await?
+    {
+        attach_work_item_to_inboxes(pool, &inbox_item_ids, existing_work_item_id).await?;
+        let items = load_inbox_wake_items_for_work_item(pool, existing_work_item_id).await?;
+        refresh_inbox_wake_work_item(pool, existing_work_item_id, &items).await?;
+        notify_ui_work_item_changed(pool, existing_work_item_id, "work_item_merged").await;
+        let scheduled =
+            enqueue_agent_work_if_available(pool, agent_id, existing_work_item_id).await?;
+        let detail = format!(
+            "{}: {}",
+            items
+                .first()
+                .map(InboxWakeItem::target)
+                .unwrap_or_else(|| "unknown target".to_owned()),
+            inbox_wake_work_item_title(&items)
+        );
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            None,
+            "inbox",
+            if scheduled {
+                "Inbox wake merged and dispatched"
+            } else {
+                "Inbox wake merged"
+            },
+            detail,
+        )
+        .await?;
+        return Ok(Some((existing_work_item_id, scheduled)));
+    }
+
     let work_item_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_work_items (
@@ -2946,19 +3221,23 @@ async fn ensure_agent_inbox_wake_work_item(
         "#,
     )
     .bind(agent_id)
-    .bind(channel_id)
-    .bind(thread_root_id)
-    .bind(source_message_id)
-    .bind(inbox_item_id)
-    .bind(task_id)
-    .bind(format!("Process inbox: {title}"))
-    .bind(context)
+    .bind(batch[0].channel_id)
+    .bind(batch[0].thread_root_id)
+    .bind(batch[0].source_message_id)
+    .bind(batch[0].id)
+    .bind(batch[0].task_id)
+    .bind(inbox_wake_work_item_title(&batch))
+    .bind(inbox_wake_context(&batch))
     .fetch_one(pool)
     .await
     .map_err(to_string)?;
-    attach_work_item_to_inbox(pool, inbox_item_id, work_item_id).await?;
+    attach_work_item_to_inboxes(pool, &inbox_item_ids, work_item_id).await?;
     notify_ui_work_item_changed(pool, work_item_id, "work_item_created").await;
     let scheduled = enqueue_agent_work_if_available(pool, agent_id, work_item_id).await?;
+    let target = batch
+        .first()
+        .map(InboxWakeItem::target)
+        .unwrap_or_else(|| "unknown target".to_owned());
     record_agent_activity(
         pool,
         Some(agent_id),
@@ -2969,7 +3248,7 @@ async fn ensure_agent_inbox_wake_work_item(
         } else {
             "Inbox wake queued"
         },
-        format!("{target}: {title}"),
+        format!("{target}: {}", inbox_wake_work_item_title(&batch)),
     )
     .await?;
     Ok(Some((work_item_id, scheduled)))
@@ -14265,6 +14544,147 @@ mod tests {
             assert_eq!(state_counts.get::<Option<i64>, _>("archived"), Some(1));
             assert_eq!(state_counts.get::<Option<i64>, _>("processing"), Some(1));
             assert_eq!(state_counts.get::<Option<i64>, _>("unread"), Some(0));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn inbox_wake_batches_unread_items_for_same_thread() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "inbox-batch").await?;
+            let channel_id = insert_test_channel(&pool, "batch-thread").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', '@inbox-batch please investigate', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into agent_work_items (
+                    agent_id, channel_id, thread_root_id, source_message_id, title, context, status
+                )
+                values ($1, $2, $3, $3, 'Initial dispatch', 'Initial dispatch', 'done')
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(root_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                Some(root_id),
+                "first pending follow-up",
+                false,
+                vec![],
+            )
+            .await?;
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                Some(root_id),
+                "second pending follow-up",
+                false,
+                vec![],
+            )
+            .await?;
+
+            let rows = sqlx::query(
+                r#"
+                select
+                    w.id,
+                    w.title,
+                    w.context,
+                    count(i.id)::bigint as inbox_count,
+                    count(*) filter (where i.state = 'processing')::bigint as processing_count
+                from agent_work_items w
+                join agent_inbox_items i on i.work_item_id = w.id
+                where w.agent_id = $1
+                  and w.channel_id = $2
+                  and w.thread_root_id = $3
+                  and w.source_kind = 'inbox_wake'
+                group by w.id, w.title, w.context
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(root_id)
+            .fetch_all(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            assert_eq!(rows.len(), 1);
+            let work_item_id: Uuid = rows[0].get("id");
+            assert_eq!(rows[0].get::<i64, _>("inbox_count"), 2);
+            assert_eq!(rows[0].get::<i64, _>("processing_count"), 2);
+            assert_eq!(
+                rows[0].get::<String, _>("title"),
+                "Process inbox: first pending follow-up (+1 more)"
+            );
+            let context: String = rows[0].get("context");
+            assert!(context.contains("batches 2 inbox items"));
+            assert!(context.contains("first pending follow-up"));
+            assert!(context.contains("second pending follow-up"));
+
+            let start_commands: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from supervisor_commands
+                where agent_id = $1 and command_type = 'start_agent'
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(start_commands, 1);
+
+            sqlx::query("update agent_work_items set status = 'done' where id = $1")
+                .bind(work_item_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            notify_ui_work_item_changed(&pool, work_item_id, "test_done").await;
+            let archived: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_inbox_items
+                where agent_id = $1 and work_item_id = $2 and state = 'archived'
+                "#,
+            )
+            .bind(agent_id)
+            .bind(work_item_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(archived, 2);
             Ok(())
         }
         .await;
