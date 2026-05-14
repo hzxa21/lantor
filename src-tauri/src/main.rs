@@ -3302,6 +3302,40 @@ fn inbox_wake_context(items: &[InboxWakeItem], other_active: &[InboxWakeSummary]
     lines.join("\n")
 }
 
+fn build_steer_followup_prompt(items: &[InboxWakeItem]) -> String {
+    let Some(primary) = items.first() else {
+        return "Same-channel/thread live inbox follow-up.".to_owned();
+    };
+    let target = primary.target();
+    let mut lines = vec![
+        "Same-channel/thread live inbox follow-up.".to_owned(),
+        "Treat the message header(s) below as newer input for the active turn.".to_owned(),
+        format!("Default reply target for normal assistant text: {target}"),
+        "Archive handled or intentionally ignored inbox items with:".to_owned(),
+        "\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id <id>".to_owned(),
+        String::new(),
+    ];
+
+    if items.len() == 1 {
+        lines.push("New inbox message:".to_owned());
+    } else {
+        lines.push("New inbox messages:".to_owned());
+    }
+    for (index, item) in items.iter().enumerate() {
+        if items.len() > 1 {
+            lines.push(format!("{}. {}", index + 1, item.message_header()));
+        } else {
+            lines.push(item.message_header());
+        }
+        lines.push(format!("   inbox_id: {}", item.id));
+        if index + 1 < items.len() {
+            lines.push(String::new());
+        }
+    }
+
+    lines.join("\n")
+}
+
 async fn refresh_inbox_wake_work_item(
     pool: &PgPool,
     agent_id: Uuid,
@@ -10187,7 +10221,7 @@ async fn steer_warm_codex_turn_if_same_surface(
 ) -> CommandResult<bool> {
     let row = sqlx::query(
         r#"
-        select channel_id, thread_root_id
+        select channel_id, thread_root_id, source_kind
         from agent_work_items
         where id = $1 and agent_id = $2 and status = 'queued'
         "#,
@@ -10202,6 +10236,7 @@ async fn steer_warm_codex_turn_if_same_surface(
     };
     let channel_id: Option<Uuid> = row.get("channel_id");
     let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+    let source_kind: String = row.get("source_kind");
 
     let (active_run_id, active_channel_id, active_thread_root_id, active_turn_id) = {
         let state = runtime.state.lock().await;
@@ -10231,6 +10266,16 @@ async fn steer_warm_codex_turn_if_same_surface(
     }
     let Some(turn_id) = active_turn_id else {
         return Ok(false);
+    };
+    let steer_prompt = if source_kind == "inbox_wake" {
+        let items = load_inbox_wake_items_for_work_item(pool, work_item_id).await?;
+        if items.is_empty() {
+            codex_prompt.to_owned()
+        } else {
+            build_steer_followup_prompt(&items)
+        }
+    } else {
+        codex_prompt.to_owned()
     };
 
     let request_id = {
@@ -10295,7 +10340,7 @@ async fn steer_warm_codex_turn_if_same_surface(
                     "expectedTurnId": turn_id,
                     "input": [{
                         "type": "text",
-                        "text": codex_prompt,
+                        "text": steer_prompt,
                         "text_elements": []
                     }]
                 }
@@ -12619,11 +12664,12 @@ fn main() {
 mod tests {
     use super::{
         activity_status, append_streaming_agent_message, build_codex_streaming_prompt,
-        build_streaming_work_item_prompt, build_work_item_prompt, capped_stream_delta,
-        claim_agent_event, claim_next_supervisor_command, classify_agent_output_activity,
-        claude_message_text, claude_result_error, claude_stream_event_activity,
-        claude_system_prompt, claude_text_delta, codex_item_started_activity,
-        codex_turn_id_from_value, consume_streaming_agent_control_lines,
+        build_steer_followup_prompt, build_streaming_work_item_prompt, build_work_item_prompt,
+        capped_stream_delta, claim_agent_event, claim_next_supervisor_command,
+        classify_agent_output_activity, claude_message_text, claude_result_error,
+        claude_stream_event_activity, claude_system_prompt, claude_text_delta,
+        codex_item_started_activity, codex_turn_id_from_value,
+        consume_streaming_agent_control_lines,
         context_tool::{
             agent_context_agent_inspect, agent_context_artifact_read_in_pool,
             agent_context_attachment_info, agent_context_history_read, agent_context_inbox_archive,
@@ -12818,6 +12864,39 @@ mod tests {
         assert!(context.contains(&format!("inbox_id: {inbox_id}")));
         assert!(context.contains("Other active inbox targets:"));
         assert!(context.contains("- dm:Hancock: 2 active"));
+    }
+
+    #[test]
+    fn steer_followup_prompt_uses_compact_inbox_headers() {
+        let thread_root_id = Uuid::new_v4();
+        let source_message_id = Uuid::new_v4();
+        let inbox_id = Uuid::new_v4();
+        let prompt = build_steer_followup_prompt(&[InboxWakeItem {
+            id: inbox_id,
+            channel_id: Some(Uuid::new_v4()),
+            channel_name: Some("support".to_owned()),
+            channel_kind: Some("channel".to_owned()),
+            thread_root_id: Some(thread_root_id),
+            source_message_id: Some(source_message_id),
+            task_id: None,
+            kind: "owner_thread_followup".to_owned(),
+            priority: 90,
+            title: "Handle follow-up".to_owned(),
+            body_preview: "please use the latest numbers\nand reply directly".to_owned(),
+            message_created_at: Some(Utc::now()),
+            sender_name: Some("Dylan".to_owned()),
+            sender_role: Some("owner".to_owned()),
+        }]);
+
+        assert!(prompt.contains("Same-channel/thread live inbox follow-up."));
+        assert!(prompt.contains("Default reply target for normal assistant text: #support:"));
+        assert!(prompt.contains(&format!("msg={}", short_id(source_message_id))));
+        assert!(prompt.contains(&format!("inbox_id: {inbox_id}")));
+        assert!(prompt.contains("inbox-archive --inbox-id <id>"));
+        assert!(!prompt.contains("Current Lantor inbox processing turn:"));
+        assert!(!prompt.contains("title: Handle follow-up"));
+        assert!(!prompt.contains("kind: owner_thread_followup"));
+        assert!(!prompt.contains(WORK_ITEM_FINISH_PROMPT));
     }
 
     #[tokio::test]
