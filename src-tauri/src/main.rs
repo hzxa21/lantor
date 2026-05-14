@@ -71,6 +71,7 @@ const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by Lantor]";
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
 const INBOX_WAKE_BATCH_LIMIT: i64 = 8;
+const INBOX_WAKE_OTHER_SUMMARY_LIMIT: i64 = 6;
 const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
@@ -2704,6 +2705,9 @@ struct InboxWakeItem {
     priority: i32,
     title: String,
     body_preview: String,
+    message_created_at: Option<DateTime<Utc>>,
+    sender_name: Option<String>,
+    sender_role: Option<String>,
 }
 
 impl InboxWakeItem {
@@ -2714,6 +2718,39 @@ impl InboxWakeItem {
             self.thread_root_id,
         )
     }
+
+    fn message_header(&self) -> String {
+        let msg = self
+            .source_message_id
+            .map(short_id)
+            .unwrap_or_else(|| short_id(self.id));
+        let time = self
+            .message_created_at
+            .map(|time| time.to_rfc3339())
+            .unwrap_or_else(|| "-".to_owned());
+        let sender_role = self.sender_role.as_deref().unwrap_or("unknown");
+        let sender = self
+            .sender_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("unknown");
+        let preview = compact_chars_middle(&self.body_preview, DISPATCH_MESSAGE_BODY_LIMIT)
+            .replace('\n', " ");
+        format!(
+            "[target={} msg={} time={} type={}] {}: {}",
+            self.target(),
+            msg,
+            time,
+            sender_role,
+            sender,
+            preview
+        )
+    }
+}
+
+struct InboxWakeSummary {
+    target: String,
+    count: i64,
 }
 
 async fn create_agent_inbox_item(
@@ -2862,6 +2899,9 @@ fn inbox_wake_item_from_row(row: &PgRow) -> InboxWakeItem {
         priority: row.get("priority"),
         title: row.get("title"),
         body_preview: row.get("body_preview"),
+        message_created_at: row.get("message_created_at"),
+        sender_name: row.get("sender_name"),
+        sender_role: row.get("sender_role"),
     }
 }
 
@@ -2882,9 +2922,13 @@ async fn next_unread_inbox_wake_item(
             i.kind,
             i.priority,
             i.title,
-            i.body_preview
+            i.body_preview,
+            m.created_at as message_created_at,
+            m.sender_name,
+            m.sender_role
         from agent_inbox_items i
         left join channels c on c.id = i.channel_id
+        left join messages m on m.id = i.source_message_id
         where i.agent_id = $1
           and i.state = 'unread'
         order by i.priority desc, i.created_at asc
@@ -2918,9 +2962,13 @@ async fn load_unread_inbox_wake_batch(
             i.kind,
             i.priority,
             i.title,
-            i.body_preview
+            i.body_preview,
+            m.created_at as message_created_at,
+            m.sender_name,
+            m.sender_role
         from agent_inbox_items i
         left join channels c on c.id = i.channel_id
+        left join messages m on m.id = i.source_message_id
         where i.agent_id = $1
           and i.state = 'unread'
           and i.channel_id is not distinct from $2
@@ -2957,9 +3005,13 @@ async fn load_inbox_wake_items_for_work_item(
             i.kind,
             i.priority,
             i.title,
-            i.body_preview
+            i.body_preview,
+            m.created_at as message_created_at,
+            m.sender_name,
+            m.sender_role
         from agent_inbox_items i
         left join channels c on c.id = i.channel_id
+        left join messages m on m.id = i.source_message_id
         where i.work_item_id = $1
         order by i.priority desc, i.created_at asc
         "#,
@@ -2970,6 +3022,61 @@ async fn load_inbox_wake_items_for_work_item(
     .map_err(to_string)?;
 
     Ok(rows.iter().map(inbox_wake_item_from_row).collect())
+}
+
+async fn load_other_active_inbox_summary(
+    pool: &PgPool,
+    agent_id: Uuid,
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+) -> CommandResult<Vec<InboxWakeSummary>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            i.channel_id,
+            c.name as channel_name,
+            c.kind as channel_kind,
+            i.thread_root_id,
+            count(*)::bigint as item_count,
+            max(i.priority) as max_priority,
+            min(i.created_at) as oldest_created_at
+        from agent_inbox_items i
+        left join channels c on c.id = i.channel_id
+        where i.agent_id = $1
+          and i.state in ('unread', 'processing')
+          and not (
+              i.channel_id is not distinct from $2
+              and i.thread_root_id is not distinct from $3
+          )
+        group by i.channel_id, c.name, c.kind, i.thread_root_id
+        order by max_priority desc, oldest_created_at asc
+        limit $4
+        "#,
+    )
+    .bind(agent_id)
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(INBOX_WAKE_OTHER_SUMMARY_LIMIT)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let channel_name: Option<String> = row.get("channel_name");
+            let channel_kind: Option<String> = row.get("channel_kind");
+            let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+            InboxWakeSummary {
+                target: format_inbox_target(
+                    channel_kind.as_deref(),
+                    channel_name.as_deref(),
+                    thread_root_id,
+                ),
+                count: row.get("item_count"),
+            }
+        })
+        .collect())
 }
 
 async fn find_queued_inbox_wake_work_item_for_surface(
@@ -3014,7 +3121,7 @@ fn inbox_wake_work_item_title(items: &[InboxWakeItem]) -> String {
     }
 }
 
-fn inbox_wake_context(items: &[InboxWakeItem]) -> String {
+fn inbox_wake_context(items: &[InboxWakeItem], other_active: &[InboxWakeSummary]) -> String {
     let Some(primary) = items.first() else {
         return "Lantor agent inbox wake.".to_owned();
     };
@@ -3029,8 +3136,9 @@ fn inbox_wake_context(items: &[InboxWakeItem]) -> String {
                 items.len()
             )
         },
-        "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id <id> only if you need a full source message or metadata.".to_owned(),
-        "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20 only if you need to choose among other active inbox items.".to_owned(),
+        "The message headers below include target, source message id, created time, sender type/name, and preview. Handle directly from them when enough detail is present.".to_owned(),
+        "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id <id> only if the preview/header is insufficient and you need a full source message or metadata.".to_owned(),
+        "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20 only if you need to inspect or choose among other active inbox items.".to_owned(),
         "Archive handled or intentionally ignored items with:".to_owned(),
         "\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-archive --inbox-id <id>".to_owned(),
         String::new(),
@@ -3046,19 +3154,27 @@ fn inbox_wake_context(items: &[InboxWakeItem]) -> String {
     }
     for (index, item) in items.iter().enumerate() {
         if items.len() > 1 {
-            lines.push(format!("{}. target: {}", index + 1, item.target()));
+            lines.push(format!("{}. {}", index + 1, item.message_header()));
+        } else {
+            lines.push(item.message_header());
         }
-        lines.push(format!("- id: {}", item.id));
-        lines.push(format!("- kind: {}", item.kind));
-        lines.push(format!("- priority: {}", item.priority));
-        lines.push(format!("- title: {}", item.title));
+        lines.push(format!("   inbox_id: {}", item.id));
         lines.push(format!(
-            "- preview: {}",
-            compact_chars_middle(&item.body_preview, DISPATCH_MESSAGE_BODY_LIMIT)
+            "   kind: {}, priority: {}, title: {}",
+            item.kind, item.priority, item.title
         ));
         if index + 1 < items.len() {
             lines.push(String::new());
         }
+    }
+
+    if !other_active.is_empty() {
+        lines.push(String::new());
+        lines.push("Other active inbox targets:".to_owned());
+        for summary in other_active {
+            lines.push(format!("- {}: {} active", summary.target, summary.count));
+        }
+        lines.push("Stay focused on the selected item(s) above unless another active target is clearly higher priority.".to_owned());
     }
 
     lines.join("\n")
@@ -3066,12 +3182,16 @@ fn inbox_wake_context(items: &[InboxWakeItem]) -> String {
 
 async fn refresh_inbox_wake_work_item(
     pool: &PgPool,
+    agent_id: Uuid,
     work_item_id: Uuid,
     items: &[InboxWakeItem],
 ) -> CommandResult<()> {
     let Some(primary) = items.first() else {
         return Ok(());
     };
+    let other_active =
+        load_other_active_inbox_summary(pool, agent_id, primary.channel_id, primary.thread_root_id)
+            .await?;
     sqlx::query(
         r#"
         update agent_work_items
@@ -3093,7 +3213,7 @@ async fn refresh_inbox_wake_work_item(
     .bind(primary.id)
     .bind(primary.task_id)
     .bind(inbox_wake_work_item_title(items))
-    .bind(inbox_wake_context(items))
+    .bind(inbox_wake_context(items, &other_active))
     .execute(pool)
     .await
     .map_err(to_string)?;
@@ -3182,7 +3302,7 @@ async fn ensure_agent_inbox_wake_work_item(
     {
         attach_work_item_to_inboxes(pool, &inbox_item_ids, existing_work_item_id).await?;
         let items = load_inbox_wake_items_for_work_item(pool, existing_work_item_id).await?;
-        refresh_inbox_wake_work_item(pool, existing_work_item_id, &items).await?;
+        refresh_inbox_wake_work_item(pool, agent_id, existing_work_item_id, &items).await?;
         notify_ui_work_item_changed(pool, existing_work_item_id, "work_item_merged").await;
         let scheduled =
             enqueue_agent_work_if_available(pool, agent_id, existing_work_item_id).await?;
@@ -3210,6 +3330,13 @@ async fn ensure_agent_inbox_wake_work_item(
         return Ok(Some((existing_work_item_id, scheduled)));
     }
 
+    let other_active = load_other_active_inbox_summary(
+        pool,
+        agent_id,
+        batch[0].channel_id,
+        batch[0].thread_root_id,
+    )
+    .await?;
     let work_item_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_work_items (
@@ -3227,7 +3354,7 @@ async fn ensure_agent_inbox_wake_work_item(
     .bind(batch[0].id)
     .bind(batch[0].task_id)
     .bind(inbox_wake_work_item_title(&batch))
-    .bind(inbox_wake_context(&batch))
+    .bind(inbox_wake_context(&batch, &other_active))
     .fetch_one(pool)
     .await
     .map_err(to_string)?;
@@ -12201,7 +12328,7 @@ mod tests {
         },
         delete_agent_in_pool, delete_channel_in_pool, ensure_agent_workspace,
         extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
-        handle_agent_event, insert_agent_message, load_agent_memory_context,
+        handle_agent_event, inbox_wake_context, insert_agent_message, load_agent_memory_context,
         load_channel_agent_roster, load_messages, load_reminders, load_runtime_thread_id,
         maybe_hide_silent_streaming_reply, migrate, notify_ui_work_item_changed,
         open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
@@ -12209,9 +12336,9 @@ mod tests {
         send_owner_message_in_pool, silent_reply_reason, upsert_agent_thread_subscription,
         upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
-        AgentAttachmentFile, AgentEvent, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
-        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
-        WORK_ITEM_FINISH_PROMPT,
+        AgentAttachmentFile, AgentEvent, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
+        AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
+        STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::json;
@@ -12264,6 +12391,7 @@ mod tests {
         assert!(prompt.contains("Before long-running work, update Active Context"));
         assert!(prompt.contains("Agent context tools"));
         assert!(prompt.contains("inbox-list"));
+        assert!(prompt.contains("Live inbox delivery"));
         assert!(prompt.contains("Persistent memory: prefer concise replies"));
     }
 
@@ -12324,6 +12452,7 @@ mod tests {
         );
 
         assert!(prompt.contains("Standing instructions are already installed"));
+        assert!(prompt.contains("Same-channel/thread follow-ups may be delivered"));
         assert!(prompt.contains("Latest user message: please review"));
         assert!(prompt.contains(WORK_ITEM_FINISH_PROMPT));
         assert!(!prompt.contains("Operating policy:"));
@@ -12346,6 +12475,44 @@ mod tests {
 
         assert!(prompt.contains("agent_profile_hint:"));
         assert!(prompt.contains("Pick a stable DiceBear avatar if the profile is empty."));
+    }
+
+    #[test]
+    fn inbox_wake_context_includes_message_headers_and_other_active_summary() {
+        let channel_id = Uuid::new_v4();
+        let thread_root_id = Uuid::new_v4();
+        let source_message_id = Uuid::new_v4();
+        let inbox_id = Uuid::new_v4();
+        let context = inbox_wake_context(
+            &[InboxWakeItem {
+                id: inbox_id,
+                channel_id: Some(channel_id),
+                channel_name: Some("support".to_owned()),
+                channel_kind: Some("channel".to_owned()),
+                thread_root_id: Some(thread_root_id),
+                source_message_id: Some(source_message_id),
+                task_id: None,
+                kind: "owner_thread_followup".to_owned(),
+                priority: 90,
+                title: "Handle follow-up".to_owned(),
+                body_preview: "please use the latest numbers\nand reply directly".to_owned(),
+                message_created_at: Some(Utc::now()),
+                sender_name: Some("Dylan".to_owned()),
+                sender_role: Some("owner".to_owned()),
+            }],
+            &[InboxWakeSummary {
+                target: "dm:Hancock".to_owned(),
+                count: 2,
+            }],
+        );
+
+        assert!(context.contains("[target=#support:"));
+        assert!(context.contains(&format!("msg={}", short_id(source_message_id))));
+        assert!(context.contains("type=owner"));
+        assert!(context.contains("Dylan: please use the latest numbers and reply directly"));
+        assert!(context.contains(&format!("inbox_id: {inbox_id}")));
+        assert!(context.contains("Other active inbox targets:"));
+        assert!(context.contains("- dm:Hancock: 2 active"));
     }
 
     #[tokio::test]

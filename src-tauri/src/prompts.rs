@@ -47,6 +47,13 @@ Inbox, workspace, and memory commands default to your own LANTOR_AGENT_ID; add -
 When a turn contains a default inbox item or source_message, handle that item directly from the provided context when possible. Use inbox-list or inbox-read when you need missing details, need to choose among multiple active items, or are handling a different item. Archive handled or intentionally ignored inbox items."##
 }
 
+fn lantor_live_delivery_prompt() -> &'static str {
+    r#"Live inbox delivery:
+- While you are working, Lantor may deliver same-channel/thread follow-ups directly into this active warm runtime turn. Treat them as newer input for the same live conversation.
+- You do not need to poll inbox-list just because live delivery exists. Use inbox-list only to inspect other active targets or recover missing context.
+- If a live follow-up changes priority or direction, adapt to the latest request; otherwise finish the current selected work and then handle any remaining active inbox items."#
+}
+
 fn lantor_control_api_prompt() -> &'static str {
     r#"Standalone LANTOR_EVENT control lines:
 LANTOR_EVENT {"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"<short user-facing status>","detail":"<optional compact detail>"}
@@ -113,7 +120,7 @@ fn build_work_item_prompt_inner(
         lines.push(lantor_operating_policy_prompt().to_owned());
         lines.push(lantor_memory_management_prompt().to_owned());
     } else {
-        lines.push("Standing instructions are already installed for this warm runtime. Handle the current request directly, use Lantor context tools only when needed, archive handled inbox items, and keep visible replies concise.".to_owned());
+        lines.push("Standing instructions are already installed for this warm runtime. Handle the current request directly. Same-channel/thread follow-ups may be delivered into this active turn; treat them as newer input for this live conversation. Use Lantor context tools only when needed, archive handled inbox items, and keep visible replies concise.".to_owned());
     }
     if let Some(agent_profile_hint) = agent_profile_hint {
         let agent_profile_hint = agent_profile_hint.trim();
@@ -258,10 +265,13 @@ fn build_runtime_standing_prompt(
          \n\
          {}\n\
          \n\
+         {}\n\
+         \n\
          Keep user-visible replies concise and include concrete results or blockers. Non-message LANTOR_EVENT control lines are allowed as standalone lines. Do not print LANTOR_EVENT message/task_claim lines unless explicitly asked to debug the stdout command path.",
         lantor_operating_policy_prompt(),
         lantor_memory_management_prompt(),
         lantor_context_tools_prompt(),
+        lantor_live_delivery_prompt(),
         lantor_control_api_prompt(),
     );
     if let Some(memory_context) = memory_context.filter(|context| !context.trim().is_empty()) {
