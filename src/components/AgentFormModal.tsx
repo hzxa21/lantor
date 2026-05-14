@@ -122,19 +122,22 @@ export function AgentFormModal({
       </label>
     </>
   );
+  const agentPreview = (
+    <div className="agent-form-preview">
+      <AgentAvatar agent={previewAgent} size="lg" showStatus={false} />
+      <div>
+        <strong>{previewName}</strong>
+        <span>{modelLabel(form.model)}</span>
+      </div>
+    </div>
+  );
 
   return (
     <Modal open={open} title={title} onClose={onCancel} width={700}>
       <div className="modal-form agent-modal-form">
         {createMode ? (
           <>
-            <div className="agent-form-preview">
-              <AgentAvatar agent={previewAgent} size="lg" showStatus={false} />
-              <div>
-                <strong>{previewName}</strong>
-                <span>{modelLabel(form.model)}</span>
-              </div>
-            </div>
+            {agentPreview}
             <div className="two-col">
               <label>
                 <span>Name</span>
@@ -174,6 +177,7 @@ export function AgentFormModal({
           </>
         ) : (
           <>
+            {agentPreview}
             <label>
               <span>Name</span>
               <input
