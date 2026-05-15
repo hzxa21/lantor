@@ -2451,6 +2451,7 @@ function App() {
       <Conversation
         channel={channel}
         agents={data.agents}
+        ownerProfile={data.owner_profile}
         agentActivities={data.agent_activities}
         agentRuns={data.agent_runs}
         agentWorkItems={data.agent_work_items}
@@ -2523,6 +2524,7 @@ function App() {
         <ThreadPanel
           channel={channel}
           agents={data.agents}
+          ownerProfile={data.owner_profile}
           agentActivities={data.agent_activities}
           agentRuns={data.agent_runs}
           agentWorkItems={data.agent_work_items}

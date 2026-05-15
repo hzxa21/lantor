@@ -1,4 +1,15 @@
-import { AgentForm, RUNTIME_PRESETS } from "./types";
+import { AgentForm, OwnerProfile, RUNTIME_PRESETS } from "./types";
+
+export function ownerAsAvatarAgent(profile: OwnerProfile) {
+  return {
+    id: "owner-profile",
+    handle: "owner",
+    display_name: profile.display_name,
+    status: "idle",
+    avatar: profile.avatar,
+    description: profile.description,
+  };
+}
 
 const LANTOR_OPERATING_POLICY = [
   "Operating policy:",

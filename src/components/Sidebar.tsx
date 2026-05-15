@@ -13,9 +13,9 @@ import {
   Agent,
   Bootstrap,
   Channel,
-  OwnerProfile,
 } from "../types";
 import { APP_DISPLAY_NAME } from "../branding";
+import { ownerAsAvatarAgent } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
 
 type SidebarProps = {
@@ -34,17 +34,6 @@ type SidebarProps = {
   onMobileClose?: () => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
-
-function ownerAsAvatarAgent(profile: OwnerProfile) {
-  return {
-    id: "owner-profile",
-    handle: "owner",
-    display_name: profile.display_name,
-    status: "idle",
-    avatar: profile.avatar,
-    description: profile.description,
-  };
-}
 
 export function Sidebar({
   data,

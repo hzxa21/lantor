@@ -6,8 +6,8 @@ import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
-import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
-import { formatClockTime, formatTime, visibleAgentDescription } from "../ui-utils";
+import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task } from "../types";
+import { formatClockTime, formatTime, ownerAsAvatarAgent, visibleAgentDescription } from "../ui-utils";
 import { ActivityProgressDock } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
@@ -19,6 +19,7 @@ import { MessageMarkdown } from "./MessageMarkdown";
 type ThreadPanelProps = {
   channel: Channel | null;
   agents: Agent[];
+  ownerProfile: OwnerProfile;
   agentActivities: AgentActivity[];
   agentRuns: AgentRun[];
   agentWorkItems: AgentWorkItem[];
@@ -54,7 +55,7 @@ type MessageMenuState = {
 } | null;
 
 function agentForMessage(message: Message, agents: Agent[]) {
-  if (message.sender_role !== "agent") return null;
+  if (message.sender_role === "owner" || message.sender_role === "system") return null;
   const sender = message.sender_name.replace(/^@/, "");
   return agents.find((agent) => agent.handle === sender || agent.display_name === message.sender_name) ?? null;
 }
@@ -62,6 +63,7 @@ function agentForMessage(message: Message, agents: Agent[]) {
 export function ThreadPanel({
   channel,
   agents,
+  ownerProfile,
   agentActivities,
   agentRuns,
   agentWorkItems,
@@ -360,6 +362,8 @@ export function ThreadPanel({
                     >
                       <AgentAvatarWithProfile agent={rootAgent} />
                     </button>
+                  ) : activeRoot.sender_role === "owner" ? (
+                    <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
                   ) : (
                     <div className="avatar">{activeRoot.sender_name.slice(0, 1)}</div>
                   )}
@@ -501,6 +505,8 @@ export function ThreadPanel({
                     >
                       <AgentAvatarWithProfile agent={replyAgent} />
                     </button>
+                  ) : reply.sender_role === "owner" ? (
+                    <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
                   ) : (
                     <div className="avatar">{reply.sender_name.slice(0, 1)}</div>
                   )}
