@@ -200,7 +200,11 @@ function activeProgressByAgent(
 ) {
   const streamingMessages = messages
     .map((message) => ({ message, runId: messageRunId(message) }))
-    .filter(({ message, runId }) => runId && message.sender_role === "agent" && message.delivery_state === "streaming");
+    .filter(({ message, runId }) =>
+      runId
+      && message.sender_role !== "owner"
+      && message.sender_role !== "system"
+      && message.delivery_state === "streaming");
 
   const activitiesByRun = new Map<string, AgentActivity[]>();
   activities

@@ -15,7 +15,8 @@ export function messageHasVisibleContent(message: Message) {
 }
 
 export function isProgressOnlyMessage(message: Message) {
-  if (message.sender_role !== "agent" || !messageRunId(message)) return false;
+  if (!messageRunId(message)) return false;
+  if (message.sender_role === "owner" || message.sender_role === "system") return false;
   if (message.delivery_state === "streaming") return true;
   return message.delivery_state === "complete" && !messageHasVisibleContent(message);
 }
