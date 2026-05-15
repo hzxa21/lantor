@@ -1497,6 +1497,94 @@ fn configured_web_base_url() -> Option<String> {
     Some(format!("http://{host}:{}", addr.port()))
 }
 
+fn normalize_external_url(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once(':')?;
+    let scheme = scheme.to_ascii_lowercase();
+    match scheme.as_str() {
+        "http" | "https" if rest.starts_with("//") => Some(url.to_owned()),
+        "mailto" if !rest.is_empty() => Some(url.to_owned()),
+        "file" if rest.starts_with("//") => Some(url.to_owned()),
+        _ => None,
+    }
+}
+
+fn strip_local_path_line_suffix(value: &str) -> &str {
+    if Path::new(value).exists() {
+        return value;
+    }
+
+    if let Some((path, line)) = value.rsplit_once(':') {
+        if !line.is_empty() && line.chars().all(|c| c.is_ascii_digit()) && Path::new(path).exists()
+        {
+            return path;
+        }
+    }
+
+    if let Some((path, line)) = value.rsplit_once("#L") {
+        if !line.is_empty() && line.chars().all(|c| c.is_ascii_digit()) && Path::new(path).exists()
+        {
+            return path;
+        }
+    }
+
+    value
+}
+
+fn normalize_local_path_link(url: &str) -> Option<String> {
+    let expanded = expand_home_path(url);
+    let without_line_suffix = strip_local_path_line_suffix(&expanded);
+    let path = Path::new(without_line_suffix);
+    if path.is_absolute() && path.exists() {
+        return Some(path.to_string_lossy().to_string());
+    }
+    None
+}
+
+fn normalize_open_link_target(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
+        return None;
+    }
+
+    normalize_external_url(trimmed).or_else(|| normalize_local_path_link(trimmed))
+}
+
+fn open_link_target_with_system(target: &str) -> CommandResult<()> {
+    #[cfg(target_os = "macos")]
+    let status = StdCommand::new("open")
+        .arg(target)
+        .status()
+        .map_err(to_string)?;
+
+    #[cfg(target_os = "windows")]
+    let status = StdCommand::new("cmd")
+        .args(["/C", "start", "", target])
+        .status()
+        .map_err(to_string)?;
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = StdCommand::new("xdg-open")
+        .arg(target)
+        .status()
+        .map_err(to_string)?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("failed to open link target: {status}"))
+    }
+}
+
+#[tauri::command]
+async fn open_external_url(url: String) -> CommandResult<()> {
+    let target = normalize_open_link_target(&url).ok_or_else(|| {
+        "only http, https, mailto, file, and existing local file links can be opened".to_owned()
+    })?;
+    tauri::async_runtime::spawn_blocking(move || open_link_target_with_system(&target))
+        .await
+        .map_err(to_string)?
+}
+
 pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResult<Bootstrap> {
     let owner_profile = load_owner_profile(pool).await?;
     let channels = load_channels(pool).await?;
@@ -12609,6 +12697,7 @@ pub fn run() {
             dismiss_inbox_items,
             mark_channel_read,
             open_dm_with_agent,
+            open_external_url,
             retry_agent_work,
             send_message,
             set_message_saved,
@@ -12679,11 +12768,11 @@ mod tests {
         extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
         handle_agent_event, inbox_wake_context, insert_agent_message, load_agent_memory_context,
         load_channel_agent_roster, load_messages, load_reminders, load_runtime_thread_id,
-        maybe_hide_silent_streaming_reply, migrate, notify_ui_work_item_changed,
-        open_dm_with_agent_in_pool, parse_activity_metadata, process_due_agent_schedules,
-        process_due_reminders, queue_mentions_as_work_items, record_agent_activity,
-        send_owner_message_in_pool, silent_reply_reason, upsert_agent_thread_subscription,
-        upsert_runtime_thread_id,
+        maybe_hide_silent_streaming_reply, migrate, normalize_open_link_target,
+        notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
+        process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
+        record_agent_activity, send_owner_message_in_pool, silent_reply_reason,
+        upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
         AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
@@ -12704,6 +12793,46 @@ mod tests {
     fn ignores_empty_or_email_like_at_signs() {
         let mentions = extract_agent_mentions("email a@b.com and a lone @ sign");
         assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn open_link_target_normalization_allows_safe_schemes() {
+        assert_eq!(
+            normalize_open_link_target(" https://example.com/path?q=1 "),
+            Some("https://example.com/path?q=1".to_owned())
+        );
+        assert_eq!(
+            normalize_open_link_target("mailto:hello@example.com"),
+            Some("mailto:hello@example.com".to_owned())
+        );
+        assert_eq!(
+            normalize_open_link_target("file:///tmp/report.txt"),
+            Some("file:///tmp/report.txt".to_owned())
+        );
+        assert!(normalize_open_link_target("javascript:alert(1)").is_none());
+        assert!(normalize_open_link_target("https://example.com/\nopen").is_none());
+    }
+
+    #[test]
+    fn open_link_target_normalization_allows_existing_local_paths_with_line_suffixes() {
+        let dir = std::env::temp_dir().join(format!("lantor-link-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let file = file.to_string_lossy().to_string();
+
+        assert_eq!(normalize_open_link_target(&file), Some(file.clone()));
+        assert_eq!(
+            normalize_open_link_target(&format!("{file}:42")),
+            Some(file.clone())
+        );
+        assert_eq!(
+            normalize_open_link_target(&format!("{file}#L42")),
+            Some(file.clone())
+        );
+        assert!(normalize_open_link_target("/definitely/not/a/lantor/file.rs:1").is_none());
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

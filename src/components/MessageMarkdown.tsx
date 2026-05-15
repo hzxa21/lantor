@@ -1,6 +1,7 @@
-import { Children, ReactNode, isValidElement, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { Children, ReactNode, isValidElement, type MouseEvent, useState } from "react";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { openExternalUrl } from "../apiClient";
 import { copyText } from "../clipboard";
 
 type MessageMarkdownProps = {
@@ -68,12 +69,32 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
+function handleLinkClick(event: MouseEvent<HTMLAnchorElement>, href: string | undefined, isLocalLink: boolean) {
+  if (isLocalLink) {
+    event.preventDefault();
+    return;
+  }
+  if (!href) {
+    event.preventDefault();
+    return;
+  }
+  event.preventDefault();
+  void openExternalUrl(href).catch((err) => {
+    console.error("Failed to open external link", err);
+  });
+}
+
+function transformMessageUrl(url: string) {
+  return /^file:\/\//i.test(url) ? url : defaultUrlTransform(url);
+}
+
 export function MessageMarkdown({ body }: MessageMarkdownProps) {
   const linkedBody = linkifyMessageBody(body);
   return (
     <div className="markdown-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={transformMessageUrl}
         components={{
           a: ({ children, href, ...props }) => {
             const isLocalLink = Boolean(href?.startsWith(LOCAL_ENTITY_PATH_PREFIX));
@@ -84,7 +105,7 @@ export function MessageMarkdown({ body }: MessageMarkdownProps) {
                 className={isLocalLink ? "local-entity-link" : undefined}
                 target={isLocalLink ? undefined : "_blank"}
                 rel={isLocalLink ? undefined : "noreferrer"}
-                onClick={isLocalLink ? (event) => event.preventDefault() : undefined}
+                onClick={(event) => handleLinkClick(event, href, isLocalLink)}
               >
                 {children}
               </a>

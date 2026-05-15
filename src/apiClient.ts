@@ -14,6 +14,14 @@ export function isTauriRuntime() {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
 }
 
+export async function openExternalUrl(url: string): Promise<void> {
+  if (isTauriRuntime()) {
+    await tauriInvoke("open_external_url", { url });
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 function webToken() {
   if (typeof window === "undefined") return "";
   const url = new URL(window.location.href);
