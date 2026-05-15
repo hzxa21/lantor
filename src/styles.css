@@ -2445,12 +2445,16 @@ body.resizing-column * {
 .reply-list article {
   position: relative;
   display: grid;
-  grid-template-columns: 44px 1fr;
+  grid-template-columns: 44px minmax(0, 1fr);
   gap: 9px;
   padding: 7px 16px;
   border: 1px solid transparent;
   border-radius: 0;
   background: transparent;
+}
+
+.reply-list article > .reply-body {
+  min-width: 0;
 }
 
 .reply-list article:hover {
