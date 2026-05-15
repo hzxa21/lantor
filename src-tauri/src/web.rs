@@ -9,7 +9,7 @@ use std::{
 
 use axum::{
     body::Body,
-    extract::{ConnectInfo, Path as AxumPath, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Path as AxumPath, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive},
@@ -28,10 +28,13 @@ use uuid::Uuid;
 use crate::models::AttachmentUpload;
 use crate::{
     agent_workspace_list_in_pool, agent_workspace_read_file_in_pool, complete_reminder_in_pool,
-    load_artifact, load_bootstrap, mark_channel_read_in_pool, open_dm_with_agent_in_pool,
-    send_owner_message_in_pool, set_message_saved_in_pool, to_string, update_owner_profile_in_pool,
-    UI_REFRESH_CHANNEL,
+    create_channel_in_pool, delete_channel_in_pool, load_artifact, load_bootstrap,
+    mark_channel_read_in_pool, open_dm_with_agent_in_pool, send_owner_message_in_pool,
+    set_channel_agent_membership_in_pool, set_message_saved_in_pool, to_string,
+    update_channel_in_pool, update_owner_profile_in_pool, UI_REFRESH_CHANNEL,
 };
+
+const WEB_SEND_MESSAGE_BODY_LIMIT: usize = 128 * 1024 * 1024;
 
 #[derive(Clone)]
 struct WebState {
@@ -60,6 +63,28 @@ struct SendMessageRequest {
 #[serde(rename_all = "camelCase")]
 struct ChannelIdRequest {
     channel_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateChannelRequest {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateChannelRequest {
+    channel_id: Uuid,
+    name: String,
+    description: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetChannelAgentMembershipRequest {
+    channel_id: Uuid,
+    agent_id: Uuid,
+    member: bool,
 }
 
 #[derive(Deserialize)]
@@ -154,7 +179,17 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
         .route("/api/bootstrap", get(api_bootstrap))
         .route("/api/events", get(api_events))
         .route("/api/attachments/{attachment_id}", get(api_attachment))
-        .route("/api/send_message", post(api_send_message))
+        .route(
+            "/api/send_message",
+            post(api_send_message).layer(DefaultBodyLimit::max(WEB_SEND_MESSAGE_BODY_LIMIT)),
+        )
+        .route("/api/create_channel", post(api_create_channel))
+        .route("/api/update_channel", post(api_update_channel))
+        .route("/api/delete_channel", post(api_delete_channel))
+        .route(
+            "/api/set_channel_agent_membership",
+            post(api_set_channel_agent_membership),
+        )
         .route("/api/set_message_saved", post(api_set_message_saved))
         .route("/api/update_owner_profile", post(api_update_owner_profile))
         .route("/api/mark_channel_read", post(api_mark_channel_read))
@@ -252,6 +287,68 @@ async fn api_send_message(
         &request.body,
         request.as_task,
         request.attachments.unwrap_or_default(),
+    )
+    .await
+    .map(|_| Json(json!({ "ok": true })))
+    .map_err(api_error)
+}
+
+async fn api_create_channel(
+    State(state): State<Arc<WebState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<CreateChannelRequest>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
+    create_channel_in_pool(&state.pool, &request.name, "")
+        .await
+        .map(|channel_id| Json(json!({ "ok": true, "channelId": channel_id })))
+        .map_err(api_error)
+}
+
+async fn api_update_channel(
+    State(state): State<Arc<WebState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateChannelRequest>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
+    update_channel_in_pool(
+        &state.pool,
+        request.channel_id,
+        request.name,
+        request.description,
+    )
+    .await
+    .map(|_| Json(json!({ "ok": true })))
+    .map_err(api_error)
+}
+
+async fn api_delete_channel(
+    State(state): State<Arc<WebState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<ChannelIdRequest>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
+    delete_channel_in_pool(&state.pool, request.channel_id)
+        .await
+        .map(|_| Json(json!({ "ok": true })))
+        .map_err(api_error)
+}
+
+async fn api_set_channel_agent_membership(
+    State(state): State<Arc<WebState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<SetChannelAgentMembershipRequest>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
+    set_channel_agent_membership_in_pool(
+        &state.pool,
+        request.channel_id,
+        request.agent_id,
+        request.member,
     )
     .await
     .map(|_| Json(json!({ "ok": true })))

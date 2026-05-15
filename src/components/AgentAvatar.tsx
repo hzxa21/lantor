@@ -26,6 +26,7 @@ const PROFILE_POPOVER_WIDTH = 252;
 const PROFILE_POPOVER_ESTIMATED_HEIGHT = 116;
 const PROFILE_POPOVER_GAP = 10;
 const PROFILE_POPOVER_VIEWPORT_MARGIN = 12;
+const PROFILE_POPOVER_MEDIA_QUERY = "(hover: hover) and (pointer: fine) and (min-width: 761px)";
 const DICEBEAR_STYLE_LOADERS = {
   adventurer: () => import("@dicebear/adventurer"),
   "bottts-neutral": () => import("@dicebear/bottts-neutral"),
@@ -142,6 +143,31 @@ function getProfilePopoverPosition(rect: DOMRect): ProfilePopoverPosition {
   return { left, top, arrowLeft, placement };
 }
 
+function canOpenProfilePopover() {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia(PROFILE_POPOVER_MEDIA_QUERY).matches;
+}
+
+function useProfilePopoverEnabled() {
+  const [enabled, setEnabled] = useState(canOpenProfilePopover);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+
+    const mediaQuery = window.matchMedia(PROFILE_POPOVER_MEDIA_QUERY);
+    const syncEnabled = () => setEnabled(mediaQuery.matches);
+
+    syncEnabled();
+    mediaQuery.addEventListener("change", syncEnabled);
+    return () => {
+      mediaQuery.removeEventListener("change", syncEnabled);
+    };
+  }, []);
+
+  return enabled;
+}
+
 export function AgentAvatar({ agent, size = "md", className = "", title, showStatus = true }: AgentAvatarProps) {
   const seedText = agent.id || `${agent.handle}:${agent.display_name}:${agent.runtime ?? ""}`;
   const identicon = generateIdenticon(seedText);
@@ -210,8 +236,10 @@ export function AgentAvatarWithProfile({
   agent,
   size = "md",
   className = "",
+  showStatus = true,
 }: AgentAvatarProps) {
   const anchorRef = useRef<HTMLSpanElement>(null);
+  const profilePopoverEnabled = useProfilePopoverEnabled();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [profilePosition, setProfilePosition] = useState<ProfilePopoverPosition | null>(null);
   const role = compactProfileText(agent.role);
@@ -223,7 +251,7 @@ export function AgentAvatarWithProfile({
   }, []);
 
   useLayoutEffect(() => {
-    if (!isProfileOpen) return;
+    if (!profilePopoverEnabled || !isProfileOpen) return;
     updateProfilePosition();
     window.addEventListener("resize", updateProfilePosition);
     window.addEventListener("scroll", updateProfilePosition, true);
@@ -231,10 +259,23 @@ export function AgentAvatarWithProfile({
       window.removeEventListener("resize", updateProfilePosition);
       window.removeEventListener("scroll", updateProfilePosition, true);
     };
-  }, [isProfileOpen, updateProfilePosition]);
+  }, [isProfileOpen, profilePopoverEnabled, updateProfilePosition]);
+
+  useEffect(() => {
+    if (!profilePopoverEnabled) {
+      setIsProfileOpen(false);
+      setProfilePosition(null);
+    }
+  }, [profilePopoverEnabled]);
+
+  const openProfile = useCallback(() => {
+    if (profilePopoverEnabled) {
+      setIsProfileOpen(true);
+    }
+  }, [profilePopoverEnabled]);
 
   const profileCard =
-    isProfileOpen && profilePosition && typeof document !== "undefined"
+    profilePopoverEnabled && isProfileOpen && profilePosition && typeof document !== "undefined"
       ? createPortal(
           <span
             className={`agent-avatar-profile-card agent-avatar-profile-card-visible agent-avatar-profile-card-${profilePosition.placement}`}
@@ -263,10 +304,10 @@ export function AgentAvatarWithProfile({
     <span
       ref={anchorRef}
       className="agent-avatar-profile-anchor"
-      onMouseEnter={() => setIsProfileOpen(true)}
+      onMouseEnter={openProfile}
       onMouseLeave={() => setIsProfileOpen(false)}
     >
-      <AgentAvatar agent={agent} size={size} className={className} />
+      <AgentAvatar agent={agent} size={size} className={className} showStatus={showStatus} />
       {profileCard}
     </span>
   );

@@ -968,10 +968,11 @@ function App() {
     }
   }
 
-  async function mutate(command: string, args: Record<string, unknown> = {}) {
+  async function mutate<T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> {
     try {
-      await apiInvoke(command, args);
+      const result = await apiInvoke<T>(command, args);
       await refresh();
+      return result;
     } catch (err) {
       const message = errorMessage(err, `${command} failed`);
       setAppError(message);
@@ -1798,9 +1799,12 @@ function App() {
   async function createChannel() {
     const name = newChannel.trim().replace(/^#/, "");
     if (!name) return;
-    await mutate("create_channel", { name });
+    const result = await mutate<{ channelId?: string }>("create_channel", { name });
     setNewChannel("");
     setShowCreateChannelModal(false);
+    if (result.channelId) {
+      selectChannel(result.channelId);
+    }
   }
 
   async function saveChannel() {

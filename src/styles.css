@@ -5141,6 +5141,7 @@ body.resizing-column * {
 
   .topbar {
     min-height: 58px;
+    justify-content: flex-start;
     gap: 10px;
     padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
   }
@@ -5164,6 +5165,7 @@ body.resizing-column * {
   }
 
   .channel-title {
+    flex: 1 1 auto;
     min-width: 0;
     gap: 10px;
   }
@@ -5356,6 +5358,10 @@ body.resizing-column * {
   }
 
   .agent-close {
+    display: none;
+  }
+
+  .agent-drawer-head-actions button.danger {
     display: none;
   }
 

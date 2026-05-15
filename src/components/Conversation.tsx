@@ -334,11 +334,13 @@ export function Conversation({
           )}
           <div>
             <h1>{isDm ? dmAgent?.display_name || "Direct Message" : channel?.name || "No channel"}</h1>
-            <p>
-              {isDm
-                ? dmAgent ? `@${dmAgent.handle} · ${dmAgent.runtime} · ${dmAgent.status}` : "Agent no longer exists"
-                : channel ? visibleChannelDescription(channel.description) : "Create a channel from the sidebar"}
-            </p>
+            {isDm ? (
+              <p title={dmAgent ? `@${dmAgent.handle} · ${dmAgent.runtime} · ${dmAgent.status}` : undefined}>
+                {dmAgent ? `@${dmAgent.handle} · ${dmAgent.runtime}` : "Agent no longer exists"}
+              </p>
+            ) : (
+              <p>{channel ? visibleChannelDescription(channel.description) : "Create a channel from the sidebar"}</p>
+            )}
           </div>
         </div>
         {channel && !isDm && (

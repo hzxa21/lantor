@@ -21,7 +21,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{
     postgres::{PgListener, PgPoolOptions, PgRow},
@@ -175,6 +175,12 @@ struct ClaudeActiveTurn {
 }
 
 type CommandResult<T> = Result<T, String>;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateChannelResult {
+    channel_id: Uuid,
+}
 
 fn db_url() -> String {
     env::var("LANTOR_DATABASE_URL")
@@ -1673,25 +1679,12 @@ async fn check_runtime(runtime: String) -> CommandResult<RuntimeCheck> {
 }
 
 #[tauri::command]
-async fn create_channel(name: String, state: State<'_, AppState>) -> CommandResult<()> {
-    let normalized = normalize_channel_name(&name);
-    if normalized.is_empty() {
-        return Err("channel name is empty".to_owned());
-    }
-
-    sqlx::query(
-        r#"
-        insert into channels (name, description, kind)
-        values ($1, '', 'channel')
-        on conflict (name) do nothing
-        "#,
-    )
-    .bind(normalized)
-    .execute(&state.pool)
-    .await
-    .map_err(to_string)?;
-
-    Ok(())
+async fn create_channel(
+    name: String,
+    state: State<'_, AppState>,
+) -> CommandResult<CreateChannelResult> {
+    let channel_id = create_channel_in_pool(&state.pool, &name, "").await?;
+    Ok(CreateChannelResult { channel_id })
 }
 
 #[tauri::command]
@@ -1701,6 +1694,15 @@ async fn update_channel(
     description: String,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
+    update_channel_in_pool(&state.pool, channel_id, name, description).await
+}
+
+pub(crate) async fn update_channel_in_pool(
+    pool: &PgPool,
+    channel_id: Uuid,
+    name: String,
+    description: String,
+) -> CommandResult<()> {
     let normalized = normalize_channel_name(&name);
     if normalized.is_empty() {
         return Err("channel name is empty".to_owned());
@@ -1708,7 +1710,7 @@ async fn update_channel(
 
     let kind: Option<String> = sqlx::query_scalar("select kind from channels where id = $1")
         .bind(channel_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(pool)
         .await
         .map_err(to_string)?;
     match kind.as_deref() {
@@ -1727,10 +1729,11 @@ async fn update_channel(
     .bind(channel_id)
     .bind(normalized)
     .bind(description.trim())
-    .execute(&state.pool)
+    .execute(pool)
     .await
     .map_err(to_string)?;
 
+    let _ = notify_ui_refresh(pool, "channel_updated").await;
     Ok(())
 }
 
@@ -1741,9 +1744,18 @@ async fn set_channel_agent_membership(
     member: bool,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
+    set_channel_agent_membership_in_pool(&state.pool, channel_id, agent_id, member).await
+}
+
+pub(crate) async fn set_channel_agent_membership_in_pool(
+    pool: &PgPool,
+    channel_id: Uuid,
+    agent_id: Uuid,
+    member: bool,
+) -> CommandResult<()> {
     let channel_row = sqlx::query("select name, kind from channels where id = $1")
         .bind(channel_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(pool)
         .await
         .map_err(to_string)?;
     let Some(channel_row) = channel_row else {
@@ -1758,7 +1770,7 @@ async fn set_channel_agent_membership(
     let agent_handle: Option<String> =
         sqlx::query_scalar("select handle from agents where id = $1")
             .bind(agent_id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(pool)
             .await
             .map_err(to_string)?;
     if agent_handle.is_none() {
@@ -1775,20 +1787,20 @@ async fn set_channel_agent_membership(
         )
         .bind(channel_id)
         .bind(agent_id)
-        .execute(&state.pool)
+        .execute(pool)
         .await
         .map_err(to_string)?;
     } else {
         sqlx::query("delete from channel_members where channel_id = $1 and agent_id = $2")
             .bind(channel_id)
             .bind(agent_id)
-            .execute(&state.pool)
+            .execute(pool)
             .await
             .map_err(to_string)?;
     }
 
     record_agent_activity(
-        &state.pool,
+        pool,
         Some(agent_id),
         None,
         "membership",
@@ -1852,7 +1864,7 @@ async fn delete_channel(channel_id: Uuid, state: State<'_, AppState>) -> Command
     delete_channel_in_pool(&state.pool, channel_id).await
 }
 
-async fn delete_channel_in_pool(pool: &PgPool, channel_id: Uuid) -> CommandResult<()> {
+pub(crate) async fn delete_channel_in_pool(pool: &PgPool, channel_id: Uuid) -> CommandResult<()> {
     let result = sqlx::query("delete from channels where id = $1")
         .bind(channel_id)
         .execute(pool)
@@ -6411,7 +6423,7 @@ async fn compact_agent_memory(pool: &PgPool, agent_id: Uuid, body: &str) -> Comm
     fs::write(path, format!("{body}\n")).map_err(to_string)
 }
 
-async fn create_channel_in_pool(
+pub(crate) async fn create_channel_in_pool(
     pool: &PgPool,
     name: &str,
     description: &str,
@@ -6420,7 +6432,7 @@ async fn create_channel_in_pool(
     if normalized.is_empty() {
         return Err("channel name is empty".to_owned());
     }
-    sqlx::query_scalar(
+    let channel_id = sqlx::query_scalar(
         r#"
         insert into channels (name, description, kind)
         values ($1, $2, 'channel')
@@ -6436,7 +6448,10 @@ async fn create_channel_in_pool(
     .bind(description.trim())
     .fetch_one(pool)
     .await
-    .map_err(to_string)
+    .map_err(to_string)?;
+
+    let _ = notify_ui_refresh(pool, "channel_created").await;
+    Ok(channel_id)
 }
 
 async fn add_agent_to_channel(

@@ -1,4 +1,4 @@
-import { Children, ReactNode, isValidElement, type MouseEvent, useState } from "react";
+import { Children, ReactNode, isValidElement, type MouseEvent, type PointerEvent, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { openExternalUrl } from "../apiClient";
@@ -69,16 +69,15 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
+function isolateLinkEvent(event: MouseEvent<HTMLAnchorElement> | PointerEvent<HTMLAnchorElement>) {
+  event.stopPropagation();
+}
+
 function handleLinkClick(event: MouseEvent<HTMLAnchorElement>, href: string | undefined, isLocalLink: boolean) {
-  if (isLocalLink) {
-    event.preventDefault();
-    return;
-  }
-  if (!href) {
-    event.preventDefault();
-    return;
-  }
   event.preventDefault();
+  event.stopPropagation();
+  if (isLocalLink || !href || event.detail > 1) return;
+
   void openExternalUrl(href).catch((err) => {
     console.error("Failed to open external link", err);
   });
@@ -105,6 +104,8 @@ export function MessageMarkdown({ body }: MessageMarkdownProps) {
                 className={isLocalLink ? "local-entity-link" : undefined}
                 target={isLocalLink ? undefined : "_blank"}
                 rel={isLocalLink ? undefined : "noreferrer"}
+                onPointerDown={isolateLinkEvent}
+                onContextMenu={isolateLinkEvent}
                 onClick={(event) => handleLinkClick(event, href, isLocalLink)}
               >
                 {children}
