@@ -18,26 +18,28 @@ import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
 import { APP_DISPLAY_NAME } from "../branding";
-import { isCompactFollowupMessage } from "../message-grouping";
+import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
-import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
+import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { firstLines, formatClockTime, formatTime, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
+import { ActivityProgressDock } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
-import { RespondingIndicator, type RespondingIndicatorItem } from "./RespondingIndicator";
 
 type ConversationProps = {
   channel: Channel | null;
   agents: Agent[];
+  agentActivities: AgentActivity[];
+  agentRuns: AgentRun[];
+  agentWorkItems: AgentWorkItem[];
   channelAgents: Agent[];
   activeTab: "chat" | "tasks";
   activeRoot: Message | null;
   rootMessages: Message[];
-  respondingAgents: RespondingIndicatorItem[];
   threadReplyCounts: Record<string, number>;
   visibleTasks: Task[];
   draft: string;
@@ -76,12 +78,6 @@ type MessageMenuState = {
   message: Message;
 } | null;
 
-function wasEdited(message: Message) {
-  const created = new Date(message.created_at).getTime();
-  const updated = new Date(message.updated_at).getTime();
-  return Number.isFinite(created) && Number.isFinite(updated) && updated - created > 1000;
-}
-
 function agentForMessage(message: Message, agents: Agent[]) {
   if (message.sender_role !== "agent") return null;
   const sender = message.sender_name.replace(/^@/, "");
@@ -91,11 +87,13 @@ function agentForMessage(message: Message, agents: Agent[]) {
 export function Conversation({
   channel,
   agents,
+  agentActivities,
+  agentRuns,
+  agentWorkItems,
   channelAgents,
   activeTab,
   activeRoot,
   rootMessages,
-  respondingAgents,
   threadReplyCounts,
   visibleTasks,
   draft,
@@ -298,7 +296,7 @@ export function Conversation({
   useLayoutEffect(() => {
     if (!shouldFollowMessagesRef.current) return;
     scrollMessagesToBottom();
-  }, [activeTab, channel?.id, rootMessages.length, respondingAgents.length, lastRootMessage?.id, lastRootMessage?.updated_at, lastRootMessage?.delivery_state]);
+  }, [activeTab, channel?.id, rootMessages.length, lastRootMessage?.id, lastRootMessage?.updated_at, lastRootMessage?.delivery_state]);
 
   useEffect(() => {
     if (!focusedMessageId) return;
@@ -438,6 +436,15 @@ export function Conversation({
               <p>Create a channel in the left sidebar, then send messages or tasks.</p>
             </div>
           )}
+          <ActivityProgressDock
+            messages={rootMessages}
+            activities={agentActivities}
+            runs={agentRuns}
+            workItems={agentWorkItems}
+            agents={agents}
+            channelId={channel?.id ?? null}
+            threadRootId={null}
+          />
           {rootMessages.map((message, index) => {
             const linkedTask = taskForMessage(message.id);
             const replyCount = threadReplyCounts[message.id] ?? 0;
@@ -523,12 +530,9 @@ export function Conversation({
                       </button>
                     </div>
                   )}
-                  <MessageMarkdown body={firstLines(message.body)} />
+                  {message.delivery_state !== "streaming" && <MessageMarkdown body={firstLines(message.body)} />}
                   <MessageAttachments attachments={message.attachments} />
                   <MessageArtifacts artifacts={message.artifacts} onOpenArtifact={openArtifact} />
-                  {message.delivery_state === "streaming" && (
-                    <div className="message-stream-state">Streaming response...</div>
-                  )}
                   {message.delivery_state === "error" && (
                     <div className="message-stream-state error">Response interrupted</div>
                   )}
@@ -537,7 +541,6 @@ export function Conversation({
               </article>
             );
           })}
-          <RespondingIndicator items={respondingAgents} />
           {messageMenu && (
             <MessageActionMenu
               x={messageMenu.x}

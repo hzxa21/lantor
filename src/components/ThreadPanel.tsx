@@ -4,25 +4,27 @@ import { useMentionPicker } from "../hooks/useMentionPicker";
 import { APP_DISPLAY_NAME } from "../branding";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
-import { isCompactFollowupMessage } from "../message-grouping";
+import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
-import { Agent, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
+import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, TASK_STATUSES, Task } from "../types";
 import { formatClockTime, formatTime, visibleAgentDescription } from "../ui-utils";
+import { ActivityProgressDock } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
-import { RespondingIndicator, type RespondingIndicatorItem } from "./RespondingIndicator";
 
 type ThreadPanelProps = {
   channel: Channel | null;
   agents: Agent[];
+  agentActivities: AgentActivity[];
+  agentRuns: AgentRun[];
+  agentWorkItems: AgentWorkItem[];
   activeRoot: Message | null;
   activeTask: Task | null;
   replies: Message[];
-  respondingAgents: RespondingIndicatorItem[];
   unreadCount: number;
   taskTitleDrafts: Record<string, string>;
   replyDraft: string;
@@ -51,12 +53,6 @@ type MessageMenuState = {
   message: Message;
 } | null;
 
-function wasEdited(message: Message) {
-  const created = new Date(message.created_at).getTime();
-  const updated = new Date(message.updated_at).getTime();
-  return Number.isFinite(created) && Number.isFinite(updated) && updated - created > 1000;
-}
-
 function agentForMessage(message: Message, agents: Agent[]) {
   if (message.sender_role !== "agent") return null;
   const sender = message.sender_name.replace(/^@/, "");
@@ -66,10 +62,12 @@ function agentForMessage(message: Message, agents: Agent[]) {
 export function ThreadPanel({
   channel,
   agents,
+  agentActivities,
+  agentRuns,
+  agentWorkItems,
   activeRoot,
   activeTask,
   replies,
-  respondingAgents,
   unreadCount,
   taskTitleDrafts,
   replyDraft,
@@ -238,7 +236,7 @@ export function ThreadPanel({
   useLayoutEffect(() => {
     if (!shouldFollowThreadRef.current) return;
     scrollThreadToBottom();
-  }, [activeRoot?.id, activeRoot?.updated_at, replies.length, respondingAgents.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
+  }, [activeRoot?.id, activeRoot?.updated_at, replies.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
 
   useEffect(() => {
     if (!focusedMessageId) return;
@@ -310,6 +308,15 @@ export function ThreadPanel({
           onScroll={handleThreadScroll}
           onLoadCapture={handleThreadContentLoad}
         >
+          <ActivityProgressDock
+            messages={replies}
+            activities={agentActivities}
+            runs={agentRuns}
+            workItems={agentWorkItems}
+            agents={agents}
+            channelId={activeRoot ? channel?.id ?? null : null}
+            threadRootId={activeRoot?.id ?? null}
+          />
           {activeRoot && (
             <article
               data-message-id={activeRoot.id}
@@ -375,12 +382,9 @@ export function ThreadPanel({
                         {rootSaved ? "Saved" : "Save"}
                       </button>
                     </div>
-                    <MessageMarkdown body={activeRoot.body} />
+                    {activeRoot.delivery_state !== "streaming" && <MessageMarkdown body={activeRoot.body} />}
                     <MessageAttachments attachments={activeRoot.attachments} />
                     <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
-                    {activeRoot.delivery_state === "streaming" && (
-                      <div className="message-stream-state">Streaming response...</div>
-                    )}
                     {activeRoot.delivery_state === "error" && (
                       <div className="message-stream-state error">Response interrupted</div>
                     )}
@@ -521,12 +525,9 @@ export function ThreadPanel({
                         </button>
                       </div>
                     )}
-                    <MessageMarkdown body={reply.body} />
+                    {reply.delivery_state !== "streaming" && <MessageMarkdown body={reply.body} />}
                     <MessageAttachments attachments={reply.attachments} />
                     <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
-                    {reply.delivery_state === "streaming" && (
-                      <div className="message-stream-state">Streaming response...</div>
-                    )}
                     {reply.delivery_state === "error" && (
                       <div className="message-stream-state error">Response interrupted</div>
                     )}
@@ -535,7 +536,6 @@ export function ThreadPanel({
               );
             })}
           </section>
-          <RespondingIndicator items={respondingAgents} />
           {messageMenu && (
             <MessageActionMenu
               x={messageMenu.x}

@@ -23,13 +23,12 @@ import { ConfirmModal } from "./components/ConfirmModal";
 import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
 import { InboxModal } from "./components/InboxModal";
-import type { RespondingIndicatorItem } from "./components/RespondingIndicator";
 import { OwnerProfileModal, ownerProfileToForm, type OwnerProfileForm } from "./components/OwnerProfileModal";
 import { SavedMessagesModal } from "./components/SavedMessagesModal";
 import { SearchModal } from "./components/SearchModal";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadPanel } from "./components/ThreadPanel";
-import { isStreamingMessage } from "./message-grouping";
+import { isProgressOnlyMessage } from "./message-grouping";
 import {
   ACTIVE_RUN_STATUSES,
   Agent,
@@ -92,22 +91,6 @@ const THREAD_PANEL_WIDTH_STORAGE_KEY = "lantor.threadPanelWidth";
 const AGENT_DRAWER_WIDTH_STORAGE_KEY = "lantor.agentDrawerWidth";
 const SIDEBAR_WIDTH_STORAGE_KEY = "lantor.sidebarWidth";
 
-const RESPONDING_ACTIVITY_KINDS = new Set([
-  "thinking",
-  "command",
-  "file_edit",
-  "tools",
-  "acting",
-  "message",
-  "event",
-  "task",
-  "runtime",
-  "work",
-  "error",
-  "event_error",
-  "run_error",
-]);
-
 type UiBackendEvent =
   | { type: "refresh"; reason?: string }
   | { type: "batch"; events: string[] }
@@ -148,52 +131,6 @@ function phaseForActivity(kind: string) {
   return ACTIVITY_PHASE_LABELS[kind] ?? "Active";
 }
 
-function agentForStreamingMessage(message: Message, agents: Agent[]) {
-  if (message.sender_role !== "agent") return null;
-  const sender = message.sender_name.replace(/^@/, "");
-  return agents.find((agent) => agent.handle === sender || agent.display_name === message.sender_name) ?? null;
-}
-
-function activityStateForIndicator(activity: AgentActivity | null) {
-  if (!activity) return "Responding";
-  if (activity.status === "error") return "Error";
-
-  const title = `${activity.summary || ""} ${activity.title || ""}`.toLowerCase();
-  if (title.includes("first token")) return "Responding";
-  if (title.includes("running command")) return "Running";
-  if (title.includes("editing file")) return "Editing";
-  if (title.includes("using tools")) return "Using tools";
-  if (title.includes("thinking")) return "Thinking";
-
-  switch (activity.phase || activity.kind) {
-    case "thinking":
-      return "Thinking";
-    case "command":
-    case "runtime":
-    case "work":
-      return "Running";
-    case "file_edit":
-      return "Editing";
-    case "tools":
-      return "Using tools";
-    case "error":
-    case "event_error":
-    case "run_error":
-      return "Error";
-    case "acting":
-    case "event":
-    case "message":
-    case "task":
-      return "Responding";
-    default:
-      return "Working";
-  }
-}
-
-function activityMatchesAgent(activity: AgentActivity, agent: Agent) {
-  return activity.agent_id === agent.id || activity.agent_handle === agent.handle;
-}
-
 function activityOwnerKey(activity: AgentActivity) {
   return activity.agent_id ?? `handle:${activity.agent_handle || "unknown"}`;
 }
@@ -209,79 +146,6 @@ function limitActivitiesPerAgent(activities: AgentActivity[]) {
       counts.set(key, count + 1);
       return true;
     });
-}
-
-function isRespondingActivity(activity: AgentActivity) {
-  return RESPONDING_ACTIVITY_KINDS.has(activity.phase || activity.kind) || RESPONDING_ACTIVITY_KINDS.has(activity.kind);
-}
-
-function latestRespondingActivityForAgent(agent: Agent, activities: AgentActivity[], runId?: string): AgentActivity | null {
-  const agentActivities = activities.filter((activity) => activityMatchesAgent(activity, agent));
-  const scopedActivities = runId ? agentActivities.filter((activity) => activity.run_id === runId) : agentActivities;
-  return scopedActivities.find(isRespondingActivity)
-    ?? scopedActivities[0]
-    ?? (runId ? latestRespondingActivityForAgent(agent, activities) : null)
-    ?? null;
-}
-
-function agentForRun(run: AgentRun, agents: Agent[]) {
-  return agents.find((agent) => agent.id === run.agent_id || agent.handle === run.agent_handle) ?? null;
-}
-
-function respondingIndicatorsForRuns(
-  runs: AgentRun[],
-  workItems: AgentWorkItem[],
-  agents: Agent[],
-  activities: AgentActivity[],
-  isInContext: (workItem: AgentWorkItem) => boolean,
-): RespondingIndicatorItem[] {
-  const seen = new Set<string>();
-  return runs.flatMap((run) => {
-    if (!ACTIVE_RUN_STATUSES.has(run.status)) return [];
-    const workItem = run.work_item_id ? workItems.find((item) => item.id === run.work_item_id) : null;
-    if (!workItem || !isInContext(workItem)) return [];
-    const key = run.agent_id || run.agent_handle;
-    if (!key || seen.has(key)) return [];
-    seen.add(key);
-    const agent = agentForRun(run, agents);
-    const activity = agent ? latestRespondingActivityForAgent(agent, activities, run.id) : null;
-    return [{
-      name: agent?.display_name || run.agent_handle,
-      state: activityStateForIndicator(activity),
-    }];
-  });
-}
-
-function mergeRespondingItems(primary: RespondingIndicatorItem[], fallback: RespondingIndicatorItem[]) {
-  if (primary.length === 0) return fallback;
-  const seen = new Set(primary.map((item) => item.name));
-  return [
-    ...primary,
-    ...fallback.filter((item) => {
-      if (seen.has(item.name)) return false;
-      seen.add(item.name);
-      return true;
-    }),
-  ];
-}
-
-function respondingIndicatorsForMessages(
-  messages: Message[],
-  agents: Agent[],
-  activities: AgentActivity[],
-): RespondingIndicatorItem[] {
-  const seen = new Set<string>();
-  return messages.flatMap((message) => {
-    const agent = agentForStreamingMessage(message, agents);
-    const key = agent?.id ?? message.sender_name;
-    if (!key || seen.has(key)) return [];
-    seen.add(key);
-    const activity = agent ? latestRespondingActivityForAgent(agent, activities) : null;
-    return [{
-      name: agent?.display_name || message.sender_name,
-      state: activityStateForIndicator(activity),
-    }];
-  });
 }
 
 function isTextInput(target: EventTarget | null) {
@@ -1046,12 +910,12 @@ function App() {
   useEffect(() => {
     if (!data) return;
     if (!knownMessageIdsRef.current) {
-      knownMessageIdsRef.current = new Set(data.messages.filter((message) => !isStreamingMessage(message)).map((message) => message.id));
+      knownMessageIdsRef.current = new Set(data.messages.filter((message) => !isProgressOnlyMessage(message)).map((message) => message.id));
       return;
     }
 
     const known = knownMessageIdsRef.current;
-    const newMessages = data.messages.filter((message) => !isStreamingMessage(message) && !known.has(message.id));
+    const newMessages = data.messages.filter((message) => !isProgressOnlyMessage(message) && !known.has(message.id));
     if (newMessages.length === 0) return;
     newMessages.forEach((message) => known.add(message.id));
 
@@ -1276,13 +1140,7 @@ function App() {
   ]);
 
   const visibleMessages = useMemo(() => {
-    if (!data) return [];
-    return data.messages.filter((message) => !isStreamingMessage(message));
-  }, [data?.messages]);
-
-  const streamingMessages = useMemo(() => {
-    if (!data) return [];
-    return data.messages.filter(isStreamingMessage);
+    return (data?.messages ?? []).filter((message) => !isProgressOnlyMessage(message));
   }, [data?.messages]);
 
   const rootMessages = useMemo(() => {
@@ -1296,40 +1154,6 @@ function App() {
     if (!activeRoot) return [];
     return visibleMessages.filter((m) => m.thread_root_id === activeRoot.id);
   }, [visibleMessages, activeRoot]);
-
-  const channelRespondingAgents = useMemo(() => {
-    if (!channel || !data) return [];
-    const runningItems = respondingIndicatorsForRuns(
-      data.agent_runs,
-      data.agent_work_items,
-      data.agents,
-      data.agent_activities,
-      (workItem) => workItem.channel_id === channel.id && !workItem.thread_root_id,
-    );
-    const streamingItems = respondingIndicatorsForMessages(
-      streamingMessages.filter((message) => message.channel_id === channel.id && !message.thread_root_id),
-      data.agents,
-      data.agent_activities,
-    );
-    return mergeRespondingItems(runningItems, streamingItems);
-  }, [streamingMessages, channel, data?.agent_runs, data?.agent_work_items, data?.agents, data?.agent_activities]);
-
-  const threadRespondingAgents = useMemo(() => {
-    if (!activeRoot || !data) return [];
-    const runningItems = respondingIndicatorsForRuns(
-      data.agent_runs,
-      data.agent_work_items,
-      data.agents,
-      data.agent_activities,
-      (workItem) => workItem.thread_root_id === activeRoot.id,
-    );
-    const streamingItems = respondingIndicatorsForMessages(
-      streamingMessages.filter((message) => message.thread_root_id === activeRoot.id),
-      data.agents,
-      data.agent_activities,
-    );
-    return mergeRespondingItems(runningItems, streamingItems);
-  }, [streamingMessages, activeRoot, data?.agent_runs, data?.agent_work_items, data?.agents, data?.agent_activities]);
 
   const threadReplyCounts = useMemo(() => {
     return visibleMessages.reduce<Record<string, number>>((counts, message) => {
@@ -2627,11 +2451,13 @@ function App() {
       <Conversation
         channel={channel}
         agents={data.agents}
+        agentActivities={data.agent_activities}
+        agentRuns={data.agent_runs}
+        agentWorkItems={data.agent_work_items}
         channelAgents={channelAgents}
         activeTab={activeTab}
         activeRoot={activeRoot}
         rootMessages={rootMessages}
-        respondingAgents={channelRespondingAgents}
         threadReplyCounts={threadReplyCounts}
         visibleTasks={visibleTasks}
         draft={draft}
@@ -2697,10 +2523,12 @@ function App() {
         <ThreadPanel
           channel={channel}
           agents={data.agents}
+          agentActivities={data.agent_activities}
+          agentRuns={data.agent_runs}
+          agentWorkItems={data.agent_work_items}
           activeRoot={activeRoot}
           activeTask={activeTask}
           replies={replies}
-          respondingAgents={threadRespondingAgents}
           unreadCount={activeThreadId ? threadUnreadCounts[activeThreadId] ?? 0 : 0}
           taskTitleDrafts={taskTitleDrafts}
           replyDraft={replyDraft}

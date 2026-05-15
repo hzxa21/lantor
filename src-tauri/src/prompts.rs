@@ -14,6 +14,7 @@ fn lantor_operating_policy_prompt() -> &'static str {
 - Prefer the smallest useful surface. Keep quick follow-ups in the current thread, but create a channel when the work is durable, multi-agent, recurring, or needs its own context/memory. If the user explicitly asks to open or create a channel, use channel_create instead of only replying.
 - Before replying, decide whether a visible response is useful. Reply briefly to direct greetings, low-intent testing messages, or "are you there?" checks so the user can tell you are alive. For pure acknowledgements, thanks, emoji-only messages, or non-actionable chatter that does not need a response, output exactly `LANTOR_SILENT_REPLY: <short reason>` and nothing else.
 - Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.
+- Activity events are the short progress notes a user would otherwise see in chat. When work takes more than a moment, emit them with a concrete user-facing title and detail that says what you are doing or what you just learned, not just a generic phase label.
 - Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.
 - MEMORY.md is durable recovery context. Keep it concise, index-like, and useful after restart or context compaction."#
 }
@@ -64,6 +65,10 @@ fn lantor_live_delivery_prompt() -> &'static str {
 - If a live follow-up changes priority or direction, adapt to the latest request; otherwise finish the current selected work and then handle any remaining active inbox items."#
 }
 
+fn streaming_activity_guidance_prompt() -> &'static str {
+    "Activity progress: before your final reply, keep users informed with standalone LANTOR_EVENT activity lines whenever you start a meaningful step, switch work modes, or learn something useful. Use the matching kind (`thinking`, `command`, `file_edit`, `tools`, or `acting`) and a concrete user-facing title/detail; activity is not only for reasoning and should not be limited to generic `Thinking`, `Running`, or phase labels."
+}
+
 fn lantor_control_api_prompt() -> &'static str {
     r#"Standalone LANTOR_EVENT control lines:
 LANTOR_EVENT {"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"<short user-facing status>","detail":"<optional compact detail>"}
@@ -81,6 +86,7 @@ LANTOR_EVENT {"type":"channel_message_create","channel_id":"<channel uuid>","thr
 LANTOR_EVENT {"type":"handoff_create","target_agent":"@OtherAgent","channel_id":"<channel uuid>","thread_root_id":"<thread uuid>","reason":"<why this handoff is needed>","body":"<specific request for the target agent>"}
 LANTOR_EVENT {"type":"channel_create","name":"short-topic","description":"<why this channel exists>","agent_handles":["@OtherAgent"]}
 LANTOR_EVENT {"type":"channel_invite","channel":"existing-channel","agent_handles":["@OtherAgent"]}
+For activity events, write title/detail as user-facing progress, for example: title='Reading the stream parser', detail='I am checking where control lines become inline progress before changing the prompt contract.'
 For profile_update avatar, you may use emoji/initials, an image URL, or a DiceBear spec like `dicebear:dylan:Hancock`. Choose a stable seed from your handle or memory. Generated DiceBear profile avatars should use the dylan style.
 Use task_create only for durable globally tracked work. Use handoff_create only to transfer a concrete existing thread to another agent after clear user authorization; it is not a general cross-thread messaging API. Use channel_message_create only after the user explicitly asks you to post a message in a specific channel/thread; it posts as your agent identity, requires channel membership, and normal @mentions may dispatch work. Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents. Use artifact_create only for long markdown reports that should render in the thread; keep the visible chat summary short. Use attachment_create for generated images or local files that should appear as message attachments; pass absolute file paths, not base64. Do not use artifact_create for HTML, SVG, Mermaid, flowchart DSL, charts, or interactive previews."#
 }
@@ -299,10 +305,11 @@ pub(crate) fn build_codex_streaming_prompt(prompt: &str) -> String {
         return "No current Lantor agent request is assigned. Reply with a short ready status."
             .to_owned();
     }
-    prompt.replace(
+    let prompt = prompt.replace(
         WORK_ITEM_FINISH_PROMPT,
         &streaming_reply_contract_prompt("Codex"),
-    )
+    );
+    format!("{prompt}\n\n{}", streaming_activity_guidance_prompt())
 }
 
 pub(crate) fn build_claude_streaming_prompt(prompt: &str) -> String {
@@ -310,10 +317,11 @@ pub(crate) fn build_claude_streaming_prompt(prompt: &str) -> String {
         return "No current Lantor agent request is assigned. Reply with a short ready status."
             .to_owned();
     }
-    prompt.replace(
+    let prompt = prompt.replace(
         WORK_ITEM_FINISH_PROMPT,
         &streaming_reply_contract_prompt("Claude"),
-    )
+    );
+    format!("{prompt}\n\n{}", streaming_activity_guidance_prompt())
 }
 
 pub(crate) fn codex_developer_instructions(handle: &str, memory_context: Option<&str>) -> String {

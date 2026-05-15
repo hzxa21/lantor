@@ -6,6 +6,7 @@ const LANTOR_OPERATING_POLICY = [
   "- Prefer the smallest useful surface. Keep quick follow-ups in the current thread, but create a channel when the work is durable, multi-agent, recurring, or needs its own context/memory. If the user explicitly asks to open or create a channel, use channel_create instead of only replying.",
   "- Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output LANTOR_SILENT_REPLY with a short reason instead of a chat reply.",
   "- Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.",
+  "- Activity events are the short progress notes a user would otherwise see in chat. Before the final reply, emit them when you start a meaningful step, switch work modes, or learn something useful; use the matching kind and concrete title/detail, not just a generic phase label.",
   "- Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.",
   "- MEMORY.md is durable recovery context. Append small facts; compact only when memory is long or repetitive.",
 ].join("\n");
@@ -44,6 +45,7 @@ const LANTOR_CONTROL_EVENTS = [
   '{"type":"handoff_create","target_agent":"@Vegapunk","channel_id":"uuid","thread_root_id":"uuid","reason":"why this handoff is needed","body":"specific request"}',
   '{"type":"channel_create","name":"short-topic","description":"why this channel exists","agent_handles":["@Hancock"]}',
   '{"type":"channel_invite","channel":"lantor","agent_handles":["@Vegapunk"]}',
+  "For activity events, write title/detail as user-facing progress across all work modes, for example: title='Reading the stream parser', detail='I am checking where control lines become inline progress before changing the prompt contract.'",
   "Use channel_message_create only after the user explicitly asks you to post in a specific channel/thread. It posts as your agent identity, requires channel membership, and normal @mentions may dispatch work.",
   "Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents.",
 ].join("\n");
