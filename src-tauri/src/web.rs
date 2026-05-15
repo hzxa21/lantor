@@ -28,10 +28,11 @@ use uuid::Uuid;
 use crate::models::AttachmentUpload;
 use crate::{
     agent_workspace_list_in_pool, agent_workspace_read_file_in_pool, complete_reminder_in_pool,
-    create_channel_in_pool, delete_channel_in_pool, load_artifact, load_bootstrap,
-    mark_channel_read_in_pool, open_dm_with_agent_in_pool, send_owner_message_in_pool,
-    set_channel_agent_membership_in_pool, set_message_saved_in_pool, to_string,
-    update_channel_in_pool, update_owner_profile_in_pool, UI_REFRESH_CHANNEL,
+    create_agent_in_pool, create_channel_in_pool, delete_agent_in_pool, delete_channel_in_pool,
+    load_artifact, load_bootstrap, mark_channel_read_in_pool, open_dm_with_agent_in_pool,
+    send_owner_message_in_pool, set_channel_agent_membership_in_pool, set_message_saved_in_pool,
+    to_string, update_agent_in_pool, update_channel_in_pool, update_owner_profile_in_pool,
+    UI_REFRESH_CHANNEL,
 };
 
 const WEB_SEND_MESSAGE_BODY_LIMIT: usize = 128 * 1024 * 1024;
@@ -114,6 +115,41 @@ struct AgentIdRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CreateAgentRequest {
+    handle: String,
+    display_name: String,
+    role: Option<String>,
+    runtime: String,
+    model: String,
+    reasoning_effort: Option<String>,
+    service_tier: Option<String>,
+    avatar: Option<String>,
+    description: Option<String>,
+    launch_command: String,
+    working_directory: String,
+    daily_budget_micros: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateAgentRequest {
+    agent_id: Uuid,
+    handle: String,
+    display_name: String,
+    role: Option<String>,
+    runtime: String,
+    model: String,
+    reasoning_effort: Option<String>,
+    service_tier: Option<String>,
+    avatar: Option<String>,
+    description: String,
+    launch_command: String,
+    working_directory: String,
+    daily_budget_micros: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AgentWorkspaceRequest {
     agent_id: Uuid,
     path: String,
@@ -186,6 +222,9 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
         .route("/api/create_channel", post(api_create_channel))
         .route("/api/update_channel", post(api_update_channel))
         .route("/api/delete_channel", post(api_delete_channel))
+        .route("/api/create_agent", post(api_create_agent))
+        .route("/api/update_agent", post(api_update_agent))
+        .route("/api/delete_agent", post(api_delete_agent))
         .route(
             "/api/set_channel_agent_membership",
             post(api_set_channel_agent_membership),
@@ -332,6 +371,74 @@ async fn api_delete_channel(
 ) -> Result<impl IntoResponse, Response> {
     require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     delete_channel_in_pool(&state.pool, request.channel_id)
+        .await
+        .map(|_| Json(json!({ "ok": true })))
+        .map_err(api_error)
+}
+
+async fn api_create_agent(
+    State(state): State<Arc<WebState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<CreateAgentRequest>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
+    create_agent_in_pool(
+        &state.pool,
+        request.handle,
+        request.display_name,
+        request.role,
+        request.runtime,
+        request.model,
+        request.reasoning_effort,
+        request.service_tier,
+        request.avatar,
+        request.description,
+        request.launch_command,
+        request.working_directory,
+        request.daily_budget_micros,
+    )
+    .await
+    .map(|agent_id| Json(agent_id.to_string()))
+    .map_err(api_error)
+}
+
+async fn api_update_agent(
+    State(state): State<Arc<WebState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateAgentRequest>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
+    update_agent_in_pool(
+        &state.pool,
+        request.agent_id,
+        request.handle,
+        request.display_name,
+        request.role,
+        request.runtime,
+        request.model,
+        request.reasoning_effort,
+        request.service_tier,
+        request.avatar,
+        request.description,
+        request.launch_command,
+        request.working_directory,
+        request.daily_budget_micros,
+    )
+    .await
+    .map(|_| Json(json!({ "ok": true })))
+    .map_err(api_error)
+}
+
+async fn api_delete_agent(
+    State(state): State<Arc<WebState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<AgentIdRequest>,
+) -> Result<impl IntoResponse, Response> {
+    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
+    delete_agent_in_pool(&state.pool, request.agent_id)
         .await
         .map(|_| Json(json!({ "ok": true })))
         .map_err(api_error)

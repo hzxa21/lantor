@@ -2005,6 +2005,40 @@ async fn create_agent(
     daily_budget_micros: Option<i64>,
     state: State<'_, AppState>,
 ) -> CommandResult<String> {
+    create_agent_in_pool(
+        &state.pool,
+        handle,
+        display_name,
+        role,
+        runtime,
+        model,
+        reasoning_effort,
+        service_tier,
+        avatar,
+        description,
+        launch_command,
+        working_directory,
+        daily_budget_micros,
+    )
+    .await
+    .map(|agent_id| agent_id.to_string())
+}
+
+pub(crate) async fn create_agent_in_pool(
+    pool: &PgPool,
+    handle: String,
+    display_name: String,
+    role: Option<String>,
+    runtime: String,
+    model: String,
+    reasoning_effort: Option<String>,
+    service_tier: Option<String>,
+    avatar: Option<String>,
+    description: Option<String>,
+    launch_command: String,
+    working_directory: String,
+    daily_budget_micros: Option<i64>,
+) -> CommandResult<Uuid> {
     let normalized_handle = handle.trim().trim_start_matches('@');
     if normalized_handle.is_empty() {
         return Err("agent handle is empty".to_owned());
@@ -2078,11 +2112,11 @@ async fn create_agent(
     .bind(daily_budget_micros)
     .bind(&reasoning_effort)
     .bind(&service_tier)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .map_err(to_string)?;
     record_agent_activity(
-        &state.pool,
+        pool,
         Some(agent_id),
         None,
         "profile",
@@ -2094,7 +2128,7 @@ async fn create_agent(
     )
     .await?;
 
-    Ok(agent_id.to_string())
+    Ok(agent_id)
 }
 
 #[tauri::command]
@@ -2113,6 +2147,41 @@ async fn update_agent(
     working_directory: String,
     daily_budget_micros: Option<i64>,
     state: State<'_, AppState>,
+) -> CommandResult<()> {
+    update_agent_in_pool(
+        &state.pool,
+        agent_id,
+        handle,
+        display_name,
+        role,
+        runtime,
+        model,
+        reasoning_effort,
+        service_tier,
+        avatar,
+        description,
+        launch_command,
+        working_directory,
+        daily_budget_micros,
+    )
+    .await
+}
+
+pub(crate) async fn update_agent_in_pool(
+    pool: &PgPool,
+    agent_id: Uuid,
+    handle: String,
+    display_name: String,
+    role: Option<String>,
+    runtime: String,
+    model: String,
+    reasoning_effort: Option<String>,
+    service_tier: Option<String>,
+    avatar: Option<String>,
+    description: String,
+    launch_command: String,
+    working_directory: String,
+    daily_budget_micros: Option<i64>,
 ) -> CommandResult<()> {
     let normalized_handle = handle.trim().trim_start_matches('@');
     if normalized_handle.is_empty() {
@@ -2179,11 +2248,11 @@ async fn update_agent(
     .bind(daily_budget_micros)
     .bind(&reasoning_effort)
     .bind(&service_tier)
-    .execute(&state.pool)
+    .execute(pool)
     .await
     .map_err(to_string)?;
     record_agent_activity(
-        &state.pool,
+        pool,
         Some(agent_id),
         None,
         "profile",
@@ -2203,7 +2272,7 @@ async fn delete_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResu
     delete_agent_in_pool(&state.pool, agent_id).await
 }
 
-async fn delete_agent_in_pool(pool: &PgPool, agent_id: Uuid) -> CommandResult<()> {
+pub(crate) async fn delete_agent_in_pool(pool: &PgPool, agent_id: Uuid) -> CommandResult<()> {
     let active_run: Option<Uuid> = sqlx::query_scalar(
         r#"
         select id
