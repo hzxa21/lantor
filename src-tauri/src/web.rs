@@ -1,16 +1,15 @@
 use std::{
-    collections::HashMap,
     convert::Infallible,
     env,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use axum::{
     body::Body,
-    extract::{ConnectInfo, DefaultBodyLimit, Path as AxumPath, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    extract::{DefaultBodyLimit, Path as AxumPath, State},
+    http::{header, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive},
         IntoResponse, Response, Sse,
@@ -41,7 +40,6 @@ const WEB_SEND_MESSAGE_BODY_LIMIT: usize = 128 * 1024 * 1024;
 struct WebState {
     pool: PgPool,
     db_url: String,
-    token: String,
 }
 
 #[derive(Serialize)]
@@ -171,23 +169,14 @@ pub(crate) fn spawn_web_server_if_configured(pool: PgPool, db_url: String) {
     if bind.is_empty() {
         return;
     }
-    let token = env::var("LANTOR_WEB_TOKEN").unwrap_or_default();
     let Ok(addr) = bind.parse::<SocketAddr>() else {
         eprintln!("Lantor web access disabled: invalid LANTOR_WEB_BIND={bind}");
         return;
     };
-    if !is_loopback(addr.ip()) && token.trim().is_empty() {
-        eprintln!("Lantor web access disabled: non-loopback bind {addr} requires LANTOR_WEB_TOKEN");
-        return;
-    }
 
     let dist_dir = web_dist_dir();
     tauri::async_runtime::spawn(async move {
-        let state = Arc::new(WebState {
-            pool,
-            db_url,
-            token,
-        });
+        let state = Arc::new(WebState { pool, db_url });
         let app = web_router(state, dist_dir);
         match TcpListener::bind(addr).await {
             Ok(listener) => {
@@ -249,13 +238,6 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
     }
 }
 
-fn is_loopback(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => ip.is_loopback(),
-        IpAddr::V6(ip) => ip.is_loopback(),
-    }
-}
-
 fn web_dist_dir() -> PathBuf {
     if let Ok(path) = env::var("LANTOR_WEB_DIST") {
         let path = PathBuf::from(path);
@@ -300,12 +282,7 @@ async fn api_health() -> impl IntoResponse {
     Json(json!({ "ok": true }))
 }
 
-async fn api_bootstrap(
-    State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
+async fn api_bootstrap(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, Response> {
     load_bootstrap(&state.pool, state.db_url.clone())
         .await
         .map(Json)
@@ -314,11 +291,8 @@ async fn api_bootstrap(
 
 async fn api_send_message(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<SendMessageRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     send_owner_message_in_pool(
         &state.pool,
         request.channel_id,
@@ -334,11 +308,8 @@ async fn api_send_message(
 
 async fn api_create_channel(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<CreateChannelRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     create_channel_in_pool(&state.pool, &request.name, "")
         .await
         .map(|channel_id| Json(json!({ "ok": true, "channelId": channel_id })))
@@ -347,11 +318,8 @@ async fn api_create_channel(
 
 async fn api_update_channel(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<UpdateChannelRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     update_channel_in_pool(
         &state.pool,
         request.channel_id,
@@ -365,11 +333,8 @@ async fn api_update_channel(
 
 async fn api_delete_channel(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<ChannelIdRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     delete_channel_in_pool(&state.pool, request.channel_id)
         .await
         .map(|_| Json(json!({ "ok": true })))
@@ -378,11 +343,8 @@ async fn api_delete_channel(
 
 async fn api_create_agent(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<CreateAgentRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     create_agent_in_pool(
         &state.pool,
         request.handle,
@@ -405,11 +367,8 @@ async fn api_create_agent(
 
 async fn api_update_agent(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<UpdateAgentRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     update_agent_in_pool(
         &state.pool,
         request.agent_id,
@@ -433,11 +392,8 @@ async fn api_update_agent(
 
 async fn api_delete_agent(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<AgentIdRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     delete_agent_in_pool(&state.pool, request.agent_id)
         .await
         .map(|_| Json(json!({ "ok": true })))
@@ -446,11 +402,8 @@ async fn api_delete_agent(
 
 async fn api_set_channel_agent_membership(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<SetChannelAgentMembershipRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     set_channel_agent_membership_in_pool(
         &state.pool,
         request.channel_id,
@@ -464,11 +417,8 @@ async fn api_set_channel_agent_membership(
 
 async fn api_update_owner_profile(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<OwnerProfileRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     update_owner_profile_in_pool(
         &state.pool,
         request.display_name,
@@ -482,11 +432,8 @@ async fn api_update_owner_profile(
 
 async fn api_mark_channel_read(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<ChannelIdRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     mark_channel_read_in_pool(&state.pool, request.channel_id)
         .await
         .map(|_| Json(json!({ "ok": true })))
@@ -495,11 +442,8 @@ async fn api_mark_channel_read(
 
 async fn api_set_message_saved(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<SetMessageSavedRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     set_message_saved_in_pool(&state.pool, request.message_id, request.saved)
         .await
         .map(|_| Json(json!({ "ok": true })))
@@ -508,11 +452,8 @@ async fn api_set_message_saved(
 
 async fn api_complete_reminder(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<ReminderIdRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     complete_reminder_in_pool(&state.pool, request.reminder_id)
         .await
         .map(|_| Json(json!({ "ok": true })))
@@ -521,11 +462,8 @@ async fn api_complete_reminder(
 
 async fn api_artifact_read(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<ArtifactReadRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     load_artifact(&state.pool, request.artifact_id)
         .await
         .map(Json)
@@ -534,11 +472,8 @@ async fn api_artifact_read(
 
 async fn api_open_dm_with_agent(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<AgentIdRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     open_dm_with_agent_in_pool(&state.pool, request.agent_id)
         .await
         .map(Json)
@@ -547,11 +482,8 @@ async fn api_open_dm_with_agent(
 
 async fn api_agent_workspace_list(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<AgentWorkspaceRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     agent_workspace_list_in_pool(&state.pool, request.agent_id, &request.path)
         .await
         .map(Json)
@@ -560,29 +492,15 @@ async fn api_agent_workspace_list(
 
 async fn api_agent_workspace_read_file(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<AgentWorkspaceRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    require_auth(&state, &headers, None, Some(peer_addr.ip()))?;
     agent_workspace_read_file_in_pool(&state.pool, request.agent_id, &request.path)
         .await
         .map(Json)
         .map_err(api_error)
 }
 
-async fn api_events(
-    State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
-) -> Result<impl IntoResponse, Response> {
-    require_auth(
-        &state,
-        &headers,
-        query.get("token").map(String::as_str),
-        Some(peer_addr.ip()),
-    )?;
+async fn api_events(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, Response> {
     let db_url = state.db_url.clone();
     let stream = async_stream::stream! {
         match PgListener::connect(&db_url).await {
@@ -613,17 +531,8 @@ async fn api_events(
 
 async fn api_attachment(
     State(state): State<Arc<WebState>>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
     AxumPath(attachment_id): AxumPath<Uuid>,
 ) -> Result<Response, Response> {
-    require_auth(
-        &state,
-        &headers,
-        query.get("token").map(String::as_str),
-        Some(peer_addr.ip()),
-    )?;
     let row = sqlx::query(
         r#"
         select original_name, mime_type, storage_path
@@ -667,39 +576,6 @@ async fn api_attachment(
         .unwrap_or(HeaderValue::from_static("inline")),
     );
     Ok(response)
-}
-
-fn require_auth(
-    state: &WebState,
-    headers: &HeaderMap,
-    query_token: Option<&str>,
-    peer_ip: Option<IpAddr>,
-) -> Result<(), Response> {
-    let token = state.token.trim();
-    if token.is_empty() || peer_ip.is_some_and(is_loopback) {
-        return Ok(());
-    }
-    let bearer = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .unwrap_or_default();
-    let explicit = headers
-        .get("x-lantor-token")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    if bearer == token || explicit == token || query_token == Some(token) {
-        Ok(())
-    } else {
-        Err((
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                ok: false,
-                message: "missing or invalid Lantor web token".to_owned(),
-            }),
-        )
-            .into_response())
-    }
 }
 
 fn api_error(message: String) -> Response {

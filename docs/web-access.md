@@ -6,27 +6,24 @@ by default.
 
 ```bash
 npm run build
-LANTOR_WEB_BIND=0.0.0.0:8787 \
-LANTOR_WEB_TOKEN="$(openssl rand -hex 24)" \
-npm run tauri:dev
+LANTOR_WEB_BIND=0.0.0.0:8787 npm run tauri:dev
 ```
 
 Then open the Mac's Tailscale address from the other device:
 
 ```text
-http://<mac-tailscale-ip>:8787/?token=<LANTOR_WEB_TOKEN>
+http://<mac-tailscale-ip>:8787/
 ```
 
-A token is required whenever the bind is non-loopback. Loopback requests from
-the same Mac can use `http://127.0.0.1:8787/` directly; requests from another
-device must include the token:
+Loopback requests from the same Mac can use:
 
 ```text
-http://<mac-tailscale-ip>:8787/?token=<LANTOR_WEB_TOKEN>
+http://127.0.0.1:8787/
 ```
 
-Keep the bind on `127.0.0.1` unless you are intentionally exposing Lantor on a
-trusted private network and have set a strong token.
+The web UI does not perform its own token check. Keep the bind on `127.0.0.1`
+unless you are intentionally exposing Lantor on a trusted private network such
+as your Tailscale tailnet.
 
 The web UI uses HTTP endpoints for the subset of Tauri commands the chat
 surface needs:

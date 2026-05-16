@@ -16,11 +16,6 @@ function artifactLines(message: Message) {
 export function messageShareLink(message: Message, baseUrl?: string | null) {
   const base = (baseUrl && baseUrl.trim()) || window.location.origin;
   const url = new URL(base, window.location.href);
-  const current = new URL(window.location.href);
-  const token = current.searchParams.get("token");
-  if (token && url.origin === current.origin) {
-    url.searchParams.set("token", token);
-  }
   url.hash = `/message/${message.id}`;
   return url.toString();
 }
