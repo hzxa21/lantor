@@ -1477,6 +1477,28 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        with latest_task_work_item as (
+            select distinct on (task_id)
+                task_id,
+                status
+            from agent_work_items
+            where task_id is not null
+            order by task_id, coalesce(completed_at, updated_at, created_at) desc
+        )
+        update tasks t
+        set status = 'in_review',
+            updated_at = now()
+        from latest_task_work_item w
+        where w.task_id = t.id
+          and w.status = 'done'
+          and t.status in ('todo', 'in_progress')
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 
@@ -2651,6 +2673,87 @@ async fn dispatch_task_assignment_to_agent(
         .to_string(),
     )
     .await?;
+    Ok(())
+}
+
+async fn mark_task_after_work_item_finished(
+    pool: &PgPool,
+    work_item_id: Uuid,
+    agent_id: Uuid,
+    run_id: Uuid,
+    work_status: &str,
+) -> CommandResult<()> {
+    let task_row = sqlx::query(
+        r#"
+        select t.id, t.number, t.title, t.status
+        from agent_work_items w
+        join tasks t on t.id = w.task_id
+        where w.id = $1
+        "#,
+    )
+    .bind(work_item_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+    let Some(task_row) = task_row else {
+        return Ok(());
+    };
+    let task_id: Uuid = task_row.get("id");
+    let task_number: i64 = task_row.get("number");
+    let title: String = task_row.get("title");
+    let current_status: String = task_row.get("status");
+
+    if work_status == "done" && matches!(current_status.as_str(), "todo" | "in_progress") {
+        sqlx::query(
+            r#"
+            update tasks
+            set status = 'in_review',
+                updated_at = now()
+            where id = $1 and status in ('todo', 'in_progress')
+            "#,
+        )
+        .bind(task_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+        let _ = notify_ui_refresh(pool, "task_ready_for_review").await;
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            Some(run_id),
+            "task",
+            "Task ready for review",
+            json!({
+                "task_id": task_id,
+                "task_number": task_number,
+                "work_item_id": work_item_id,
+                "title": title,
+            })
+            .to_string(),
+        )
+        .await?;
+    } else if matches!(work_status, "failed" | "cancelled") {
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            Some(run_id),
+            "task",
+            if work_status == "failed" {
+                "Task run failed"
+            } else {
+                "Task run cancelled"
+            },
+            json!({
+                "task_id": task_id,
+                "task_number": task_number,
+                "work_item_id": work_item_id,
+                "title": title,
+            })
+            .to_string(),
+        )
+        .await?;
+    }
+
     Ok(())
 }
 
@@ -4637,6 +4740,16 @@ async fn claim_task(
 
     if let Some(agent_id) = agent_id {
         dispatch_task_assignment_to_agent(&state.pool, task_id, agent_id, "manual_claim").await?;
+    } else {
+        record_agent_activity(
+            &state.pool,
+            None,
+            None,
+            "task",
+            "Task unassigned",
+            json!({ "task_id": task_id }).to_string(),
+        )
+        .await?;
     }
 
     Ok(())
@@ -4669,6 +4782,15 @@ async fn update_task_status(
     if affected == 0 {
         return Err("task does not exist".to_owned());
     }
+    record_agent_activity(
+        &state.pool,
+        None,
+        None,
+        "task",
+        "Task status updated",
+        json!({ "task_id": task_id, "status": status }).to_string(),
+    )
+    .await?;
 
     Ok(())
 }
@@ -4707,6 +4829,15 @@ async fn update_task_title(
         .map_err(to_string)?;
 
     tx.commit().await.map_err(to_string)?;
+    record_agent_activity(
+        &state.pool,
+        None,
+        None,
+        "task",
+        "Task title updated",
+        json!({ "task_id": task_id, "title": title }).to_string(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -9453,6 +9584,9 @@ async fn wait_for_agent_run(
         .execute(&pool)
         .await;
         notify_ui_work_item_changed(&pool, work_item_id, "work_item_finished").await;
+        let _ =
+            mark_task_after_work_item_finished(&pool, work_item_id, agent_id, run_id, work_status)
+                .await;
         let _ = record_agent_activity(
             &pool,
             Some(agent_id),
@@ -12845,6 +12979,14 @@ async fn finish_warm_claude_active_turn(
         .await
         .map_err(to_string)?;
         notify_ui_work_item_changed(pool, work_item_id, "work_item_finished").await;
+        mark_task_after_work_item_finished(
+            pool,
+            work_item_id,
+            agent_id,
+            active.run_id,
+            work_status,
+        )
+        .await?;
         record_agent_activity(
             pool,
             Some(agent_id),
@@ -13048,6 +13190,14 @@ async fn finish_warm_codex_active_turn(
         .await
         .map_err(to_string)?;
         notify_ui_work_item_changed(pool, work_item_id, "work_item_finished").await;
+        mark_task_after_work_item_finished(
+            pool,
+            work_item_id,
+            agent_id,
+            active.run_id,
+            work_status,
+        )
+        .await?;
         record_agent_activity(
             pool,
             Some(agent_id),

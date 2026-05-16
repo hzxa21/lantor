@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowLeft, Bookmark, MessageSquare, Paperclip, Reply, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, MessageSquare, Paperclip, Reply, RotateCcw, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -19,6 +19,23 @@ import { TaskAssigneePicker } from "./TaskAssigneePicker";
 
 function taskStatusLabel(status: string) {
   return status.replace("_", " ");
+}
+
+function metadataString(metadata: Record<string, unknown>, key: string) {
+  const value = metadata[key];
+  return typeof value === "string" ? value : typeof value === "number" ? String(value) : "";
+}
+
+function activityDetailText(activity: AgentActivity) {
+  const title = metadataString(activity.metadata, "title");
+  if (title) return title;
+  const detail = activity.detail.trim();
+  if (!detail || detail.startsWith("{")) return "";
+  return detail;
+}
+
+function taskActivityLabel(activity: AgentActivity) {
+  return activity.title || activity.summary || activity.kind.replace("_", " ");
 }
 
 type ThreadPanelProps = {
@@ -278,6 +295,22 @@ export function ThreadPanel({
   const activeTaskAssignee = activeTask
     ? agents.find((agent) => agent.id === activeTask.assignee_id) ?? null
     : null;
+  const taskWorkItems = activeTask
+    ? agentWorkItems
+        .filter((item) => item.task_id === activeTask.id)
+        .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+    : [];
+  const taskRunIds = new Set(taskWorkItems.map((item) => item.run_id).filter(Boolean));
+  const taskActivities = activeTask
+    ? agentActivities
+        .filter((activity) =>
+          (activity.run_id && taskRunIds.has(activity.run_id)) ||
+          metadataString(activity.metadata, "task_id") === activeTask.id)
+        .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+        .slice(0, 12)
+    : [];
+  const latestFinishedTaskWorkItem = taskWorkItems.find((item) => ["done", "failed", "cancelled", "silent"].includes(item.status));
+  const showTaskReviewActions = Boolean(activeTask && activeTask.status === "in_review" && latestFinishedTaskWorkItem?.status === "done");
 
   return (
     <aside className="thread">
@@ -443,6 +476,55 @@ export function ThreadPanel({
                     {taskStatusLabel(status)}
                   </button>
                 ))}
+              </div>
+              {showTaskReviewActions && (
+                <div className="task-review-actions" aria-label={`Review task #${activeTask.number}`}>
+                  <button type="button" onClick={() => updateTaskStatus(activeTask, "done")}>
+                    <CheckCircle2 size={15} /> Done
+                  </button>
+                  <button type="button" onClick={() => updateTaskStatus(activeTask, "in_progress")}>
+                    <RotateCcw size={15} /> Follow-up
+                  </button>
+                </div>
+              )}
+              <div className="task-execution-panel">
+                <div className="task-execution-head">
+                  <strong>Execution</strong>
+                  <span>{taskActivities.length || taskWorkItems.length ? `${taskActivities.length || taskWorkItems.length} events` : "No runs yet"}</span>
+                </div>
+                {taskActivities.length > 0 ? (
+                  <div className="task-execution-timeline">
+                    {taskActivities.map((activity) => {
+                      const detail = activityDetailText(activity);
+                      return (
+                        <div className="task-execution-row" key={activity.id}>
+                          <time>{formatClockTime(activity.created_at)}</time>
+                          <span className="activity-dot" data-kind={activity.kind} data-status={activity.status} />
+                          <div>
+                            <strong>{taskActivityLabel(activity)}</strong>
+                            <small>{activity.agent_handle ? `@${activity.agent_handle}` : "Lantor"} · {activity.status}</small>
+                            {detail && <p>{detail}</p>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : taskWorkItems.length > 0 ? (
+                  <div className="task-execution-timeline">
+                    {taskWorkItems.slice(0, 6).map((item) => (
+                      <div className="task-execution-row" key={item.id}>
+                        <time>{formatClockTime(item.created_at)}</time>
+                        <span className="activity-dot" data-kind="task" data-status={item.status === "failed" ? "error" : item.status === "done" ? "success" : "active"} />
+                        <div>
+                          <strong>{item.title}</strong>
+                          <small>@{item.agent_handle} · {item.status}</small>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="task-execution-empty">Assign an agent to start execution.</p>
+                )}
               </div>
             </section>
           )}
