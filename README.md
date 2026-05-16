@@ -147,4 +147,4 @@ npm run tauri:dev                                          # desktop app
 
 ## License
 
-MIT
+Apache-2.0
