@@ -6,7 +6,6 @@ import {
   Bookmark,
   Plus,
   Search,
-  X,
 } from "lucide-react";
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
@@ -31,7 +30,6 @@ type SidebarProps = {
   openCreateAgentModal: () => void;
   openDmWithAgent: (agent: Agent) => void;
   openOwnerProfileModal: () => void;
-  onMobileClose?: () => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
@@ -48,7 +46,6 @@ export function Sidebar({
   openCreateAgentModal,
   openDmWithAgent,
   openOwnerProfileModal,
-  onMobileClose,
   onResizeStart,
 }: SidebarProps) {
   const [collapsedSections, setCollapsedSections] = useState({ channels: false, dms: false });
@@ -70,14 +67,6 @@ export function Sidebar({
           <img className="workspace-switch-logo" src="/lantor-icon.png" alt="" aria-hidden="true" />
           <strong>{APP_DISPLAY_NAME}</strong>
         </div>
-        <button
-          type="button"
-          className="mobile-sidebar-close"
-          aria-label="Close navigation"
-          onClick={onMobileClose}
-        >
-          <X size={18} />
-        </button>
       </section>
 
       <section className="quick-actions">

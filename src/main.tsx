@@ -90,6 +90,11 @@ const CHANNEL_THREAD_MEMORY_STORAGE_KEY = "lantor.channelThreadMemory";
 const THREAD_PANEL_WIDTH_STORAGE_KEY = "lantor.threadPanelWidth";
 const AGENT_DRAWER_WIDTH_STORAGE_KEY = "lantor.agentDrawerWidth";
 const SIDEBAR_WIDTH_STORAGE_KEY = "lantor.sidebarWidth";
+const MOBILE_EDGE_SWIPE_START_PX = 24;
+const MOBILE_EDGE_SWIPE_OPEN_PX = 72;
+const MOBILE_EDGE_SWIPE_MAX_VERTICAL_PX = 48;
+const MOBILE_SIDEBAR_PEEK_PX = 18;
+const MOBILE_SIDEBAR_FLING_VELOCITY = 0.45;
 
 type UiBackendEvent =
   | { type: "refresh"; reason?: string }
@@ -114,9 +119,6 @@ type ActiveTab = "chat" | "tasks";
 type MobileHistoryState = {
   __lantorMobileUi?: true;
   index: number;
-  activeChannelId: string;
-  activeThreadId: string | null;
-  activeTab: ActiveTab;
   showThread: boolean;
   showMobileSidebar: boolean;
   selectedAgentId: string | null;
@@ -162,9 +164,6 @@ function isMobileHistoryState(value: unknown): value is MobileHistoryState {
   const state = value as Record<string, unknown>;
   return state.__lantorMobileUi === true
     && typeof state.index === "number"
-    && typeof state.activeChannelId === "string"
-    && (state.activeThreadId === null || typeof state.activeThreadId === "string")
-    && (state.activeTab === "chat" || state.activeTab === "tasks")
     && typeof state.showThread === "boolean"
     && typeof state.showMobileSidebar === "boolean"
     && (state.selectedAgentId === null || typeof state.selectedAgentId === "string");
@@ -172,9 +171,6 @@ function isMobileHistoryState(value: unknown): value is MobileHistoryState {
 
 function mobileHistoryKey(state: MobileHistoryState) {
   return [
-    state.activeChannelId,
-    state.activeThreadId ?? "",
-    state.activeTab,
     state.showThread ? "thread" : "conversation",
     state.showMobileSidebar ? "sidebar" : "content",
     state.selectedAgentId ?? "",
@@ -487,7 +483,8 @@ function App() {
   const [showInboxModal, setShowInboxModal] = useState(false);
   const [showSavedModal, setShowSavedModal] = useState(false);
   const [showOwnerProfileModal, setShowOwnerProfileModal] = useState(false);
-  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(() => isMobileViewport());
+  const [mobileSidebarDragPx, setMobileSidebarDragPx] = useState(0);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
@@ -551,9 +548,6 @@ function App() {
     return {
       __lantorMobileUi: true,
       index,
-      activeChannelId,
-      activeThreadId,
-      activeTab,
       showThread,
       showMobileSidebar,
       selectedAgentId,
@@ -1066,11 +1060,12 @@ function App() {
       mobileHistoryReadyRef.current = true;
       mobileHistoryIndexRef.current = event.state.index;
       lastMobileHistoryKeyRef.current = mobileHistoryKey(event.state);
-      setActiveChannelId(event.state.activeChannelId);
-      setActiveThreadId(event.state.activeThreadId);
-      setActiveTab(event.state.activeTab);
+      // Only restore navigation-layer state (sidebar/thread/agent-drawer pages).
+      // The active channel/thread/tab are content state and stay live across
+      // back navigation so the sidebar remembers what was last opened.
       setShowThread(event.state.showThread);
       setShowMobileSidebar(event.state.showMobileSidebar);
+      setMobileSidebarDragPx(0);
       setSelectedAgentId(event.state.selectedAgentId);
     }
 
@@ -1104,8 +1099,6 @@ function App() {
       const baseState: MobileHistoryState = {
         ...currentState,
         index: 0,
-        activeThreadId: null,
-        activeTab: "chat",
         showThread: false,
         showMobileSidebar: true,
         selectedAgentId: null,
@@ -1125,17 +1118,148 @@ function App() {
     }
 
     if (lastMobileHistoryKeyRef.current === currentKey) return;
+
+    const browserState = window.history.state;
+    const isLeavingSidebar =
+      isMobileHistoryState(browserState) &&
+      browserState.showMobileSidebar &&
+      !currentState.showMobileSidebar;
+    if (isLeavingSidebar) {
+      const sidebarState: MobileHistoryState = {
+        ...currentState,
+        index: browserState.index,
+        showThread: false,
+        showMobileSidebar: true,
+        selectedAgentId: null,
+      };
+      window.history.replaceState(sidebarState, "");
+      mobileHistoryIndexRef.current = sidebarState.index;
+      lastMobileHistoryKeyRef.current = mobileHistoryKey(sidebarState);
+    }
+
     const nextState = { ...currentState, index: mobileHistoryIndexRef.current + 1 };
     window.history.pushState(nextState, "");
     mobileHistoryIndexRef.current = nextState.index;
     lastMobileHistoryKeyRef.current = mobileHistoryKey(nextState);
   }, [
-    activeChannelId,
-    activeTab,
-    activeThreadId,
     data,
     selectedAgentId,
     showMobileSidebar,
+    showThread,
+  ]);
+
+  useEffect(() => {
+    const hasOpenModal = showChannelAgentsModal ||
+      showChannelSettingsModal ||
+      showCreateAgentModal ||
+      showCreateChannelModal ||
+      showInboxModal ||
+      showOwnerProfileModal ||
+      showSavedModal ||
+      showSearchModal;
+    if (!isMobileViewport() || showMobileSidebar || showThread || selectedAgentId || hasOpenModal) return;
+
+    let startX: number | null = null;
+    let startY: number | null = null;
+    let lastX = 0;
+    let lastTime = 0;
+    let tracking = false;
+
+    function mobileSidebarWidth() {
+      return window.innerWidth;
+    }
+
+    function resetSwipe() {
+      startX = null;
+      startY = null;
+      lastX = 0;
+      lastTime = 0;
+      tracking = false;
+      setMobileSidebarDragPx(0);
+    }
+
+    function onTouchStart(event: TouchEvent) {
+      if (event.touches.length !== 1 || isTextInput(event.target)) {
+        resetSwipe();
+        return;
+      }
+
+      const touch = event.touches[0];
+      if (touch.clientX > MOBILE_EDGE_SWIPE_START_PX) {
+        resetSwipe();
+        return;
+      }
+      event.preventDefault();
+      startX = touch.clientX;
+      startY = touch.clientY;
+      lastX = touch.clientX;
+      lastTime = event.timeStamp;
+      tracking = true;
+      setMobileSidebarDragPx(MOBILE_SIDEBAR_PEEK_PX);
+    }
+
+    function onTouchMove(event: TouchEvent) {
+      if (!tracking || startX === null || startY === null || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const deltaX = touch.clientX - startX;
+      const deltaY = Math.abs(touch.clientY - startY);
+
+      if (deltaY > MOBILE_EDGE_SWIPE_MAX_VERTICAL_PX && Math.abs(deltaX) < MOBILE_EDGE_SWIPE_OPEN_PX) {
+        resetSwipe();
+        return;
+      }
+      if (Math.abs(deltaX) > 10) {
+        event.preventDefault();
+      }
+
+      const width = mobileSidebarWidth();
+      setMobileSidebarDragPx(Math.max(MOBILE_SIDEBAR_PEEK_PX, Math.min(width, deltaX)));
+      lastX = touch.clientX;
+    }
+
+    function onTouchEnd(event: TouchEvent) {
+      if (!tracking || startX === null) {
+        resetSwipe();
+        return;
+      }
+
+      const width = mobileSidebarWidth();
+      const currentPx = Math.max(0, Math.min(width, lastX - startX));
+      const elapsed = Math.max(1, event.timeStamp - lastTime);
+      const velocity = (lastX - startX) / elapsed;
+      const shouldOpen = currentPx >= width * 0.28 || velocity > MOBILE_SIDEBAR_FLING_VELOCITY;
+
+      if (shouldOpen) {
+        if (mobileHistoryReadyRef.current && mobileHistoryIndexRef.current > 0) {
+          window.history.back();
+        } else {
+          setShowMobileSidebar(true);
+        }
+      }
+      resetSwipe();
+    }
+
+    window.addEventListener("touchstart", onTouchStart, { passive: false, capture: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: false, capture: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true, capture: true });
+    window.addEventListener("touchcancel", resetSwipe, { passive: true, capture: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart, { capture: true });
+      window.removeEventListener("touchmove", onTouchMove, { capture: true });
+      window.removeEventListener("touchend", onTouchEnd, { capture: true });
+      window.removeEventListener("touchcancel", resetSwipe, { capture: true });
+    };
+  }, [
+    selectedAgentId,
+    showChannelAgentsModal,
+    showChannelSettingsModal,
+    showCreateAgentModal,
+    showCreateChannelModal,
+    showInboxModal,
+    showMobileSidebar,
+    showOwnerProfileModal,
+    showSavedModal,
+    showSearchModal,
     showThread,
   ]);
 
@@ -1779,10 +1903,6 @@ function App() {
     fallback();
   }
 
-  function closeMobileSidebar() {
-    navigateMobileBack(() => setShowMobileSidebar(false));
-  }
-
   function closeSelectedAgent() {
     navigateMobileBack(() => setSelectedAgentId(null));
   }
@@ -2355,10 +2475,11 @@ function App() {
 
   return (
     <main
-      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"} ${showMobileSidebar ? "mobile-sidebar-open" : ""}`}
+      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"} ${showMobileSidebar ? "mobile-sidebar-open" : ""} ${mobileSidebarDragPx > 0 ? "mobile-sidebar-dragging" : ""}`}
       style={{
         "--sidebar-width": `${sidebarWidth}px`,
         "--thread-width": `${selectedAgent ? agentDrawerWidth : threadPanelWidth}px`,
+        "--mobile-sidebar-drag": `${mobileSidebarDragPx}px`,
       } as CSSProperties}
     >
       <Sidebar
@@ -2382,7 +2503,11 @@ function App() {
           setShowMobileSidebar(false);
           setShowCreateChannelModal(true);
         }}
-        selectChannel={selectChannel}
+        selectChannel={(channelId) => {
+          setShowMobileSidebar(false);
+          setMobileSidebarDragPx(0);
+          selectChannel(channelId);
+        }}
         openCreateAgentModal={() => {
           setAgentDraft(newAgentDraft());
           setShowMobileSidebar(false);
@@ -2397,16 +2522,8 @@ function App() {
           setShowMobileSidebar(false);
           setShowOwnerProfileModal(true);
         }}
-        onMobileClose={closeMobileSidebar}
         onResizeStart={startSidebarResize}
       />
-      <button
-        type="button"
-        className="mobile-sidebar-backdrop"
-        aria-label="Close navigation"
-        onClick={closeMobileSidebar}
-      />
-
       <SearchModal
         open={showSearchModal}
         query={searchQuery}
@@ -2468,7 +2585,7 @@ function App() {
         taskTitleDrafts={taskTitleDrafts}
         setActiveTab={setActiveTab}
         setActiveThreadId={revealThread}
-        openMobileSidebar={() => setShowMobileSidebar(true)}
+        openMobileSidebar={() => navigateMobileBack(() => setShowMobileSidebar(true))}
         openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
         deleteChannel={deleteChannel}
         openChannelAgentsModal={() => setShowChannelAgentsModal(true)}
