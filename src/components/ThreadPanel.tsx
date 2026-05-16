@@ -38,6 +38,14 @@ function taskActivityLabel(activity: AgentActivity) {
   return activity.title || activity.summary || activity.kind.replace("_", " ");
 }
 
+function isNoisyTaskActivity(activity: AgentActivity) {
+  const title = taskActivityLabel(activity).toLowerCase();
+  if (activity.kind === "task" && title.startsWith("task claim opportunity")) return true;
+  if (activity.kind === "dispatch" && (title === "request started" || title === "request queued")) return true;
+  if (activity.kind === "run" && (title === "started working" || title === "run started" || title === "run created")) return true;
+  return false;
+}
+
 type ThreadPanelProps = {
   channel: Channel | null;
   agents: Agent[];
@@ -309,6 +317,7 @@ export function ThreadPanel({
         .filter((activity) =>
           (activity.run_id && taskRunIds.has(activity.run_id)) ||
           metadataString(activity.metadata, "task_id") === activeTask.id)
+        .filter((activity) => !isNoisyTaskActivity(activity))
         .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
         .slice(0, 12)
     : [];

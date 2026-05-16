@@ -71,6 +71,7 @@ const LANTOR_CONTROL_EVENTS = [
   '{"type":"reminder_cancel","reminder_id":"uuid"}',
   '{"type":"task_create","channel_id":"uuid","title":"Short task title","body":"Root task message","thread_body":"First execution update","assign_self":true,"status":"in_progress"}',
   '{"type":"task_status","task_number":1,"status":"in_review"}',
+  '{"type":"task_claim","task_number":1}',
   '{"type":"artifact_create","channel_id":"uuid","thread_root_id":"optional uuid","kind":"markdown","title":"Report","summary":"Short chat summary","content":"Full markdown content","metadata":{}}',
   '{"type":"attachment_create","channel_id":"uuid","thread_root_id":"optional uuid","body":"Short message","files":[{"path":"/absolute/path/to/image.png","name":"image.png","mime_type":"image/png"}]}',
   '{"type":"channel_message_create","channel_id":"uuid","thread_root_id":"optional uuid","body":"Message body"}',
@@ -78,6 +79,7 @@ const LANTOR_CONTROL_EVENTS = [
   '{"type":"channel_create","name":"short-topic","description":"why this channel exists","agent_handles":["@Hancock"]}',
   '{"type":"channel_invite","channel":"lantor","agent_handles":["@Vegapunk"]}',
   "For activity events, write title/detail as user-facing progress across all work modes, for example: title='Reading the stream parser', detail='I am checking where control lines become inline progress before changing the prompt contract.'",
+  "For competitive unassigned task opportunities, emit the hidden task_claim control line first if you can start now, then stay silent until Lantor sends the winning agent a task_assigned turn.",
   "Use channel_message_create only after the user explicitly asks you to post in a specific channel/thread. It posts as your agent identity, requires channel membership, and normal @mentions may dispatch work.",
   "Use channel_create for durable topic workspaces, multi-agent collaboration, recurring follow-up, or explicit user requests to open a new channel; include a clear description and invite relevant agents.",
 ].join("\n");
@@ -85,11 +87,11 @@ const LANTOR_CONTROL_EVENTS = [
 const LANTOR_VISIBLE_REPLY_TRANSPORT = [
   "Visible reply transport:",
   "- Warm Codex/Claude streaming runtimes should answer with normal assistant text; Lantor routes it to the current channel/thread automatically.",
-  "- Warm streaming runtimes may still emit non-message LANTOR_EVENT control lines above, including artifact_create, attachment_create, channel_message_create, and handoff_create; Lantor consumes and hides those lines.",
+  "- Warm streaming runtimes may still emit non-message LANTOR_EVENT control lines above, including artifact_create, attachment_create, channel_message_create, task_claim, and handoff_create; Lantor consumes and hides those lines.",
   "- Stdout command runtimes should create visible chat by printing exactly one LANTOR_EVENT message line.",
   '{"type":"message","channel_id":"uuid","body":"..."}',
   '{"type":"message","channel_id":"uuid","thread_root_id":"uuid","body":"..."}',
-  "- Do not emit message/task_claim lines from warm streaming runtimes unless explicitly debugging the stdout command path.",
+  "- Do not emit message lines from warm streaming runtimes unless explicitly debugging the stdout command path.",
 ].join("\n");
 
 export function shellQuote(value: string) {

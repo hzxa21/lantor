@@ -139,6 +139,7 @@ export type Task = {
   channel_id: string;
   title: string;
   status: string;
+  version: number;
   channel_name: string;
   assignee_id: string | null;
   assignee_name: string | null;

@@ -166,6 +166,7 @@ pub(crate) struct Task {
     pub(crate) channel_id: Uuid,
     pub(crate) title: String,
     pub(crate) status: String,
+    pub(crate) version: i64,
     pub(crate) channel_name: String,
     pub(crate) assignee_id: Option<Uuid>,
     pub(crate) assignee_name: Option<String>,

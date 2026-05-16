@@ -377,6 +377,14 @@ async fn maybe_insert_work_item_system_message(
     {
         return Ok(());
     }
+    if work_item.task_number.is_some()
+        && matches!(
+            reason,
+            "work_item_created" | "work_item_queued" | "work_item_running"
+        )
+    {
+        return Ok(());
+    }
     let Some(channel_id) = work_item.channel_id else {
         return Ok(());
     };
@@ -1052,6 +1060,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
             title text not null,
             status text not null default 'todo',
             assignee_agent_id uuid references agents(id) on delete set null,
+            version bigint not null default 0,
             created_at timestamptz not null default now(),
             updated_at timestamptz not null default now()
         )
@@ -1059,6 +1068,9 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    sqlx::query("alter table tasks add column if not exists version bigint not null default 0")
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         r#"
@@ -2545,6 +2557,7 @@ async fn dispatch_agent_work(
             update tasks
             set assignee_agent_id = $2,
                 status = 'in_progress',
+                version = version + 1,
                 updated_at = now()
             where id = $1
             "#,
@@ -2674,6 +2687,176 @@ async fn dispatch_task_assignment_to_agent(
     )
     .await?;
     Ok(())
+}
+
+async fn dispatch_unassigned_task_availability(pool: &PgPool, task_id: Uuid) -> CommandResult<()> {
+    let Some(row) = sqlx::query(
+        r#"
+        select t.channel_id, t.message_id, t.title, t.status, t.assignee_agent_id, m.body, c.name as channel_name
+        from tasks t
+        join messages m on m.id = t.message_id
+        join channels c on c.id = t.channel_id
+        where t.id = $1
+        "#,
+    )
+    .bind(task_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?
+    else {
+        return Ok(());
+    };
+    let status: String = row.get("status");
+    let assignee_agent_id: Option<Uuid> = row.get("assignee_agent_id");
+    if status != "todo" || assignee_agent_id.is_some() {
+        return Ok(());
+    }
+
+    let channel_id: Uuid = row.get("channel_id");
+    let message_id: Uuid = row.get("message_id");
+    let title: String = row.get("title");
+    let body: String = row.get("body");
+    let channel_name: String = row.get("channel_name");
+    let agents = sqlx::query(
+        r#"
+        select a.id, a.handle
+        from channel_members cm
+        join agents a on a.id = cm.agent_id
+        where cm.channel_id = $1
+        order by cm.created_at, a.handle
+        "#,
+    )
+    .bind(channel_id)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    for agent in agents {
+        let agent_id: Uuid = agent.get("id");
+        let agent_handle: String = agent.get("handle");
+        let inbox_item_id = create_agent_inbox_item(
+            pool,
+            AgentInboxItemInput {
+                agent_id,
+                channel_id: Some(channel_id),
+                thread_root_id: Some(message_id),
+                source_message_id: Some(message_id),
+                task_id: Some(task_id),
+                kind: "task_available",
+                priority: 70,
+                title: &title,
+                body_preview: body.trim(),
+                payload: json!({
+                    "channel_name": &channel_name,
+                    "source_kind": "task_available",
+                    "claim_contract": "Emit LANTOR_EVENT task_claim only if you can start this task now. The backend will atomically accept one claimant and ignore stale claims.",
+                }),
+            },
+        )
+        .await?;
+        let scheduled = ensure_agent_inbox_wake_work_item(pool, agent_id)
+            .await?
+            .is_some_and(|(_, scheduled)| scheduled);
+        record_agent_activity(
+            pool,
+            Some(agent_id),
+            None,
+            "task",
+            if scheduled {
+                "Task claim opportunity delivered"
+            } else {
+                "Task claim opportunity queued"
+            },
+            json!({
+                "target_agent": format!("@{agent_handle}"),
+                "inbox_item_id": inbox_item_id,
+                "task_id": task_id,
+                "title": &title,
+            })
+            .to_string(),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn try_claim_unassigned_task(
+    pool: &PgPool,
+    task_id: Uuid,
+    agent_id: Uuid,
+    expected_version: Option<i64>,
+    reason: &str,
+) -> CommandResult<Option<i64>> {
+    let claimed = sqlx::query(
+        r#"
+        update tasks t
+        set assignee_agent_id = $2,
+            status = 'in_progress',
+            version = t.version + 1,
+            updated_at = now()
+        where t.id = $1
+          and t.assignee_agent_id is null
+          and t.status = 'todo'
+          and ($3::bigint is null or t.version = $3)
+          and exists (
+              select 1
+              from channel_members cm
+              where cm.channel_id = t.channel_id
+                and cm.agent_id = $2
+          )
+          and not exists (
+              select 1
+              from tasks active
+              where active.assignee_agent_id = $2
+                and active.status in ('todo', 'in_progress')
+                and active.id <> t.id
+          )
+        returning t.number
+        "#,
+    )
+    .bind(task_id)
+    .bind(agent_id)
+    .bind(expected_version)
+    .fetch_optional(pool)
+    .await
+    .map_err(to_string)?;
+
+    let Some(row) = claimed else {
+        return Ok(None);
+    };
+    let task_number: i64 = row.get("number");
+    sqlx::query(
+        r#"
+        update agent_inbox_items
+        set state = 'archived',
+            archived_at = now(),
+            updated_at = now()
+        where task_id = $1
+          and kind = 'task_available'
+          and state <> 'archived'
+        "#,
+    )
+    .bind(task_id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    dispatch_task_assignment_to_agent(pool, task_id, agent_id, reason).await?;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        None,
+        "task",
+        format!("Task #{task_number} claimed"),
+        json!({
+            "task_id": task_id,
+            "reason": reason,
+            "optimistic": expected_version.is_some(),
+        })
+        .to_string(),
+    )
+    .await?;
+    Ok(Some(task_number))
 }
 
 async fn mark_task_after_work_item_finished(
@@ -3609,6 +3792,7 @@ fn inbox_wake_context(items: &[InboxWakeItem], other_active: &[InboxWakeSummary]
         return "Lantor agent inbox wake.".to_owned();
     };
     let target = primary.target();
+    let has_task_available = items.iter().any(|item| item.kind == "task_available");
     let mut lines = vec![
         "Lantor agent inbox wake.".to_owned(),
         if items.len() == 1 {
@@ -3628,6 +3812,16 @@ fn inbox_wake_context(items: &[InboxWakeItem], other_active: &[InboxWakeSummary]
         "If you handle another inbox item in this same turn with a different target, post to that item's channel/thread with channel_message_create instead of relying on the default route.".to_owned(),
         String::new(),
     ];
+    if has_task_available {
+        lines.extend([
+            "Task claim opportunity mode:".to_owned(),
+            "- This is a competitive, unassigned task opportunity sent to multiple agents.".to_owned(),
+            "- If you can start now, emit only the standalone `LANTOR_EVENT {\"type\":\"task_claim\",\"task_number\":...}` control line, then finish with `LANTOR_SILENT_REPLY: claim attempted`.".to_owned(),
+            "- Do not post a visible reply, do not narrate that you are queued/starting, and do not emit activity events for the claim attempt.".to_owned(),
+            "- Lantor atomically accepts one claimant, ignores stale claims, and will send a separate task_assigned inbox turn to the winning agent to do the work visibly.".to_owned(),
+            String::new(),
+        ]);
+    }
 
     if items.len() == 1 {
         lines.push("Default inbox item:".to_owned());
@@ -4063,6 +4257,7 @@ async fn queue_mentions_as_work_items(
             update tasks
             set assignee_agent_id = $2,
                 status = 'in_progress',
+                version = version + 1,
                 updated_at = now()
             where id = $1 and assignee_agent_id is null
             "#,
@@ -4543,6 +4738,9 @@ pub(crate) async fn send_owner_message_in_pool(
         MentionDispatchOrigin::Owner,
     )
     .await?;
+    if let Some(task_id) = task_id {
+        dispatch_unassigned_task_availability(pool, task_id).await?;
+    }
     let _ = notify_ui_refresh(pool, "message").await;
     Ok(())
 }
@@ -4708,6 +4906,7 @@ pub(crate) async fn set_message_saved_in_pool(
 async fn claim_task(
     task_id: Uuid,
     agent_id: Option<Uuid>,
+    expected_version: Option<i64>,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     let current_status: Option<String> =
@@ -4721,11 +4920,25 @@ async fn claim_task(
         return Err("done tasks cannot be reassigned".to_owned());
     }
 
+    if let (Some(agent_id), Some(expected_version)) = (agent_id, expected_version) {
+        return try_claim_unassigned_task(
+            &state.pool,
+            task_id,
+            agent_id,
+            Some(expected_version),
+            "manual_claim",
+        )
+        .await?
+        .map(|_| ())
+        .ok_or_else(|| "task was already claimed or is no longer available".to_owned());
+    }
+
     sqlx::query_scalar::<_, Uuid>(
         r#"
         update tasks
         set assignee_agent_id = $2,
             status = case when $2 is null then status else 'in_progress' end,
+            version = version + 1,
             updated_at = now()
         where id = $1
         returning id
@@ -4769,7 +4982,7 @@ async fn update_task_status(
     let affected = sqlx::query(
         r#"
         update tasks
-        set status = $2, updated_at = now()
+        set status = $2, version = version + 1, updated_at = now()
         where id = $1
         "#,
     )
@@ -4810,7 +5023,7 @@ async fn update_task_title(
     let message_id: Uuid = sqlx::query_scalar(
         r#"
         update tasks
-        set title = $2, updated_at = now()
+        set title = $2, version = version + 1, updated_at = now()
         where id = $1
         returning message_id
         "#,
@@ -6085,6 +6298,7 @@ async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
             t.channel_id,
             t.title,
             t.status,
+            t.version,
             c.name as channel_name,
             t.assignee_agent_id as assignee_id,
             a.display_name as assignee_name,
@@ -6109,6 +6323,7 @@ async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
             channel_id: row.get("channel_id"),
             title: row.get("title"),
             status: row.get("status"),
+            version: row.get("version"),
             channel_name: row.get("channel_name"),
             assignee_id: row.get("assignee_id"),
             assignee_name: row.get("assignee_name"),
@@ -7513,7 +7728,7 @@ async fn handle_agent_event(
             let affected = sqlx::query(
                 r#"
                 update tasks
-                set status = $2, updated_at = now()
+                set status = $2, version = version + 1, updated_at = now()
                 where number = $1
                 "#,
             )
@@ -7546,35 +7761,53 @@ async fn handle_agent_event(
                 Some(handle) => Some(resolve_agent_by_handle(pool, handle).await?),
                 None => Some(agent_id),
             };
-            let affected = sqlx::query(
-                r#"
-                update tasks
-                set assignee_agent_id = $2,
-                    status = case when $2 is null then status else 'in_progress' end,
-                    updated_at = now()
-                where number = $1
-                "#,
-            )
-            .bind(task_number)
-            .bind(assignee)
-            .execute(pool)
-            .await
-            .map_err(to_string)?
-            .rows_affected();
-            if affected == 0 {
+            let task_id: Option<Uuid> =
+                sqlx::query_scalar("select id from tasks where number = $1")
+                    .bind(task_number)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(to_string)?;
+            let Some(task_id) = task_id else {
                 return Err(format!("task #{task_number} does not exist"));
+            };
+            if assignee.is_none() {
+                let affected = sqlx::query(
+                    r#"
+                    update tasks
+                    set assignee_agent_id = null,
+                        version = version + 1,
+                        updated_at = now()
+                    where id = $1
+                      and assignee_agent_id = $2
+                      and status <> 'done'
+                    "#,
+                )
+                .bind(task_id)
+                .bind(agent_id)
+                .execute(pool)
+                .await
+                .map_err(to_string)?
+                .rows_affected();
+                if affected == 0 {
+                    return Ok(format!("task #{task_number} unclaim ignored"));
+                }
+                record_agent_activity(
+                    pool,
+                    Some(agent_id),
+                    None,
+                    "task",
+                    format!("Task #{task_number} unclaimed"),
+                    "agent_claim",
+                )
+                .await?;
+            } else if assignee != Some(agent_id) {
+                return Err("task_claim can only claim for the current agent".to_owned());
+            } else if try_claim_unassigned_task(pool, task_id, agent_id, None, "agent_claim")
+                .await?
+                .is_none()
+            {
+                return Ok(format!("task #{task_number} claim ignored"));
             }
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                None,
-                "task",
-                format!("Task #{task_number} assignee changed"),
-                assignee_handle
-                    .as_deref()
-                    .unwrap_or("claimed by current agent"),
-            )
-            .await?;
             Ok(format!("task #{task_number} assignee updated"))
         }
         AgentEvent::TaskHandoff {
@@ -7609,6 +7842,7 @@ async fn handle_agent_event(
                 update tasks
                 set assignee_agent_id = $2,
                     status = 'in_progress',
+                    version = version + 1,
                     updated_at = now()
                 where id = $1
                   and assignee_agent_id = $3
@@ -8707,6 +8941,7 @@ async fn create_agent_task_thread(
         set title = $2,
             status = $3,
             assignee_agent_id = case when $4 then $5 else null end,
+            version = version + 1,
             updated_at = now()
         where message_id = $1
         returning number
@@ -13626,8 +13861,8 @@ mod tests {
         normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
         parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
         queue_mentions_as_work_items, record_agent_activity, send_owner_message_in_pool,
-        silent_reply_reason, streaming_message_body_is_empty, upsert_agent_thread_subscription,
-        upsert_runtime_thread_id,
+        silent_reply_reason, streaming_message_body_is_empty, try_claim_unassigned_task,
+        upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
         AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
@@ -13778,6 +14013,7 @@ mod tests {
         assert!(streaming.contains("channel_message_create"));
         assert!(streaming.contains("handoff_create"));
         assert!(streaming.contains("task_handoff"));
+        assert!(streaming.contains("task_claim"));
         assert!(streaming.contains("Do not emit LANTOR_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
     }
@@ -13857,6 +14093,36 @@ mod tests {
         assert!(context.contains(&format!("inbox_id: {inbox_id}")));
         assert!(context.contains("Other active inbox targets:"));
         assert!(context.contains("- dm:Hancock: 2 active"));
+    }
+
+    #[test]
+    fn inbox_wake_context_tells_task_available_agents_to_claim_silently() {
+        let context = inbox_wake_context(
+            &[InboxWakeItem {
+                id: Uuid::new_v4(),
+                channel_id: Some(Uuid::new_v4()),
+                channel_name: Some("builders".to_owned()),
+                channel_kind: Some("channel".to_owned()),
+                thread_root_id: Some(Uuid::new_v4()),
+                source_message_id: Some(Uuid::new_v4()),
+                task_id: Some(Uuid::new_v4()),
+                kind: "task_available".to_owned(),
+                priority: 70,
+                title: "Implement queue behavior".to_owned(),
+                body_preview: "Implement queue behavior".to_owned(),
+                message_created_at: Some(Utc::now()),
+                sender_name: Some("Dylan".to_owned()),
+                sender_role: Some("owner".to_owned()),
+            }],
+            &[],
+        );
+
+        assert!(context.contains("Task claim opportunity mode:"));
+        assert!(context.contains("competitive, unassigned task opportunity"));
+        assert!(context.contains(r#"LANTOR_EVENT {"type":"task_claim","task_number":...}"#));
+        assert!(context.contains("LANTOR_SILENT_REPLY: claim attempted"));
+        assert!(context.contains("do not emit activity events"));
+        assert!(context.contains("task_assigned inbox turn"));
     }
 
     #[test]
@@ -17300,12 +17566,194 @@ mod tests {
                 select count(*)::bigint
                 from agent_inbox_items
                 where task_id = (select id from tasks limit 1)
+                  and kind = 'task_available'
                 "#,
             )
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
-            assert_eq!(inbox_count, 0);
+            assert_eq!(inbox_count, 2);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn unassigned_task_claim_is_atomic_across_agents() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let first_agent_id = insert_test_agent(&pool, "claim-race-a").await?;
+            let second_agent_id = insert_test_agent(&pool, "claim-race-b").await?;
+            let channel_id = insert_test_channel(&pool, "claim-race").await?;
+            for agent_id in [first_agent_id, second_agent_id] {
+                sqlx::query(
+                    r#"
+                    insert into channel_members (channel_id, agent_id)
+                    values ($1, $2)
+                    "#,
+                )
+                .bind(channel_id)
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            }
+            let message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Race to claim', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into tasks (message_id, channel_id, title, status)
+                values ($1, $2, 'Race to claim', 'todo')
+                returning id
+                "#,
+            )
+            .bind(message_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let first = try_claim_unassigned_task(&pool, task_id, first_agent_id, Some(0), "test");
+            let second =
+                try_claim_unassigned_task(&pool, task_id, second_agent_id, Some(0), "test");
+            let (first, second) = tokio::join!(first, second);
+            let wins = [first?, second?]
+                .into_iter()
+                .filter(|claim| claim.is_some())
+                .count();
+            assert_eq!(wins, 1);
+
+            let task = sqlx::query("select status, assignee_agent_id, version from tasks where id = $1")
+                .bind(task_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(task.get::<String, _>("status"), "in_progress");
+            assert!(task.get::<Option<Uuid>, _>("assignee_agent_id").is_some());
+            assert_eq!(task.get::<i64, _>("version"), 1);
+
+            let assigned_inboxes: i64 = sqlx::query_scalar(
+                "select count(*)::bigint from agent_inbox_items where task_id = $1 and kind = 'task_assigned'",
+            )
+            .bind(task_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(assigned_inboxes, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn stale_task_claim_event_is_ignored_without_dispatch_noise() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let winner_agent_id = insert_test_agent(&pool, "claim-winner").await?;
+            let stale_agent_id = insert_test_agent(&pool, "claim-stale").await?;
+            let channel_id = insert_test_channel(&pool, "claim-stale").await?;
+            for agent_id in [winner_agent_id, stale_agent_id] {
+                sqlx::query(
+                    r#"
+                    insert into channel_members (channel_id, agent_id)
+                    values ($1, $2)
+                    "#,
+                )
+                .bind(channel_id)
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            }
+            let message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Claim once', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_row = sqlx::query(
+                r#"
+                insert into tasks (message_id, channel_id, title, status)
+                values ($1, $2, 'Claim once', 'todo')
+                returning id, number
+                "#,
+            )
+            .bind(message_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_id: Uuid = task_row.get("id");
+            let task_number: i64 = task_row.get("number");
+            assert!(
+                try_claim_unassigned_task(&pool, task_id, winner_agent_id, None, "test")
+                    .await?
+                    .is_some()
+            );
+
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(stale_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let result = handle_agent_event(
+                &pool,
+                stale_agent_id,
+                run_id,
+                AgentEvent::TaskClaim {
+                    task_number,
+                    assignee_handle: None,
+                },
+            )
+            .await?;
+            assert_eq!(result, format!("task #{task_number} claim ignored"));
+
+            let task = sqlx::query("select assignee_agent_id from tasks where id = $1")
+                .bind(task_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(
+                task.get::<Option<Uuid>, _>("assignee_agent_id"),
+                Some(winner_agent_id)
+            );
+            let stale_inboxes: i64 = sqlx::query_scalar(
+                "select count(*)::bigint from agent_inbox_items where task_id = $1 and agent_id = $2 and kind = 'task_assigned'",
+            )
+            .bind(task_id)
+            .bind(stale_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(stale_inboxes, 0);
             Ok(())
         }
         .await;
@@ -17321,6 +17769,17 @@ mod tests {
         let result: Result<(), String> = async {
             let agent_id = insert_test_agent(&pool, "task-noise-agent").await?;
             let channel_id = insert_test_channel(&pool, "task-noise").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
             let message_id: Uuid = sqlx::query_scalar(
                 r#"
                 insert into messages (channel_id, sender_name, sender_role, body, is_task)
@@ -17398,6 +17857,88 @@ mod tests {
                 "#,
             )
             .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(system_messages, 0);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn task_work_item_queue_and_start_do_not_insert_system_messages() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "task-lifecycle-agent").await?;
+            let channel_id = insert_test_channel(&pool, "task-lifecycle").await?;
+            let message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Handle this task', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into tasks (message_id, channel_id, title, status, assignee_agent_id)
+                values ($1, $2, 'Handle this task', 'in_progress', $3)
+                returning id
+                "#,
+            )
+            .bind(message_id)
+            .bind(channel_id)
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let work_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_work_items (
+                    agent_id, channel_id, thread_root_id, source_message_id,
+                    task_id, source_kind, title, context, status
+                )
+                values ($1, $2, $3, $3, $4, 'task_assigned', 'Handle this task', 'context', 'queued')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .bind(message_id)
+            .bind(task_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            notify_ui_work_item_changed(&pool, work_item_id, "work_item_created").await;
+            notify_ui_work_item_changed(&pool, work_item_id, "work_item_queued").await;
+            sqlx::query("update agent_work_items set status = 'running' where id = $1")
+                .bind(work_item_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            notify_ui_work_item_changed(&pool, work_item_id, "work_item_running").await;
+
+            let system_messages: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from messages
+                where channel_id = $1
+                  and thread_root_id = $2
+                  and sender_role = 'system'
+                  and (body like '%queued task run%' or body like '%started task run%')
+                "#,
+            )
+            .bind(channel_id)
+            .bind(message_id)
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
