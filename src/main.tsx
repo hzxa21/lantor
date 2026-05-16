@@ -2673,6 +2673,7 @@ function App() {
         <ThreadPanel
           channel={channel}
           agents={data.agents}
+          channelAgents={channelAgents}
           ownerProfile={data.owner_profile}
           agentActivities={data.agent_activities}
           agentRuns={data.agent_runs}

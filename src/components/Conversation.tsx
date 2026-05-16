@@ -146,6 +146,8 @@ export function Conversation({
   const activeTasks = visibleTasks.filter((task) => task.status !== "done");
   const reviewTasks = visibleTasks.filter((task) => task.status === "in_review");
   const unassignedTasks = visibleTasks.filter((task) => task.status !== "done" && !task.assignee_id);
+  const assignedTasks = visibleTasks.filter((task) => task.assignee_id || task.status === "done");
+  const taskAssigneeOptions = channelAgents.length > 0 ? channelAgents : agents;
   const surfaceLabel = channel
     ? isDm
       ? `DM with @${dmAgent?.handle || "agent"}`
@@ -590,55 +592,35 @@ export function Conversation({
             </div>
           )}
           {visibleTasks.length > 0 && (
-            <div className="task-list">
-              {visibleTasks.map((task) => {
-                const assignee = agents.find((agent) => agent.id === task.assignee_id) ?? null;
-                return (
-                <article className="task-card" key={task.id}>
-                  <div className="task-card-main">
-                    <div className="task-card-head" onClick={() => openTask(task)}>
-                      <span>Task #{task.number}</span>
-                      <button type="button" className="task-open-thread" aria-label={`Open task #${task.number} thread`}>
-                        <MessageSquare size={14} />
-                      </button>
+            <div className="task-sections">
+              {unassignedTasks.length > 0 && (
+                <section className="task-queue-section unassigned" aria-label="Unassigned task queue">
+                  <div className="task-queue-heading">
+                    <div>
+                      <span>Queue</span>
+                      <strong>Unassigned</strong>
                     </div>
-                    <input
-                      value={taskTitleDrafts[task.id] ?? task.title}
-                      onChange={(event) => setTaskTitleDraft(task, event.target.value)}
-                      onBlur={() => saveTaskTitle(task)}
-                      onKeyDown={(event) => {
-                        if (isImeComposing(event)) return;
-                        if (event.key === "Enter") saveTaskTitle(task);
-                      }}
-                    />
-                    <p>Updated {formatTime(task.updated_at)}</p>
+                    <mark>{unassignedTasks.length}</mark>
                   </div>
-                  <div className="task-controls">
-                    <TaskAssigneePicker
-                      agents={agents}
-                      assignee={assignee}
-                      disabled={task.status === "done"}
-                      done={task.status === "done"}
-                      onChange={(agentId) => claimTask(task, agentId)}
-                      taskNumber={task.number}
-                    />
-                    <div className="status-row" aria-label={`Task #${task.number} status`}>
-                      {TASK_STATUSES.map((status) => (
-                        <button
-                          type="button"
-                          key={status}
-                          className={task.status === status ? "active" : ""}
-                          data-state={status}
-                          onClick={() => updateTaskStatus(task, status)}
-                        >
-                          {taskStatusLabel(status)}
-                        </button>
-                      ))}
+                  <div className="task-list">
+                    {unassignedTasks.map((task) => renderTaskCard(task))}
+                  </div>
+                </section>
+              )}
+              {assignedTasks.length > 0 && (
+                <section className="task-queue-section" aria-label="Assigned tasks">
+                  <div className="task-queue-heading">
+                    <div>
+                      <span>Work</span>
+                      <strong>Assigned</strong>
                     </div>
+                    <mark>{assignedTasks.length}</mark>
                   </div>
-                </article>
-              );
-              })}
+                  <div className="task-list">
+                    {assignedTasks.map((task) => renderTaskCard(task))}
+                  </div>
+                </section>
+              )}
             </div>
           )}
         </div>
@@ -741,4 +723,53 @@ export function Conversation({
       )}
     </section>
   );
+
+  function renderTaskCard(task: Task) {
+    const assignee = agents.find((agent) => agent.id === task.assignee_id) ?? null;
+    return (
+      <article className={`task-card ${task.assignee_id ? "" : "unassigned"}`} key={task.id}>
+        <div className="task-card-main">
+          <div className="task-card-head" onClick={() => openTask(task)}>
+            <span>Task #{task.number}</span>
+            <button type="button" className="task-open-thread" aria-label={`Open task #${task.number} thread`}>
+              <MessageSquare size={14} />
+            </button>
+          </div>
+          <input
+            value={taskTitleDrafts[task.id] ?? task.title}
+            onChange={(event) => setTaskTitleDraft(task, event.target.value)}
+            onBlur={() => saveTaskTitle(task)}
+            onKeyDown={(event) => {
+              if (isImeComposing(event)) return;
+              if (event.key === "Enter") saveTaskTitle(task);
+            }}
+          />
+          <p>Updated {formatTime(task.updated_at)}</p>
+        </div>
+        <div className="task-controls">
+          <TaskAssigneePicker
+            agents={taskAssigneeOptions}
+            assignee={assignee}
+            disabled={task.status === "done"}
+            done={task.status === "done"}
+            onChange={(agentId) => claimTask(task, agentId)}
+            taskNumber={task.number}
+          />
+          <div className="status-row" aria-label={`Task #${task.number} status`}>
+            {TASK_STATUSES.map((status) => (
+              <button
+                type="button"
+                key={status}
+                className={task.status === status ? "active" : ""}
+                data-state={status}
+                onClick={() => updateTaskStatus(task, status)}
+              >
+                {taskStatusLabel(status)}
+              </button>
+            ))}
+          </div>
+        </div>
+      </article>
+    );
+  }
 }

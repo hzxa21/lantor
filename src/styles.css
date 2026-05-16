@@ -2011,6 +2011,72 @@ mark {
   gap: 10px;
 }
 
+.task-sections {
+  display: grid;
+  gap: 12px;
+}
+
+.task-queue-section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.task-queue-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 4px 2px;
+}
+
+.task-queue-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.task-queue-heading span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.task-queue-heading strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 860;
+}
+
+.task-queue-heading mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(20, 23, 31, 0.07);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.task-queue-section.unassigned {
+  padding: 12px;
+  border: 1px solid rgba(255, 149, 0, 0.3);
+  border-radius: var(--radius-md);
+  background: rgba(255, 250, 242, 0.78);
+}
+
+.task-queue-section.unassigned .task-queue-heading mark {
+  background: rgba(255, 149, 0, 0.14);
+  color: #a35b00;
+}
+
 .task-card input,
 .thread-task-card input,
 .thread-task-card select {
@@ -2042,6 +2108,10 @@ mark {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: #fff;
+}
+
+.task-card.unassigned {
+  border-color: rgba(255, 149, 0, 0.32);
 }
 
 .task-card-main {

@@ -41,6 +41,7 @@ function taskActivityLabel(activity: AgentActivity) {
 type ThreadPanelProps = {
   channel: Channel | null;
   agents: Agent[];
+  channelAgents: Agent[];
   ownerProfile: OwnerProfile;
   agentActivities: AgentActivity[];
   agentRuns: AgentRun[];
@@ -79,6 +80,7 @@ type MessageMenuState = {
 export function ThreadPanel({
   channel,
   agents,
+  channelAgents,
   ownerProfile,
   agentActivities,
   agentRuns,
@@ -295,6 +297,7 @@ export function ThreadPanel({
   const activeTaskAssignee = activeTask
     ? agents.find((agent) => agent.id === activeTask.assignee_id) ?? null
     : null;
+  const taskAssigneeOptions = channelAgents.length > 0 ? channelAgents : agents;
   const taskWorkItems = activeTask
     ? agentWorkItems
         .filter((item) => item.task_id === activeTask.id)
@@ -457,7 +460,7 @@ export function ThreadPanel({
                 }}
               />
               <TaskAssigneePicker
-                agents={agents}
+                agents={taskAssigneeOptions}
                 assignee={activeTaskAssignee}
                 disabled={activeTask.status === "done"}
                 done={activeTask.status === "done"}

@@ -16927,6 +16927,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_task_without_mentions_stays_unassigned_with_multiple_channel_agents() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let first_agent_id = insert_test_agent(&pool, "multi-task-a").await?;
+            let second_agent_id = insert_test_agent(&pool, "multi-task-b").await?;
+            let channel_id = insert_test_channel(&pool, "multi-task").await?;
+            for agent_id in [first_agent_id, second_agent_id] {
+                sqlx::query(
+                    r#"
+                    insert into channel_members (channel_id, agent_id)
+                    values ($1, $2)
+                    "#,
+                )
+                .bind(channel_id)
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            }
+
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                None,
+                "Implement the unassigned queue",
+                true,
+                vec![],
+            )
+            .await?;
+
+            let task = sqlx::query("select status, assignee_agent_id from tasks limit 1")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(task.get::<String, _>("status"), "todo");
+            assert_eq!(task.get::<Option<Uuid>, _>("assignee_agent_id"), None);
+            let inbox_count: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_inbox_items
+                where task_id = (select id from tasks limit 1)
+                "#,
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(inbox_count, 0);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
     async fn task_status_and_claim_events_do_not_insert_system_messages() {
         let Some((pool, schema)) = test_pool().await else {
             return;
