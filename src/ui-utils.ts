@@ -40,7 +40,17 @@ const LANTOR_OPERATING_POLICY = [
   "- Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.",
   "- Activity events are the short progress notes a user would otherwise see in chat. Before the final reply, emit them when you start a meaningful step, switch work modes, or learn something useful; use the matching kind and concrete title/detail, not just a generic phase label.",
   "- Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.",
-  "- MEMORY.md is durable recovery context. Append small facts; compact only when memory is long or repetitive.",
+  "- MEMORY.md is durable recovery context. Keep it concise and index-like; do not use it as a chronological log. Store detailed durable knowledge in notes/<topic>.md and link it from MEMORY.md.",
+].join("\n");
+
+const LANTOR_MEMORY_MANAGEMENT = [
+  "Workspace memory:",
+  "- Treat memory as readable files: MEMORY.md is the compact recovery index, notes/<topic>.md holds detailed durable knowledge, artifacts/ holds deliverables, and raw conversation/tool logs should stay out of memory unless explicitly preserved.",
+  "- Keep MEMORY.md structured: Role, Key Knowledge / Memory Map, Active Context, and Memory Policy. It should help a restarted agent recover what matters and where to look next.",
+  "- Use notes/user-preferences.md for stable user preferences, notes/channels.md for collaboration context, notes/work-log.md for chronological durable updates, and named topic notes for project/domain knowledge.",
+  "- Use memory_append for durable updates that still need later distillation; Lantor stages them in notes/work-log.md. Use memory_compact to replace MEMORY.md with a cleaned index when it becomes noisy, stale, duplicated, or log-like.",
+  "- When compacting active work, preserve Goal, Constraints, Progress, Key Decisions, Critical Context, and Next Steps. Keep Active Context to one current resume point and clear it after completion.",
+  "- Do not store secrets, raw logs, full command output, transient reasoning, every chat turn, or facts that are cheap to re-read from source.",
 ].join("\n");
 
 const LANTOR_CONTEXT_TOOLS = [
@@ -64,8 +74,8 @@ const LANTOR_CONTROL_EVENTS = [
   "Standalone LANTOR_EVENT control lines:",
   '{"type":"activity","kind":"thinking|command|file_edit|tools|acting","title":"Short user-facing status","detail":"Optional compact detail"}',
   '{"type":"usage","input_tokens":1234,"output_tokens":567,"cost_usd":0.0123}',
-  '{"type":"memory_append","body":"Durable fact or handoff to remember"}',
-  '{"type":"memory_compact","body":"Full compact MEMORY.md replacement"}',
+  '{"type":"memory_append","body":"Durable update staged in notes/work-log.md"}',
+  '{"type":"memory_compact","body":"Full compact MEMORY.md replacement with Role, Key Knowledge / Memory Map, Active Context, and Memory Policy"}',
   '{"type":"profile_update","display_name":"Name","role":"specialist role","avatar":"dicebear:dylan:Hancock","description":"What this agent is good at"}',
   '{"type":"reminder_create","when":"ISO8601 timestamp","title":"Follow-up title","note":"optional note","recurrence":"none|daily|weekly"}',
   '{"type":"reminder_cancel","reminder_id":"uuid"}',
@@ -114,6 +124,7 @@ export function presetPrompt(form: AgentForm) {
     "You collaborate with one local human through channels, threads, tasks, DMs, reminders, artifacts, and other agents.",
     "If LANTOR_WORK_ITEM_PROMPT is set, treat it as the current agent request. It may be a DM, mention, thread follow-up, reminder, schedule, or explicit task run.",
     LANTOR_OPERATING_POLICY,
+    LANTOR_MEMORY_MANAGEMENT,
     LANTOR_CONTEXT_TOOLS,
     LANTOR_CONTROL_EVENTS,
     LANTOR_VISIBLE_REPLY_TRANSPORT,

@@ -60,6 +60,13 @@ context.
 
 Memory-related control events:
 
-- `memory_append`: append a small durable fact.
+- `memory_append`: stage a durable update in `notes/work-log.md` while keeping `MEMORY.md` as the compact recovery index.
 - `memory_compact`: replace `MEMORY.md` with a cleaned compact version.
 - `profile_update`: update display name, role, avatar, or description.
+
+Memory prompts intentionally follow a file-based memory model: raw dialog/tool
+output stays out of the compact index, chronological updates are staged in a work
+log, and `MEMORY.md` is periodically distilled into a restart-friendly map. When
+an agent compacts active work, it should preserve the fields that make the next
+turn recoverable: Goal, Constraints, Progress, Key Decisions, Critical Context,
+and Next Steps.

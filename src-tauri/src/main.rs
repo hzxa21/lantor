@@ -75,7 +75,9 @@ const INBOX_WAKE_OTHER_SUMMARY_LIMIT: i64 = 6;
 const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
-const CODEX_CONTEXT_ROTATE_INPUT_TOKENS: i64 = 50_000;
+const CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS: i64 = 180_000;
+const CODEX_CONTEXT_ROTATE_MIN_INPUT_TOKENS: i64 = 50_000;
+const CODEX_CONTEXT_ROTATE_ENV: &str = "LANTOR_CODEX_CONTEXT_ROTATE_INPUT_TOKENS";
 const AGENT_WORKSPACE_PREVIEW_LIMIT: u64 = 256 * 1024;
 const DEFAULT_OWNER_DISPLAY_NAME: &str = "Me";
 const DEFAULT_OWNER_AVATAR: &str = "M";
@@ -3170,9 +3172,21 @@ async fn agent_has_active_or_pending_start(pool: &PgPool, agent_id: Uuid) -> Com
     Ok(pending_start.is_some())
 }
 
+fn codex_context_rotate_input_tokens_from_env(value: Option<&str>) -> i64 {
+    value
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|tokens| *tokens >= CODEX_CONTEXT_ROTATE_MIN_INPUT_TOKENS)
+        .unwrap_or(CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS)
+}
+
+fn codex_context_rotate_input_tokens() -> i64 {
+    codex_context_rotate_input_tokens_from_env(env::var(CODEX_CONTEXT_ROTATE_ENV).ok().as_deref())
+}
+
 async fn codex_context_rotation_candidate(
     pool: &PgPool,
     agent_id: Uuid,
+    threshold: i64,
 ) -> CommandResult<Option<(Uuid, i64)>> {
     let row = sqlx::query(
         r#"
@@ -3191,7 +3205,7 @@ async fn codex_context_rotation_candidate(
 
     Ok(row.and_then(|row| {
         let input_tokens = row.get("input_tokens");
-        (input_tokens >= CODEX_CONTEXT_ROTATE_INPUT_TOKENS).then(|| (row.get("id"), input_tokens))
+        (input_tokens >= threshold).then(|| (row.get("id"), input_tokens))
     }))
 }
 
@@ -6945,12 +6959,108 @@ async fn agent_memory_path(pool: &PgPool, agent_id: Uuid) -> CommandResult<PathB
     memory_path_for_workspace(&working_directory)
 }
 
+#[cfg(test)]
+fn format_memory_index_entry(body: &str) -> String {
+    let body = body.trim();
+    let body = body
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = body
+        .strip_prefix("- ")
+        .or_else(|| body.strip_prefix("* "))
+        .unwrap_or(&body)
+        .trim();
+    let mut lines = body.lines();
+    let first = lines.next().unwrap_or("").trim();
+    let mut entry = format!("- {first}");
+    for line in lines {
+        let line = line.trim();
+        if !line.is_empty() {
+            entry.push_str("\n  ");
+            entry.push_str(line);
+        }
+    }
+    entry
+}
+
+fn insert_memory_index_entry(memory: &str, entry: &str) -> String {
+    let memory = memory.trim_end();
+    let entry = entry.trim();
+    if memory
+        .lines()
+        .any(|line| line.trim() == entry || line.trim() == entry.trim_start_matches("- ").trim())
+    {
+        return format!("{memory}\n");
+    }
+
+    let section_start = memory
+        .find("\n## Key Knowledge")
+        .or_else(|| memory.starts_with("## Key Knowledge").then_some(0));
+    let Some(section_start) = section_start else {
+        return format!("{memory}\n\n## Key Knowledge\n{entry}\n");
+    };
+
+    let content_start = if section_start == 0 {
+        "## Key Knowledge".len()
+    } else {
+        section_start + "\n## Key Knowledge".len()
+    };
+    let section_end = memory[content_start..]
+        .find("\n## ")
+        .map(|offset| content_start + offset)
+        .unwrap_or(memory.len());
+    let section = &memory[content_start..section_end];
+
+    let placeholder = section
+        .trim()
+        .lines()
+        .all(|line| line.trim().is_empty() || line.trim_start().starts_with("- Add "));
+
+    let mut updated = String::new();
+    updated.push_str(&memory[..content_start]);
+    updated.push('\n');
+    if !placeholder {
+        let existing = section.trim();
+        if !existing.is_empty() {
+            updated.push_str(existing);
+            updated.push('\n');
+        }
+    }
+    updated.push_str(entry);
+    updated.push('\n');
+    updated.push_str(memory[section_end..].trim_start_matches('\n'));
+    updated.push('\n');
+    updated
+}
+
 async fn append_agent_memory(pool: &PgPool, agent_id: Uuid, body: &str) -> CommandResult<()> {
     let body = body.trim();
     if body.is_empty() {
         return Err("memory_append body is empty".to_owned());
     }
     let path = agent_memory_path(pool, agent_id).await?;
+    let workspace = path
+        .parent()
+        .ok_or_else(|| "agent memory path has no parent".to_owned())?;
+    let notes_dir = workspace.join("notes");
+    fs::create_dir_all(&notes_dir).map_err(to_string)?;
+
+    let memory = fs::read_to_string(&path).unwrap_or_default();
+    if !memory.contains("notes/work-log.md") {
+        let index_entry = "- `notes/work-log.md`: chronological durable updates staged by `memory_append`; keep `MEMORY.md` as the compact recovery index.";
+        fs::write(&path, insert_memory_index_entry(&memory, index_entry)).map_err(to_string)?;
+    }
+
+    let note_path = notes_dir.join("work-log.md");
+    if !note_path.exists() {
+        fs::write(
+            &note_path,
+            "# Work Log\n\nChronological durable updates staged by `memory_append`. Promote only stable, reusable facts into `MEMORY.md` with `memory_compact`.\n",
+        )
+        .map_err(to_string)?;
+    }
     let entry = format!(
         "\n\n## Memory update {}\n{}\n",
         Utc::now().to_rfc3339(),
@@ -6959,7 +7069,7 @@ async fn append_agent_memory(pool: &PgPool, agent_id: Uuid, body: &str) -> Comma
     fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
+        .open(note_path)
         .and_then(|mut file| std::io::Write::write_all(&mut file, entry.as_bytes()))
         .map_err(to_string)
 }
@@ -10640,7 +10750,9 @@ async fn get_or_spawn_warm_codex_runtime(
     working_directory: &str,
     memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
-    let rotation_candidate = codex_context_rotation_candidate(pool, agent_id).await?;
+    let context_rotate_threshold = codex_context_rotate_input_tokens();
+    let rotation_candidate =
+        codex_context_rotation_candidate(pool, agent_id, context_rotate_threshold).await?;
     if let Some(runtime) = {
         let runtimes = registry.runtimes.lock().await;
         runtimes.get(&agent_id).cloned()
@@ -10672,6 +10784,7 @@ async fn get_or_spawn_warm_codex_runtime(
         service_tier,
         working_directory,
         memory_context,
+        context_rotate_threshold,
     )
     .await?;
     registry
@@ -10692,6 +10805,7 @@ async fn spawn_warm_codex_runtime(
     service_tier: &str,
     working_directory: &str,
     memory_context: Option<&str>,
+    context_rotate_threshold: i64,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
     let cwd = effective_codex_cwd(working_directory)?;
     let mut command = Command::new("/bin/zsh");
@@ -10766,7 +10880,8 @@ async fn spawn_warm_codex_runtime(
     .await?;
     codex_write_json(&mut stdin, json!({ "method": "initialized" })).await?;
 
-    let rotation_candidate = codex_context_rotation_candidate(pool, agent_id).await?;
+    let rotation_candidate =
+        codex_context_rotation_candidate(pool, agent_id, context_rotate_threshold).await?;
     let existing_thread_id = if rotation_candidate.is_some() {
         None
     } else {
@@ -10783,7 +10898,8 @@ async fn spawn_warm_codex_runtime(
             json!({
                 "previous_run_id": run_id,
                 "input_tokens": input_tokens,
-                "threshold": CODEX_CONTEXT_ROTATE_INPUT_TOKENS
+                "threshold": context_rotate_threshold,
+                "env": CODEX_CONTEXT_ROTATE_ENV
             })
             .to_string(),
         )
@@ -13844,8 +13960,9 @@ mod tests {
         build_streaming_work_item_prompt, build_work_item_prompt, capped_stream_delta,
         claim_agent_event, claim_next_supervisor_command, classify_agent_output_activity,
         claude_message_text, claude_result_error, claude_stream_event_activity,
-        claude_system_prompt, claude_text_delta, codex_item_started_activity,
-        codex_pending_stream_key, codex_turn_id_from_value, consume_streaming_agent_control_lines,
+        claude_system_prompt, claude_text_delta, codex_context_rotate_input_tokens_from_env,
+        codex_item_started_activity, codex_pending_stream_key, codex_turn_id_from_value,
+        consume_streaming_agent_control_lines,
         context_tool::{
             agent_context_agent_inspect, agent_context_artifact_read_in_pool,
             agent_context_attachment_info, agent_context_history_read, agent_context_inbox_archive,
@@ -13855,9 +13972,10 @@ mod tests {
         },
         delete_agent_in_pool, delete_channel_in_pool, ensure_agent_workspace,
         ensure_streaming_agent_message, extract_agent_event_json, extract_agent_mentions,
-        finish_streaming_agent_message, handle_agent_event, inbox_wake_context,
-        insert_agent_message, load_agent_memory_context, load_channel_agent_roster, load_messages,
-        load_reminders, load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
+        finish_streaming_agent_message, format_memory_index_entry, handle_agent_event,
+        inbox_wake_context, insert_agent_message, insert_memory_index_entry,
+        load_agent_memory_context, load_channel_agent_roster, load_messages, load_reminders,
+        load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
         normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
         parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
         queue_mentions_as_work_items, record_agent_activity, send_owner_message_in_pool,
@@ -13865,8 +13983,9 @@ mod tests {
         upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
-        AGENT_MEMORY_CONTEXT_LIMIT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
-        STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
+        AGENT_MEMORY_CONTEXT_LIMIT, CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
+        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::{json, Value};
@@ -13954,8 +14073,11 @@ mod tests {
         assert!(prompt.contains("channel and thread are delivered as message envelope fields"));
         assert!(prompt.contains("Treat messages as conversation"));
         assert!(prompt.contains("Activity events are the short progress notes"));
-        assert!(prompt.contains("MEMORY.md is the entry point"));
+        assert!(prompt.contains("MEMORY.md is the compact index"));
+        assert!(prompt.contains("raw conversation/tool logs should stay out of memory"));
         assert!(prompt.contains("notes/<topic>.md"));
+        assert!(prompt.contains("not replay past turns"));
+        assert!(prompt.contains("timestamp-log-like"));
         assert!(prompt.contains("stable user preferences"));
         assert!(prompt.contains("Before long-running work, update Active Context"));
         assert!(prompt.contains("Turn startup sequence:"));
@@ -13978,11 +14100,51 @@ mod tests {
         assert!(dir.join("notes").is_dir());
         assert!(memory.contains("# @template-agent"));
         assert!(memory.contains("## Key Knowledge"));
+        assert!(memory.contains("## Memory Map"));
         assert!(memory.contains("notes/user-preferences.md"));
+        assert!(memory.contains("notes/work-log.md"));
         assert!(memory.contains("## Active Context"));
         assert!(memory.contains("Keep this file concise and index-like"));
+        assert!(memory.contains("Do not use MEMORY.md as a chronological log"));
 
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn memory_append_can_add_work_log_link_without_timestamp_log() {
+        let memory = "# @agent\n\n## Role\nLantor agent.\n\n## Key Knowledge\n- Add stable facts and links that help a restarted agent recover quickly.\n\n## Active Context\n- Currently working on: none.";
+
+        let updated = insert_memory_index_entry(
+            memory,
+            &format_memory_index_entry("`notes/work-log.md` - staged durable updates."),
+        );
+
+        assert!(
+            updated.contains("## Key Knowledge\n- `notes/work-log.md` - staged durable updates.")
+        );
+        assert!(updated.contains("\n## Active Context"));
+        assert!(!updated.contains("Memory update"));
+        assert!(!updated.contains("Add stable facts and links"));
+    }
+
+    #[test]
+    fn codex_context_rotation_threshold_is_configurable_with_floor() {
+        assert_eq!(
+            codex_context_rotate_input_tokens_from_env(None),
+            CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS
+        );
+        assert_eq!(
+            codex_context_rotate_input_tokens_from_env(Some("220000")),
+            220_000
+        );
+        assert_eq!(
+            codex_context_rotate_input_tokens_from_env(Some("49999")),
+            CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS
+        );
+        assert_eq!(
+            codex_context_rotate_input_tokens_from_env(Some("not-a-number")),
+            CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS
+        );
     }
 
     #[test]
@@ -14014,7 +14176,7 @@ mod tests {
         assert!(streaming.contains("handoff_create"));
         assert!(streaming.contains("task_handoff"));
         assert!(streaming.contains("task_claim"));
-        assert!(streaming.contains("Do not emit LANTOR_EVENT message"));
+        assert!(streaming.contains("Do not narrate every intermediate step in chat"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
     }
 
@@ -15538,7 +15700,14 @@ mod tests {
             .await?;
             let memory_path = dir.join("MEMORY.md");
             let memory = std::fs::read_to_string(&memory_path).map_err(|err| err.to_string())?;
-            assert!(memory.contains("Remember: concise replies."));
+            let work_log_path = dir.join("notes").join("work-log.md");
+            let work_log =
+                std::fs::read_to_string(&work_log_path).map_err(|err| err.to_string())?;
+            assert!(memory.contains("notes/work-log.md"));
+            assert!(memory.contains("## Memory Map"));
+            assert!(!memory.contains("## Memory update"));
+            assert!(work_log.contains("## Memory update"));
+            assert!(work_log.contains("Remember: concise replies."));
             handle_agent_event(
                 &pool,
                 agent_id,
