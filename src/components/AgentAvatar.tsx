@@ -173,6 +173,7 @@ export function AgentAvatar({ agent, size = "md", className = "", title, showSta
   const identicon = generateIdenticon(seedText);
   const customAvatar = agent.avatar?.trim();
   const diceBearSpec = customAvatar ? parseDiceBearAvatar(customAvatar, seedText) : null;
+  const isDeletedAgent = agent.status === "deleted";
   const [diceBearAvatar, setDiceBearAvatar] = useState<string | null>(null);
   const style = {
     "--avatar-color": identicon.foreground,
@@ -210,6 +211,7 @@ export function AgentAvatar({ agent, size = "md", className = "", title, showSta
   return (
     <span
       className={`avatar agent-avatar agent-avatar-${size} status-${agent.status} ${className}`.trim()}
+      data-agent-deleted={isDeletedAgent ? "true" : "false"}
       data-show-status={showStatus ? "true" : "false"}
       style={style}
       title={title}
@@ -243,7 +245,9 @@ export function AgentAvatarWithProfile({
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [profilePosition, setProfilePosition] = useState<ProfilePopoverPosition | null>(null);
   const role = compactProfileText(agent.role);
-  const description = compactProfileText(agent.description);
+  const description = compactProfileText(
+    agent.status === "deleted" ? "This agent has been deleted." : agent.description,
+  );
   const updateProfilePosition = useCallback(() => {
     const rect = anchorRef.current?.getBoundingClientRect();
     if (!rect) return;

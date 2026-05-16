@@ -69,6 +69,7 @@ export type Message = {
   id: string;
   channel_id: string;
   thread_root_id: string | null;
+  sender_agent_id: string | null;
   sender_name: string;
   sender_role: string;
   body: string;

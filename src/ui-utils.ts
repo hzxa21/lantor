@@ -1,4 +1,4 @@
-import { AgentForm, OwnerProfile, RUNTIME_PRESETS } from "./types";
+import { Agent, AgentForm, Message, OwnerProfile, RUNTIME_PRESETS } from "./types";
 
 export function ownerAsAvatarAgent(profile: OwnerProfile) {
   return {
@@ -8,6 +8,27 @@ export function ownerAsAvatarAgent(profile: OwnerProfile) {
     status: "idle",
     avatar: profile.avatar,
     description: profile.description,
+  };
+}
+
+export function agentForMessageSender(message: Message, agents: Agent[]) {
+  if (message.sender_role === "owner" || message.sender_role === "system") return null;
+  if (!message.sender_agent_id) return null;
+  return agents.find((agent) => agent.id === message.sender_agent_id) ?? null;
+}
+
+export function deletedAgentForMessageSender(message: Message) {
+  if (message.sender_role === "owner" || message.sender_role === "system") return null;
+  if (message.sender_agent_id) return null;
+  const handle = message.sender_name.replace(/^@/, "").trim() || "deleted-agent";
+  return {
+    id: `deleted-agent:${message.id}`,
+    handle,
+    display_name: message.sender_name || "Deleted agent",
+    role: "Deleted agent",
+    status: "deleted",
+    avatar: "",
+    description: "This agent has been deleted.",
   };
 }
 

@@ -7,7 +7,7 @@ import { copyText } from "../clipboard";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task } from "../types";
-import { formatClockTime, formatTime, ownerAsAvatarAgent, visibleAgentDescription } from "../ui-utils";
+import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatTime, ownerAsAvatarAgent, visibleAgentDescription } from "../ui-utils";
 import { ActivityProgressDock } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
@@ -54,12 +54,6 @@ type MessageMenuState = {
   message: Message;
 } | null;
 
-function agentForMessage(message: Message, agents: Agent[]) {
-  if (message.sender_role === "owner" || message.sender_role === "system") return null;
-  const sender = message.sender_name.replace(/^@/, "");
-  return agents.find((agent) => agent.handle === sender || agent.display_name === message.sender_name) ?? null;
-}
-
 export function ThreadPanel({
   channel,
   agents,
@@ -103,7 +97,8 @@ export function ThreadPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
-  const rootAgent = activeRoot ? agentForMessage(activeRoot, agents) : null;
+  const rootAgent = activeRoot ? agentForMessageSender(activeRoot, agents) : null;
+  const deletedRootAgent = activeRoot && !rootAgent ? deletedAgentForMessageSender(activeRoot) : null;
   const rootSaved = activeRoot ? savedMessageIds.has(activeRoot.id) : false;
   const surfaceLabel = channel
     ? isDm
@@ -362,6 +357,12 @@ export function ThreadPanel({
                     >
                       <AgentAvatarWithProfile agent={rootAgent} />
                     </button>
+                  ) : deletedRootAgent ? (
+                    <AgentAvatar
+                      agent={deletedRootAgent}
+                      size="md"
+                      title={`@${deletedRootAgent.handle} has been deleted`}
+                    />
                   ) : activeRoot.sender_role === "owner" ? (
                     <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
                   ) : (
@@ -456,7 +457,8 @@ export function ThreadPanel({
               </div>
             )}
             {replies.map((reply, index) => {
-              const replyAgent = agentForMessage(reply, agents);
+              const replyAgent = agentForMessageSender(reply, agents);
+              const deletedReplyAgent = replyAgent ? null : deletedAgentForMessageSender(reply);
               const replySaved = savedMessageIds.has(reply.id);
               const isCompact = isCompactFollowupMessage(reply, replies[index - 1]);
               if (reply.sender_role === "system") {
@@ -505,6 +507,12 @@ export function ThreadPanel({
                     >
                       <AgentAvatarWithProfile agent={replyAgent} />
                     </button>
+                  ) : deletedReplyAgent ? (
+                    <AgentAvatar
+                      agent={deletedReplyAgent}
+                      size="md"
+                      title={`@${deletedReplyAgent.handle} has been deleted`}
+                    />
                   ) : reply.sender_role === "owner" ? (
                     <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
                   ) : (

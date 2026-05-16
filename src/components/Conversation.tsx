@@ -21,7 +21,7 @@ import { APP_DISPLAY_NAME } from "../branding";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task } from "../types";
-import { firstLines, formatClockTime, formatTime, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
+import { agentForMessageSender, deletedAgentForMessageSender, firstLines, formatClockTime, formatTime, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
 import { ActivityProgressDock } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
@@ -78,12 +78,6 @@ type MessageMenuState = {
   y: number;
   message: Message;
 } | null;
-
-function agentForMessage(message: Message, agents: Agent[]) {
-  if (message.sender_role === "owner" || message.sender_role === "system") return null;
-  const sender = message.sender_name.replace(/^@/, "");
-  return agents.find((agent) => agent.handle === sender || agent.display_name === message.sender_name) ?? null;
-}
 
 export function Conversation({
   channel,
@@ -450,7 +444,8 @@ export function Conversation({
           {rootMessages.map((message, index) => {
             const linkedTask = taskForMessage(message.id);
             const replyCount = threadReplyCounts[message.id] ?? 0;
-            const messageAgent = isDm ? null : agentForMessage(message, agents);
+            const messageAgent = isDm ? null : agentForMessageSender(message, agents);
+            const deletedMessageAgent = isDm || messageAgent ? null : deletedAgentForMessageSender(message);
             const isSaved = savedMessageIds.has(message.id);
             const isCompact = isCompactFollowupMessage(message, rootMessages[index - 1]);
             if (message.sender_role === "system") {
@@ -502,6 +497,12 @@ export function Conversation({
                   >
                     <AgentAvatarWithProfile agent={messageAgent} />
                   </button>
+                ) : deletedMessageAgent ? (
+                  <AgentAvatar
+                    agent={deletedMessageAgent}
+                    size="md"
+                    title={`@${deletedMessageAgent.handle} has been deleted`}
+                  />
                 ) : message.sender_role === "owner" ? (
                   <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
                 ) : (

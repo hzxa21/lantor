@@ -92,6 +92,7 @@ pub(crate) struct Message {
     pub(crate) id: Uuid,
     pub(crate) channel_id: Uuid,
     pub(crate) thread_root_id: Option<Uuid>,
+    pub(crate) sender_agent_id: Option<Uuid>,
     pub(crate) sender_name: String,
     pub(crate) sender_role: String,
     pub(crate) body: String,

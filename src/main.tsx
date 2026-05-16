@@ -1800,6 +1800,7 @@ function App() {
       id,
       channel_id: channelId,
       thread_root_id: threadRootId,
+      sender_agent_id: null,
       sender_name: data?.owner_profile.display_name || DEFAULT_OWNER_DISPLAY_NAME,
       sender_role: "owner",
       body,
