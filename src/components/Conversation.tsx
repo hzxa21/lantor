@@ -7,7 +7,6 @@ import {
   LayoutList,
   MessageSquare,
   Paperclip,
-  Plus,
   Send,
   Settings,
   Trash2,
@@ -29,6 +28,7 @@ import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { TaskAssigneePicker } from "./TaskAssigneePicker";
 
 type ConversationProps = {
   channel: Channel | null;
@@ -45,7 +45,6 @@ type ConversationProps = {
   visibleTasks: Task[];
   draft: string;
   draftAttachments: DraftAttachment[];
-  taskDraft: string;
   taskTitleDrafts: Record<string, string>;
   setActiveTab: (tab: "chat" | "tasks") => void;
   setActiveThreadId: (threadId: string | null) => void;
@@ -59,8 +58,6 @@ type ConversationProps = {
   claimTask: (task: Task, agentId: string) => void;
   updateTaskStatus: (task: Task, status: string) => void;
   openTask: (task: Task) => void;
-  setTaskDraft: (value: string) => void;
-  createTaskFromBoard: () => void;
   setDraft: (value: string) => void;
   addDraftAttachments: (files: FileList | File[]) => void;
   removeDraftAttachment: (id: string) => void;
@@ -79,6 +76,10 @@ type MessageMenuState = {
   message: Message;
 } | null;
 
+function taskStatusLabel(status: string) {
+  return status.replace("_", " ");
+}
+
 export function Conversation({
   channel,
   agents,
@@ -94,7 +95,6 @@ export function Conversation({
   visibleTasks,
   draft,
   draftAttachments,
-  taskDraft,
   taskTitleDrafts,
   setActiveTab,
   setActiveThreadId,
@@ -108,8 +108,6 @@ export function Conversation({
   claimTask,
   updateTaskStatus,
   openTask,
-  setTaskDraft,
-  createTaskFromBoard,
   setDraft,
   addDraftAttachments,
   removeDraftAttachment,
@@ -145,6 +143,9 @@ export function Conversation({
     focusComposer,
   } = useMentionPicker({ agents, value: draft, setValue: setDraft, textareaRef });
   const lastRootMessage = rootMessages[rootMessages.length - 1] ?? null;
+  const activeTasks = visibleTasks.filter((task) => task.status !== "done");
+  const reviewTasks = visibleTasks.filter((task) => task.status === "in_review");
+  const unassignedTasks = visibleTasks.filter((task) => task.status !== "done" && !task.assignee_id);
   const surfaceLabel = channel
     ? isDm
       ? `DM with @${dmAgent?.handle || "agent"}`
@@ -563,163 +564,181 @@ export function Conversation({
         </div>
       ) : (
         <div className="task-board">
-          <section className="task-create">
+          <section className="task-board-summary" aria-label="Task summary">
             <div>
-              <h2>Create task in {channel ? `#${channel.name}` : "a channel"}</h2>
-              <p>Tasks are top-level messages with status, assignee, and a thread.</p>
+              <strong>{visibleTasks.length}</strong>
+              <span>Total</span>
             </div>
-            <textarea
-              value={taskDraft}
-              onChange={(event) => setTaskDraft(event.target.value)}
-              disabled={!channel}
-              placeholder={channel ? "Task title or short brief" : "Create a channel before creating tasks"}
-            />
-            <button disabled={!channel || !taskDraft.trim()} onClick={createTaskFromBoard}>
-              <Plus size={15} /> Create Task
-            </button>
+            <div>
+              <strong>{activeTasks.length}</strong>
+              <span>Active</span>
+            </div>
+            <div>
+              <strong>{reviewTasks.length}</strong>
+              <span>Review</span>
+            </div>
+            <div>
+              <strong>{unassignedTasks.length}</strong>
+              <span>Unassigned</span>
+            </div>
           </section>
           {visibleTasks.length === 0 && (
             <div className="empty-state">
               <LayoutList size={34} />
               <h2>No tasks in this channel</h2>
-              <p>Create a task above or switch the composer to Task mode for explicit tracked work.</p>
+              <p>Create tracked work from chat by sending a message in Task mode.</p>
             </div>
           )}
-          {visibleTasks.map((task) => (
-            <article className="task-card" key={task.id}>
-              <div className="task-card-head">
-                <span>#{task.number}</span>
-                <button onClick={() => openTask(task)}>
-                  <MessageSquare size={14} /> Open thread
-                </button>
-              </div>
-              <input
-                value={taskTitleDrafts[task.id] ?? task.title}
-                onChange={(event) => setTaskTitleDraft(task, event.target.value)}
-                onBlur={() => saveTaskTitle(task)}
-                onKeyDown={(event) => {
-                  if (isImeComposing(event)) return;
-                  if (event.key === "Enter") saveTaskTitle(task);
-                }}
-              />
-              <p>{task.channel_name} · {task.assignee_name || "unassigned"} · updated {formatTime(task.updated_at)}</p>
-              <div className="task-controls">
-                <select value={task.assignee_id ?? ""} onChange={(event) => claimTask(task, event.target.value)}>
-                  <option value="">Unassigned</option>
-                  {agents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>{agent.display_name}</option>
-                  ))}
-                </select>
-                <div className="status-row">
-                  {TASK_STATUSES.map((status) => (
-                    <button
-                      key={status}
-                      className={task.status === status ? "active" : ""}
-                      onClick={() => updateTaskStatus(task, status)}
-                    >
-                      {status.replace("_", " ")}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </article>
-          ))}
+          {visibleTasks.length > 0 && (
+            <div className="task-list">
+              {visibleTasks.map((task) => {
+                const assignee = agents.find((agent) => agent.id === task.assignee_id) ?? null;
+                return (
+                <article className="task-card" key={task.id}>
+                  <div className="task-card-main">
+                    <div className="task-card-head" onClick={() => openTask(task)}>
+                      <span>Task #{task.number}</span>
+                      <button type="button" className="task-open-thread" aria-label={`Open task #${task.number} thread`}>
+                        <MessageSquare size={14} />
+                      </button>
+                    </div>
+                    <input
+                      value={taskTitleDrafts[task.id] ?? task.title}
+                      onChange={(event) => setTaskTitleDraft(task, event.target.value)}
+                      onBlur={() => saveTaskTitle(task)}
+                      onKeyDown={(event) => {
+                        if (isImeComposing(event)) return;
+                        if (event.key === "Enter") saveTaskTitle(task);
+                      }}
+                    />
+                    <p>Updated {formatTime(task.updated_at)}</p>
+                  </div>
+                  <div className="task-controls">
+                    <TaskAssigneePicker
+                      agents={agents}
+                      assignee={assignee}
+                      disabled={task.status === "done"}
+                      done={task.status === "done"}
+                      onChange={(agentId) => claimTask(task, agentId)}
+                      taskNumber={task.number}
+                    />
+                    <div className="status-row" aria-label={`Task #${task.number} status`}>
+                      {TASK_STATUSES.map((status) => (
+                        <button
+                          type="button"
+                          key={status}
+                          className={task.status === status ? "active" : ""}
+                          data-state={status}
+                          onClick={() => updateTaskStatus(task, status)}
+                        >
+                          {taskStatusLabel(status)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </article>
+              );
+              })}
+            </div>
+          )}
         </div>
       )}
 
-      <footer
-        className={`composer ${isComposerDragOver ? "drag-over" : ""}`}
-        onDragEnter={handleComposerDragEnter}
-        onDragOver={handleComposerDragOver}
-        onDragLeave={handleComposerDragLeave}
-        onDrop={handleComposerDrop}
-      >
-        {mentionState && mentionCandidates.length > 0 && (
-          <div className="mention-picker">
-            {mentionCandidates.map((agent, index) => (
-              <button
-                key={agent.id}
-                className={index === mentionIndex ? "active" : ""}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  chooseMention(agent);
-                }}
-              >
-                <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
-                <span className="mention-picker-copy">
-                  <strong>{agent.display_name}</strong>
-                  <small>@{agent.handle}</small>
-                  {visibleAgentDescription(agent.description) && <em>{visibleAgentDescription(agent.description)}</em>}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="file-input-hidden"
-          onChange={(event) => {
-            if (event.target.files) addDraftAttachments(event.target.files);
-            event.target.value = "";
-          }}
-        />
-        <DraftAttachmentsPreview attachments={draftAttachments} onRemove={removeDraftAttachment} />
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            refreshMentionState(event.target.value, event.target.selectionStart);
-          }}
-          onSelect={(event) => refreshMentionState(draft, event.currentTarget.selectionStart)}
-          onKeyDown={handleComposerKeyDown}
-          onPaste={handleComposerPaste}
-          disabled={!channel}
-          placeholder={
-            channel
-              ? isDm
-                ? `Message @${dmAgent?.handle || "agent"}`
-                : `Message #${channel.name} - type @ to send to an agent`
-              : "Create a channel before messaging"
-          }
-        />
-        <div className="composer-actions">
-          <button
-            type="button"
-            className="attach-button"
+      {activeTab === "chat" && (
+        <footer
+          className={`composer ${isComposerDragOver ? "drag-over" : ""}`}
+          onDragEnter={handleComposerDragEnter}
+          onDragOver={handleComposerDragOver}
+          onDragLeave={handleComposerDragLeave}
+          onDrop={handleComposerDrop}
+        >
+          {mentionState && mentionCandidates.length > 0 && (
+            <div className="mention-picker">
+              {mentionCandidates.map((agent, index) => (
+                <button
+                  key={agent.id}
+                  className={index === mentionIndex ? "active" : ""}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    chooseMention(agent);
+                  }}
+                >
+                  <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
+                  <span className="mention-picker-copy">
+                    <strong>{agent.display_name}</strong>
+                    <small>@{agent.handle}</small>
+                    {visibleAgentDescription(agent.description) && <em>{visibleAgentDescription(agent.description)}</em>}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="file-input-hidden"
+            onChange={(event) => {
+              if (event.target.files) addDraftAttachments(event.target.files);
+              event.target.value = "";
+            }}
+          />
+          <DraftAttachmentsPreview attachments={draftAttachments} onRemove={removeDraftAttachment} />
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              refreshMentionState(event.target.value, event.target.selectionStart);
+            }}
+            onSelect={(event) => refreshMentionState(draft, event.currentTarget.selectionStart)}
+            onKeyDown={handleComposerKeyDown}
+            onPaste={handleComposerPaste}
             disabled={!channel}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <Paperclip size={16} />
-          </button>
-          {!isDm && (
+            placeholder={
+              channel
+                ? isDm
+                  ? `Message @${dmAgent?.handle || "agent"}`
+                  : `Message #${channel.name} - type @ to send to an agent`
+                : "Create a channel before messaging"
+            }
+          />
+          <div className="composer-actions">
             <button
               type="button"
-              className={`task-toggle ${sendAsTask ? "active" : ""}`}
-              title={sendAsTask ? "Send next message as a normal message" : "Send next message as a task"}
-              aria-label={sendAsTask ? "Send next message as a normal message" : "Send next message as a task"}
-              aria-pressed={sendAsTask}
+              className="attach-button"
               disabled={!channel}
-              onClick={() => setSendAsTask((current) => !current)}
+              onClick={() => fileInputRef.current?.click()}
             >
-              <Flag size={15} />
-              <span>Task</span>
+              <Paperclip size={16} />
             </button>
-          )}
-          <button
-            className="send"
-            title={sendAsTask && !isDm ? "Create task" : "Send message"}
-            aria-label={sendAsTask && !isDm ? "Create task" : "Send message"}
-            disabled={!channel || (!draft.trim() && draftAttachments.length === 0)}
-            onClick={submitComposer}
-          >
-            <span>{sendAsTask && !isDm ? "Create" : "Send"}</span>
-            <Send size={17} />
-          </button>
-        </div>
-      </footer>
+            {!isDm && (
+              <button
+                type="button"
+                className={`task-toggle ${sendAsTask ? "active" : ""}`}
+                title={sendAsTask ? "Send next message as a normal message" : "Send next message as a task"}
+                aria-label={sendAsTask ? "Send next message as a normal message" : "Send next message as a task"}
+                aria-pressed={sendAsTask}
+                disabled={!channel}
+                onClick={() => setSendAsTask((current) => !current)}
+              >
+                <Flag size={15} />
+                <span>Task</span>
+              </button>
+            )}
+            <button
+              className="send"
+              title={sendAsTask && !isDm ? "Create task" : "Send message"}
+              aria-label={sendAsTask && !isDm ? "Create task" : "Send message"}
+              disabled={!channel || (!draft.trim() && draftAttachments.length === 0)}
+              onClick={submitComposer}
+            >
+              <span>{sendAsTask && !isDm ? "Create" : "Send"}</span>
+              <Send size={17} />
+            </button>
+          </div>
+        </footer>
+      )}
     </section>
   );
 }

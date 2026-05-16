@@ -467,7 +467,6 @@ function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
   const [rootComposerDrafts, setRootComposerDrafts] = useState<Record<string, ComposerDraftState>>({});
   const [replyComposerDrafts, setReplyComposerDrafts] = useState<Record<string, ComposerDraftState>>({});
-  const [taskDraft, setTaskDraft] = useState("");
   const [taskTitleDrafts, setTaskTitleDrafts] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [searchScope, setSearchScope] = useState<SearchScope>("all");
@@ -1889,7 +1888,6 @@ function App() {
     const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
     setActiveChannelId(channelId);
     setShowMobileSidebar(false);
-    setTaskDraft("");
     if (nextChannel?.kind === "dm") {
       setActiveTab("chat");
     }
@@ -2223,22 +2221,6 @@ function App() {
     }
   }
 
-  async function createTaskFromBoard() {
-    if (!channel || !taskDraft.trim()) return;
-    if (channel.kind === "dm") {
-      setAppError("Direct messages do not support tasks");
-      return;
-    }
-    await mutate("send_message", {
-      channelId: channel.id,
-      threadRootId: null,
-      body: taskDraft.trim(),
-      asTask: true,
-      attachments: [],
-    });
-    setTaskDraft("");
-  }
-
   async function openDmWithAgent(agent: Agent) {
     try {
       const channelId = await apiInvoke<string>("open_dm_with_agent", { agentId: agent.id });
@@ -2246,7 +2228,6 @@ function App() {
       setActiveChannelId(channelId);
       restoreRememberedThreadForChannel(channelId);
       setActiveTab("chat");
-      setTaskDraft("");
       setSelectedAgentId(null);
     } catch (err) {
       const message = errorMessage(err, "Failed to open direct message");
@@ -2301,6 +2282,7 @@ function App() {
   }
 
   async function claimTask(task: Task, agentId: string) {
+    if (task.status === "done") return;
     await mutate("claim_task", { taskId: task.id, agentId: agentId || null });
   }
 
@@ -2633,7 +2615,6 @@ function App() {
         visibleTasks={visibleTasks}
         draft={draft}
         draftAttachments={draftAttachments}
-        taskDraft={taskDraft}
         taskTitleDrafts={taskTitleDrafts}
         setActiveTab={setActiveTab}
         setActiveThreadId={revealThread}
@@ -2647,8 +2628,6 @@ function App() {
         claimTask={claimTask}
         updateTaskStatus={updateTaskStatus}
         openTask={openTask}
-        setTaskDraft={setTaskDraft}
-        createTaskFromBoard={createTaskFromBoard}
         setDraft={setDraft}
         addDraftAttachments={(files) => appendDraftAttachments(files, "root")}
         removeDraftAttachment={(id) => updateRootComposerDraft(activeChannelId, (current) => ({

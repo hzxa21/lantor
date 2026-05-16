@@ -15,6 +15,11 @@ import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { TaskAssigneePicker } from "./TaskAssigneePicker";
+
+function taskStatusLabel(status: string) {
+  return status.replace("_", " ");
+}
 
 type ThreadPanelProps = {
   channel: Channel | null;
@@ -270,6 +275,10 @@ export function ThreadPanel({
     setMessageMenu(null);
   }
 
+  const activeTaskAssignee = activeTask
+    ? agents.find((agent) => agent.id === activeTask.assignee_id) ?? null
+    : null;
+
   return (
     <aside className="thread">
       <button
@@ -403,7 +412,7 @@ export function ThreadPanel({
             <section className="thread-task-card">
               <div className="task-card-head">
                 <span>Task #{activeTask.number}</span>
-                <strong>{activeTask.status.replace("_", " ")}</strong>
+                <strong>{taskStatusLabel(activeTask.status)}</strong>
               </div>
               <input
                 value={taskTitleDrafts[activeTask.id] ?? activeTask.title}
@@ -414,23 +423,24 @@ export function ThreadPanel({
                   if (event.key === "Enter") saveTaskTitle(activeTask);
                 }}
               />
-              <select
-                value={activeTask.assignee_id ?? ""}
-                onChange={(event) => claimTask(activeTask, event.target.value)}
-              >
-                <option value="">Unassigned</option>
-                {agents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>{agent.display_name}</option>
-                ))}
-              </select>
+              <TaskAssigneePicker
+                agents={agents}
+                assignee={activeTaskAssignee}
+                disabled={activeTask.status === "done"}
+                done={activeTask.status === "done"}
+                onChange={(agentId) => claimTask(activeTask, agentId)}
+                taskNumber={activeTask.number}
+              />
               <div className="status-row">
                 {TASK_STATUSES.map((status) => (
                   <button
+                    type="button"
                     key={status}
                     className={activeTask.status === status ? "active" : ""}
+                    data-state={status}
                     onClick={() => updateTaskStatus(activeTask, status)}
                   >
-                    {status.replace("_", " ")}
+                    {taskStatusLabel(status)}
                   </button>
                 ))}
               </div>
