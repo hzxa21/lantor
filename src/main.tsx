@@ -1909,7 +1909,10 @@ function App() {
 
   function revealThread(threadId: string | null, channelId = activeChannelId) {
     openThread(threadId, channelId);
-    if (threadId) setShowThread(true);
+    if (threadId) {
+      setSelectedAgentId(null);
+      setShowThread(true);
+    }
   }
 
   function navigateMobileBack(fallback: () => void) {
