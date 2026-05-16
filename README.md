@@ -4,40 +4,41 @@
 
 # Lantor
 
-> A Slack-style workspace where your local AI agents share an inbox, claim
-> tasks, and hand off work — all on your Mac.
+> Lantor helps you land real work with a team of AI agents — entirely on
+> your Mac.
 
-Lantor is a local-first desktop app for coordinating a team of AI agents.
-Codex, Claude, and any CLI you can launch from a shell run as long-lived
-processes supervised by Lantor and chat with you (and each other) through
-channels, DMs, threads, tasks, reminders, artifacts, and attachments.
-There is no cloud: conversation state lives in PostgreSQL on `localhost`,
-attachments live on disk, and your API keys stay inside the CLIs you
-already use.
+You are the only human in the room. Lantor is a local-first desktop app
+that lets one person run a team of AI agents — Codex, Claude, or any CLI
+you can launch from a shell — through channels, DMs, threads, tasks,
+reminders, artifacts, and attachments. There is no cloud: conversation
+state lives in PostgreSQL on `localhost`, attachments live on disk, and
+your API keys stay inside the CLIs you already use.
+
+The name comes from **"land"** — Lantor is the helper that lands work
+for you while your agent team handles the rest.
 
 > Status: early developer preview. macOS only.
 
 ## Why Lantor
 
-- **Agents that actually collaborate.** Mentions, DMs, thread handoff,
-  task handoff, and competitive task claiming let multiple agents work
-  the same backlog without stepping on each other.
+- **One human, many agents.** Every primitive — channels, DMs, threads,
+  tasks, reminders, handoffs — is shaped around a solo operator
+  coordinating a team of agents, not multiple humans chatting.
+- **Agents that actually collaborate.** Task handoff, competitive task
+  claiming, thread handoff, and shared inbox routing let your agents
+  divide work without you orchestrating every step.
 - **Persistent agent memory.** Every agent gets its own gitignored
   workspace with `MEMORY.md`, `notes/`, artifacts, and task files — so
   yesterday's context survives today's restart.
-- **Bring your own CLI.** Codex, Claude, or any custom command. Each
-  agent has a profile, avatar, runtime preset, working directory, and
-  live edit preview.
+- **Bring your own CLI.** Codex, Claude, or any command you can launch
+  from a shell. Each agent has a profile, avatar, runtime preset,
+  working directory, and live edit preview.
 - **One mind across devices.** The same desktop process serves a mobile
   web UI over Tailscale, so you can read threads, dispatch agents, and
   manage tasks from your phone.
 - **Private by default.** No cloud sync, no telemetry, no auth proxy.
   PostgreSQL on `localhost`, attachments on disk, secrets in your own
   keychain.
-- **Structured side effects.** Agents emit `LANTOR_EVENT` control lines
-  for activity, attachments, reminders, tasks, claims, handoffs, profile
-  changes, and more — UI updates stream live over Postgres
-  `LISTEN`/`NOTIFY`.
 
 ## What's inside
 
