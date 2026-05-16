@@ -1,12 +1,12 @@
 # Tailscale Web Access
 
-Lantor can expose a browser-accessible web UI from the same desktop process for
-private Tailscale access from another device, such as a phone. It is disabled
-by default.
+Lantor exposes a browser-accessible web UI from the same desktop process so you
+can open it from another device, such as a phone over Tailscale. It is enabled
+by default on `0.0.0.0:8787`.
 
 ```bash
 npm run build
-LANTOR_WEB_BIND=0.0.0.0:8787 npm run tauri:dev
+npm run tauri:dev
 ```
 
 Then open the Mac's Tailscale address from the other device:
@@ -21,9 +21,12 @@ Loopback requests from the same Mac can use:
 http://127.0.0.1:8787/
 ```
 
-The web UI does not perform its own token check. Keep the bind on `127.0.0.1`
-unless you are intentionally exposing Lantor on a trusted private network such
-as your Tailscale tailnet.
+To restrict to loopback, set `LANTOR_WEB_BIND=127.0.0.1:8787`. To turn the web
+server off, set `LANTOR_WEB_BIND=off` (also accepts `none`, `disabled`,
+`false`, or `0`).
+
+The web UI does not perform its own token check. Only expose Lantor on a
+trusted private network such as your Tailscale tailnet.
 
 The web UI uses HTTP endpoints for the subset of Tauri commands the chat
 surface needs:

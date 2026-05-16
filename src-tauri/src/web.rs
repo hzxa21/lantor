@@ -161,14 +161,31 @@ struct OwnerProfileRequest {
     description: String,
 }
 
+pub(crate) const DEFAULT_LANTOR_WEB_BIND: &str = "0.0.0.0:8787";
+
+pub(crate) fn resolve_web_bind() -> Option<String> {
+    match env::var("LANTOR_WEB_BIND") {
+        Ok(value) => {
+            let trimmed = value.trim().to_owned();
+            if trimmed.is_empty() {
+                return Some(DEFAULT_LANTOR_WEB_BIND.to_owned());
+            }
+            if matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "off" | "none" | "disabled" | "false" | "0"
+            ) {
+                return None;
+            }
+            Some(trimmed)
+        }
+        Err(_) => Some(DEFAULT_LANTOR_WEB_BIND.to_owned()),
+    }
+}
+
 pub(crate) fn spawn_web_server_if_configured(pool: PgPool, db_url: String) {
-    let Ok(bind) = env::var("LANTOR_WEB_BIND") else {
+    let Some(bind) = resolve_web_bind() else {
         return;
     };
-    let bind = bind.trim().to_owned();
-    if bind.is_empty() {
-        return;
-    }
     let Ok(addr) = bind.parse::<SocketAddr>() else {
         eprintln!("Lantor web access disabled: invalid LANTOR_WEB_BIND={bind}");
         return;
@@ -266,7 +283,7 @@ async fn missing_dist(dist_dir: PathBuf) -> impl IntoResponse {
   <body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 32px;">
     <h1>Lantor Web build not found</h1>
     <p>Expected <code>{}</code>.</p>
-    <p>Run <code>npm run build</code>, then restart Lantor with <code>LANTOR_WEB_BIND</code>.</p>
+    <p>Run <code>npm run build</code>, then restart Lantor.</p>
   </body>
 </html>"#,
         dist_dir.display()

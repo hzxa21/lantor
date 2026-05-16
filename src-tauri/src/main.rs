@@ -1492,8 +1492,8 @@ fn configured_web_base_url() -> Option<String> {
             return Some(trimmed);
         }
     }
-    let bind = env::var("LANTOR_WEB_BIND").ok()?;
-    let addr = bind.trim().parse::<SocketAddr>().ok()?;
+    let bind = crate::web::resolve_web_bind()?;
+    let addr = bind.parse::<SocketAddr>().ok()?;
     let host = match addr.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_owned(),
         IpAddr::V4(ip) => ip.to_string(),
