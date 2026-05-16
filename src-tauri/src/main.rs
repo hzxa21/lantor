@@ -7664,6 +7664,10 @@ async fn replay_agent_events_from_run_log_if_needed(
 }
 
 fn extract_agent_event_json(line: &str) -> Option<&str> {
+    extract_agent_event_json_with_remainder(line).map(|(json, _)| json)
+}
+
+fn extract_agent_event_json_with_remainder(line: &str) -> Option<(&str, &str)> {
     let mut trimmed = line.trim();
     for prefix in ["[stdout] ", "[stderr] "] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
@@ -7671,7 +7675,47 @@ fn extract_agent_event_json(line: &str) -> Option<&str> {
             break;
         }
     }
-    trimmed.strip_prefix(AGENT_EVENT_PREFIX).map(str::trim)
+    let payload = trimmed.strip_prefix(AGENT_EVENT_PREFIX)?.trim_start();
+    match complete_json_object_end(payload) {
+        Some(end) => Some((&payload[..end], &payload[end..])),
+        None => Some((payload.trim(), "")),
+    }
+}
+
+fn complete_json_object_end(value: &str) -> Option<usize> {
+    if !value.starts_with('{') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, ch) in value.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 async fn handle_agent_event(
@@ -9703,8 +9747,11 @@ fn split_streaming_agent_event_lines(body: &str) -> (String, Vec<String>) {
     let mut visible_lines = Vec::new();
     let mut events = Vec::new();
     for line in body.lines() {
-        if let Some(json) = extract_agent_event_json(line) {
+        if let Some((json, remainder)) = extract_agent_event_json_with_remainder(line) {
             events.push(json.to_owned());
+            if !remainder.trim().is_empty() {
+                visible_lines.push(remainder);
+            }
         } else {
             visible_lines.push(line);
         }
@@ -9721,8 +9768,12 @@ fn split_complete_streaming_agent_event_lines(body: &str) -> (String, Vec<String
             continue;
         }
         let line = segment.trim_end_matches(['\r', '\n']);
-        if let Some(json) = extract_agent_event_json(line) {
+        if let Some((json, remainder)) = extract_agent_event_json_with_remainder(line) {
             events.push(json.to_owned());
+            if !remainder.trim().is_empty() {
+                visible.push_str(remainder);
+                visible.push('\n');
+            }
         } else {
             visible.push_str(segment);
         }
@@ -13979,8 +14030,8 @@ mod tests {
         normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
         parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
         queue_mentions_as_work_items, record_agent_activity, send_owner_message_in_pool,
-        silent_reply_reason, streaming_message_body_is_empty, try_claim_unassigned_task,
-        upsert_agent_thread_subscription, upsert_runtime_thread_id,
+        silent_reply_reason, split_streaming_agent_event_lines, streaming_message_body_is_empty,
+        try_claim_unassigned_task, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
         AGENT_MEMORY_CONTEXT_LIMIT, CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
@@ -15198,6 +15249,39 @@ mod tests {
             ),
             Some(r#"{"type":"message","body":"from final output"}"#)
         );
+    }
+
+    #[test]
+    fn extracts_agent_event_json_before_trailing_text() {
+        assert_eq!(
+            extract_agent_event_json(
+                r#"LANTOR_EVENT {"type":"activity","title":"Done","detail":"ok"} ## Review"#
+            ),
+            Some(r#"{"type":"activity","title":"Done","detail":"ok"}"#)
+        );
+    }
+
+    #[test]
+    fn extracts_agent_event_json_with_braces_inside_strings() {
+        assert_eq!(
+            extract_agent_event_json(
+                r#"LANTOR_EVENT {"type":"message","body":"text with { braces } and \"quotes\""} trailing"#
+            ),
+            Some(r#"{"type":"message","body":"text with { braces } and \"quotes\""}"#)
+        );
+    }
+
+    #[test]
+    fn keeps_trailing_stream_text_after_control_event() {
+        let (visible, events) = split_streaming_agent_event_lines(
+            r#"LANTOR_EVENT {"type":"activity","title":"Done","detail":"ok"} ## Review"#,
+        );
+
+        assert_eq!(
+            events,
+            vec![r#"{"type":"activity","title":"Done","detail":"ok"}"#]
+        );
+        assert_eq!(visible, "## Review");
     }
 
     #[test]
