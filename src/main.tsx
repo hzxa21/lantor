@@ -2482,15 +2482,6 @@ function App() {
     window.addEventListener("pointerup", onPointerUp);
   }
 
-  async function startAgent(agent: Agent) {
-    await mutate("start_agent", { agentId: agent.id });
-  }
-
-  async function stopAgent(run: AgentRun) {
-    if (!window.confirm(`Stop @${run.agent_handle}? Current work will be interrupted.`)) return;
-    await mutate("stop_agent", { runId: run.id });
-  }
-
   async function cancelWorkItem(item: AgentWorkItem) {
     await mutate("cancel_agent_work", { workItemId: item.id });
   }
@@ -2657,13 +2648,10 @@ function App() {
           reminders={data.reminders}
           onClose={closeSelectedAgent}
           onDelete={deleteAgent}
-          onStart={startAgent}
-          onStop={stopAgent}
           onEdit={(agent) => {
             startEditAgent(agent);
             setSelectedAgentId(null);
           }}
-          onOpenDm={openDmWithAgent}
           onOpenWorkItem={(item) => {
             openWorkItem(item);
             setSelectedAgentId(null);

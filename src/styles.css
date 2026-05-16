@@ -3006,7 +3006,7 @@ body.resizing-column * {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border-left: 1px solid var(--line);
   background: rgba(248, 249, 251, 0.96);
@@ -3066,7 +3066,7 @@ body.resizing-column * {
 }
 
 .agent-drawer-head button:disabled,
-.agent-drawer-actions button:disabled {
+.agent-detail-hero-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
@@ -3081,37 +3081,48 @@ body.resizing-column * {
   padding: 14px 16px;
 }
 
-.agent-drawer-actions {
+.agent-detail-hero-side {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px 14px;
-  border-top: 1px solid var(--line);
-  background: rgba(248, 249, 251, 0.98);
+  justify-content: flex-end;
+  align-self: start;
 }
 
-.agent-drawer-actions > div {
+.agent-detail-hero-actions {
   display: flex;
-  gap: 10px;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid rgba(118, 118, 128, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 8px 18px rgba(32, 36, 44, 0.06);
 }
 
-.agent-drawer-actions button {
-  padding: 10px 14px;
-  border-radius: 13px;
-  background: rgba(142, 142, 147, 0.12);
+.agent-detail-hero-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: transparent;
   color: var(--ink);
+  font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
-.agent-drawer-actions button.primary {
-  background: var(--accent);
-  color: #fff;
+.agent-detail-hero-actions button:hover {
+  background: rgba(142, 142, 147, 0.12);
 }
 
-.agent-drawer-actions button.danger {
-  background: rgba(255, 59, 48, 0.12);
+.agent-detail-hero-actions button.danger {
   color: #d70015;
+}
+
+.agent-detail-hero-actions button.danger:hover {
+  background: rgba(255, 59, 48, 0.12);
 }
 
 .thread-focus {
@@ -3667,21 +3678,6 @@ body.resizing-column * {
 .phase-badge.phase-run_error {
   background: rgba(255, 69, 58, 0.15);
   color: #c91810;
-}
-
-.status-badge {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(142, 142, 147, 0.12);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.status-badge.running {
-  background: rgba(52, 199, 89, 0.14);
-  color: #167d32;
 }
 
 .detail-grid {
@@ -5915,13 +5911,24 @@ body.resizing-column * {
     padding: 12px;
   }
 
-  .agent-drawer-actions {
-    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
-    flex-wrap: wrap;
+  .agent-detail-hero {
+    grid-template-columns: 52px minmax(0, 1fr);
+    align-items: start;
   }
 
-  .agent-drawer-actions > div {
-    flex-wrap: wrap;
+  .agent-detail-hero-side {
+    grid-column: 1 / -1;
+    align-items: stretch;
+    justify-content: space-between;
+  }
+
+  .agent-detail-hero-actions {
+    margin-left: auto;
+  }
+
+  .agent-detail-hero-actions button {
+    justify-content: center;
+    text-align: center;
   }
 
   .detail-grid,
