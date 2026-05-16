@@ -26,12 +26,13 @@ type AgentPhase = {
   detail: string;
 };
 
-type AgentDetailTab = "profile" | "reminders" | "activity" | "workspace";
+type AgentDetailTab = "profile" | "reminders" | "activity" | "inbox" | "workspace";
 
 const AGENT_DETAIL_TABS: Array<{ id: AgentDetailTab; label: string }> = [
   { id: "profile", label: "Profile" },
   { id: "reminders", label: "Reminders" },
   { id: "activity", label: "Activity" },
+  { id: "inbox", label: "Inbox" },
   { id: "workspace", label: "Workspace" },
 ];
 
@@ -422,6 +423,7 @@ export function AgentDetailDrawer({
       if (activeRun) return "Live";
       return activities.length > 0 ? String(activities.length) : "Idle";
     }
+    if (tab === "inbox") return workItems.length > 0 ? String(workItems.length) : "Empty";
     return workspacePath ? agent.workspace_exists ? "Ready" : "Missing" : "Unset";
   }
 
@@ -639,112 +641,115 @@ export function AgentDetailDrawer({
 
   function renderActivityPanel() {
     return (
-      <>
-        <section className="detail-section live-activity-section">
-          <div className="detail-section-head">
-            <h4>Recent activity</h4>
-            {activities.length > 0 && <span>Latest {activities.length}</span>}
-          </div>
-          {activities.length === 0 && <p className="empty-mini">No activity yet.</p>}
-          {activities.length > 0 && (
-            <div className="activity-timeline" role="log" aria-label={`${agent.handle} activity`}>
-              {activities.map((activity) => {
-                const title = userFacingActivityTitle(activity);
-                const detail = userFacingActivityDetail(activity);
-                const category = userFacingActivityCategory(activity);
-                const visibleMetadata = visibleMetadataEntries(activity);
-                const allMetadata = metadataEntries(activity);
-                return (
-                  <article
-                    key={activity.id}
-                    className={`activity-timeline-row ${expandedActivityId === activity.id ? "expanded" : ""}`}
+      <section className="detail-section live-activity-section">
+        <div className="detail-section-head">
+          <h4>Recent activity</h4>
+          {activities.length > 0 && <span>Latest {activities.length}</span>}
+        </div>
+        {activities.length === 0 && <p className="empty-mini">No activity yet.</p>}
+        {activities.length > 0 && (
+          <div className="activity-timeline" role="log" aria-label={`${agent.handle} activity`}>
+            {activities.map((activity) => {
+              const title = userFacingActivityTitle(activity);
+              const detail = userFacingActivityDetail(activity);
+              const category = userFacingActivityCategory(activity);
+              const visibleMetadata = visibleMetadataEntries(activity);
+              const allMetadata = metadataEntries(activity);
+              return (
+                <article
+                  key={activity.id}
+                  className={`activity-timeline-row ${expandedActivityId === activity.id ? "expanded" : ""}`}
+                  data-kind={activity.kind}
+                  data-phase={activity.phase}
+                  data-status={activity.status}
+                  onClick={() => setExpandedActivityId((current) => current === activity.id ? null : activity.id)}
+                >
+                  <time>{formatActivityTime(activity.created_at)}</time>
+                  <span
+                    className="activity-dot"
                     data-kind={activity.kind}
                     data-phase={activity.phase}
                     data-status={activity.status}
-                    onClick={() => setExpandedActivityId((current) => current === activity.id ? null : activity.id)}
-                  >
-                    <time>{formatActivityTime(activity.created_at)}</time>
-                    <span
-                      className="activity-dot"
-                      data-kind={activity.kind}
-                      data-phase={activity.phase}
-                      data-status={activity.status}
-                      aria-hidden="true"
-                    />
-                    <div className="activity-timeline-body">
-                      <div className="activity-timeline-title">
-                        <strong>{title}</strong>
-                        <span className={`activity-status status-${activity.status}`}>
-                          {statusForActivity(activity)}
-                        </span>
-                      </div>
-                      <div className="activity-structure-line">
-                        <span>{category}</span>
-                        {activity.status === "active" && <span>In progress</span>}
-                      </div>
-                      {visibleMetadata.length > 0 && (
-                        <div className="activity-metadata">
-                          {visibleMetadata.map(([key, value]) => (
-                            <span key={key} title={`${key}: ${value}`}>
-                              <b>{key}</b>
-                              {compactValue(value)}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      {detail && (
-                        <p title="Click to expand activity detail">{compactValue(detail, 120)}</p>
-                      )}
-                      {expandedActivityId === activity.id && allMetadata.length > 0 && (
-                        <pre className="activity-raw">{JSON.stringify(activity.metadata, null, 2)}</pre>
-                      )}
+                    aria-hidden="true"
+                  />
+                  <div className="activity-timeline-body">
+                    <div className="activity-timeline-title">
+                      <strong>{title}</strong>
+                      <span className={`activity-status status-${activity.status}`}>
+                        {statusForActivity(activity)}
+                      </span>
                     </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
-        <section className="detail-section">
-          <div className="detail-section-head">
-            <h4>Agent inbox</h4>
-            {workItems.length > 0 && <span>{workItems.length} requests</span>}
+                    <div className="activity-structure-line">
+                      <span>{category}</span>
+                      {activity.status === "active" && <span>In progress</span>}
+                    </div>
+                    {visibleMetadata.length > 0 && (
+                      <div className="activity-metadata">
+                        {visibleMetadata.map(([key, value]) => (
+                          <span key={key} title={`${key}: ${value}`}>
+                            <b>{key}</b>
+                            {compactValue(value)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {detail && (
+                      <p title="Click to expand activity detail">{compactValue(detail, 120)}</p>
+                    )}
+                    {expandedActivityId === activity.id && allMetadata.length > 0 && (
+                      <pre className="activity-raw">{JSON.stringify(activity.metadata, null, 2)}</pre>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
           </div>
-          {workItems.length === 0 && <p className="empty-mini">No agent requests yet.</p>}
-          {workItems.map((item) => (
-            <article key={item.id} className="detail-work" onClick={() => onOpenWorkItem(item)}>
-              <div>
-                <strong>{item.title}</strong>
-                <span>{agentRequestSourceLabel(item.source_kind, item.task_number)} · {item.status}</span>
-              </div>
-              <div className="detail-work-actions">
-                {["queued", "running", "cancelling"].includes(item.status) && (
-                  <button
-                    className="danger"
-                    disabled={item.status === "cancelling"}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onCancelWorkItem(item);
-                    }}
-                  >
-                    {item.status === "cancelling" ? "Cancelling" : "Cancel"}
-                  </button>
-                )}
-                {["failed", "cancelled"].includes(item.status) && (
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onRetryWorkItem(item);
-                    }}
-                  >
-                    Retry
-                  </button>
-                )}
-              </div>
-            </article>
-          ))}
-        </section>
-      </>
+        )}
+      </section>
+    );
+  }
+
+  function renderInboxPanel() {
+    return (
+      <section className="detail-section agent-inbox-section">
+        <div className="detail-section-head">
+          <h4>Agent inbox</h4>
+          {workItems.length > 0 && <span>{workItems.length} requests</span>}
+        </div>
+        {workItems.length === 0 && <p className="empty-mini">No agent requests yet.</p>}
+        {workItems.map((item) => (
+          <article key={item.id} className="detail-work" onClick={() => onOpenWorkItem(item)}>
+            <div>
+              <strong>{item.title}</strong>
+              <span>{agentRequestSourceLabel(item.source_kind, item.task_number)} · {item.status}</span>
+            </div>
+            <div className="detail-work-actions">
+              {["queued", "running", "cancelling"].includes(item.status) && (
+                <button
+                  className="danger"
+                  disabled={item.status === "cancelling"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCancelWorkItem(item);
+                  }}
+                >
+                  {item.status === "cancelling" ? "Cancelling" : "Cancel"}
+                </button>
+              )}
+              {["failed", "cancelled"].includes(item.status) && (
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRetryWorkItem(item);
+                  }}
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          </article>
+        ))}
+      </section>
     );
   }
 
@@ -838,6 +843,7 @@ export function AgentDetailDrawer({
             {activeDetailTab === "profile" && renderProfilePanel()}
             {activeDetailTab === "reminders" && renderRemindersPanel()}
             {activeDetailTab === "activity" && renderActivityPanel()}
+            {activeDetailTab === "inbox" && renderInboxPanel()}
             {activeDetailTab === "workspace" && renderWorkspacePanel()}
           </div>
         </div>

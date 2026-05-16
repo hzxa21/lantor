@@ -3076,8 +3076,9 @@ body.resizing-column * {
 }
 
 .agent-drawer-body {
+  display: grid;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding: 14px 16px;
 }
 
@@ -3518,7 +3519,10 @@ body.resizing-column * {
 
 .agent-detail {
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 16px;
+  height: 100%;
+  min-height: 0;
 }
 
 .agent-detail-hero {
@@ -3558,7 +3562,7 @@ body.resizing-column * {
 
 .agent-detail-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   border: 1px solid rgba(118, 118, 128, 0.12);
@@ -3613,6 +3617,15 @@ body.resizing-column * {
   display: grid;
   gap: 14px;
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.agent-detail-panel.panel-activity {
+  overflow: hidden;
 }
 
 .agent-phase-line {
@@ -3716,6 +3729,7 @@ body.resizing-column * {
 .detail-section {
   display: grid;
   gap: 8px;
+  min-height: 0;
 }
 
 .detail-section-head {
@@ -3999,6 +4013,7 @@ body.resizing-column * {
 }
 
 .live-activity-section {
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -4166,7 +4181,7 @@ body.resizing-column * {
 
 .activity-timeline {
   display: grid;
-  max-height: min(43vh, 520px);
+  max-height: none;
   min-height: 0;
   overflow-y: auto;
   padding: 2px 4px 6px 0;
@@ -5929,6 +5944,28 @@ body.resizing-column * {
   .agent-detail-hero-actions button {
     justify-content: center;
     text-align: center;
+  }
+
+  .agent-detail-tabs {
+    grid-auto-columns: minmax(112px, 34vw);
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    padding: 4px;
+    scroll-padding-inline: 4px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .agent-detail-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .agent-detail-tab {
+    min-height: 52px;
+    scroll-snap-align: start;
   }
 
   .detail-grid,
