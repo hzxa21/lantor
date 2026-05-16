@@ -1812,11 +1812,22 @@ mark {
   display: grid;
   gap: 6px;
   min-width: 0;
+  max-width: 100%;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-body > * {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.markdown-body img,
+.markdown-body video,
+.markdown-body svg {
+  max-width: 100%;
+  height: auto;
 }
 
 .markdown-body ul,
@@ -1878,6 +1889,8 @@ mark {
   border-radius: 12px;
   background: #101318;
   color: #f7f7f8;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .markdown-body pre code {
