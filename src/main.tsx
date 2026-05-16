@@ -115,6 +115,7 @@ type ConfirmRequest = {
 };
 
 type ActiveTab = "chat" | "tasks";
+type MobileModal = "search" | "inbox" | "saved";
 
 type MobileHistoryState = {
   __lantorMobileUi?: true;
@@ -122,6 +123,7 @@ type MobileHistoryState = {
   showThread: boolean;
   showMobileSidebar: boolean;
   selectedAgentId: string | null;
+  activeModal: MobileModal | null;
 };
 
 type AppErrorBoundaryState = {
@@ -166,7 +168,13 @@ function isMobileHistoryState(value: unknown): value is MobileHistoryState {
     && typeof state.index === "number"
     && typeof state.showThread === "boolean"
     && typeof state.showMobileSidebar === "boolean"
-    && (state.selectedAgentId === null || typeof state.selectedAgentId === "string");
+    && (state.selectedAgentId === null || typeof state.selectedAgentId === "string")
+    && (
+      state.activeModal === null ||
+      state.activeModal === "search" ||
+      state.activeModal === "inbox" ||
+      state.activeModal === "saved"
+    );
 }
 
 function mobileHistoryKey(state: MobileHistoryState) {
@@ -174,6 +182,7 @@ function mobileHistoryKey(state: MobileHistoryState) {
     state.showThread ? "thread" : "conversation",
     state.showMobileSidebar ? "sidebar" : "content",
     state.selectedAgentId ?? "",
+    state.activeModal ?? "",
   ].join("|");
 }
 
@@ -543,6 +552,13 @@ function App() {
   const mobileHistoryIndexRef = useRef(0);
   const restoringMobileHistoryRef = useRef(false);
   const lastMobileHistoryKeyRef = useRef<string | null>(null);
+  const activeMobileModal: MobileModal | null = showSearchModal
+    ? "search"
+    : showInboxModal
+      ? "inbox"
+      : showSavedModal
+        ? "saved"
+        : null;
 
   function buildMobileHistoryState(index = mobileHistoryIndexRef.current): MobileHistoryState {
     return {
@@ -551,6 +567,7 @@ function App() {
       showThread,
       showMobileSidebar,
       selectedAgentId,
+      activeModal: activeMobileModal,
     };
   }
 
@@ -987,7 +1004,7 @@ function App() {
 
       if (modifier && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setShowSearchModal(true);
+        openSearchModal();
         return;
       }
 
@@ -1067,6 +1084,9 @@ function App() {
       setShowMobileSidebar(event.state.showMobileSidebar);
       setMobileSidebarDragPx(0);
       setSelectedAgentId(event.state.selectedAgentId);
+      setShowSearchModal(event.state.activeModal === "search");
+      setShowInboxModal(event.state.activeModal === "inbox");
+      setShowSavedModal(event.state.activeModal === "saved");
     }
 
     window.addEventListener("popstate", onPopState);
@@ -1102,6 +1122,7 @@ function App() {
         showThread: false,
         showMobileSidebar: true,
         selectedAgentId: null,
+        activeModal: null,
       };
       const baseKey = mobileHistoryKey(baseState);
       window.history.replaceState(baseState, "");
@@ -1131,6 +1152,7 @@ function App() {
         showThread: false,
         showMobileSidebar: true,
         selectedAgentId: null,
+        activeModal: null,
       };
       window.history.replaceState(sidebarState, "");
       mobileHistoryIndexRef.current = sidebarState.index;
@@ -1144,6 +1166,7 @@ function App() {
   }, [
     data,
     selectedAgentId,
+    activeMobileModal,
     showMobileSidebar,
     showThread,
   ]);
@@ -1230,11 +1253,7 @@ function App() {
       const shouldOpen = currentPx >= width * 0.28 || velocity > MOBILE_SIDEBAR_FLING_VELOCITY;
 
       if (shouldOpen) {
-        if (mobileHistoryReadyRef.current && mobileHistoryIndexRef.current > 0) {
-          window.history.back();
-        } else {
-          setShowMobileSidebar(true);
-        }
+        openMobileSidebarFromContent();
       }
       resetSwipe();
     }
@@ -1903,6 +1922,48 @@ function App() {
     fallback();
   }
 
+  function openMobileSidebarFromContent() {
+    if (isMobileViewport() && mobileHistoryReadyRef.current && mobileHistoryIndexRef.current > 0) {
+      restoringMobileHistoryRef.current = true;
+      setShowThread(false);
+      setSelectedAgentId(null);
+      setShowMobileSidebar(true);
+      setMobileSidebarDragPx(0);
+      window.history.back();
+      return;
+    }
+    setShowMobileSidebar(true);
+  }
+
+  function openSearchModal() {
+    setShowMobileSidebar(false);
+    setShowInboxModal(false);
+    setShowSavedModal(false);
+    setShowSearchModal(true);
+  }
+
+  function openInboxModal() {
+    setShowMobileSidebar(false);
+    setShowSearchModal(false);
+    setShowSavedModal(false);
+    setShowInboxModal(true);
+  }
+
+  function openSavedModal() {
+    setShowMobileSidebar(false);
+    setShowSearchModal(false);
+    setShowInboxModal(false);
+    setShowSavedModal(true);
+  }
+
+  function closeMobileModal(fallback: () => void) {
+    if (isMobileViewport() && activeMobileModal && mobileHistoryReadyRef.current && mobileHistoryIndexRef.current > 0) {
+      window.history.back();
+      return;
+    }
+    fallback();
+  }
+
   function closeSelectedAgent() {
     navigateMobileBack(() => setSelectedAgentId(null));
   }
@@ -2487,18 +2548,9 @@ function App() {
         channel={channel}
         channelAlertIds={channelAlertIds}
         inboxUnreadCount={inboxUnreadCount}
-        openSearch={() => {
-          setShowMobileSidebar(false);
-          setShowSearchModal(true);
-        }}
-        openInbox={() => {
-          setShowMobileSidebar(false);
-          setShowInboxModal(true);
-        }}
-        openSaved={() => {
-          setShowMobileSidebar(false);
-          setShowSavedModal(true);
-        }}
+        openSearch={openSearchModal}
+        openInbox={openInboxModal}
+        openSaved={openSavedModal}
         openCreateChannelModal={() => {
           setShowMobileSidebar(false);
           setShowCreateChannelModal(true);
@@ -2535,7 +2587,7 @@ function App() {
         onTimeRangeChange={setSearchTimeRange}
         onOpenResult={openSearchResult}
         onClear={() => setSearchQuery("")}
-        onClose={() => setShowSearchModal(false)}
+        onClose={() => closeMobileModal(() => setShowSearchModal(false))}
       />
 
       <InboxModal
@@ -2544,7 +2596,7 @@ function App() {
         onOpenItem={openInboxItem}
         onMarkItemRead={markInboxItemRead}
         onMarkAllRead={markAllInboxRead}
-        onClose={() => setShowInboxModal(false)}
+        onClose={() => closeMobileModal(() => setShowInboxModal(false))}
       />
 
       <SavedMessagesModal
@@ -2552,7 +2604,7 @@ function App() {
         items={data.saved_messages}
         onOpenItem={openSavedMessage}
         onUnsaveItem={unsaveSavedMessage}
-        onClose={() => setShowSavedModal(false)}
+        onClose={() => closeMobileModal(() => setShowSavedModal(false))}
       />
 
       <OwnerProfileModal
@@ -2585,7 +2637,7 @@ function App() {
         taskTitleDrafts={taskTitleDrafts}
         setActiveTab={setActiveTab}
         setActiveThreadId={revealThread}
-        openMobileSidebar={() => navigateMobileBack(() => setShowMobileSidebar(true))}
+        openMobileSidebar={openMobileSidebarFromContent}
         openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
         deleteChannel={deleteChannel}
         openChannelAgentsModal={() => setShowChannelAgentsModal(true)}
