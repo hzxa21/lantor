@@ -49,6 +49,15 @@ pub(crate) enum AgentEvent {
         task_number: i64,
         assignee_handle: Option<String>,
     },
+    TaskHandoff {
+        #[serde(alias = "target_handle")]
+        target_agent: String,
+        #[serde(default)]
+        task_number: Option<i64>,
+        reason: String,
+        #[serde(default)]
+        body: Option<String>,
+    },
     Silent {
         reason: Option<String>,
     },

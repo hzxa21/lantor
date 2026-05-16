@@ -7577,6 +7577,89 @@ async fn handle_agent_event(
             .await?;
             Ok(format!("task #{task_number} assignee updated"))
         }
+        AgentEvent::TaskHandoff {
+            target_agent,
+            task_number,
+            reason,
+            body,
+        } => {
+            let (task_id, resolved_task_number, title, channel_id, thread_root_id) =
+                resolve_task_for_handoff(pool, agent_id, run_id, task_number).await?;
+            let target_agent_id = resolve_agent_by_handle(pool, &target_agent).await?;
+            if target_agent_id == agent_id {
+                return Err("task_handoff target_agent must be a different agent".to_owned());
+            }
+            let target_handle = resolve_agent_handle(pool, target_agent_id).await?;
+            let source_handle = resolve_agent_handle(pool, agent_id).await?;
+            let reason = reason.trim();
+            if reason.is_empty() {
+                return Err("task_handoff reason is required".to_owned());
+            }
+            let handoff_body = body
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    format!("@{target_handle} taking over task #{resolved_task_number}: {reason}")
+                });
+
+            let affected = sqlx::query(
+                r#"
+                update tasks
+                set assignee_agent_id = $2,
+                    status = 'in_progress',
+                    updated_at = now()
+                where id = $1
+                  and assignee_agent_id = $3
+                  and status <> 'done'
+                "#,
+            )
+            .bind(task_id)
+            .bind(target_agent_id)
+            .bind(agent_id)
+            .execute(pool)
+            .await
+            .map_err(to_string)?
+            .rows_affected();
+            if affected == 0 {
+                return Err(format!(
+                    "task #{resolved_task_number} can only be handed off by its current assignee"
+                ));
+            }
+
+            let handoff_message_id = insert_agent_handoff_message(
+                pool,
+                agent_id,
+                channel_id,
+                thread_root_id,
+                &handoff_body,
+            )
+            .await?;
+            dispatch_task_assignment_to_agent(pool, task_id, target_agent_id, reason).await?;
+            let _ = notify_ui_refresh(pool, "task_handoff").await;
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                Some(run_id),
+                "task",
+                format!("Task #{resolved_task_number} handed off"),
+                json!({
+                    "task_id": task_id,
+                    "task_number": resolved_task_number,
+                    "title": title,
+                    "from": format!("@{source_handle}"),
+                    "target_agent": format!("@{target_handle}"),
+                    "reason": reason,
+                    "message_id": handoff_message_id,
+                })
+                .to_string(),
+            )
+            .await?;
+            Ok(format!(
+                "task #{resolved_task_number} handed off to @{target_handle}"
+            ))
+        }
         AgentEvent::Silent { reason } => {
             let reason =
                 reason.unwrap_or_else(|| "Agent judged no visible reply was needed.".to_owned());
@@ -8042,6 +8125,69 @@ async fn resolve_event_channel(
         .await
         .map_err(to_string)?
         .ok_or_else(|| format!("channel #{normalized} does not exist"))
+}
+
+async fn resolve_task_for_handoff(
+    pool: &PgPool,
+    agent_id: Uuid,
+    run_id: Uuid,
+    task_number: Option<i64>,
+) -> CommandResult<(Uuid, i64, String, Uuid, Uuid)> {
+    let row = if let Some(task_number) = task_number {
+        sqlx::query(
+            r#"
+            select id, number, title, channel_id, message_id, assignee_agent_id, status
+            from tasks
+            where number = $1
+            "#,
+        )
+        .bind(task_number)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?
+    } else {
+        sqlx::query(
+            r#"
+            select t.id, t.number, t.title, t.channel_id, t.message_id, t.assignee_agent_id, t.status
+            from agent_work_items w
+            join tasks t on t.id = w.task_id
+            where w.run_id = $1 and w.agent_id = $2
+            order by w.updated_at desc
+            limit 1
+            "#,
+        )
+        .bind(run_id)
+        .bind(agent_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?
+    };
+    let row = row.ok_or_else(|| {
+        task_number
+            .map(|task_number| format!("task #{task_number} does not exist"))
+            .unwrap_or_else(|| {
+                "task_handoff needs task_number when the current run is not tied to a task"
+                    .to_owned()
+            })
+    })?;
+    let resolved_task_number: i64 = row.get("number");
+    let status: String = row.get("status");
+    if status == "done" {
+        return Err(format!("task #{resolved_task_number} is already done"));
+    }
+    let assignee_agent_id: Option<Uuid> = row.get("assignee_agent_id");
+    if assignee_agent_id != Some(agent_id) {
+        return Err(format!(
+            "task #{resolved_task_number} can only be handed off by its current assignee"
+        ));
+    }
+    Ok((
+        row.get("id"),
+        resolved_task_number,
+        row.get("title"),
+        row.get("channel_id"),
+        row.get("message_id"),
+    ))
 }
 
 async fn resolve_agent_by_handle(pool: &PgPool, handle: &str) -> CommandResult<Uuid> {
@@ -9248,6 +9394,7 @@ fn control_event_creates_visible_chat_message(json: &str) -> bool {
             "message"
             | "channel_message_create"
             | "task_create"
+            | "task_handoff"
             | "attachment_create"
             | "handoff_create",
         ) => true,
@@ -13630,6 +13777,7 @@ mod tests {
         assert!(streaming.contains("attachment_create"));
         assert!(streaming.contains("channel_message_create"));
         assert!(streaming.contains("handoff_create"));
+        assert!(streaming.contains("task_handoff"));
         assert!(streaming.contains("Do not emit LANTOR_EVENT message"));
         assert!(!streaming.contains(WORK_ITEM_FINISH_PROMPT));
     }
@@ -14188,6 +14336,188 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(pending_start, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn task_handoff_reassigns_task_and_wakes_new_assignee() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let source_agent_id = insert_test_agent(&pool, "task-source").await?;
+            let target_agent_id = insert_test_agent(&pool, "task-target").await?;
+            let channel_id = insert_test_channel(&pool, "task-handoff").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(source_agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let root_message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Implement task handoff', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_row = sqlx::query(
+                r#"
+                insert into tasks (message_id, channel_id, title, status, assignee_agent_id)
+                values ($1, $2, 'Implement task handoff', 'in_progress', $3)
+                returning id, number
+                "#,
+            )
+            .bind(root_message_id)
+            .bind(channel_id)
+            .bind(source_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_id: Uuid = task_row.get("id");
+            let task_number: i64 = task_row.get("number");
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(source_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into agent_work_items (
+                    agent_id, channel_id, thread_root_id, task_id, source_kind, title, context, status, run_id
+                )
+                values ($1, $2, $3, $4, 'task', 'Implement task handoff', '', 'running', $5)
+                "#,
+            )
+            .bind(source_agent_id)
+            .bind(channel_id)
+            .bind(root_message_id)
+            .bind(task_id)
+            .bind(run_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            handle_agent_event(
+                &pool,
+                source_agent_id,
+                run_id,
+                AgentEvent::TaskHandoff {
+                    target_agent: "@task-target".to_owned(),
+                    task_number: None,
+                    reason: "Target owns the UI side".to_owned(),
+                    body: Some("@task-target please continue the UI wiring.".to_owned()),
+                },
+            )
+            .await?;
+
+            let task = sqlx::query("select status, assignee_agent_id from tasks where id = $1")
+                .bind(task_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(task.get::<String, _>("status"), "in_progress");
+            assert_eq!(
+                task.get::<Option<Uuid>, _>("assignee_agent_id"),
+                Some(target_agent_id)
+            );
+
+            let handoff_message_body: String = sqlx::query_scalar(
+                r#"
+                select body
+                from messages
+                where channel_id = $1
+                  and thread_root_id = $2
+                  and sender_agent_id = $3
+                "#,
+            )
+            .bind(channel_id)
+            .bind(root_message_id)
+            .bind(source_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(
+                handoff_message_body,
+                "@task-target please continue the UI wiring."
+            );
+
+            let inbox = sqlx::query(
+                r#"
+                select kind, task_id, payload->>'reason' as reason
+                from agent_inbox_items
+                where agent_id = $1
+                order by created_at desc
+                limit 1
+                "#,
+            )
+            .bind(target_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(inbox.get::<String, _>("kind"), "task_assigned");
+            assert_eq!(inbox.get::<Option<Uuid>, _>("task_id"), Some(task_id));
+            assert_eq!(
+                inbox.get::<Option<String>, _>("reason").as_deref(),
+                Some("Target owns the UI side")
+            );
+            let target_is_member: bool = sqlx::query_scalar(
+                r#"
+                select exists (
+                    select 1 from channel_members
+                    where channel_id = $1 and agent_id = $2
+                )
+                "#,
+            )
+            .bind(channel_id)
+            .bind(target_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert!(target_is_member);
+            let target_work_items: i64 = sqlx::query_scalar(
+                "select count(*)::bigint from agent_work_items where agent_id = $1 and task_id = $2",
+            )
+            .bind(target_agent_id)
+            .bind(task_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(target_work_items, 1);
+            let activity_count: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_activities
+                where agent_id = $1
+                  and title = $2
+                  and metadata->>'target_agent' = '@task-target'
+                "#,
+            )
+            .bind(source_agent_id)
+            .bind(format!("Task #{task_number} handed off"))
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(activity_count, 1);
             Ok(())
         }
         .await;
