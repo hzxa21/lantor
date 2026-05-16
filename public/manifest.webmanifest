@@ -1,0 +1,21 @@
+{
+  "name": "Lantor",
+  "short_name": "Lantor",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#070d1f",
+  "theme_color": "#070d1f",
+  "icons": [
+    {
+      "src": "/lantor-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/lantor-icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
