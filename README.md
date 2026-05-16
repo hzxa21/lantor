@@ -4,18 +4,20 @@
 
 # Lantor
 
-> Lantor helps you land real work with a team of AI agents — entirely on
-> your Mac.
+**You are the only human in the room.**
 
-You are the only human in the room. Lantor is a local-first desktop app
-that lets one person run a team of AI agents — Codex, Claude, or any CLI
-you can launch from a shell — through channels, DMs, threads, tasks,
-reminders, artifacts, and attachments. There is no cloud: conversation
-state lives in PostgreSQL on `localhost`, attachments live on disk, and
-your API keys stay inside the CLIs you already use.
+Lantor is a local-first desktop workspace where one developer can run a team
+of AI agents from their Mac.
 
-The name comes from **"land"** — Lantor is the helper that lands work
-for you while your agent team handles the rest.
+Bring Codex, Claude, or any CLI you can launch from a shell. Lantor organizes
+them into channels, DMs, threads, tasks, reminders, artifacts, and attachments
+so agents can work like teammates instead of scattered terminal sessions.
+
+Everything stays local: PostgreSQL on `localhost` for conversation state, disk
+storage for attachments, and API keys inside the CLIs you already use. No cloud
+workspace. No hosted agent runtime. No vendor lock-in.
+
+Lantor helps you land real work with an agent team you control.
 
 > Status: early developer preview. macOS only.
 
