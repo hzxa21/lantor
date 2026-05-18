@@ -70,6 +70,7 @@ const LANTOR_CONTEXT_TOOL_ENV: &str = "LANTOR_CONTEXT_TOOL";
 const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by Lantor]";
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
+const CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT: i64 = 16;
 const INBOX_WAKE_BATCH_LIMIT: i64 = 8;
 const INBOX_WAKE_OTHER_SUMMARY_LIMIT: i64 = 6;
 const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
@@ -172,7 +173,14 @@ struct WarmClaudeState {
     alive: bool,
     active: Option<ClaudeActiveTurn>,
     session_id: Option<String>,
+    last_surface: Option<ClaudeSurface>,
     last_activity: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ClaudeSurface {
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
 }
 
 struct ClaudeActiveTurn {
@@ -10853,6 +10861,7 @@ async fn spawn_warm_claude_runtime(
             alive: true,
             active: None,
             session_id: None,
+            last_surface: None,
             last_activity: Instant::now(),
         }),
         pid,
@@ -12189,6 +12198,39 @@ async fn supervisor_start_claude_streaming_agent(
             return Ok(());
         }
     }
+    let (channel_id, thread_root_id) = if let Some(work_item_id) = work_item_id {
+        let row = sqlx::query(
+            r#"
+            select channel_id, thread_root_id
+            from agent_work_items
+            where id = $1 and agent_id = $2
+            "#,
+        )
+        .bind(work_item_id)
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+        (
+            row.get::<Option<Uuid>, _>("channel_id"),
+            row.get::<Option<Uuid>, _>("thread_root_id"),
+        )
+    } else {
+        (None, None)
+    };
+    let current_surface = ClaudeSurface {
+        channel_id,
+        thread_root_id,
+    };
+    let surface_boundary = {
+        let state = runtime.state.lock().await;
+        claude_surface_boundary_marker(state.last_surface, current_surface).unwrap_or_default()
+    };
+    let claude_prompt = if surface_boundary.is_empty() {
+        claude_prompt
+    } else {
+        format!("{surface_boundary}{claude_prompt}")
+    };
 
     let initial_log = if claude_prompt.is_empty() {
         format!("$ {command_text}\n[warm process reused]\n")
@@ -12215,19 +12257,7 @@ async fn supervisor_start_claude_streaming_agent(
     .map_err(to_string)?;
     notify_ui_agent_run_changed(pool, run_id, "run_created").await;
 
-    let (channel_id, thread_root_id) = if let Some(work_item_id) = work_item_id {
-        let row = sqlx::query(
-            r#"
-            select channel_id, thread_root_id
-            from agent_work_items
-            where id = $1 and agent_id = $2
-            "#,
-        )
-        .bind(work_item_id)
-        .bind(agent_id)
-        .fetch_one(pool)
-        .await
-        .map_err(to_string)?;
+    if let Some(work_item_id) = work_item_id {
         sqlx::query(
             r#"
             update agent_work_items
@@ -12252,13 +12282,7 @@ async fn supervisor_start_claude_streaming_agent(
             work_item_id.to_string(),
         )
         .await?;
-        (
-            row.get::<Option<Uuid>, _>("channel_id"),
-            row.get::<Option<Uuid>, _>("thread_root_id"),
-        )
-    } else {
-        (None, None)
-    };
+    }
 
     sqlx::query("update agent_runs set status = 'running', pid = $2 where id = $1")
         .bind(run_id)
@@ -12321,6 +12345,124 @@ async fn supervisor_start_claude_streaming_agent(
     }
 
     Ok(())
+}
+
+fn claude_surface_boundary_marker(
+    previous: Option<ClaudeSurface>,
+    current: ClaudeSurface,
+) -> Option<String> {
+    let previous = previous?;
+    if previous == current {
+        return None;
+    }
+    Some(format!(
+        "\n\n--- Lantor thread boundary ---\nPrevious surface: channel_id={}, thread_root_id={}\nCurrent surface: channel_id={}, thread_root_id={}\nThe warm Claude conversation may contain older turns from the previous surface. Treat this current surface and the injected current-thread context as authoritative. Do not use details from the previous surface unless the current prompt explicitly includes them.\n--- end boundary ---\n\n",
+        display_optional_uuid(previous.channel_id),
+        display_optional_uuid(previous.thread_root_id),
+        display_optional_uuid(current.channel_id),
+        display_optional_uuid(current.thread_root_id),
+    ))
+}
+
+fn display_optional_uuid(id: Option<Uuid>) -> String {
+    id.map(|id| id.to_string())
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+async fn append_claude_thread_context(
+    pool: &PgPool,
+    context: &str,
+    channel_id: Option<Uuid>,
+    channel_name: Option<&str>,
+    thread_root_id: Option<Uuid>,
+) -> CommandResult<String> {
+    let Some(channel_id) = channel_id else {
+        return Ok(context.to_owned());
+    };
+    let rows = if let Some(thread_root_id) = thread_root_id {
+        sqlx::query(
+            r#"
+            select id, sender_name, sender_role, body, thread_root_id
+            from messages
+            where channel_id = $1
+              and (id = $2 or thread_root_id = $2)
+              and length(trim(body)) > 0
+            order by created_at desc
+            limit $3
+            "#,
+        )
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .bind(CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    } else {
+        sqlx::query(
+            r#"
+            select id, sender_name, sender_role, body, thread_root_id
+            from messages
+            where channel_id = $1
+              and thread_root_id is null
+              and length(trim(body)) > 0
+            order by created_at desc
+            limit $2
+            "#,
+        )
+        .bind(channel_id)
+        .bind(CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT)
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+    };
+    if rows.is_empty() {
+        return Ok(context.to_owned());
+    }
+
+    let mut lines = vec![
+        String::new(),
+        "Same-thread recent context (auto-injected by Lantor):".to_owned(),
+        "Use these messages as current-surface evidence. Resolve contextual follow-ups from this block when possible; if it is insufficient, use the Lantor history/search context tools before answering. Do not mix in older warm-runtime turns from other channels or threads unless they are explicitly quoted here.".to_owned(),
+    ];
+    for row in rows.iter().rev() {
+        let message_id: Uuid = row.get("id");
+        let row_thread_root_id: Option<Uuid> = row.get("thread_root_id");
+        let sender_name: String = row.get("sender_name");
+        let sender_role: String = row.get("sender_role");
+        let body: String = row.get("body");
+        let body = compact_chars_middle(body.trim(), 1_200).replace('\n', " ");
+        lines.push(format!(
+            "[target={} msg={} type={}] {}: {}",
+            claude_context_target(channel_name, channel_id, thread_root_id, row_thread_root_id),
+            short_id(message_id),
+            sender_role,
+            sender_name,
+            body,
+        ));
+    }
+
+    let mut enriched = context.trim().to_owned();
+    if !enriched.is_empty() {
+        enriched.push('\n');
+    }
+    enriched.push_str(&lines.join("\n"));
+    Ok(enriched)
+}
+
+fn claude_context_target(
+    channel_name: Option<&str>,
+    channel_id: Uuid,
+    prompt_thread_root_id: Option<Uuid>,
+    row_thread_root_id: Option<Uuid>,
+) -> String {
+    let channel_label = channel_name
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| format!("#{name}"))
+        .unwrap_or_else(|| channel_id.to_string());
+    prompt_thread_root_id
+        .or(row_thread_root_id)
+        .map(|thread_root_id| format!("{channel_label}:{}", short_id(thread_root_id)))
+        .unwrap_or(channel_label)
 }
 
 async fn supervisor_start_agent(
@@ -12445,6 +12587,18 @@ async fn supervisor_start_agent(
             let channel_name: Option<String> = row.get("channel_name");
             let task_number: Option<i64> = row.get("task_number");
             let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+            let context = if runtime.eq_ignore_ascii_case("claude") {
+                append_claude_thread_context(
+                    pool,
+                    &context,
+                    channel_id,
+                    channel_name.as_deref(),
+                    thread_root_id,
+                )
+                .await?
+            } else {
+                context
+            };
             let available_agents = load_channel_agent_roster(pool, channel_id, agent_id).await?;
             let agent_profile_hint = avatar
                 .as_deref()
@@ -13694,6 +13848,12 @@ async fn finish_warm_claude_active_turn(
         let mut state = runtime.state.lock().await;
         state.last_activity = Instant::now();
         let active = state.active.take();
+        if let Some(active) = active.as_ref() {
+            state.last_surface = Some(ClaudeSurface {
+                channel_id: active.channel_id,
+                thread_root_id: active.thread_root_id,
+            });
+        }
         let session_id = state.session_id.clone();
         (active, session_id)
     };
@@ -14293,15 +14453,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        activity_status, adopt_streaming_agent_message_key, append_streaming_agent_message,
-        build_codex_streaming_prompt, build_steer_followup_prompt,
+        activity_status, adopt_streaming_agent_message_key, append_claude_thread_context,
+        append_streaming_agent_message, build_codex_streaming_prompt, build_steer_followup_prompt,
         build_streaming_work_item_prompt, build_work_item_prompt, capped_stream_delta,
         claim_agent_event, claim_next_supervisor_command, classify_agent_output_activity,
         claude_message_text, claude_result_error, claude_stream_event_activity,
-        claude_system_prompt, claude_text_delta, codex_active_turn_schedule_state,
-        codex_context_rotate_input_tokens_from_env, codex_error_notification_detail,
-        codex_item_started_activity, codex_pending_stream_key, codex_turn_id_from_value,
-        consume_streaming_agent_control_lines,
+        claude_surface_boundary_marker, claude_system_prompt, claude_text_delta,
+        codex_active_turn_schedule_state, codex_context_rotate_input_tokens_from_env,
+        codex_error_notification_detail, codex_item_started_activity, codex_pending_stream_key,
+        codex_turn_id_from_value, consume_streaming_agent_control_lines,
         context_tool::{
             agent_context_agent_inspect, agent_context_artifact_read_in_pool,
             agent_context_attachment_info, agent_context_history_read, agent_context_inbox_archive,
@@ -14322,8 +14482,8 @@ mod tests {
         split_streaming_agent_event_lines, streaming_message_body_is_empty,
         try_claim_unassigned_task, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
-        AgentAttachmentFile, AgentEvent, CodexActiveTurnScheduleState, InboxWakeItem,
-        InboxWakeSummary, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
+        AgentAttachmentFile, AgentEvent, ClaudeSurface, CodexActiveTurnScheduleState,
+        InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
         CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS, CODEX_TURN_START_TIMEOUT, DEFAULT_DATABASE_URL,
         STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
     };
@@ -14422,7 +14582,9 @@ mod tests {
         assert!(prompt.contains("stable user preferences"));
         assert!(prompt.contains("Before long-running work, update Active Context"));
         assert!(prompt.contains("Turn startup sequence:"));
-        assert!(prompt.contains("Use history-read or message-search only when"));
+        assert!(
+            prompt.contains("Use history-read or message-search when older channel/thread context")
+        );
         assert!(prompt.contains("Reply briefly to direct greetings"));
         assert!(prompt.contains("Agent context tools"));
         assert!(prompt.contains("inbox-list"));
@@ -14663,6 +14825,96 @@ mod tests {
         assert!(!prompt.contains("title: Handle follow-up"));
         assert!(!prompt.contains("kind: owner_thread_followup"));
         assert!(!prompt.contains(WORK_ITEM_FINISH_PROMPT));
+    }
+
+    #[test]
+    fn claude_surface_boundary_only_appears_when_surface_changes() {
+        let channel_id = Uuid::new_v4();
+        let thread_a = Uuid::new_v4();
+        let thread_b = Uuid::new_v4();
+        let previous = ClaudeSurface {
+            channel_id: Some(channel_id),
+            thread_root_id: Some(thread_a),
+        };
+
+        assert!(claude_surface_boundary_marker(None, previous).is_none());
+        assert!(claude_surface_boundary_marker(Some(previous), previous).is_none());
+
+        let marker = claude_surface_boundary_marker(
+            Some(previous),
+            ClaudeSurface {
+                channel_id: Some(channel_id),
+                thread_root_id: Some(thread_b),
+            },
+        )
+        .expect("changed surface should produce a boundary");
+        assert!(marker.contains("Lantor thread boundary"));
+        assert!(marker.contains("Previous surface:"));
+        assert!(marker.contains("Current surface:"));
+    }
+
+    #[tokio::test]
+    async fn claude_thread_context_injects_only_current_thread_messages() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "claude-context").await?;
+            let thread_a: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'thread A root', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let thread_b: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'thread B root with forbidden bleed', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into messages (channel_id, thread_root_id, sender_name, sender_role, body, is_task)
+                values ($1, $2, 'Agent', 'agent', 'thread A reply evidence', false),
+                       ($1, $3, 'Agent', 'agent', 'thread B reply forbidden bleed', false)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_a)
+            .bind(thread_b)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let context = append_claude_thread_context(
+                &pool,
+                "Default inbox item: summarize",
+                Some(channel_id),
+                Some("claude-context"),
+                Some(thread_a),
+            )
+            .await?;
+            assert!(context.contains("Same-thread recent context"));
+            assert!(context.contains("Resolve contextual follow-ups from this block"));
+            assert!(context.contains("thread A root"));
+            assert!(context.contains("thread A reply evidence"));
+            assert!(!context.contains("thread B root with forbidden bleed"));
+            assert!(!context.contains("thread B reply forbidden bleed"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        result.unwrap();
     }
 
     #[tokio::test]
