@@ -23,7 +23,7 @@ type ActivityProgressDockProps = {
   threadRootId: string | null;
 };
 
-type ActiveAgentProgress = {
+export type ActiveAgentProgress = {
   key: string;
   agent: Pick<Agent, "handle" | "display_name" | "status"> &
     Partial<Pick<Agent, "id" | "runtime" | "model" | "role" | "avatar" | "description">>;
@@ -189,7 +189,7 @@ function agentForProgress(
   };
 }
 
-function activeProgressByAgent(
+export function activeProgressByAgent(
   messages: Message[],
   activities: AgentActivity[],
   runs: AgentRun[],

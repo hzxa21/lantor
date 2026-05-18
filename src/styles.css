@@ -1308,7 +1308,8 @@ button,
 }
 
 .thread-reply-summary-action time,
-.thread-reply-summary-action > span {
+.thread-reply-summary-status,
+.thread-reply-summary-open {
   grid-area: stack;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1319,20 +1320,38 @@ button,
   color: #8f8f95;
 }
 
-.thread-reply-summary-action > span {
+.thread-reply-summary-status {
+  color: #4f5560;
+  font-weight: 700;
+}
+
+.thread-reply-summary-open {
   color: #686d76;
   font-weight: 650;
   opacity: 0;
 }
 
 .thread-reply-summary:hover .thread-reply-summary-action time,
+.thread-reply-summary:hover .thread-reply-summary-status,
 .thread-reply-summary:focus-visible .thread-reply-summary-action time {
   opacity: 0;
 }
 
-.thread-reply-summary:hover .thread-reply-summary-action > span,
-.thread-reply-summary:focus-visible .thread-reply-summary-action > span {
+.thread-reply-summary:focus-visible .thread-reply-summary-status {
+  opacity: 0;
+}
+
+.thread-reply-summary:hover .thread-reply-summary-open,
+.thread-reply-summary:focus-visible .thread-reply-summary-open {
   opacity: 1;
+}
+
+.thread-reply-summary.active-reply {
+  color: #4f5560;
+}
+
+.thread-reply-summary.active-reply strong {
+  color: #1f7a4d;
 }
 
 .thread-reply-summary-icon {

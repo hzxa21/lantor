@@ -13,7 +13,7 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
@@ -22,7 +22,7 @@ import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task, ThreadReplySummary } from "../types";
 import { agentForMessageSender, deletedAgentForMessageSender, firstLines, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
-import { ActivityProgressDock } from "./ActivityProgressDock";
+import { ActivityProgressDock, activeProgressByAgent } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
@@ -80,6 +80,12 @@ type MessageMenuState = {
 
 function taskStatusLabel(status: string) {
   return status.replace("_", " ");
+}
+
+function replyingAgentsLabel(progress: ReturnType<typeof activeProgressByAgent>) {
+  if (progress.length === 0) return "";
+  if (progress.length === 1) return `${progress[0].agent.display_name} is replying`;
+  return `${progress.length} agents are replying`;
 }
 
 export function Conversation({
@@ -144,6 +150,25 @@ export function Conversation({
     closeMentionPicker,
     focusComposer,
   } = useMentionPicker({ agents, value: draft, setValue: setDraft, textareaRef });
+  const activeReplyProgressByRoot = useMemo<Record<string, ReturnType<typeof activeProgressByAgent>>>(() => {
+    if (!channel) return {};
+    return Object.fromEntries(
+      rootMessages
+        .map((message) => [
+          message.id,
+          activeProgressByAgent(
+            [],
+            agentActivities,
+            agentRuns,
+            agentWorkItems,
+            agents,
+            channel.id,
+            message.id,
+          ),
+        ] as const)
+        .filter(([, progress]) => progress.length > 0),
+    );
+  }, [agentActivities, agentRuns, agentWorkItems, agents, channel, rootMessages]);
   const lastRootMessage = rootMessages[rootMessages.length - 1] ?? null;
   const activeTasks = visibleTasks.filter((task) => task.status !== "done");
   const reviewTasks = visibleTasks.filter((task) => task.status === "in_review");
@@ -464,6 +489,13 @@ export function Conversation({
             const linkedTask = taskForMessage(message.id);
             const replyCount = threadReplyCounts[message.id] ?? 0;
             const replySummary = threadReplySummaries[message.id] ?? null;
+            const activeReplyProgress = activeReplyProgressByRoot[message.id] ?? [];
+            const hasActiveReplyProgress = activeReplyProgress.length > 0;
+            const replyingLabel = replyingAgentsLabel(activeReplyProgress);
+            const activeReplyAgentIds = new Set(activeReplyProgress.map((progress) => progress.agent.id).filter(Boolean));
+            const replyParticipants = (replySummary?.participants ?? [])
+              .filter((participant) => !participant.sender_agent_id || !activeReplyAgentIds.has(participant.sender_agent_id))
+              .slice(0, Math.max(0, 3 - activeReplyProgress.length));
             const messageAgent = isDm ? null : agentForMessageSender(message, agents);
             const deletedMessageAgent = isDm || messageAgent ? null : deletedAgentForMessageSender(message);
             const isSaved = savedMessageIds.has(message.id);
@@ -592,12 +624,14 @@ export function Conversation({
                     {message.delivery_state === "error" && (
                       <div className="message-stream-state error">Response interrupted</div>
                     )}
-                    {replyCount > 0 && replySummary && (
+                    {(hasActiveReplyProgress || (replyCount > 0 && replySummary)) && (
                       <button
                         type="button"
-                        className="thread-reply-summary"
+                        className={`thread-reply-summary ${hasActiveReplyProgress ? "active-reply" : ""}`}
                         title="View thread replies"
-                        aria-label={`View ${replyCount} ${replyCount === 1 ? "reply" : "replies"} in thread`}
+                        aria-label={hasActiveReplyProgress
+                          ? `${replyingLabel}. View thread`
+                          : `View ${replyCount} ${replyCount === 1 ? "reply" : "replies"} in thread`}
                         onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.stopPropagation();
@@ -605,17 +639,26 @@ export function Conversation({
                         }}
                       >
                         <div className="thread-reply-avatars">
-                          {replySummary.participants.slice(0, 3).map((participant) => (
+                          {activeReplyProgress.slice(0, 3).map((progress) => (
+                            <span key={`active:${progress.key}`}>
+                              <AgentAvatar agent={progress.agent} size="sm" showStatus={false} />
+                            </span>
+                          ))}
+                          {replyParticipants.map((participant) => (
                             <span key={`${participant.sender_role}:${participant.sender_agent_id ?? participant.sender_name}`}>
                               {renderReplyParticipantAvatar(participant)}
                             </span>
                           ))}
                         </div>
-                        <strong>{replyCount} {replyCount === 1 ? "reply" : "replies"}</strong>
-                        {replySummary.latest && (
+                        <strong>{replyCount > 0 ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : "Replying"}</strong>
+                        {(hasActiveReplyProgress || replySummary?.latest) && (
                           <span className="thread-reply-summary-action">
-                            <time dateTime={replySummary.latest.created_at}>Last reply {formatTime(replySummary.latest.created_at)}</time>
-                            <span>View thread</span>
+                            {hasActiveReplyProgress ? (
+                              <span className="thread-reply-summary-status">{replyingLabel}</span>
+                            ) : replySummary?.latest ? (
+                              <time dateTime={replySummary.latest.created_at}>Last reply {formatTime(replySummary.latest.created_at)}</time>
+                            ) : null}
+                            <span className="thread-reply-summary-open">View thread</span>
                           </span>
                         )}
                         <ChevronRight className="thread-reply-summary-icon" size={18} aria-hidden="true" />
