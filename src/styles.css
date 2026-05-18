@@ -1233,6 +1233,90 @@ button,
   box-shadow: inset 3px 0 #ffcc00;
 }
 
+.message-date-divider {
+  display: grid;
+  grid-template-columns: minmax(24px, 1fr) auto minmax(24px, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 14px 22px 8px;
+  color: #8f8f95;
+}
+
+.message-date-divider span {
+  height: 1px;
+  background: rgba(20, 23, 31, 0.1);
+}
+
+.message-date-divider time {
+  padding: 3px 9px;
+  border: 1px solid rgba(20, 23, 31, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 16px;
+}
+
+.thread-reply-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.thread-reply-summary strong {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.thread-reply-summary time {
+  overflow: hidden;
+  color: #8f8f95;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-reply-avatars {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-left: 2px;
+}
+
+.thread-reply-avatars > span {
+  display: inline-flex;
+  margin-left: -4px;
+}
+
+.thread-reply-avatars > span:first-child {
+  margin-left: 0;
+}
+
+.thread-reply-avatars .agent-avatar,
+.thread-reply-fallback-avatar {
+  width: 22px;
+  height: 22px;
+  border: 2px solid #fbfbfc;
+  box-shadow: 0 0 0 1px rgba(20, 23, 31, 0.08);
+}
+
+.thread-reply-fallback-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #eef0f4;
+  color: #555a66;
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
 .message-action-menu {
   position: fixed;
   z-index: 120;
@@ -2600,6 +2684,17 @@ body.resizing-column * {
 .thread h2 span {
   color: var(--muted);
   font-weight: 500;
+}
+
+.thread-header-replies {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .thread-root {

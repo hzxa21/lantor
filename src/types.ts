@@ -85,6 +85,12 @@ export type Message = {
   updated_at: string;
 };
 
+export type ThreadReplySummary = {
+  count: number;
+  latest: Message | null;
+  participants: Message[];
+};
+
 export type SavedMessage = {
   id: string;
   message_id: string;

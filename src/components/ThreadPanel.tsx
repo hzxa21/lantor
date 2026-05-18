@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, MessageSquare, Paperclip, Reply, RotateCcw, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { APP_DISPLAY_NAME } from "../branding";
 import { isImeComposing } from "../input-utils";
@@ -7,7 +7,7 @@ import { copyText } from "../clipboard";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task } from "../types";
-import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatTime, ownerAsAvatarAgent, visibleAgentDescription } from "../ui-utils";
+import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription } from "../ui-utils";
 import { ActivityProgressDock } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
@@ -302,9 +302,31 @@ export function ThreadPanel({
     setMessageMenu(null);
   }
 
+  function renderReplyParticipantAvatar(message: Message) {
+    const agent = agentForMessageSender(message, agents);
+    if (agent) return <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} showStatus={false} />;
+    const deletedAgent = deletedAgentForMessageSender(message);
+    if (deletedAgent) return <AgentAvatar agent={deletedAgent} size="sm" title={`@${deletedAgent.handle} has been deleted`} showStatus={false} />;
+    if (message.sender_role === "owner") {
+      return <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="sm" showStatus={false} />;
+    }
+    return <span className="thread-reply-fallback-avatar">{message.sender_name.slice(0, 1)}</span>;
+  }
+
   const activeTaskAssignee = activeTask
     ? agents.find((agent) => agent.id === activeTask.assignee_id) ?? null
     : null;
+  const replyParticipants = replies.reduce<Message[]>((participants, reply) => {
+    if (reply.sender_role === "system") return participants;
+    if (participants.some((participant) =>
+      participant.sender_role === reply.sender_role &&
+      participant.sender_name === reply.sender_name &&
+      participant.sender_agent_id === reply.sender_agent_id)
+    ) {
+      return participants;
+    }
+    return [...participants, reply];
+  }, []);
   const taskAssigneeOptions = channelAgents.length > 0 ? channelAgents : agents;
   const taskWorkItems = activeTask
     ? agentWorkItems
@@ -347,7 +369,20 @@ export function ThreadPanel({
           <p>
             {activeRoot ? `${replies.length} ${replies.length === 1 ? "reply" : "replies"}` : "No thread selected"}
             {unreadCount > 0 ? ` · ${unreadCount} new` : ""}
+            {lastReply ? ` · Last reply ${formatTime(lastReply.created_at)}` : ""}
           </p>
+          {replyParticipants.length > 0 && (
+            <div className="thread-header-replies" aria-label="Thread reply participants">
+              <div className="thread-reply-avatars">
+                {replyParticipants.slice(0, 4).map((participant) => (
+                  <span key={`${participant.sender_role}:${participant.sender_agent_id ?? participant.sender_name}`}>
+                    {renderReplyParticipantAvatar(participant)}
+                  </span>
+                ))}
+              </div>
+              <span>{replyParticipants.length} {replyParticipants.length === 1 ? "participant" : "participants"}</span>
+            </div>
+          )}
         </div>
         <button type="button" className="thread-close" onClick={onClose} aria-label="Close thread panel"><X size={18} /></button>
       </header>
@@ -369,88 +404,95 @@ export function ThreadPanel({
             threadRootId={activeRoot?.id ?? null}
           />
           {activeRoot && (
-            <article
-              data-message-id={activeRoot.id}
-              className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${tapFocusedMessageId === activeRoot.id ? "tap-focused" : ""} ${rootSaved ? "saved" : ""}`}
-              data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
-              onClick={() => {
-                if (activeRoot.sender_role !== "system") setTapFocusedMessageId(activeRoot.id);
-              }}
-              onContextMenu={(event) => {
-                if (activeRoot.sender_role === "system") return;
-                event.preventDefault();
-                setMessageMenu({ x: event.clientX, y: event.clientY, message: activeRoot });
-              }}
-              onPointerDown={(event) => {
-                if (activeRoot.sender_role !== "system") {
-                  setTapFocusedMessageId(activeRoot.id);
-                  startMessageLongPress(event, activeRoot);
-                }
-              }}
-              onPointerMove={clearLongPress}
-              onPointerUp={clearLongPress}
-              onPointerCancel={clearLongPress}
-              onPointerLeave={clearLongPress}
-            >
-              {activeRoot.sender_role === "system" ? (
-                <div className="system-message-line">
-                  <MessageMarkdown body={activeRoot.body} />
-                  <time>{formatTime(activeRoot.created_at)}</time>
-                </div>
-              ) : (
-                <div className="thread-message-with-avatar">
-                  {rootAgent ? (
-                    <button
-                      type="button"
-                      className="message-agent-avatar-trigger"
-                      aria-label={`View @${rootAgent.handle} details`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openAgentDetail(rootAgent);
-                      }}
-                    >
-                      <AgentAvatarWithProfile agent={rootAgent} />
-                    </button>
-                  ) : deletedRootAgent ? (
-                    <AgentAvatar
-                      agent={deletedRootAgent}
-                      size="md"
-                      title={`@${deletedRootAgent.handle} has been deleted`}
-                    />
-                  ) : activeRoot.sender_role === "owner" ? (
-                    <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
-                  ) : (
-                    <div className="avatar">{activeRoot.sender_name.slice(0, 1)}</div>
-                  )}
-                  <div className="thread-message-content">
-                    <div className="meta">
-                      <strong>{activeRoot.sender_name}</strong>
-                      <time>{formatTime(activeRoot.created_at)}</time>
-                      {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
+            <Fragment>
+              <div className="message-date-divider" role="separator">
+                <span />
+                <time dateTime={activeRoot.created_at}>{formatDateDivider(activeRoot.created_at)}</time>
+                <span />
+              </div>
+              <article
+                data-message-id={activeRoot.id}
+                className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${tapFocusedMessageId === activeRoot.id ? "tap-focused" : ""} ${rootSaved ? "saved" : ""}`}
+                data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
+                onClick={() => {
+                  if (activeRoot.sender_role !== "system") setTapFocusedMessageId(activeRoot.id);
+                }}
+                onContextMenu={(event) => {
+                  if (activeRoot.sender_role === "system") return;
+                  event.preventDefault();
+                  setMessageMenu({ x: event.clientX, y: event.clientY, message: activeRoot });
+                }}
+                onPointerDown={(event) => {
+                  if (activeRoot.sender_role !== "system") {
+                    setTapFocusedMessageId(activeRoot.id);
+                    startMessageLongPress(event, activeRoot);
+                  }
+                }}
+                onPointerMove={clearLongPress}
+                onPointerUp={clearLongPress}
+                onPointerCancel={clearLongPress}
+                onPointerLeave={clearLongPress}
+              >
+                {activeRoot.sender_role === "system" ? (
+                  <div className="system-message-line">
+                    <MessageMarkdown body={activeRoot.body} />
+                    <time>{formatTime(activeRoot.created_at)}</time>
+                  </div>
+                ) : (
+                  <div className="thread-message-with-avatar">
+                    {rootAgent ? (
                       <button
                         type="button"
-                        className={`message-save-button ${rootSaved ? "saved" : ""}`}
-                        title={rootSaved ? "Unsave message" : "Save message"}
-                        onPointerDown={(event) => event.stopPropagation()}
+                        className="message-agent-avatar-trigger"
+                        aria-label={`View @${rootAgent.handle} details`}
                         onClick={(event) => {
                           event.stopPropagation();
-                          onToggleMessageSaved(activeRoot, !rootSaved);
+                          openAgentDetail(rootAgent);
                         }}
                       >
-                        <Bookmark size={13} />
-                        {rootSaved ? "Saved" : "Save"}
+                        <AgentAvatarWithProfile agent={rootAgent} />
                       </button>
-                    </div>
-                    {activeRoot.delivery_state !== "streaming" && <MessageMarkdown body={activeRoot.body} />}
-                    <MessageAttachments attachments={activeRoot.attachments} />
-                    <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
-                    {activeRoot.delivery_state === "error" && (
-                      <div className="message-stream-state error">Response interrupted</div>
+                    ) : deletedRootAgent ? (
+                      <AgentAvatar
+                        agent={deletedRootAgent}
+                        size="md"
+                        title={`@${deletedRootAgent.handle} has been deleted`}
+                      />
+                    ) : activeRoot.sender_role === "owner" ? (
+                      <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
+                    ) : (
+                      <div className="avatar">{activeRoot.sender_name.slice(0, 1)}</div>
                     )}
+                    <div className="thread-message-content">
+                      <div className="meta">
+                        <strong>{activeRoot.sender_name}</strong>
+                        <time>{formatTime(activeRoot.created_at)}</time>
+                        {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
+                        <button
+                          type="button"
+                          className={`message-save-button ${rootSaved ? "saved" : ""}`}
+                          title={rootSaved ? "Unsave message" : "Save message"}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleMessageSaved(activeRoot, !rootSaved);
+                          }}
+                        >
+                          <Bookmark size={13} />
+                          {rootSaved ? "Saved" : "Save"}
+                        </button>
+                      </div>
+                      {activeRoot.delivery_state !== "streaming" && <MessageMarkdown body={activeRoot.body} />}
+                      <MessageAttachments attachments={activeRoot.attachments} />
+                      <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
+                      {activeRoot.delivery_state === "error" && (
+                        <div className="message-stream-state error">Response interrupted</div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
-            </article>
+                )}
+              </article>
+            </Fragment>
           )}
 
           {activeTask && (
@@ -565,92 +607,110 @@ export function ThreadPanel({
               const deletedReplyAgent = replyAgent ? null : deletedAgentForMessageSender(reply);
               const replySaved = savedMessageIds.has(reply.id);
               const isCompact = isCompactFollowupMessage(reply, replies[index - 1]);
+              const showDateDivider = index === 0 || !isSameCalendarDay(reply.created_at, replies[index - 1]?.created_at ?? "");
               if (reply.sender_role === "system") {
                 return (
-                  <article key={reply.id} className="system-message">
-                    <div className="system-message-line">
-                      <MessageMarkdown body={reply.body} />
-                      <time>{formatTime(reply.created_at)}</time>
-                    </div>
-                  </article>
+                  <Fragment key={reply.id}>
+                    {showDateDivider && (
+                      <div className="message-date-divider" role="separator">
+                        <span />
+                        <time dateTime={reply.created_at}>{formatDateDivider(reply.created_at)}</time>
+                        <span />
+                      </div>
+                    )}
+                    <article className="system-message">
+                      <div className="system-message-line">
+                        <MessageMarkdown body={reply.body} />
+                        <time>{formatTime(reply.created_at)}</time>
+                      </div>
+                    </article>
+                  </Fragment>
                 );
               }
               return (
-                <article
-                  key={reply.id}
-                  data-message-id={reply.id}
-                  className={`${isCompact ? "compact" : ""} ${replySaved ? "saved" : ""} ${tapFocusedMessageId === reply.id ? "tap-focused" : ""}`}
-                  data-jump-focused={focusedMessageId === reply.id ? "true" : "false"}
-                  onClick={() => setTapFocusedMessageId(reply.id)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setMessageMenu({ x: event.clientX, y: event.clientY, message: reply });
-                  }}
-                  onPointerDown={(event) => {
-                    setTapFocusedMessageId(reply.id);
-                    startMessageLongPress(event, reply);
-                  }}
-                  onPointerMove={clearLongPress}
-                  onPointerUp={clearLongPress}
-                  onPointerCancel={clearLongPress}
-                  onPointerLeave={clearLongPress}
-                >
-                  {isCompact ? (
-                    <time className="message-compact-time" dateTime={reply.created_at}>
-                      {formatClockTime(reply.created_at)}
-                    </time>
-                  ) : replyAgent ? (
-                    <button
-                      type="button"
-                      className="message-agent-avatar-trigger"
-                      aria-label={`View @${replyAgent.handle} details`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openAgentDetail(replyAgent);
-                      }}
-                    >
-                      <AgentAvatarWithProfile agent={replyAgent} />
-                    </button>
-                  ) : deletedReplyAgent ? (
-                    <AgentAvatar
-                      agent={deletedReplyAgent}
-                      size="md"
-                      title={`@${deletedReplyAgent.handle} has been deleted`}
-                    />
-                  ) : reply.sender_role === "owner" ? (
-                    <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
-                  ) : (
-                    <div className="avatar">{reply.sender_name.slice(0, 1)}</div>
+                <Fragment key={reply.id}>
+                  {showDateDivider && (
+                    <div className="message-date-divider" role="separator">
+                      <span />
+                      <time dateTime={reply.created_at}>{formatDateDivider(reply.created_at)}</time>
+                      <span />
+                    </div>
                   )}
-                  <div className="reply-body">
-                    {!isCompact && (
-                      <div className="meta">
-                        <strong>{reply.sender_name}</strong>
-                        <time>{formatTime(reply.created_at)}</time>
-                        {wasEdited(reply) && <span className="edited-indicator">edited</span>}
-                        <button
-                          type="button"
-                          className={`message-save-button ${replySaved ? "saved" : ""}`}
-                          title={replySaved ? "Unsave message" : "Save message"}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onToggleMessageSaved(reply, !replySaved);
-                          }}
-                        >
-                          <Bookmark size={13} />
-                          {replySaved ? "Saved" : "Save"}
-                        </button>
-                      </div>
+                  <article
+                    data-message-id={reply.id}
+                    className={`${isCompact ? "compact" : ""} ${replySaved ? "saved" : ""} ${tapFocusedMessageId === reply.id ? "tap-focused" : ""}`}
+                    data-jump-focused={focusedMessageId === reply.id ? "true" : "false"}
+                    onClick={() => setTapFocusedMessageId(reply.id)}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setMessageMenu({ x: event.clientX, y: event.clientY, message: reply });
+                    }}
+                    onPointerDown={(event) => {
+                      setTapFocusedMessageId(reply.id);
+                      startMessageLongPress(event, reply);
+                    }}
+                    onPointerMove={clearLongPress}
+                    onPointerUp={clearLongPress}
+                    onPointerCancel={clearLongPress}
+                    onPointerLeave={clearLongPress}
+                  >
+                    {isCompact ? (
+                      <time className="message-compact-time" dateTime={reply.created_at}>
+                        {formatClockTime(reply.created_at)}
+                      </time>
+                    ) : replyAgent ? (
+                      <button
+                        type="button"
+                        className="message-agent-avatar-trigger"
+                        aria-label={`View @${replyAgent.handle} details`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openAgentDetail(replyAgent);
+                        }}
+                      >
+                        <AgentAvatarWithProfile agent={replyAgent} />
+                      </button>
+                    ) : deletedReplyAgent ? (
+                      <AgentAvatar
+                        agent={deletedReplyAgent}
+                        size="md"
+                        title={`@${deletedReplyAgent.handle} has been deleted`}
+                      />
+                    ) : reply.sender_role === "owner" ? (
+                      <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
+                    ) : (
+                      <div className="avatar">{reply.sender_name.slice(0, 1)}</div>
                     )}
-                    {reply.delivery_state !== "streaming" && <MessageMarkdown body={reply.body} />}
-                    <MessageAttachments attachments={reply.attachments} />
-                    <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
-                    {reply.delivery_state === "error" && (
-                      <div className="message-stream-state error">Response interrupted</div>
-                    )}
-                  </div>
-                </article>
+                    <div className="reply-body">
+                      {!isCompact && (
+                        <div className="meta">
+                          <strong>{reply.sender_name}</strong>
+                          <time>{formatTime(reply.created_at)}</time>
+                          {wasEdited(reply) && <span className="edited-indicator">edited</span>}
+                          <button
+                            type="button"
+                            className={`message-save-button ${replySaved ? "saved" : ""}`}
+                            title={replySaved ? "Unsave message" : "Save message"}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onToggleMessageSaved(reply, !replySaved);
+                            }}
+                          >
+                            <Bookmark size={13} />
+                            {replySaved ? "Saved" : "Save"}
+                          </button>
+                        </div>
+                      )}
+                      {reply.delivery_state !== "streaming" && <MessageMarkdown body={reply.body} />}
+                      <MessageAttachments attachments={reply.attachments} />
+                      <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
+                      {reply.delivery_state === "error" && (
+                        <div className="message-stream-state error">Response interrupted</div>
+                      )}
+                    </div>
+                  </article>
+                </Fragment>
               );
             })}
           </section>

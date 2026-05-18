@@ -49,6 +49,7 @@ import {
   SearchScope,
   SearchTimeRange,
   Task,
+  ThreadReplySummary,
 } from "./types";
 import { agentRequestSourceLabel, buildPresetCommand, firstLines, formatTime, visibleChannelDescription } from "./ui-utils";
 import "./styles.css";
@@ -1297,13 +1298,33 @@ function App() {
     return visibleMessages.filter((m) => m.thread_root_id === activeRoot.id);
   }, [visibleMessages, activeRoot]);
 
-  const threadReplyCounts = useMemo(() => {
-    return visibleMessages.reduce<Record<string, number>>((counts, message) => {
-      if (!message.thread_root_id) return counts;
-      counts[message.thread_root_id] = (counts[message.thread_root_id] ?? 0) + 1;
-      return counts;
+  const threadReplySummaries = useMemo(() => {
+    return visibleMessages.reduce<Record<string, ThreadReplySummary>>((summaries, message) => {
+      if (!message.thread_root_id) return summaries;
+      const current = summaries[message.thread_root_id] ?? { count: 0, latest: null, participants: [] };
+      current.count += 1;
+      if (!current.latest || new Date(message.created_at) > new Date(current.latest.created_at)) {
+        current.latest = message;
+      }
+      if (
+        message.sender_role !== "system" &&
+        !current.participants.some((participant) =>
+          participant.sender_role === message.sender_role &&
+          participant.sender_name === message.sender_name &&
+          participant.sender_agent_id === message.sender_agent_id)
+      ) {
+        current.participants.push(message);
+      }
+      summaries[message.thread_root_id] = current;
+      return summaries;
     }, {});
   }, [visibleMessages]);
+
+  const threadReplyCounts = useMemo(() => {
+    return Object.fromEntries(
+      Object.entries(threadReplySummaries).map(([rootId, summary]) => [rootId, summary.count]),
+    );
+  }, [threadReplySummaries]);
 
   const allThreadRootMessages = useMemo(() => {
     const latestByRoot = new Map<string, number>();
@@ -2606,6 +2627,7 @@ function App() {
         activeRoot={activeRoot}
         rootMessages={rootMessages}
         threadReplyCounts={threadReplyCounts}
+        threadReplySummaries={threadReplySummaries}
         visibleTasks={visibleTasks}
         draft={draft}
         draftAttachments={draftAttachments}

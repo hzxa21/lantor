@@ -12,15 +12,15 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
 import { APP_DISPLAY_NAME } from "../branding";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
-import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task } from "../types";
-import { agentForMessageSender, deletedAgentForMessageSender, firstLines, formatClockTime, formatTime, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
+import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task, ThreadReplySummary } from "../types";
+import { agentForMessageSender, deletedAgentForMessageSender, firstLines, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
 import { ActivityProgressDock } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
@@ -42,6 +42,7 @@ type ConversationProps = {
   activeRoot: Message | null;
   rootMessages: Message[];
   threadReplyCounts: Record<string, number>;
+  threadReplySummaries: Record<string, ThreadReplySummary>;
   visibleTasks: Task[];
   draft: string;
   draftAttachments: DraftAttachment[];
@@ -92,6 +93,7 @@ export function Conversation({
   activeRoot,
   rootMessages,
   threadReplyCounts,
+  threadReplySummaries,
   visibleTasks,
   draft,
   draftAttachments,
@@ -237,6 +239,17 @@ export function Conversation({
     if (!channel) return;
     addDraftAttachments(imageFiles);
     focusComposer();
+  }
+
+  function renderReplyParticipantAvatar(message: Message) {
+    const agent = agentForMessageSender(message, agents);
+    if (agent) return <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} showStatus={false} />;
+    const deletedAgent = deletedAgentForMessageSender(message);
+    if (deletedAgent) return <AgentAvatar agent={deletedAgent} size="sm" title={`@${deletedAgent.handle} has been deleted`} showStatus={false} />;
+    if (message.sender_role === "owner") {
+      return <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="sm" showStatus={false} />;
+    }
+    return <span className="thread-reply-fallback-avatar">{message.sender_name.slice(0, 1)}</span>;
   }
 
   useEffect(() => {
@@ -447,106 +460,139 @@ export function Conversation({
           {rootMessages.map((message, index) => {
             const linkedTask = taskForMessage(message.id);
             const replyCount = threadReplyCounts[message.id] ?? 0;
+            const replySummary = threadReplySummaries[message.id] ?? null;
             const messageAgent = isDm ? null : agentForMessageSender(message, agents);
             const deletedMessageAgent = isDm || messageAgent ? null : deletedAgentForMessageSender(message);
             const isSaved = savedMessageIds.has(message.id);
             const isCompact = isCompactFollowupMessage(message, rootMessages[index - 1]);
+            const showDateDivider = index === 0 || !isSameCalendarDay(message.created_at, rootMessages[index - 1]?.created_at ?? "");
             if (message.sender_role === "system") {
               return (
-                <article key={message.id} className="system-message">
-                  <div className="system-message-line">
-                    <MessageMarkdown body={message.body} />
-                    <time>{formatTime(message.created_at)}</time>
-                  </div>
-                </article>
+                <Fragment key={message.id}>
+                  {showDateDivider && (
+                    <div className="message-date-divider" role="separator">
+                      <span />
+                      <time dateTime={message.created_at}>{formatDateDivider(message.created_at)}</time>
+                      <span />
+                    </div>
+                  )}
+                  <article className="system-message">
+                    <div className="system-message-line">
+                      <MessageMarkdown body={message.body} />
+                      <time>{formatTime(message.created_at)}</time>
+                    </div>
+                  </article>
+                </Fragment>
               );
             }
             return (
-              <article
-                key={message.id}
-                data-message-id={message.id}
-                className={`message-card ${isCompact ? "compact" : ""} ${message.id === activeRoot?.id ? "focused" : ""} ${tapFocusedMessageId === message.id ? "tap-focused" : ""} ${isSaved ? "saved" : ""}`}
-                data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
-                onClick={() => {
-                  setTapFocusedMessageId(message.id);
-                  setActiveThreadId(message.id);
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  setMessageMenu({ x: event.clientX, y: event.clientY, message });
-                }}
-                onPointerDown={(event) => {
-                  setTapFocusedMessageId(message.id);
-                  startMessageLongPress(event, message);
-                }}
-                onPointerMove={clearLongPress}
-                onPointerUp={clearLongPress}
-                onPointerCancel={clearLongPress}
-                onPointerLeave={clearLongPress}
-              >
-                {isCompact ? (
-                  <time className="message-compact-time" dateTime={message.created_at}>
-                    {formatClockTime(message.created_at)}
-                  </time>
-                ) : messageAgent ? (
-                  <button
-                    type="button"
-                    className="message-agent-avatar-trigger"
-                    aria-label={`View @${messageAgent.handle} details`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openAgentDetail(messageAgent);
-                    }}
-                  >
-                    <AgentAvatarWithProfile agent={messageAgent} />
-                  </button>
-                ) : deletedMessageAgent ? (
-                  <AgentAvatar
-                    agent={deletedMessageAgent}
-                    size="md"
-                    title={`@${deletedMessageAgent.handle} has been deleted`}
-                  />
-                ) : message.sender_role === "owner" ? (
-                  <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
-                ) : (
-                  <div className="avatar">{message.sender_name.slice(0, 1)}</div>
+              <Fragment key={message.id}>
+                {showDateDivider && (
+                  <div className="message-date-divider" role="separator">
+                    <span />
+                    <time dateTime={message.created_at}>{formatDateDivider(message.created_at)}</time>
+                    <span />
+                  </div>
                 )}
-                <div className="message-body">
-                  {!isCompact && (
-                    <div className="meta">
-                      <strong>{message.sender_name}</strong>
-                      <span>{message.sender_role}</span>
-                      <time>{formatTime(message.created_at)}</time>
-                      {wasEdited(message) && <span className="edited-indicator">edited</span>}
-                      {linkedTask && (
-                        <mark>
-                          <CheckCircle2 size={14} /> #{linkedTask.number} · {linkedTask.status.replace("_", " ")}
-                        </mark>
-                      )}
-                      <button
-                        type="button"
-                        className={`message-save-button ${isSaved ? "saved" : ""}`}
-                        title={isSaved ? "Unsave message" : "Save message"}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onToggleMessageSaved(message, !isSaved);
-                        }}
-                      >
-                        <Bookmark size={13} />
-                        {isSaved ? "Saved" : "Save"}
-                      </button>
-                    </div>
+                <article
+                  data-message-id={message.id}
+                  className={`message-card ${isCompact ? "compact" : ""} ${message.id === activeRoot?.id ? "focused" : ""} ${tapFocusedMessageId === message.id ? "tap-focused" : ""} ${isSaved ? "saved" : ""}`}
+                  data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
+                  onClick={() => {
+                    setTapFocusedMessageId(message.id);
+                    setActiveThreadId(message.id);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setMessageMenu({ x: event.clientX, y: event.clientY, message });
+                  }}
+                  onPointerDown={(event) => {
+                    setTapFocusedMessageId(message.id);
+                    startMessageLongPress(event, message);
+                  }}
+                  onPointerMove={clearLongPress}
+                  onPointerUp={clearLongPress}
+                  onPointerCancel={clearLongPress}
+                  onPointerLeave={clearLongPress}
+                >
+                  {isCompact ? (
+                    <time className="message-compact-time" dateTime={message.created_at}>
+                      {formatClockTime(message.created_at)}
+                    </time>
+                  ) : messageAgent ? (
+                    <button
+                      type="button"
+                      className="message-agent-avatar-trigger"
+                      aria-label={`View @${messageAgent.handle} details`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openAgentDetail(messageAgent);
+                      }}
+                    >
+                      <AgentAvatarWithProfile agent={messageAgent} />
+                    </button>
+                  ) : deletedMessageAgent ? (
+                    <AgentAvatar
+                      agent={deletedMessageAgent}
+                      size="md"
+                      title={`@${deletedMessageAgent.handle} has been deleted`}
+                    />
+                  ) : message.sender_role === "owner" ? (
+                    <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="md" showStatus={false} />
+                  ) : (
+                    <div className="avatar">{message.sender_name.slice(0, 1)}</div>
                   )}
-                  {message.delivery_state !== "streaming" && <MessageMarkdown body={firstLines(message.body)} />}
-                  <MessageAttachments attachments={message.attachments} />
-                  <MessageArtifacts artifacts={message.artifacts} onOpenArtifact={openArtifact} />
-                  {message.delivery_state === "error" && (
-                    <div className="message-stream-state error">Response interrupted</div>
-                  )}
-                  {replyCount > 0 && <div className="thread-reply-count">{replyCount} {replyCount === 1 ? "reply" : "replies"}</div>}
-                </div>
-              </article>
+                  <div className="message-body">
+                    {!isCompact && (
+                      <div className="meta">
+                        <strong>{message.sender_name}</strong>
+                        <span>{message.sender_role}</span>
+                        <time>{formatTime(message.created_at)}</time>
+                        {wasEdited(message) && <span className="edited-indicator">edited</span>}
+                        {linkedTask && (
+                          <mark>
+                            <CheckCircle2 size={14} /> #{linkedTask.number} · {linkedTask.status.replace("_", " ")}
+                          </mark>
+                        )}
+                        <button
+                          type="button"
+                          className={`message-save-button ${isSaved ? "saved" : ""}`}
+                          title={isSaved ? "Unsave message" : "Save message"}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleMessageSaved(message, !isSaved);
+                          }}
+                        >
+                          <Bookmark size={13} />
+                          {isSaved ? "Saved" : "Save"}
+                        </button>
+                      </div>
+                    )}
+                    {message.delivery_state !== "streaming" && <MessageMarkdown body={firstLines(message.body)} />}
+                    <MessageAttachments attachments={message.attachments} />
+                    <MessageArtifacts artifacts={message.artifacts} onOpenArtifact={openArtifact} />
+                    {message.delivery_state === "error" && (
+                      <div className="message-stream-state error">Response interrupted</div>
+                    )}
+                    {replyCount > 0 && replySummary && (
+                      <div className="thread-reply-summary">
+                        <div className="thread-reply-avatars">
+                          {replySummary.participants.slice(0, 3).map((participant) => (
+                            <span key={`${participant.sender_role}:${participant.sender_agent_id ?? participant.sender_name}`}>
+                              {renderReplyParticipantAvatar(participant)}
+                            </span>
+                          ))}
+                        </div>
+                        <strong>{replyCount} {replyCount === 1 ? "reply" : "replies"}</strong>
+                        {replySummary.latest && (
+                          <time dateTime={replySummary.latest.created_at}>Last reply {formatTime(replySummary.latest.created_at)}</time>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </article>
+              </Fragment>
             );
           })}
           {messageMenu && (

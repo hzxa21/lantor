@@ -174,6 +174,32 @@ export function formatClockTime(value: string) {
   }).format(new Date(value));
 }
 
+export function formatDateDivider(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (isSameCalendarDay(value, now.toISOString())) return "Today";
+  if (isSameCalendarDay(value, yesterday.toISOString())) return "Yesterday";
+  return new Intl.DateTimeFormat("en", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  }).format(date);
+}
+
+export function isSameCalendarDay(left: string, right: string) {
+  const leftDate = new Date(left);
+  const rightDate = new Date(right);
+  if (Number.isNaN(leftDate.getTime()) || Number.isNaN(rightDate.getTime())) return false;
+  return (
+    leftDate.getFullYear() === rightDate.getFullYear() &&
+    leftDate.getMonth() === rightDate.getMonth() &&
+    leftDate.getDate() === rightDate.getDate()
+  );
+}
+
 export function firstLines(text: string, lines = 8) {
   const split = text.trim().split("\n");
   return split.slice(0, lines).join("\n") + (split.length > lines ? "\n..." : "");
