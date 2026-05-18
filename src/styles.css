@@ -6713,15 +6713,26 @@ body.resizing-column * {
     position: fixed;
     inset: 0;
     z-index: 60;
-    width: 100vw;
+    width: auto;
+    max-width: 100vw;
+    min-width: 0;
     height: 100dvh;
     border-left: 0;
     box-shadow: none;
   }
 
+  .thread {
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+
   .thread header,
   .agent-drawer-head {
     justify-content: flex-start;
+    overflow: hidden;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     min-height: 58px;
     gap: 10px;
     padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
@@ -6729,8 +6740,18 @@ body.resizing-column * {
 
   .thread header > div,
   .agent-title {
-    flex: 1 1 auto;
+    flex: 1 1 0;
+    max-width: 100%;
     min-width: 0;
+  }
+
+  .thread-title {
+    max-width: calc(100vw - 124px);
+    overflow: hidden;
+  }
+
+  .thread-title-card {
+    flex: 0 0 auto;
   }
 
   .thread header .thread-mobile-back,
@@ -6774,6 +6795,8 @@ body.resizing-column * {
 
   .thread h2,
   .agent-drawer-head h2 {
+    max-width: 100%;
+    min-width: 0;
     overflow: hidden;
     font-size: 18px;
     line-height: 22px;
@@ -6782,8 +6805,24 @@ body.resizing-column * {
   }
 
   .thread header p {
+    overflow: hidden;
     font-size: 11px;
     line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .thread-focus,
+  .thread-scroll,
+  .thread-scroll .reply-list,
+  .thread-root,
+  .thread-message-with-avatar,
+  .thread-message-content,
+  .reply-list article,
+  .reply-body,
+  .reply-composer {
+    max-width: 100%;
+    min-width: 0;
   }
 
   .thread-root {
