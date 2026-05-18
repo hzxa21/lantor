@@ -111,6 +111,7 @@ export type MessageAttachment = {
   mime_type: string;
   size_bytes: number;
   storage_path: string;
+  local_url?: string;
   created_at: string;
 };
 

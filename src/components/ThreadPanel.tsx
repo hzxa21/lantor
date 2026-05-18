@@ -460,6 +460,9 @@ export function ThreadPanel({
                       )}
                       <MessageAttachments attachments={activeRoot.attachments} />
                       <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
+                      {activeRoot.delivery_state === "sending" && (
+                        <div className="message-stream-state sending">Sending...</div>
+                      )}
                       {activeRoot.delivery_state === "error" && (
                         <div className="message-stream-state error">Response interrupted</div>
                       )}
@@ -686,6 +689,9 @@ export function ThreadPanel({
                       )}
                       <MessageAttachments attachments={reply.attachments} />
                       <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
+                      {reply.delivery_state === "sending" && (
+                        <div className="message-stream-state sending">Sending...</div>
+                      )}
                       {reply.delivery_state === "error" && (
                         <div className="message-stream-state error">Response interrupted</div>
                       )}

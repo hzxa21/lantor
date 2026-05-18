@@ -42,6 +42,7 @@ import {
   EMPTY_AGENT_FORM,
   InboxItem,
   Message,
+  MessageAttachment,
   RUNTIME_PRESETS,
   RuntimeCheck,
   SavedMessage,
@@ -558,6 +559,8 @@ function App() {
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
   const messageDeltaBufferRef = useRef<Map<string, { append: string; deliveryState: Message["delivery_state"] }>>(new Map());
+  const optimisticMessagesRef = useRef<Map<string, Message>>(new Map());
+  const optimisticAttachmentUrlsRef = useRef<Map<string, string[]>>(new Map());
   const messageDeltaFlushTimerRef = useRef<number | null>(null);
   const appHistoryReadyRef = useRef(false);
   const appHistoryIndexRef = useRef(0);
@@ -571,6 +574,16 @@ function App() {
       : showSavedModal
         ? "saved"
         : null;
+
+  useEffect(() => {
+    return () => {
+      optimisticAttachmentUrlsRef.current.forEach((objectUrls) => {
+        objectUrls.forEach((url) => URL.revokeObjectURL(url));
+      });
+      optimisticAttachmentUrlsRef.current.clear();
+      optimisticMessagesRef.current.clear();
+    };
+  }, []);
 
   function setAppHistoryPosition(index: number) {
     appHistoryIndexRef.current = index;
@@ -606,9 +619,9 @@ function App() {
     setRuntimeChecks(Object.fromEntries(entries));
   }
 
-  async function refresh() {
+  async function refresh(includeOptimistic = true) {
     const next = await apiInvoke<Bootstrap>("bootstrap");
-    setData(next);
+    setData(includeOptimistic ? withOptimisticMessages(next) : next);
     setActiveChannelId((prev) => {
       if (next.channels.some((item) => item.id === prev)) return prev;
       return next.channels[0]?.id || "";
@@ -662,6 +675,17 @@ function App() {
       messages.sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
       return { ...current, messages };
     });
+  }
+
+  function withOptimisticMessages(next: Bootstrap): Bootstrap {
+    if (optimisticMessagesRef.current.size === 0) return next;
+    const existingIds = new Set(next.messages.map((message) => message.id));
+    const optimisticMessages = Array.from(optimisticMessagesRef.current.values())
+      .filter((message) => !existingIds.has(message.id));
+    if (optimisticMessages.length === 0) return next;
+    const messages = [...next.messages, ...optimisticMessages];
+    messages.sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
+    return { ...next, messages };
   }
 
   function flushMessageDeltas() {
@@ -2065,8 +2089,43 @@ function App() {
     });
   }
 
-  function addOptimisticOwnerMessage(channelId: string, threadRootId: string | null, body: string, asTask: boolean) {
+  function optimisticMessageAttachments(messageId: string, attachments: DraftAttachment[]): MessageAttachment[] {
+    const objectUrls: string[] = [];
+    const messageAttachments = attachments.map((attachment) => {
+      const localUrl = URL.createObjectURL(attachment.file);
+      objectUrls.push(localUrl);
+      return {
+        id: `local-${attachment.id}`,
+        message_id: messageId,
+        original_name: attachment.original_name,
+        mime_type: attachment.mime_type,
+        size_bytes: attachment.size_bytes,
+        storage_path: "",
+        local_url: localUrl,
+        created_at: new Date().toISOString(),
+      };
+    });
+    if (objectUrls.length > 0) {
+      optimisticAttachmentUrlsRef.current.set(messageId, objectUrls);
+    }
+    return messageAttachments;
+  }
+
+  function releaseOptimisticAttachmentUrls(messageId: string) {
+    const objectUrls = optimisticAttachmentUrlsRef.current.get(messageId) ?? [];
+    objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    optimisticAttachmentUrlsRef.current.delete(messageId);
+  }
+
+  function addOptimisticOwnerMessage(
+    channelId: string,
+    threadRootId: string | null,
+    body: string,
+    asTask: boolean,
+    attachments: DraftAttachment[] = [],
+  ) {
     const id = `local-${clientId()}`;
+    const createdAt = new Date().toISOString();
     const optimisticMessage: Message = {
       id,
       channel_id: channelId,
@@ -2077,15 +2136,16 @@ function App() {
       body,
       is_task: asTask,
       thread_followed: true,
-      delivery_state: "complete",
+      delivery_state: attachments.length > 0 ? "sending" : "complete",
       stream_key: "",
       task_number: null,
       task_status: null,
-      attachments: [],
+      attachments: optimisticMessageAttachments(id, attachments),
       artifacts: [],
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      created_at: createdAt,
+      updated_at: createdAt,
     };
+    optimisticMessagesRef.current.set(id, optimisticMessage);
     knownMessageIdsRef.current?.add(id);
     setData((current) => current ? {
       ...current,
@@ -2095,11 +2155,19 @@ function App() {
   }
 
   function removeOptimisticMessage(messageId: string) {
+    optimisticMessagesRef.current.delete(messageId);
+    releaseOptimisticAttachmentUrls(messageId);
     knownMessageIdsRef.current?.delete(messageId);
     setData((current) => current ? {
       ...current,
       messages: current.messages.filter((message) => message.id !== messageId),
     } : current);
+  }
+
+  function finalizeOptimisticMessage(messageId: string) {
+    optimisticMessagesRef.current.delete(messageId);
+    releaseOptimisticAttachmentUrls(messageId);
+    knownMessageIdsRef.current?.delete(messageId);
   }
 
   function appendDraftAttachments(files: FileList | File[], target: "root" | "reply") {
@@ -2291,9 +2359,7 @@ function App() {
     const body = draft.trim();
     const attachments = draftAttachments;
     const sendAsTask = channel.kind === "dm" ? false : asTask;
-    const optimisticId = attachments.length === 0
-      ? addOptimisticOwnerMessage(channel.id, null, body, sendAsTask)
-      : null;
+    const optimisticId = addOptimisticOwnerMessage(channel.id, null, body, sendAsTask, attachments);
     updateRootComposerDraft(channel.id, () => EMPTY_COMPOSER_DRAFT);
     try {
       await apiInvoke("send_message", {
@@ -2303,9 +2369,10 @@ function App() {
         asTask: sendAsTask,
         attachments: await attachmentUploads(attachments),
       });
-      await refresh();
+      await refresh(false);
+      finalizeOptimisticMessage(optimisticId);
     } catch (err) {
-      if (optimisticId) removeOptimisticMessage(optimisticId);
+      removeOptimisticMessage(optimisticId);
       updateRootComposerDraft(channel.id, () => ({ text: body, attachments }));
       const message = errorMessage(err, "Failed to send message");
       setAppError(message);
@@ -2332,9 +2399,7 @@ function App() {
     if (!channel || !activeRoot || (!replyDraft.trim() && replyAttachments.length === 0)) return;
     const body = replyDraft.trim();
     const attachments = replyAttachments;
-    const optimisticId = attachments.length === 0
-      ? addOptimisticOwnerMessage(channel.id, activeRoot.id, body, false)
-      : null;
+    const optimisticId = addOptimisticOwnerMessage(channel.id, activeRoot.id, body, false, attachments);
     updateReplyComposerDraft(activeRoot.id, () => EMPTY_COMPOSER_DRAFT);
     try {
       await apiInvoke("send_message", {
@@ -2344,9 +2409,10 @@ function App() {
         asTask: false,
         attachments: await attachmentUploads(attachments),
       });
-      await refresh();
+      await refresh(false);
+      finalizeOptimisticMessage(optimisticId);
     } catch (err) {
-      if (optimisticId) removeOptimisticMessage(optimisticId);
+      removeOptimisticMessage(optimisticId);
       updateReplyComposerDraft(activeRoot.id, () => ({ text: body, attachments }));
       const message = errorMessage(err, "Failed to send reply");
       setAppError(message);

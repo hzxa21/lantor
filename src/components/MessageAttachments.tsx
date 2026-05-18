@@ -36,14 +36,14 @@ export function MessageAttachments({ attachments }: MessageAttachmentsProps) {
     <>
       <div className="message-attachments">
         {attachments.map((attachment) => {
-          const src = attachmentAssetUrl(attachment.storage_path, attachment.id);
+          const src = attachment.local_url ?? attachmentAssetUrl(attachment.storage_path, attachment.id);
           const isImage = attachment.mime_type.startsWith("image/");
           if (isImage) {
             return (
               <button
                 key={attachment.id}
                 type="button"
-                className="message-attachment image"
+                className={`message-attachment image ${attachment.local_url ? "pending" : ""}`}
                 aria-label={`Preview ${attachment.original_name}`}
                 onClick={() => setImagePreview({ src, alt: attachment.original_name })}
               >
@@ -54,7 +54,7 @@ export function MessageAttachments({ attachments }: MessageAttachmentsProps) {
           return (
             <a
               key={attachment.id}
-              className="message-attachment"
+              className={`message-attachment ${attachment.local_url ? "pending" : ""}`}
               href={src}
               target="_blank"
               rel="noreferrer"

@@ -719,6 +719,9 @@ export function Conversation({
                     )}
                     <MessageAttachments attachments={message.attachments} />
                     <MessageArtifacts artifacts={message.artifacts} onOpenArtifact={openArtifact} />
+                    {message.delivery_state === "sending" && (
+                      <div className="message-stream-state sending">Sending...</div>
+                    )}
                     {message.delivery_state === "error" && (
                       <div className="message-stream-state error">Response interrupted</div>
                     )}

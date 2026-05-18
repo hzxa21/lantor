@@ -1939,6 +1939,10 @@ mark {
   filter: saturate(1.04) contrast(1.02);
 }
 
+.message-attachment.pending {
+  opacity: 0.78;
+}
+
 .attachment-icon {
   display: grid;
   place-items: center;
@@ -2158,6 +2162,15 @@ mark {
 .message-stream-state.error::before {
   background: #e1583f;
   box-shadow: 0 0 0 4px rgba(225, 88, 63, 0.12);
+}
+
+.message-stream-state.sending {
+  color: #6a5a20;
+}
+
+.message-stream-state.sending::before {
+  background: #d99a17;
+  box-shadow: 0 0 0 4px rgba(217, 154, 23, 0.14);
 }
 
 .activity-progress-dock {
