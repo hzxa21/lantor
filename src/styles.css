@@ -3727,7 +3727,7 @@ body.resizing-column * {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: 1500;
   display: grid;
   place-items: center;
   padding: 32px;
@@ -6629,8 +6629,14 @@ body.resizing-column * {
   }
 
   .channel-agent-count-trigger {
-    min-width: 42px;
+    min-width: 44px;
+    height: 44px;
     padding: 0 8px;
+  }
+
+  .channel-action-trigger {
+    width: 44px;
+    height: 44px;
   }
 
   .channel-agent-preview {
@@ -6860,8 +6866,8 @@ body.resizing-column * {
   .thread header .thread-mobile-back,
   .agent-drawer-head .agent-mobile-back {
     display: grid;
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     flex: 0 0 auto;
     place-items: center;
     border-radius: 13px;
@@ -6872,8 +6878,8 @@ body.resizing-column * {
 
   .thread header .thread-close {
     display: grid;
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     flex: 0 0 auto;
     margin-left: auto;
     padding: 0;
@@ -6894,6 +6900,11 @@ body.resizing-column * {
 
   .agent-drawer-head-actions {
     margin-left: auto;
+  }
+
+  .agent-drawer-head .agent-head-action {
+    width: 44px;
+    height: 44px;
   }
 
   .thread h2,

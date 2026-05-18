@@ -163,6 +163,11 @@ function isTextInput(target: EventTarget | null) {
   return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
 }
 
+function isActionControl(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest("button, a, [role='button'], [role='tab']"));
+}
+
 function isMobileViewport() {
   return window.innerWidth <= MOBILE_BREAKPOINT;
 }
@@ -1278,7 +1283,7 @@ function App() {
     }
 
     function onTouchStart(event: TouchEvent) {
-      if (event.touches.length !== 1 || isTextInput(event.target)) {
+      if (event.touches.length !== 1 || isTextInput(event.target) || isActionControl(event.target)) {
         resetSwipe();
         return;
       }
@@ -1288,7 +1293,6 @@ function App() {
         resetSwipe();
         return;
       }
-      event.preventDefault();
       startX = touch.clientX;
       startY = touch.clientY;
       lastX = touch.clientX;
@@ -1357,6 +1361,21 @@ function App() {
     showSearchModal,
     showThread,
   ]);
+
+  useEffect(() => {
+    function onTouchStart(event: TouchEvent) {
+      if (!isMobileViewport() || !isActionControl(event.target) || isTextInput(event.target)) return;
+      if (event.target instanceof HTMLElement && event.target.closest(".composer, .reply-composer")) return;
+      if (document.activeElement instanceof HTMLElement && isTextInput(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    }
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true, capture: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart, { capture: true });
+    };
+  }, []);
 
   const visibleMessages = useMemo(() => {
     return (data?.messages ?? []).filter((message) => !isProgressOnlyMessage(message));

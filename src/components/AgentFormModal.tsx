@@ -1,4 +1,5 @@
 import { ChevronDown, Shuffle } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { Modal } from "./Modal";
 import {
   AgentForm,
@@ -46,6 +47,10 @@ function seedForAgentForm(form: AgentForm) {
   return seed || "agent";
 }
 
+function shouldAutoFocusTextInput() {
+  return window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+}
+
 export function AgentFormModal({
   open,
   title,
@@ -59,6 +64,7 @@ export function AgentFormModal({
   onCancel,
   onSubmit,
 }: AgentFormModalProps) {
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
   const isCodex = form.runtime === "codex";
   const previewHandle = (form.handle || form.displayName || "agent").trim().replace(/^@/, "") || "agent";
   const previewName = form.displayName.trim() || form.handle.trim().replace(/^@/, "") || "New agent";
@@ -154,6 +160,11 @@ export function AgentFormModal({
     </div>
   );
 
+  useEffect(() => {
+    if (!open || !shouldAutoFocusTextInput()) return;
+    nameInputRef.current?.focus();
+  }, [open]);
+
   return (
     <Modal open={open} title={title} onClose={onCancel} width={700}>
       <div className="modal-form agent-modal-form">
@@ -164,7 +175,7 @@ export function AgentFormModal({
               <label>
                 <span>Name</span>
                 <input
-                  autoFocus
+                  ref={nameInputRef}
                   value={form.displayName}
                   onChange={(event) => onChange({ ...form, displayName: event.target.value })}
                   placeholder="Agent name"
@@ -198,7 +209,7 @@ export function AgentFormModal({
             <label>
               <span>Name</span>
               <input
-                autoFocus
+                ref={nameInputRef}
                 value={form.displayName}
                 onChange={(event) => onChange({ ...form, displayName: event.target.value })}
                 placeholder="Agent name"
