@@ -28,6 +28,7 @@ select {
 button {
   border: 0;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 button,
@@ -2619,6 +2620,7 @@ mark {
   gap: 10px;
   margin: 0;
   min-width: 0;
+  touch-action: manipulation;
 }
 
 .task-card-head > span {
@@ -3084,10 +3086,18 @@ mark {
 }
 
 .task-toggle.active {
-  border-color: rgba(21, 128, 61, 0.24);
-  background: #f0f9f3;
-  color: #167a36;
-  box-shadow: inset 0 0 0 1px rgba(21, 128, 61, 0.08);
+  border-color: rgba(21, 128, 61, 0.55);
+  background: #d6f3e0;
+  color: #0f5f2c;
+  box-shadow:
+    inset 0 0 0 1px rgba(21, 128, 61, 0.22),
+    0 1px 2px rgba(21, 128, 61, 0.14);
+}
+
+.task-toggle.active:hover:not(:disabled) {
+  border-color: rgba(21, 128, 61, 0.7);
+  background: #c6ecd3;
+  color: #0c5026;
 }
 
 .send {

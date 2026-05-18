@@ -13,7 +13,7 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
@@ -162,6 +162,7 @@ export function Conversation({
   const [expandedChannelMessageIds, setExpandedChannelMessageIds] = useState<Set<string>>(() => new Set());
   const composerDragDepthRef = useRef(0);
   const longPressTimerRef = useRef<number | null>(null);
+  const taskToggleHandledAtRef = useRef(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowMessagesRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -241,6 +242,43 @@ export function Conversation({
       event.preventDefault();
       submitComposer();
     }
+  }
+
+  // Mobile WebViews (iOS WKWebView, Android WebView) dismiss the soft keyboard
+  // when a tap blurs the focused textarea, and the first tap is consumed by the
+  // dismissal so the button doesn't fire. Calling preventDefault on mousedown
+  // (which is non-passive in React) keeps focus on the textarea so the click
+  // fires reliably on the first tap.
+  function preserveComposerFocus(event: ReactMouseEvent<HTMLElement>) {
+    if (textareaRef.current && document.activeElement === textareaRef.current) {
+      event.preventDefault();
+    }
+  }
+
+  // Toggle eagerly on pointer/mouse down so the active highlight flips before
+  // the synthesized click. We dedupe via a timestamp ref and let click handle
+  // keyboard activation (Enter/Space), where down events do not fire.
+  function handleTaskToggleMouseDown(event: ReactMouseEvent<HTMLElement>) {
+    if (Date.now() - taskToggleHandledAtRef.current < 600) return;
+    preserveComposerFocus(event);
+    if (!channel) return;
+    taskToggleHandledAtRef.current = Date.now();
+    setSendAsTask((current) => !current);
+  }
+
+  function handleTaskTogglePointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.pointerType === "mouse") return;
+    if (!channel) return;
+    event.preventDefault();
+    event.stopPropagation();
+    taskToggleHandledAtRef.current = Date.now();
+    setSendAsTask((current) => !current);
+  }
+
+  function handleTaskToggleClick() {
+    if (!channel) return;
+    if (Date.now() - taskToggleHandledAtRef.current < 600) return;
+    setSendAsTask((current) => !current);
   }
 
   function submitComposer() {
@@ -912,6 +950,7 @@ export function Conversation({
               type="button"
               className="attach-button"
               disabled={!channel}
+              onMouseDown={preserveComposerFocus}
               onClick={() => fileInputRef.current?.click()}
             >
               <Paperclip size={16} />
@@ -924,7 +963,9 @@ export function Conversation({
                 aria-label={sendAsTask ? "Send next message as a normal message" : "Send next message as a task"}
                 aria-pressed={sendAsTask}
                 disabled={!channel}
-                onClick={() => setSendAsTask((current) => !current)}
+                onPointerDown={handleTaskTogglePointerDown}
+                onMouseDown={handleTaskToggleMouseDown}
+                onClick={handleTaskToggleClick}
               >
                 <Flag size={15} />
                 <span>Task</span>
@@ -935,6 +976,7 @@ export function Conversation({
               title={sendAsTask && !isDm ? "Create task" : "Send message"}
               aria-label={sendAsTask && !isDm ? "Create task" : "Send message"}
               disabled={!channel || (!draft.trim() && draftAttachments.length === 0)}
+              onMouseDown={preserveComposerFocus}
               onClick={submitComposer}
             >
               <Send size={17} />
