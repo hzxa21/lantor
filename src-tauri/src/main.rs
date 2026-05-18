@@ -404,6 +404,19 @@ async fn maybe_insert_work_item_system_message(
     {
         return Ok(());
     }
+    if work_item.task_number.is_some() && work_item.source_kind == "inbox_wake" {
+        if let Some(inbox_item_id) = work_item.inbox_item_id {
+            let inbox_kind: Option<String> =
+                sqlx::query_scalar("select kind from agent_inbox_items where id = $1")
+                    .bind(inbox_item_id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(to_string)?;
+            if inbox_kind.as_deref() == Some("task_available") {
+                return Ok(());
+            }
+        }
+    }
     let Some(channel_id) = work_item.channel_id else {
         return Ok(());
     };
@@ -14469,10 +14482,10 @@ mod tests {
             agent_context_message_search, agent_context_workspace_info,
             agent_context_workspace_list, short_id,
         },
-        delete_agent_in_pool, delete_channel_in_pool, ensure_agent_workspace,
-        ensure_streaming_agent_message, extract_agent_event_json, extract_agent_mentions,
-        finish_streaming_agent_message, format_memory_index_entry, handle_agent_event,
-        inbox_wake_context, insert_agent_message, insert_memory_index_entry,
+        create_agent_inbox_item, delete_agent_in_pool, delete_channel_in_pool,
+        ensure_agent_workspace, ensure_streaming_agent_message, extract_agent_event_json,
+        extract_agent_mentions, finish_streaming_agent_message, format_memory_index_entry,
+        handle_agent_event, inbox_wake_context, insert_agent_message, insert_memory_index_entry,
         load_agent_memory_context, load_channel_agent_roster, load_messages, load_reminders,
         load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
         normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
@@ -14482,10 +14495,11 @@ mod tests {
         split_streaming_agent_event_lines, streaming_message_body_is_empty,
         try_claim_unassigned_task, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
-        AgentAttachmentFile, AgentEvent, ClaudeSurface, CodexActiveTurnScheduleState,
-        InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
-        CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS, CODEX_TURN_START_TIMEOUT, DEFAULT_DATABASE_URL,
-        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
+        AgentAttachmentFile, AgentEvent, AgentInboxItemInput, ClaudeSurface,
+        CodexActiveTurnScheduleState, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
+        AGENT_MEMORY_CONTEXT_LIMIT, CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
+        CODEX_TURN_START_TIMEOUT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
+        STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::{json, Value};
@@ -18963,6 +18977,186 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(system_messages, 0);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn task_claim_opportunity_finish_does_not_insert_system_message() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let loser_agent_id = insert_test_agent(&pool, "claim-loser").await?;
+            let winner_agent_id = insert_test_agent(&pool, "claim-winner-finish").await?;
+            let channel_id = insert_test_channel(&pool, "claim-finish").await?;
+            let available_message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Race this task', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let available_task_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into tasks (message_id, channel_id, title, status)
+                values ($1, $2, 'Race this task', 'todo')
+                returning id
+                "#,
+            )
+            .bind(available_message_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let available_inbox_id = create_agent_inbox_item(
+                &pool,
+                AgentInboxItemInput {
+                    agent_id: loser_agent_id,
+                    channel_id: Some(channel_id),
+                    thread_root_id: Some(available_message_id),
+                    source_message_id: Some(available_message_id),
+                    task_id: Some(available_task_id),
+                    kind: "task_available",
+                    priority: 70,
+                    title: "Race this task",
+                    body_preview: "Race this task",
+                    payload: json!({}),
+                },
+            )
+            .await?;
+            let available_work_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_work_items (
+                    agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id,
+                    task_id, source_kind, title, context, status, completed_at
+                )
+                values ($1, $2, $3, $3, $4, $5, 'inbox_wake', 'Race this task', 'context', 'done', now())
+                returning id
+                "#,
+            )
+            .bind(loser_agent_id)
+            .bind(channel_id)
+            .bind(available_message_id)
+            .bind(available_inbox_id)
+            .bind(available_task_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query("update agent_inbox_items set work_item_id = $2 where id = $1")
+                .bind(available_inbox_id)
+                .bind(available_work_item_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            notify_ui_work_item_changed(&pool, available_work_item_id, "work_item_finished").await;
+
+            let assigned_message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Run this task', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let assigned_task_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into tasks (message_id, channel_id, title, status, assignee_agent_id)
+                values ($1, $2, 'Run this task', 'in_progress', $3)
+                returning id
+                "#,
+            )
+            .bind(assigned_message_id)
+            .bind(channel_id)
+            .bind(winner_agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let assigned_inbox_id = create_agent_inbox_item(
+                &pool,
+                AgentInboxItemInput {
+                    agent_id: winner_agent_id,
+                    channel_id: Some(channel_id),
+                    thread_root_id: Some(assigned_message_id),
+                    source_message_id: Some(assigned_message_id),
+                    task_id: Some(assigned_task_id),
+                    kind: "task_assigned",
+                    priority: 95,
+                    title: "Run this task",
+                    body_preview: "Run this task",
+                    payload: json!({}),
+                },
+            )
+            .await?;
+            let assigned_work_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_work_items (
+                    agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id,
+                    task_id, source_kind, title, context, status, completed_at
+                )
+                values ($1, $2, $3, $3, $4, $5, 'inbox_wake', 'Run this task', 'context', 'done', now())
+                returning id
+                "#,
+            )
+            .bind(winner_agent_id)
+            .bind(channel_id)
+            .bind(assigned_message_id)
+            .bind(assigned_inbox_id)
+            .bind(assigned_task_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query("update agent_inbox_items set work_item_id = $2 where id = $1")
+                .bind(assigned_inbox_id)
+                .bind(assigned_work_item_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            notify_ui_work_item_changed(&pool, assigned_work_item_id, "work_item_finished").await;
+
+            let claim_opportunity_messages: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from messages
+                where channel_id = $1
+                  and thread_root_id = $2
+                  and sender_role = 'system'
+                  and body like '@claim-loser completed task run%'
+                "#,
+            )
+            .bind(channel_id)
+            .bind(available_message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(claim_opportunity_messages, 0);
+
+            let assigned_messages: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from messages
+                where channel_id = $1
+                  and thread_root_id = $2
+                  and sender_role = 'system'
+                  and body like '@claim-winner-finish completed task run%'
+                "#,
+            )
+            .bind(channel_id)
+            .bind(assigned_message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(assigned_messages, 1);
             Ok(())
         }
         .await;
