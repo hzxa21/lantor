@@ -1,4 +1,4 @@
-import { ArrowLeft, Pencil, Trash2 } from "lucide-react";
+import { ArrowLeft, Pencil, Trash2, X } from "lucide-react";
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { apiInvoke } from "../apiClient";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -770,12 +770,37 @@ export function AgentDetailDrawer({
         >
           <ArrowLeft size={18} />
         </button>
-        <div>
-          <span>Agent</span>
-          <h2>@{agent.handle}</h2>
+        <div className="agent-title">
+          <span className="hash-card agent-title-card" aria-hidden="true">
+            <AgentAvatar agent={agent} size="sm" showStatus={false} />
+          </span>
+          <div>
+            <h2>{agent.display_name}</h2>
+          </div>
         </div>
         <div className="agent-drawer-head-actions">
-          <button type="button" className="agent-close" onClick={onClose} aria-label="Close agent detail">×</button>
+          <button
+            type="button"
+            className="agent-head-action"
+            title={`Edit @${agent.handle}`}
+            aria-label={`Edit @${agent.handle}`}
+            onClick={() => onEdit(agent)}
+          >
+            <Pencil size={16} />
+          </button>
+          <button
+            type="button"
+            className="agent-head-action danger"
+            disabled={deleteDisabled}
+            aria-label={`Delete @${agent.handle}`}
+            title={deleteDisabled ? "Stop the active run before deleting this agent" : `Delete @${agent.handle}`}
+            onClick={() => onDelete(agent)}
+          >
+            <Trash2 size={16} />
+          </button>
+          <button type="button" className="agent-close" onClick={onClose} aria-label="Close agent detail">
+            <X size={18} />
+          </button>
         </div>
       </header>
       <div className="agent-drawer-body">
@@ -791,30 +816,6 @@ export function AgentDetailDrawer({
                   <small>{phase.detail}</small>
                 </div>
               )}
-            </div>
-            <div className="agent-detail-hero-side">
-              <div className="agent-detail-hero-actions" aria-label={`${agent.handle} actions`}>
-                <button
-                  type="button"
-                  className="agent-hero-action"
-                  title={`Edit @${agent.handle}`}
-                  aria-label={`Edit @${agent.handle}`}
-                  onClick={() => onEdit(agent)}
-                >
-                  <Pencil size={15} />
-                  <span>Edit</span>
-                </button>
-                <button
-                  type="button"
-                  className="agent-hero-action danger"
-                  disabled={deleteDisabled}
-                  aria-label={`Delete @${agent.handle}`}
-                  title={deleteDisabled ? "Stop the active run before deleting this agent" : `Delete @${agent.handle}`}
-                  onClick={() => onDelete(agent)}
-                >
-                  <Trash2 size={15} />
-                </button>
-              </div>
             </div>
           </section>
           <nav className="agent-detail-tabs" role="tablist" aria-label={`${agent.handle} detail sections`}>

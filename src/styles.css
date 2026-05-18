@@ -929,13 +929,15 @@ button,
 }
 
 .topbar,
-.thread header {
+.thread header,
+.agent-drawer-head {
   min-height: 72px;
   padding: 14px 18px;
 }
 
 .channel-title,
-.thread-title {
+.thread-title,
+.agent-title {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -943,7 +945,8 @@ button,
 }
 
 .channel-title > div,
-.thread-title h2 {
+.thread-title h2,
+.agent-title > div {
   min-width: 0;
 }
 
@@ -3449,56 +3452,62 @@ body.resizing-column * {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  min-height: 72px;
-  padding: 16px;
+  gap: 16px;
   border-bottom: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.72);
 }
 
-.agent-drawer-head span {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+.agent-title-card {
+  overflow: hidden;
+}
+
+.agent-title-card .agent-avatar {
+  width: 28px;
+  height: 28px;
 }
 
 .agent-drawer-head h2 {
-  margin: 2px 0 0;
-  font-size: 22px;
+  overflow: hidden;
+  margin: 0;
+  color: var(--ink);
+  font-size: 20px;
   font-weight: 700;
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-drawer-head-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
 }
 
 .agent-drawer-head button {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   place-items: center;
-  border-radius: 999px;
-  background: rgba(142, 142, 147, 0.12);
-  color: var(--muted);
-  font-size: 22px;
-  line-height: 1;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--panel-strong);
+  color: var(--ink);
 }
 
-.agent-drawer-head button.danger {
-  width: auto;
-  padding: 0 12px;
-  background: rgba(255, 59, 48, 0.12);
+.agent-drawer-head button:hover {
+  border-color: rgba(10, 132, 255, 0.28);
+  background: rgba(10, 132, 255, 0.1);
+}
+
+.agent-drawer-head button.danger:hover {
+  border-color: rgba(255, 59, 48, 0.2);
+  background: rgba(255, 59, 48, 0.1);
   color: #d70015;
-  font-size: 13px;
-  font-weight: 700;
 }
 
 .agent-drawer-head button:disabled,
-.agent-detail-hero-actions button:disabled {
+.agent-head-action:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
@@ -3511,51 +3520,7 @@ body.resizing-column * {
   display: grid;
   min-height: 0;
   overflow: hidden;
-  padding: 14px 16px;
-}
-
-.agent-detail-hero-side {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  align-self: start;
-}
-
-.agent-detail-hero-actions {
-  display: flex;
-  gap: 6px;
-  padding: 4px;
-  border: 1px solid rgba(118, 118, 128, 0.12);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.74);
-  box-shadow: 0 8px 18px rgba(32, 36, 44, 0.06);
-}
-
-.agent-detail-hero-actions button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.agent-detail-hero-actions button:hover {
-  background: rgba(142, 142, 147, 0.12);
-}
-
-.agent-detail-hero-actions button.danger {
-  color: #d70015;
-}
-
-.agent-detail-hero-actions button.danger:hover {
-  background: rgba(255, 59, 48, 0.12);
+  padding: 12px 16px 14px;
 }
 
 .thread-focus {
@@ -4012,7 +3977,7 @@ body.resizing-column * {
 .agent-detail-hero {
   position: relative;
   display: grid;
-  grid-template-columns: 62px minmax(0, 1fr) auto;
+  grid-template-columns: 62px minmax(0, 1fr);
   align-items: center;
   gap: 15px;
   overflow: hidden;
@@ -4034,14 +3999,20 @@ body.resizing-column * {
 }
 
 .agent-detail-hero h3 {
+  overflow: hidden;
   margin: 0;
   font-size: 21px;
   letter-spacing: -0.03em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-detail-hero p {
+  overflow: hidden;
   margin: 4px 0 0;
   color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-detail-tabs {
@@ -6464,7 +6435,7 @@ body.resizing-column * {
   }
 
   .thread header > div,
-  .agent-drawer-head > div:not(.agent-drawer-head-actions) {
+  .agent-title {
     flex: 1 1 auto;
     min-width: 0;
   }
@@ -6517,8 +6488,7 @@ body.resizing-column * {
     white-space: nowrap;
   }
 
-  .thread header p,
-  .agent-drawer-head span {
+  .thread header p {
     font-size: 11px;
     line-height: 14px;
   }
@@ -6549,21 +6519,8 @@ body.resizing-column * {
   .agent-detail-hero {
     grid-template-columns: 52px minmax(0, 1fr);
     align-items: start;
-  }
-
-  .agent-detail-hero-side {
-    grid-column: 1 / -1;
-    align-items: stretch;
-    justify-content: space-between;
-  }
-
-  .agent-detail-hero-actions {
-    margin-left: auto;
-  }
-
-  .agent-detail-hero-actions button {
-    justify-content: center;
-    text-align: center;
+    padding: 14px;
+    border-radius: 18px;
   }
 
   .agent-detail-tabs {

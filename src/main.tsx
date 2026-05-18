@@ -2685,7 +2685,6 @@ function App() {
           onDelete={deleteAgent}
           onEdit={(agent) => {
             startEditAgent(agent);
-            setSelectedAgentId(null);
           }}
           onOpenWorkItem={(item) => {
             openWorkItem(item);
