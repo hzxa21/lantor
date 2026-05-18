@@ -2778,8 +2778,6 @@ function App() {
         draft={draft}
         draftAttachments={draftAttachments}
         taskTitleDrafts={taskTitleDrafts}
-        canNavigateBack={appHistoryIndex > 0}
-        navigateBack={() => navigateBack(() => {})}
         setActiveTab={setActiveTab}
         setActiveThreadId={revealThread}
         openMobileSidebar={openMobileSidebarFromContent}

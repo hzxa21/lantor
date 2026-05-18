@@ -49,8 +49,6 @@ type ConversationProps = {
   draft: string;
   draftAttachments: DraftAttachment[];
   taskTitleDrafts: Record<string, string>;
-  canNavigateBack: boolean;
-  navigateBack: () => void;
   setActiveTab: (tab: "chat" | "tasks") => void;
   setActiveThreadId: (threadId: string | null) => void;
   openMobileSidebar: () => void;
@@ -134,8 +132,6 @@ export function Conversation({
   draft,
   draftAttachments,
   taskTitleDrafts,
-  canNavigateBack,
-  navigateBack,
   setActiveTab,
   setActiveThreadId,
   openMobileSidebar,
@@ -407,16 +403,6 @@ export function Conversation({
           onClick={openMobileSidebar}
         >
           <ArrowLeft size={18} />
-        </button>
-        <button
-          type="button"
-          className="desktop-back-button"
-          disabled={!canNavigateBack}
-          title="Back (⌘[)"
-          aria-label="Back"
-          onClick={navigateBack}
-        >
-          <ArrowLeft size={17} />
         </button>
         <div className="channel-title">
           {isDm && dmAgent ? (
