@@ -178,7 +178,10 @@ export function AgentFormModal({
             </div>
             <RuntimePreflight check={runtimeChecks[form.runtime]} />
             <details className="agent-advanced-settings">
-              <summary>Advanced</summary>
+              <summary>
+                <span>Advanced</span>
+                <ChevronDown size={16} aria-hidden="true" />
+              </summary>
               <label>
                 <span>Workspace directory</span>
                 <input

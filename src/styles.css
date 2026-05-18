@@ -63,6 +63,8 @@ button,
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
+  --surface-border: rgba(20, 23, 31, 0.12);
+  --surface-shadow: 0 24px 64px rgba(15, 23, 42, 0.18);
   --sidebar-width: 292px;
   --thread-width: 420px;
   display: grid;
@@ -2151,10 +2153,10 @@ mark {
   gap: 9px;
   min-height: 42px;
   padding: 7px 9px 7px 7px;
-  border: 1px solid rgba(17, 24, 39, 0.09);
-  border-radius: 8px;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.1);
   cursor: pointer;
   list-style: none;
   backdrop-filter: blur(14px);
@@ -3935,12 +3937,40 @@ body.resizing-column * {
 }
 
 .agent-advanced-settings summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 9px;
   cursor: pointer;
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+  list-style: none;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.agent-advanced-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-advanced-settings summary:hover,
+.agent-advanced-settings summary:focus-visible {
+  background: rgba(20, 23, 31, 0.06);
+  color: #4f5560;
+  outline: none;
+}
+
+.agent-advanced-settings summary svg {
+  color: rgba(20, 23, 31, 0.46);
+  transition: transform 0.16s ease;
+}
+
+.agent-advanced-settings[open] summary svg {
+  transform: rotate(180deg);
 }
 
 .agent-advanced-settings[open] summary {
@@ -4039,11 +4069,12 @@ body.resizing-column * {
   max-width: min(520px, calc(100vw - 48px));
   gap: 12px;
   padding: 12px 14px;
-  border: 1px solid rgba(255, 69, 58, 0.24);
-  border-radius: 16px;
-  background: rgba(255, 248, 247, 0.96);
-  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
-  color: #7f1d1d;
+  border: 1px solid rgba(20, 23, 31, 0.12);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 16px 44px rgba(15, 23, 42, 0.14);
+  color: #2c3038;
+  backdrop-filter: blur(16px);
 }
 
 .app-toast span {
@@ -4055,9 +4086,9 @@ body.resizing-column * {
 .app-toast button {
   flex: 0 0 auto;
   padding: 6px 9px;
-  border-radius: 999px;
-  background: rgba(255, 69, 58, 0.12);
-  color: #c91810;
+  border-radius: 9px;
+  background: rgba(20, 23, 31, 0.08);
+  color: #4f5560;
   font-size: 12px;
   font-weight: 700;
 }
@@ -5181,10 +5212,10 @@ body.resizing-column * {
   width: min(1180px, calc(100vw - 56px));
   max-height: calc(100vh - 56px);
   overflow: hidden;
-  border: 1px solid rgba(20, 23, 31, 0.14);
-  border-radius: 22px;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-lg);
   background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 32px 86px rgba(15, 23, 42, 0.24);
+  box-shadow: var(--surface-shadow);
 }
 
 .search-panel-head {
@@ -5281,14 +5312,26 @@ body.resizing-column * {
 }
 
 .search-time-filter {
+  position: relative;
   margin-left: auto;
+  padding-right: 10px;
 }
 
 .search-time-filter select {
+  max-width: 132px;
+  padding-right: 18px;
   border: 0;
+  appearance: none;
   background: transparent;
   color: inherit;
   outline: none;
+  cursor: pointer;
+}
+
+.search-time-chevron {
+  flex: 0 0 auto;
+  color: rgba(20, 23, 31, 0.48);
+  pointer-events: none;
 }
 
 .search-panel-body {
@@ -5434,10 +5477,10 @@ body.resizing-column * {
   width: min(1180px, calc(100vw - 56px));
   max-height: calc(100vh - 56px);
   overflow: hidden;
-  border: 1px solid rgba(20, 23, 31, 0.14);
-  border-radius: 22px;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-lg);
   background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 32px 86px rgba(15, 23, 42, 0.24);
+  box-shadow: var(--surface-shadow);
 }
 
 .thread-browser-head {

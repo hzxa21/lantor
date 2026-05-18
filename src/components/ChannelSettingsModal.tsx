@@ -1,4 +1,5 @@
 import { Agent, Channel } from "../types";
+import { AgentAvatar } from "./AgentAvatar";
 import { Modal } from "./Modal";
 
 type ChannelSettingsModalProps = {
@@ -55,19 +56,30 @@ export function ChannelSettingsModal({
               placeholder="Channel description"
             />
           </label>
-          <div className="member-editor modal-member-editor">
+          <div className="member-editor modal-member-editor channel-agent-picker">
             <strong>Agent members</strong>
             {agents.length === 0 && <span>No agents yet.</span>}
-            {agents.map((agent) => (
-              <label key={agent.id}>
-                <input
-                  type="checkbox"
-                  checked={channelMemberIds.has(agent.id)}
-                  onChange={(event) => onSetMember(agent.id, event.target.checked)}
-                />
-                @{agent.handle}
-              </label>
-            ))}
+            {agents.map((agent) => {
+              const isMember = channelMemberIds.has(agent.id);
+              return (
+                <label key={agent.id} className={`channel-agent-option ${isMember ? "selected" : ""}`}>
+                  <input
+                    className="channel-agent-checkbox"
+                    type="checkbox"
+                    checked={isMember}
+                    onChange={(event) => onSetMember(agent.id, event.target.checked)}
+                    aria-label={`${isMember ? "Remove" : "Add"} @${agent.handle}`}
+                  />
+                  <div className="channel-agent-profile">
+                    <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
+                    <div className="agent-pick-row">
+                      <strong>{agent.display_name}</strong>
+                      <small>@{agent.handle}</small>
+                    </div>
+                  </div>
+                </label>
+              );
+            })}
           </div>
           <div className="modal-actions split">
             <button type="button" className="danger" onClick={onDelete}>Delete Channel</button>

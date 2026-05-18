@@ -1,4 +1,4 @@
-import { Activity, ArrowLeft, Bot, CalendarDays, FileText, Hash, LayoutList, MessageSquare, Search, X } from "lucide-react";
+import { Activity, ArrowLeft, Bot, CalendarDays, ChevronDown, FileText, Hash, LayoutList, MessageSquare, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import type { Agent, OwnerProfile, SearchResult, SearchScope, SearchTimeRange } from "../types";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -158,6 +158,7 @@ export function SearchModal({
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
+            <ChevronDown className="search-time-chevron" size={15} aria-hidden="true" />
           </label>
         </div>
 
