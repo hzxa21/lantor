@@ -5847,6 +5847,13 @@ body.resizing-column * {
     padding: 8px 12px;
   }
 
+  .message-card.focused,
+  .message-card.tap-focused {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+
   .message-card.compact,
   .reply-list article.compact {
     padding-top: 4px;

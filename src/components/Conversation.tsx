@@ -125,7 +125,6 @@ export function Conversation({
   const [isComposerDragOver, setIsComposerDragOver] = useState(false);
   const [showChannelActions, setShowChannelActions] = useState(false);
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
-  const [tapFocusedMessageId, setTapFocusedMessageId] = useState<string | null>(null);
   const composerDragDepthRef = useRef(0);
   const longPressTimerRef = useRef<number | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -263,7 +262,6 @@ export function Conversation({
     setIsComposerDragOver(false);
     setShowChannelActions(false);
     setMessageMenu(null);
-    setTapFocusedMessageId(null);
   }, [channel?.id]);
 
   function handleChannelActionsBlur(event: FocusEvent<HTMLDivElement>) {
@@ -496,10 +494,9 @@ export function Conversation({
                 )}
                 <article
                   data-message-id={message.id}
-                  className={`message-card ${isCompact ? "compact" : ""} ${message.id === activeRoot?.id ? "focused" : ""} ${tapFocusedMessageId === message.id ? "tap-focused" : ""} ${isSaved ? "saved" : ""}`}
+                  className={`message-card ${isCompact ? "compact" : ""} ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""}`}
                   data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
                   onClick={() => {
-                    setTapFocusedMessageId(message.id);
                     setActiveThreadId(message.id);
                   }}
                   onContextMenu={(event) => {
@@ -507,7 +504,6 @@ export function Conversation({
                     setMessageMenu({ x: event.clientX, y: event.clientY, message });
                   }}
                   onPointerDown={(event) => {
-                    setTapFocusedMessageId(message.id);
                     startMessageLongPress(event, message);
                   }}
                   onPointerMove={clearLongPress}
