@@ -42,7 +42,7 @@ const HIDDEN_ACTIVITY_TITLES = new Set([
   "Request acknowledged",
   "Stream event accepted",
 ]);
-const MAX_PROGRESS_HISTORY_ITEMS = 3;
+const MAX_PROGRESS_HISTORY_ITEMS = 20;
 const ACTIVE_RUN_STATUSES = new Set(["starting", "running", "stopping"]);
 const ACTIVE_WORK_ITEM_STATUSES = new Set(["queued", "running", "cancelling"]);
 const SETTLING_WORK_ITEM_STATUSES = new Set(["done", "failed", "cancelled", "silent"]);

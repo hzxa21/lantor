@@ -2260,12 +2260,14 @@ mark {
 }
 
 .activity-progress-history {
+  --activity-row-height: 56px;
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
   left: 0;
   display: grid;
   gap: 6px;
+  max-height: calc(5 * var(--activity-row-height));
   margin: 0;
   padding: 8px;
   border: 1px solid rgba(17, 24, 39, 0.08);
@@ -2273,6 +2275,9 @@ mark {
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 14px 34px rgba(15, 23, 42, 0.12);
   list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   backdrop-filter: blur(14px);
 }
 
