@@ -6549,7 +6549,7 @@ body.resizing-column * {
   }
 
   .topbar {
-    overflow: hidden;
+    overflow: visible;
     min-height: 58px;
     justify-content: flex-start;
     gap: 10px;
