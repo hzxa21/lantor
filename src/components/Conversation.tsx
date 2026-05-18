@@ -175,6 +175,7 @@ export function Conversation({
   const unassignedTasks = visibleTasks.filter((task) => task.status !== "done" && !task.assignee_id);
   const assignedTasks = visibleTasks.filter((task) => task.assignee_id || task.status === "done");
   const taskAssigneeOptions = channelAgents.length > 0 ? channelAgents : agents;
+  const channelAgentPreview = channelAgents.slice(0, 3);
   const surfaceLabel = channel
     ? isDm
       ? `DM with @${dmAgent?.handle || "agent"}`
@@ -393,7 +394,17 @@ export function Conversation({
                 openChannelAgentsModal();
               }}
             >
-              <Users size={16} />
+              {channelAgentPreview.length > 0 ? (
+                <span className="channel-agent-preview" aria-hidden="true">
+                  {channelAgentPreview.map((agent) => (
+                    <span key={agent.id}>
+                      <AgentAvatar agent={agent} size="sm" showStatus={false} title={`@${agent.handle}`} />
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                <Users size={16} />
+              )}
               <span>{channelAgents.length}</span>
             </button>
             <button
@@ -835,7 +846,6 @@ export function Conversation({
               disabled={!channel || (!draft.trim() && draftAttachments.length === 0)}
               onClick={submitComposer}
             >
-              <span>{sendAsTask && !isDm ? "Create" : "Send"}</span>
               <Send size={17} />
             </button>
           </div>

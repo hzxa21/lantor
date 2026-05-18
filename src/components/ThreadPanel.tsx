@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, MessageSquare, Paperclip, Reply, RotateCcw, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, MessageSquare, Paperclip, RotateCcw, Send, X } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -96,7 +96,6 @@ export function ThreadPanel({
   activeRoot,
   activeTask,
   replies,
-  unreadCount,
   taskTitleDrafts,
   replyDraft,
   replyAttachments,
@@ -302,31 +301,9 @@ export function ThreadPanel({
     setMessageMenu(null);
   }
 
-  function renderReplyParticipantAvatar(message: Message) {
-    const agent = agentForMessageSender(message, agents);
-    if (agent) return <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} showStatus={false} />;
-    const deletedAgent = deletedAgentForMessageSender(message);
-    if (deletedAgent) return <AgentAvatar agent={deletedAgent} size="sm" title={`@${deletedAgent.handle} has been deleted`} showStatus={false} />;
-    if (message.sender_role === "owner") {
-      return <AgentAvatar agent={ownerAsAvatarAgent(ownerProfile)} size="sm" showStatus={false} />;
-    }
-    return <span className="thread-reply-fallback-avatar">{message.sender_name.slice(0, 1)}</span>;
-  }
-
   const activeTaskAssignee = activeTask
     ? agents.find((agent) => agent.id === activeTask.assignee_id) ?? null
     : null;
-  const replyParticipants = replies.reduce<Message[]>((participants, reply) => {
-    if (reply.sender_role === "system") return participants;
-    if (participants.some((participant) =>
-      participant.sender_role === reply.sender_role &&
-      participant.sender_name === reply.sender_name &&
-      participant.sender_agent_id === reply.sender_agent_id)
-    ) {
-      return participants;
-    }
-    return [...participants, reply];
-  }, []);
   const taskAssigneeOptions = channelAgents.length > 0 ? channelAgents : agents;
   const taskWorkItems = activeTask
     ? agentWorkItems
@@ -366,23 +343,6 @@ export function ThreadPanel({
           <h2>
             Thread <span>{channel ? isDm ? `- @${dmAgent?.handle || "agent"}` : `- #${channel.name}` : "- no channel"}</span>
           </h2>
-          <p>
-            {activeRoot ? `${replies.length} ${replies.length === 1 ? "reply" : "replies"}` : "No thread selected"}
-            {unreadCount > 0 ? ` · ${unreadCount} new` : ""}
-            {lastReply ? ` · Last reply ${formatTime(lastReply.created_at)}` : ""}
-          </p>
-          {replyParticipants.length > 0 && (
-            <div className="thread-header-replies" aria-label="Thread reply participants">
-              <div className="thread-reply-avatars">
-                {replyParticipants.slice(0, 4).map((participant) => (
-                  <span key={`${participant.sender_role}:${participant.sender_agent_id ?? participant.sender_name}`}>
-                    {renderReplyParticipantAvatar(participant)}
-                  </span>
-                ))}
-              </div>
-              <span>{replyParticipants.length} {replyParticipants.length === 1 ? "participant" : "participants"}</span>
-            </div>
-          )}
         </div>
         <button type="button" className="thread-close" onClick={onClose} aria-label="Close thread panel"><X size={18} /></button>
       </header>
@@ -811,7 +771,7 @@ export function ThreadPanel({
               disabled={!activeRoot || (!replyDraft.trim() && replyAttachments.length === 0)}
               onClick={submitReply}
             >
-              <Reply size={16} />
+              <Send size={17} />
             </button>
           </div>
         </section>
