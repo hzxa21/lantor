@@ -30,6 +30,11 @@ export function CreateChannelModal({
           <span>Channel name</span>
           <input
             autoFocus
+            autoCapitalize="none"
+            autoComplete="off"
+            autoCorrect="off"
+            name="lantor-channel-name"
+            spellCheck={false}
             value={channelName}
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={(event) => {
