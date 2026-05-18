@@ -935,7 +935,8 @@ button,
   padding: 14px 18px;
 }
 
-.channel-title {
+.channel-title,
+.thread-title {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -943,7 +944,7 @@ button,
 }
 
 .channel-title > div,
-.thread header > div {
+.thread-title h2 {
   min-width: 0;
 }
 
@@ -1104,20 +1105,16 @@ button,
 
 .thread header button {
   display: inline-flex;
-  min-height: 38px;
+  width: 38px;
+  height: 38px;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 0 12px;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: var(--panel-strong);
   color: var(--ink);
-}
-
-.thread header button {
-  min-height: 34px;
-  padding: 0 10px;
-  border-radius: 12px;
 }
 
 .thread header .thread-mobile-back {
