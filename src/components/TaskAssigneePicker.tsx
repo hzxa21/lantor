@@ -1,4 +1,5 @@
 import { Check, ChevronDown } from "lucide-react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Agent } from "../types";
 import { AgentAvatar } from "./AgentAvatar";
@@ -52,9 +53,12 @@ export function TaskAssigneePicker({
     : assignee
       ? `@${assignee.handle}`
       : "No agent";
+  const stopPickerPointer = (event: ReactPointerEvent) => {
+    event.stopPropagation();
+  };
 
   return (
-    <div className="task-assignee-picker" ref={rootRef}>
+    <div className="task-assignee-picker" ref={rootRef} onPointerDown={stopPickerPointer}>
       <button
         type="button"
         className="task-assignee-trigger"

@@ -2669,6 +2669,7 @@ mark {
 .task-assignee-picker {
   position: relative;
   justify-self: start;
+  width: 100%;
   min-width: 0;
 }
 
@@ -6734,6 +6735,34 @@ body.resizing-column * {
 
   .task-controls {
     width: 100%;
+  }
+
+  .task-assignee-picker {
+    justify-self: stretch;
+  }
+
+  .task-assignee-trigger {
+    width: 100%;
+    max-width: none;
+    grid-template-columns: 28px minmax(0, 1fr) 14px;
+  }
+
+  .task-assignee-menu {
+    right: auto;
+    left: 0;
+    width: min(100%, calc(100vw - 24px));
+  }
+
+  .status-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    justify-content: stretch;
+  }
+
+  .status-row button {
+    min-width: 0;
+    padding-inline: 5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .composer,
