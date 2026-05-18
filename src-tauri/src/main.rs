@@ -829,22 +829,6 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .await?;
     sqlx::query(
         r#"
-        update agent_activities
-        set kind = 'run',
-            phase = 'runtime',
-            status = 'warning',
-            title = 'Runtime warning',
-            summary = 'Runtime warning'
-        where upper(coalesce(metadata->>'level', '')) in ('WARN', 'WARNING')
-          and coalesce(metadata->>'target', '') like 'codex_%'
-          and title in ('Thinking', 'Error output', 'Runtime output', 'Runtime warning')
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
         create table if not exists agents (
             id uuid primary key default gen_random_uuid(),
             handle text not null unique,
@@ -1193,6 +1177,21 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
+    sqlx::query(
+        r#"
+        update agent_activities
+        set kind = 'run',
+            phase = 'runtime',
+            status = 'warning',
+            title = 'Runtime warning',
+            summary = 'Runtime warning'
+        where upper(coalesce(metadata->>'level', '')) in ('WARN', 'WARNING')
+          and coalesce(metadata->>'target', '') like 'codex_%'
+          and title in ('Thinking', 'Error output', 'Runtime output', 'Runtime warning')
+        "#,
+    )
+    .execute(pool)
+    .await?;
     sqlx::query(
         r#"
         update agent_activities
