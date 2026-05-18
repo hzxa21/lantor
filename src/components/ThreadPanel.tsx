@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, MessageSquare, Paperclip, RotateCcw, Send, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, Hash, MessageSquare, Paperclip, RotateCcw, Send, X } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -7,7 +7,7 @@ import { copyText } from "../clipboard";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task } from "../types";
-import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription } from "../ui-utils";
+import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
 import { ActivityProgressDock } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
@@ -48,6 +48,7 @@ function isNoisyTaskActivity(activity: AgentActivity) {
 
 type ThreadPanelProps = {
   channel: Channel | null;
+  channels: Channel[];
   agents: Agent[];
   channelAgents: Agent[];
   ownerProfile: OwnerProfile;
@@ -87,6 +88,7 @@ type MessageMenuState = {
 
 export function ThreadPanel({
   channel,
+  channels,
   agents,
   channelAgents,
   ownerProfile,
@@ -145,7 +147,7 @@ export function ThreadPanel({
     handleMentionKeyDown,
     closeMentionPicker,
     focusComposer,
-  } = useMentionPicker({ agents, value: replyDraft, setValue: setReplyDraft, textareaRef });
+  } = useMentionPicker({ agents, channels, value: replyDraft, setValue: setReplyDraft, textareaRef });
   const lastReply = replies[replies.length - 1] ?? null;
 
   function isThreadScrollAtBottom(element: HTMLDivElement) {
@@ -716,21 +718,36 @@ export function ThreadPanel({
         >
           {mentionState && mentionCandidates.length > 0 && (
             <div className="mention-picker">
-              {mentionCandidates.map((agent, index) => (
+              {mentionCandidates.map((candidate, index) => (
                 <button
-                  key={agent.id}
+                  key={`${candidate.kind}:${candidate.id}`}
                   className={index === mentionIndex ? "active" : ""}
                   onMouseDown={(event) => {
                     event.preventDefault();
-                    chooseMention(agent);
+                    chooseMention(candidate);
                   }}
                 >
-                  <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
-                  <span className="mention-picker-copy">
-                    <strong>{agent.display_name}</strong>
-                    <small>@{agent.handle}</small>
-                    {visibleAgentDescription(agent.description) && <em>{visibleAgentDescription(agent.description)}</em>}
-                  </span>
+                  {candidate.kind === "agent" ? (
+                    <>
+                      <AgentAvatar agent={candidate.agent} size="sm" title={`@${candidate.agent.handle}`} />
+                      <span className="mention-picker-copy">
+                        <strong>{candidate.agent.display_name}</strong>
+                        <small>@{candidate.agent.handle}</small>
+                        {visibleAgentDescription(candidate.agent.description) && <em>{visibleAgentDescription(candidate.agent.description)}</em>}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="mention-picker-channel-icon" aria-hidden="true">
+                        <Hash size={16} />
+                      </span>
+                      <span className="mention-picker-copy">
+                        <strong>#{candidate.channel.name}</strong>
+                        <small>Channel</small>
+                        {visibleChannelDescription(candidate.channel.description) && <em>{visibleChannelDescription(candidate.channel.description)}</em>}
+                      </span>
+                    </>
+                  )}
                 </button>
               ))}
             </div>

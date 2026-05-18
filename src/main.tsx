@@ -2641,6 +2641,7 @@ function App() {
 
       <Conversation
         channel={channel}
+        channels={data.channels}
         agents={data.agents}
         ownerProfile={data.owner_profile}
         agentActivities={data.agent_activities}
@@ -2708,6 +2709,7 @@ function App() {
       ) : showThread && (
         <ThreadPanel
           channel={channel}
+          channels={data.channels}
           agents={data.agents}
           channelAgents={channelAgents}
           ownerProfile={data.owner_profile}

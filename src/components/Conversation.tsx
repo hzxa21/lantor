@@ -33,6 +33,7 @@ import { TaskAssigneePicker } from "./TaskAssigneePicker";
 
 type ConversationProps = {
   channel: Channel | null;
+  channels: Channel[];
   agents: Agent[];
   ownerProfile: OwnerProfile;
   agentActivities: AgentActivity[];
@@ -115,6 +116,7 @@ function channelMessagePreview(body: string) {
 
 export function Conversation({
   channel,
+  channels,
   agents,
   ownerProfile,
   agentActivities,
@@ -175,7 +177,7 @@ export function Conversation({
     handleMentionKeyDown,
     closeMentionPicker,
     focusComposer,
-  } = useMentionPicker({ agents, value: draft, setValue: setDraft, textareaRef });
+  } = useMentionPicker({ agents, channels, value: draft, setValue: setDraft, textareaRef });
   const activeReplyProgressByRoot = useMemo<Record<string, ReturnType<typeof activeProgressByAgent>>>(() => {
     if (!channel) return {};
     return Object.fromEntries(
@@ -834,21 +836,36 @@ export function Conversation({
         >
           {mentionState && mentionCandidates.length > 0 && (
             <div className="mention-picker">
-              {mentionCandidates.map((agent, index) => (
+              {mentionCandidates.map((candidate, index) => (
                 <button
-                  key={agent.id}
+                  key={`${candidate.kind}:${candidate.id}`}
                   className={index === mentionIndex ? "active" : ""}
                   onMouseDown={(event) => {
                     event.preventDefault();
-                    chooseMention(agent);
+                    chooseMention(candidate);
                   }}
                 >
-                  <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
-                  <span className="mention-picker-copy">
-                    <strong>{agent.display_name}</strong>
-                    <small>@{agent.handle}</small>
-                    {visibleAgentDescription(agent.description) && <em>{visibleAgentDescription(agent.description)}</em>}
-                  </span>
+                  {candidate.kind === "agent" ? (
+                    <>
+                      <AgentAvatar agent={candidate.agent} size="sm" title={`@${candidate.agent.handle}`} />
+                      <span className="mention-picker-copy">
+                        <strong>{candidate.agent.display_name}</strong>
+                        <small>@{candidate.agent.handle}</small>
+                        {visibleAgentDescription(candidate.agent.description) && <em>{visibleAgentDescription(candidate.agent.description)}</em>}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="mention-picker-channel-icon" aria-hidden="true">
+                        <Hash size={16} />
+                      </span>
+                      <span className="mention-picker-copy">
+                        <strong>#{candidate.channel.name}</strong>
+                        <small>Channel</small>
+                        {visibleChannelDescription(candidate.channel.description) && <em>{visibleChannelDescription(candidate.channel.description)}</em>}
+                      </span>
+                    </>
+                  )}
                 </button>
               ))}
             </div>
@@ -879,7 +896,7 @@ export function Conversation({
               channel
                 ? isDm
                   ? `Message @${dmAgent?.handle || "agent"}`
-                  : `Message #${channel.name} - type @ to send to an agent`
+                  : `Message #${channel.name} - type @ or # to mention`
                 : "Create a channel before messaging"
             }
           />
