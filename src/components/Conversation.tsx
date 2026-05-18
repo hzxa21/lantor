@@ -191,6 +191,10 @@ export function Conversation({
     focusComposer();
   }
 
+  function shouldOpenThreadFromMessageClick() {
+    return window.matchMedia("(max-width: 760px)").matches;
+  }
+
   function hasDraggedFiles(event: DragEvent<HTMLElement>) {
     return Array.from(event.dataTransfer.types).includes("Files");
   }
@@ -497,7 +501,7 @@ export function Conversation({
                   className={`message-card ${isCompact ? "compact" : ""} ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""}`}
                   data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
                   onClick={() => {
-                    setActiveThreadId(message.id);
+                    if (shouldOpenThreadFromMessageClick()) setActiveThreadId(message.id);
                   }}
                   onContextMenu={(event) => {
                     event.preventDefault();
@@ -550,21 +554,37 @@ export function Conversation({
                             <CheckCircle2 size={14} /> #{linkedTask.number} · {linkedTask.status.replace("_", " ")}
                           </mark>
                         )}
-                        <button
-                          type="button"
-                          className={`message-save-button ${isSaved ? "saved" : ""}`}
-                          title={isSaved ? "Unsave message" : "Save message"}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onToggleMessageSaved(message, !isSaved);
-                          }}
-                        >
-                          <Bookmark size={13} />
-                          {isSaved ? "Saved" : "Save"}
-                        </button>
                       </div>
                     )}
+                    <div className="message-hover-actions" aria-label="Message actions">
+                      <button
+                        type="button"
+                        data-tooltip={replyCount > 0 ? "View thread" : "Reply in thread"}
+                        title={replyCount > 0 ? "View thread replies" : "Reply in thread"}
+                        aria-label={replyCount > 0 ? "View thread replies" : "Reply in thread"}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setActiveThreadId(message.id);
+                        }}
+                      >
+                        <MessageSquare size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className={isSaved ? "saved" : ""}
+                        data-tooltip={isSaved ? "Unsave" : "Save"}
+                        title={isSaved ? "Unsave message" : "Save message"}
+                        aria-label={isSaved ? "Unsave message" : "Save message"}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onToggleMessageSaved(message, !isSaved);
+                        }}
+                      >
+                        <Bookmark size={14} />
+                      </button>
+                    </div>
                     {message.delivery_state !== "streaming" && <MessageMarkdown body={firstLines(message.body)} />}
                     <MessageAttachments attachments={message.attachments} />
                     <MessageArtifacts artifacts={message.artifacts} onOpenArtifact={openArtifact} />
@@ -572,7 +592,17 @@ export function Conversation({
                       <div className="message-stream-state error">Response interrupted</div>
                     )}
                     {replyCount > 0 && replySummary && (
-                      <div className="thread-reply-summary">
+                      <button
+                        type="button"
+                        className="thread-reply-summary"
+                        title="View thread replies"
+                        aria-label={`View ${replyCount} ${replyCount === 1 ? "reply" : "replies"} in thread`}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setActiveThreadId(message.id);
+                        }}
+                      >
                         <div className="thread-reply-avatars">
                           {replySummary.participants.slice(0, 3).map((participant) => (
                             <span key={`${participant.sender_role}:${participant.sender_agent_id ?? participant.sender_name}`}>
@@ -582,9 +612,12 @@ export function Conversation({
                         </div>
                         <strong>{replyCount} {replyCount === 1 ? "reply" : "replies"}</strong>
                         {replySummary.latest && (
-                          <time dateTime={replySummary.latest.created_at}>Last reply {formatTime(replySummary.latest.created_at)}</time>
+                          <span className="thread-reply-summary-action">
+                            <time dateTime={replySummary.latest.created_at}>Last reply {formatTime(replySummary.latest.created_at)}</time>
+                            <span>View thread</span>
+                          </span>
                         )}
-                      </div>
+                      </button>
                     )}
                   </div>
                 </article>

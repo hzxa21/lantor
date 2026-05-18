@@ -1206,7 +1206,7 @@ button,
 .message-card.tap-focused {
   transform: none;
   border-color: transparent;
-  background: rgba(246, 247, 249, 0.92);
+  background: rgba(248, 248, 248, 0.72);
   box-shadow: none;
 }
 
@@ -1261,10 +1261,21 @@ button,
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  width: fit-content;
   max-width: 100%;
   margin-top: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--muted);
+  cursor: pointer;
   font-size: 12px;
+  text-align: left;
+}
+
+.thread-reply-summary:hover {
+  color: var(--accent);
 }
 
 .thread-reply-summary strong {
@@ -1274,11 +1285,156 @@ button,
   white-space: nowrap;
 }
 
-.thread-reply-summary time {
+.thread-reply-summary-action {
+  display: inline-grid;
+  grid-template-areas: "stack";
+  min-width: 0;
   overflow: hidden;
-  color: #8f8f95;
+}
+
+.thread-reply-summary-action time,
+.thread-reply-summary-action > span {
+  grid-area: stack;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.thread-reply-summary-action time {
+  color: #8f8f95;
+}
+
+.thread-reply-summary-action > span {
+  color: var(--accent);
+  font-weight: 800;
+  opacity: 0;
+}
+
+.thread-reply-summary:hover .thread-reply-summary-action time {
+  opacity: 0;
+}
+
+.thread-reply-summary:hover .thread-reply-summary-action > span {
+  opacity: 1;
+}
+
+.message-hover-actions {
+  position: absolute;
+  top: -12px;
+  right: 18px;
+  z-index: 2;
+  display: inline-flex;
+  gap: 0;
+  padding: 2px;
+  border: 1px solid rgba(29, 28, 29, 0.13);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow:
+    0 1px 1px rgba(29, 28, 29, 0.04),
+    0 4px 12px rgba(29, 28, 29, 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.message-card:hover .message-hover-actions,
+.message-card:focus-within .message-hover-actions,
+.thread-root:hover .message-hover-actions,
+.thread-root:focus-within .message-hover-actions,
+.reply-list article:hover .message-hover-actions,
+.reply-list article:focus-within .message-hover-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.message-hover-actions button {
+  position: relative;
+  display: grid;
+  width: 30px;
+  height: 28px;
+  place-items: center;
+  border-radius: 6px;
+  background: #fff;
+  color: #5e5d60;
+}
+
+.message-hover-actions button:hover {
+  background: rgba(29, 28, 29, 0.06);
+  color: #1d1c1d;
+}
+
+.message-hover-actions button:first-child:hover {
+  color: var(--accent);
+}
+
+.message-hover-actions button.saved:last-child {
+  background: #fff;
+  color: #8a5b00;
+}
+
+.message-hover-actions button.saved:last-child:hover {
+  background: rgba(29, 28, 29, 0.06);
+}
+
+.message-hover-actions button.saved svg {
+  fill: currentColor;
+}
+
+.message-hover-actions button[data-tooltip]::after {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  z-index: 3;
+  max-width: 140px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(29, 28, 29, 0.94);
+  color: #fff;
+  content: attr(data-tooltip);
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 14px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 2px);
+  transition:
+    opacity 90ms ease,
+    transform 90ms ease;
+  white-space: nowrap;
+}
+
+.message-hover-actions button[data-tooltip]::before {
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  z-index: 3;
+  width: 8px;
+  height: 8px;
+  background: rgba(29, 28, 29, 0.94);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 2px) rotate(45deg);
+  transition:
+    opacity 90ms ease,
+    transform 90ms ease;
+}
+
+.message-hover-actions button[data-tooltip]:hover::after,
+.message-hover-actions button[data-tooltip]:focus-visible::after,
+.message-hover-actions button[data-tooltip]:hover::before,
+.message-hover-actions button[data-tooltip]:focus-visible::before {
+  opacity: 1;
+  transform: translate(-50%, 0) rotate(45deg);
+}
+
+.message-hover-actions button[data-tooltip]:hover::after,
+.message-hover-actions button[data-tooltip]:focus-visible::after {
+  transform: translate(-50%, 0);
 }
 
 .thread-reply-avatars {
@@ -5852,6 +6008,10 @@ body.resizing-column * {
     border-color: transparent;
     background: transparent;
     box-shadow: none;
+  }
+
+  .message-hover-actions {
+    display: none;
   }
 
   .message-card.compact,

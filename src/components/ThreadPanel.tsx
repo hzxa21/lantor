@@ -468,18 +468,21 @@ export function ThreadPanel({
                         <strong>{activeRoot.sender_name}</strong>
                         <time>{formatTime(activeRoot.created_at)}</time>
                         {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
+                      </div>
+                      <div className="message-hover-actions" aria-label="Message actions">
                         <button
                           type="button"
-                          className={`message-save-button ${rootSaved ? "saved" : ""}`}
+                          className={rootSaved ? "saved" : ""}
+                          data-tooltip={rootSaved ? "Unsave" : "Save"}
                           title={rootSaved ? "Unsave message" : "Save message"}
+                          aria-label={rootSaved ? "Unsave message" : "Save message"}
                           onPointerDown={(event) => event.stopPropagation()}
                           onClick={(event) => {
                             event.stopPropagation();
                             onToggleMessageSaved(activeRoot, !rootSaved);
                           }}
                         >
-                          <Bookmark size={13} />
-                          {rootSaved ? "Saved" : "Save"}
+                          <Bookmark size={14} />
                         </button>
                       </div>
                       {activeRoot.delivery_state !== "streaming" && <MessageMarkdown body={activeRoot.body} />}
@@ -687,21 +690,24 @@ export function ThreadPanel({
                           <strong>{reply.sender_name}</strong>
                           <time>{formatTime(reply.created_at)}</time>
                           {wasEdited(reply) && <span className="edited-indicator">edited</span>}
-                          <button
-                            type="button"
-                            className={`message-save-button ${replySaved ? "saved" : ""}`}
-                            title={replySaved ? "Unsave message" : "Save message"}
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onToggleMessageSaved(reply, !replySaved);
-                            }}
-                          >
-                            <Bookmark size={13} />
-                            {replySaved ? "Saved" : "Save"}
-                          </button>
                         </div>
                       )}
+                      <div className="message-hover-actions" aria-label="Message actions">
+                        <button
+                          type="button"
+                          className={replySaved ? "saved" : ""}
+                          data-tooltip={replySaved ? "Unsave" : "Save"}
+                          title={replySaved ? "Unsave message" : "Save message"}
+                          aria-label={replySaved ? "Unsave message" : "Save message"}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleMessageSaved(reply, !replySaved);
+                          }}
+                        >
+                          <Bookmark size={14} />
+                        </button>
+                      </div>
                       {reply.delivery_state !== "streaming" && <MessageMarkdown body={reply.body} />}
                       <MessageAttachments attachments={reply.attachments} />
                       <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />

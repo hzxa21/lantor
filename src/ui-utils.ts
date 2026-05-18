@@ -158,12 +158,23 @@ export function buildPresetCommand(form: AgentForm) {
 }
 
 export function formatTime(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "2-digit",
-    day: "2-digit",
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const clock = new Intl.DateTimeFormat("en", {
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(value));
+  }).format(date);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (isSameCalendarDay(value, now.toISOString())) return `Today ${clock}`;
+  if (isSameCalendarDay(value, yesterday.toISOString())) return `Yesterday ${clock}`;
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 export function formatClockTime(value: string) {
