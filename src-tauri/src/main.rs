@@ -406,14 +406,25 @@ async fn maybe_insert_work_item_system_message(
     }
     if work_item.task_number.is_some() {
         if let Some(task_id) = work_item.task_id {
-            let is_assignee: Option<bool> =
-                sqlx::query_scalar("select assignee_agent_id = $2 from tasks where id = $1")
-                    .bind(task_id)
-                    .bind(work_item.agent_id)
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(to_string)?;
-            if is_assignee != Some(true) {
+            let task_row = sqlx::query(
+                "select coalesce(assignee_agent_id = $2, false) as is_assignee, status from tasks where id = $1",
+            )
+            .bind(task_id)
+            .bind(work_item.agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string)?;
+            let Some(task_row) = task_row else {
+                return Ok(());
+            };
+            if !task_row.get::<bool, _>("is_assignee") {
+                return Ok(());
+            }
+            let task_status: String = task_row.get("status");
+            if reason == "work_item_finished"
+                && work_item.status == "done"
+                && matches!(task_status.as_str(), "todo" | "in_progress")
+            {
                 return Ok(());
             }
         }
@@ -5543,8 +5554,21 @@ async fn dismiss_inbox_items(
     items: Vec<DismissInboxItemInput>,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
+    dismiss_inbox_items_in_pool(
+        &state.pool,
+        items
+            .into_iter()
+            .map(|item| (item.item_id, item.dismissed_until)),
+    )
+    .await
+}
+
+pub(crate) async fn dismiss_inbox_items_in_pool<I>(pool: &PgPool, items: I) -> CommandResult<()>
+where
+    I: IntoIterator<Item = (String, DateTime<Utc>)>,
+{
     for item in items {
-        let item_id = item.item_id.trim();
+        let item_id = item.0.trim();
         if item_id.is_empty() {
             continue;
         }
@@ -5561,13 +5585,127 @@ async fn dismiss_inbox_items(
             "#,
         )
         .bind(item_id)
-        .bind(item.dismissed_until)
-        .execute(&state.pool)
+        .bind(item.1)
+        .execute(pool)
         .await
         .map_err(to_string)?;
     }
 
     Ok(())
+}
+
+async fn upsert_owner_inbox_dismissals_from_query(pool: &PgPool, query: &str) -> CommandResult<()> {
+    sqlx::query(query).execute(pool).await.map_err(to_string)?;
+    Ok(())
+}
+
+pub(crate) async fn mark_all_owner_inbox_read_in_pool(pool: &PgPool) -> CommandResult<()> {
+    upsert_owner_inbox_dismissals_from_query(
+        pool,
+        r#"
+        insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
+        select 'task:' || id::text, now(), now()
+        from tasks
+        where status = 'in_review'
+        on conflict (item_id) do update set
+            dismissed_until = greatest(owner_inbox_dismissals.dismissed_until, excluded.dismissed_until),
+            dismissed_at = now()
+        "#,
+    )
+    .await?;
+
+    upsert_owner_inbox_dismissals_from_query(
+        pool,
+        r#"
+        insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
+        select 'reminder:' || id::text, now(), now()
+        from reminders
+        where status = 'fired'
+        on conflict (item_id) do update set
+            dismissed_until = greatest(owner_inbox_dismissals.dismissed_until, excluded.dismissed_until),
+            dismissed_at = now()
+        "#,
+    )
+    .await?;
+
+    upsert_owner_inbox_dismissals_from_query(
+        pool,
+        r#"
+        insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
+        select 'mention:' || id::text, now(), now()
+        from messages
+        left join channel_read_state r on r.channel_id = messages.channel_id
+        where sender_role <> 'owner'
+          and (lower(body) like '%@theo%' or lower(body) like '%@dylan%')
+          and created_at > coalesce(r.last_read_at, '-infinity'::timestamptz)
+        on conflict (item_id) do update set
+            dismissed_until = greatest(owner_inbox_dismissals.dismissed_until, excluded.dismissed_until),
+            dismissed_at = now()
+        "#,
+    )
+    .await?;
+
+    upsert_owner_inbox_dismissals_from_query(
+        pool,
+        r#"
+        insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
+        select
+            'thread:' || root.id::text || ':' || coalesce(latest.id, root.id)::text,
+            now(),
+            now()
+        from messages root
+        left join lateral (
+            select reply.id, reply.created_at
+            from messages reply
+            where reply.thread_root_id = root.id
+              and reply.delivery_state <> 'streaming'
+            order by reply.created_at desc
+            limit 1
+        ) latest on true
+        where root.thread_root_id is null
+          and root.delivery_state <> 'streaming'
+          and latest.created_at > coalesce((
+              select last_read_at
+              from channel_read_state
+              where channel_id = root.channel_id
+          ), '-infinity'::timestamptz)
+        on conflict (item_id) do update set
+            dismissed_until = greatest(owner_inbox_dismissals.dismissed_until, excluded.dismissed_until),
+            dismissed_at = now()
+        "#,
+    )
+    .await?;
+
+    sqlx::query(
+        r#"
+        insert into channel_read_state (channel_id, last_read_at)
+        select id, now()
+        from channels
+        on conflict (channel_id) do update set last_read_at = excluded.last_read_at
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    sqlx::query(
+        r#"
+        update reminders
+        set status = 'completed', updated_at = now()
+        where status = 'fired'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    notify_ui_refresh(pool, "owner_inbox_mark_all_read").await?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn mark_all_inbox_read(state: State<'_, AppState>) -> CommandResult<()> {
+    mark_all_owner_inbox_read_in_pool(&state.pool).await
 }
 
 pub(crate) async fn mark_channel_read_in_pool(
@@ -10255,10 +10393,10 @@ async fn wait_for_agent_run(
         .bind(work_status)
         .execute(&pool)
         .await;
-        notify_ui_work_item_changed(&pool, work_item_id, "work_item_finished").await;
         let _ =
             mark_task_after_work_item_finished(&pool, work_item_id, agent_id, run_id, work_status)
                 .await;
+        notify_ui_work_item_changed(&pool, work_item_id, "work_item_finished").await;
         let _ = record_agent_activity(
             &pool,
             Some(agent_id),
@@ -13988,7 +14126,6 @@ async fn finish_warm_claude_active_turn(
         .execute(pool)
         .await
         .map_err(to_string)?;
-        notify_ui_work_item_changed(pool, work_item_id, "work_item_finished").await;
         mark_task_after_work_item_finished(
             pool,
             work_item_id,
@@ -13997,6 +14134,7 @@ async fn finish_warm_claude_active_turn(
             work_status,
         )
         .await?;
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_finished").await;
         record_agent_activity(
             pool,
             Some(agent_id),
@@ -14199,7 +14337,6 @@ async fn finish_warm_codex_active_turn(
         .execute(pool)
         .await
         .map_err(to_string)?;
-        notify_ui_work_item_changed(pool, work_item_id, "work_item_finished").await;
         mark_task_after_work_item_finished(
             pool,
             work_item_id,
@@ -14208,6 +14345,7 @@ async fn finish_warm_codex_active_turn(
             work_status,
         )
         .await?;
+        notify_ui_work_item_changed(pool, work_item_id, "work_item_finished").await;
         record_agent_activity(
             pool,
             Some(agent_id),
@@ -14412,6 +14550,7 @@ pub fn run() {
             dispatch_agent_work,
             install_supervisor_service,
             dismiss_inbox_items,
+            mark_all_inbox_read,
             mark_channel_read,
             open_dm_with_agent,
             open_external_url,
@@ -14488,12 +14627,12 @@ mod tests {
         extract_agent_mentions, finish_streaming_agent_message, format_memory_index_entry,
         handle_agent_event, inbox_wake_context, insert_agent_message, insert_memory_index_entry,
         load_agent_memory_context, load_channel_agent_roster, load_messages, load_reminders,
-        load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
-        normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
-        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
-        queue_mentions_as_work_items, record_agent_activity,
-        recover_supervisor_commands_at_startup, send_owner_message_in_pool, silent_reply_reason,
-        split_streaming_agent_event_lines, streaming_message_body_is_empty,
+        load_runtime_thread_id, mark_all_owner_inbox_read_in_pool,
+        maybe_hide_silent_streaming_reply, migrate, normalize_open_link_target,
+        notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
+        process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
+        record_agent_activity, recover_supervisor_commands_at_startup, send_owner_message_in_pool,
+        silent_reply_reason, split_streaming_agent_event_lines, streaming_message_body_is_empty,
         try_claim_unassigned_task, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, AgentInboxItemInput, ClaudeSurface,
@@ -19157,7 +19296,91 @@ mod tests {
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
+            assert_eq!(assigned_messages, 0);
+
+            sqlx::query("update tasks set status = 'in_review' where id = $1")
+                .bind(assigned_task_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            notify_ui_work_item_changed(&pool, assigned_work_item_id, "work_item_finished").await;
+
+            let assigned_messages: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from messages
+                where channel_id = $1
+                  and thread_root_id = $2
+                  and sender_role = 'system'
+                  and body like '@claim-winner-finish completed task run%'
+                "#,
+            )
+            .bind(channel_id)
+            .bind(assigned_message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
             assert_eq!(assigned_messages, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn mark_all_inbox_read_uses_current_cutoff_for_active_tasks() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "mark-all-read").await?;
+            let message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'Review this task', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into tasks (message_id, channel_id, title, status, updated_at)
+                values ($1, $2, 'Review this task', 'in_review', now() - interval '1 hour')
+                returning id
+                "#,
+            )
+            .bind(message_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_updated_at: DateTime<Utc> =
+                sqlx::query_scalar("select updated_at from tasks where id = $1")
+                    .bind(task_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            let before_mark_all: DateTime<Utc> = sqlx::query_scalar("select now()")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+
+            mark_all_owner_inbox_read_in_pool(&pool).await?;
+
+            let dismissed_until: DateTime<Utc> = sqlx::query_scalar(
+                "select dismissed_until from owner_inbox_dismissals where item_id = $1",
+            )
+            .bind(format!("task:{task_id}"))
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            assert!(dismissed_until > task_updated_at);
+            assert!(dismissed_until >= before_mark_all);
             Ok(())
         }
         .await;
@@ -19657,6 +19880,180 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(system_messages, 1);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn mark_all_owner_inbox_read_writes_db_snapshot() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "mark-all-inbox").await?;
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'thread root', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let reply_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, thread_root_id, sender_name, sender_role, body, is_task)
+                values ($1, $2, 'Agent', 'agent', '@Dylan latest reply', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .bind(root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'task root', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let task_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into tasks (message_id, channel_id, title, status)
+                values ($1, $2, 'Review this', 'in_review')
+                returning id
+                "#,
+            )
+            .bind(task_message_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let active_task_message_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'active task root', true)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let active_task_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into tasks (message_id, channel_id, title, status)
+                values ($1, $2, 'In progress task', 'in_progress')
+                returning id
+                "#,
+            )
+            .bind(active_task_message_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let reminder_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into reminders (channel_id, title, note, due_at, fired_at, recurrence, status)
+                values ($1, 'Due reminder', '', now() - interval '1 minute', now(), 'none', 'fired')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let read_channel_id = insert_test_channel(&pool, "mark-all-read-thread").await?;
+            let read_root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'already read thread root', false)
+                returning id
+                "#,
+            )
+            .bind(read_channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let read_reply_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, thread_root_id, sender_name, sender_role, body, is_task)
+                values ($1, $2, 'Agent', 'agent', '@Dylan already read reply', false)
+                returning id
+                "#,
+            )
+            .bind(read_channel_id)
+            .bind(read_root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                "insert into channel_read_state (channel_id, last_read_at) values ($1, now())",
+            )
+            .bind(read_channel_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            mark_all_owner_inbox_read_in_pool(&pool).await?;
+
+            let read_state_count: i64 = sqlx::query_scalar(
+                "select count(*)::bigint from channel_read_state where channel_id = $1",
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(read_state_count, 1);
+
+            for item_id in [
+                format!("thread:{root_id}:{reply_id}"),
+                format!("mention:{reply_id}"),
+                format!("task:{task_id}"),
+                format!("reminder:{reminder_id}"),
+            ] {
+                let exists: bool = sqlx::query_scalar(
+                    "select exists(select 1 from owner_inbox_dismissals where item_id = $1)",
+                )
+                .bind(item_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+                assert!(exists);
+            }
+            for item_id in [
+                format!("task:{active_task_id}"),
+                format!("thread:{read_root_id}:{read_reply_id}"),
+                format!("mention:{read_reply_id}"),
+            ] {
+                let exists: bool = sqlx::query_scalar(
+                    "select exists(select 1 from owner_inbox_dismissals where item_id = $1)",
+                )
+                .bind(item_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+                assert!(!exists);
+            }
+
+            let reminder_status: String =
+                sqlx::query_scalar("select status from reminders where id = $1")
+                    .bind(reminder_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(reminder_status, "completed");
             Ok(())
         }
         .await;

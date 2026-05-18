@@ -17,6 +17,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{postgres::PgListener, PgPool, Row};
@@ -28,10 +29,11 @@ use crate::models::AttachmentUpload;
 use crate::{
     add_agent_to_channel, agent_workspace_list_in_pool, agent_workspace_read_file_in_pool,
     complete_reminder_in_pool, create_agent_in_pool, create_channel_in_pool, delete_agent_in_pool,
-    delete_channel_in_pool, load_artifact, load_bootstrap, mark_channel_read_in_pool,
-    open_dm_with_agent_in_pool, send_owner_message_in_pool, set_channel_agent_membership_in_pool,
-    set_message_saved_in_pool, to_string, update_agent_in_pool, update_channel_in_pool,
-    update_owner_profile_in_pool, UI_REFRESH_CHANNEL,
+    delete_channel_in_pool, dismiss_inbox_items_in_pool, load_artifact, load_bootstrap,
+    mark_all_owner_inbox_read_in_pool, mark_channel_read_in_pool, open_dm_with_agent_in_pool,
+    send_owner_message_in_pool, set_channel_agent_membership_in_pool, set_message_saved_in_pool,
+    to_string, update_agent_in_pool, update_channel_in_pool, update_owner_profile_in_pool,
+    UI_REFRESH_CHANNEL,
 };
 
 const WEB_SEND_MESSAGE_BODY_LIMIT: usize = 128 * 1024 * 1024;
@@ -94,6 +96,19 @@ struct SetChannelAgentMembershipRequest {
 #[serde(rename_all = "camelCase")]
 struct ReminderIdRequest {
     reminder_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DismissInboxItemRequest {
+    item_id: String,
+    dismissed_until: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DismissInboxItemsRequest {
+    items: Vec<DismissInboxItemRequest>,
 }
 
 #[derive(Deserialize)]
@@ -241,6 +256,8 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
         )
         .route("/api/set_message_saved", post(api_set_message_saved))
         .route("/api/update_owner_profile", post(api_update_owner_profile))
+        .route("/api/dismiss_inbox_items", post(api_dismiss_inbox_items))
+        .route("/api/mark_all_inbox_read", post(api_mark_all_inbox_read))
         .route("/api/mark_channel_read", post(api_mark_channel_read))
         .route("/api/complete_reminder", post(api_complete_reminder))
         .route("/api/artifact_read", post(api_artifact_read))
@@ -468,6 +485,31 @@ async fn api_mark_channel_read(
     Json(request): Json<ChannelIdRequest>,
 ) -> Result<impl IntoResponse, Response> {
     mark_channel_read_in_pool(&state.pool, request.channel_id)
+        .await
+        .map(|_| Json(json!({ "ok": true })))
+        .map_err(api_error)
+}
+
+async fn api_dismiss_inbox_items(
+    State(state): State<Arc<WebState>>,
+    Json(request): Json<DismissInboxItemsRequest>,
+) -> Result<impl IntoResponse, Response> {
+    dismiss_inbox_items_in_pool(
+        &state.pool,
+        request
+            .items
+            .into_iter()
+            .map(|item| (item.item_id, item.dismissed_until)),
+    )
+    .await
+    .map(|_| Json(json!({ "ok": true })))
+    .map_err(api_error)
+}
+
+async fn api_mark_all_inbox_read(
+    State(state): State<Arc<WebState>>,
+) -> Result<impl IntoResponse, Response> {
+    mark_all_owner_inbox_read_in_pool(&state.pool)
         .await
         .map(|_| Json(json!({ "ok": true })))
         .map_err(api_error)

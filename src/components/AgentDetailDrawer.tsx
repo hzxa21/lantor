@@ -232,7 +232,7 @@ function workItemStatusLabel(status: string) {
   if (status === "queued") return "Queued";
   if (status === "running") return "Running";
   if (status === "cancelling") return "Cancelling";
-  if (status === "done") return "Done";
+  if (status === "done") return "Run done";
   if (status === "failed") return "Failed";
   if (status === "cancelled") return "Cancelled";
   return status.replace(/_/g, " ");

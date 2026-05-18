@@ -97,6 +97,14 @@ const MOBILE_EDGE_SWIPE_OPEN_PX = 72;
 const MOBILE_EDGE_SWIPE_MAX_VERTICAL_PX = 48;
 const MOBILE_SIDEBAR_PEEK_PX = 18;
 const MOBILE_SIDEBAR_FLING_VELOCITY = 0.45;
+const INBOX_KIND_PRIORITY: Record<InboxItem["kind"], number> = {
+  reminder: 0,
+  mention: 1,
+  dm: 2,
+  thread: 3,
+  task: 4,
+  channel: 5,
+};
 
 type UiBackendEvent =
   | { type: "refresh"; reason?: string }
@@ -1437,7 +1445,7 @@ function App() {
       .sort((left, right) => (latestByRoot.get(right.id) ?? 0) - (latestByRoot.get(left.id) ?? 0));
   }, [visibleMessages, locallyUnfollowedThreadIds, threadUnreadCounts]);
 
-  const inboxItems = useMemo(() => {
+  const allInboxItems = useMemo(() => {
     if (!data) return [];
     const channelsById = new Map(data.channels.map((item) => [item.id, item]));
     const agentsById = new Map(data.agents.map((item) => [item.id, item]));
@@ -1524,7 +1532,6 @@ function App() {
     visibleMessages
       .filter((message) => message.sender_role !== "owner" && messageMentionsOwner(message))
       .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
-      .slice(0, 24)
       .forEach((message) => {
         const rootId = message.thread_root_id ?? message.id;
         items.push({
@@ -1550,7 +1557,6 @@ function App() {
 
     data.tasks
       .filter((task) => task.status !== "done")
-      .slice(0, 24)
       .forEach((task) => {
         items.push({
           id: `task:${task.id}`,
@@ -1593,15 +1599,11 @@ function App() {
         });
       });
 
-    const kindPriority: Record<InboxItem["kind"], number> = {
-      reminder: 0,
-      mention: 1,
-      dm: 2,
-      thread: 3,
-      task: 4,
-      channel: 5,
-    };
-    return items
+    return items;
+  }, [allThreadRootMessages, channelAlertIds, data, threadReplyCounts, threadUnreadCounts, visibleMessages]);
+
+  const inboxItems = useMemo(() => {
+    return allInboxItems
       .filter((item) => {
         const dismissedAt = dismissedInboxItems[item.id];
         if (!dismissedAt) return true;
@@ -1609,12 +1611,12 @@ function App() {
       })
       .sort((left, right) => {
         if (left.unread !== right.unread) return left.unread ? -1 : 1;
-        const priority = kindPriority[left.kind] - kindPriority[right.kind];
+        const priority = INBOX_KIND_PRIORITY[left.kind] - INBOX_KIND_PRIORITY[right.kind];
         if (priority !== 0) return priority;
         return new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime();
       })
       .slice(0, 120);
-  }, [allThreadRootMessages, channelAlertIds, data, dismissedInboxItems, threadReplyCounts, threadUnreadCounts, visibleMessages]);
+  }, [allInboxItems, dismissedInboxItems]);
 
   const inboxUnreadCount = useMemo(() => {
     return inboxItems.filter((item) => item.unread).length;
@@ -2500,10 +2502,10 @@ function App() {
     setShowSavedModal(false);
   }
 
-  async function persistDismissedInboxItems(items: InboxItem[]) {
+  async function persistDismissedInboxItems(items: InboxItem[], dismissedUntil?: string) {
     const dismissals = items.map((item) => ({
       itemId: item.id,
-      dismissedUntil: item.timestamp,
+      dismissedUntil: dismissedUntil ?? item.timestamp,
     }));
     if (dismissals.length === 0) return;
     await apiInvoke("dismiss_inbox_items", { items: dismissals });
@@ -2528,8 +2530,9 @@ function App() {
   }
 
   async function markInboxItemRead(item: InboxItem) {
-    setDismissedInboxItems((current) => ({ ...current, [item.id]: item.timestamp }));
-    const operations: Promise<unknown>[] = [persistDismissedInboxItems([item])];
+    const dismissedUntil = new Date().toISOString();
+    setDismissedInboxItems((current) => ({ ...current, [item.id]: dismissedUntil }));
+    const operations: Promise<unknown>[] = [persistDismissedInboxItems([item], dismissedUntil)];
     if (item.threadId) {
       setThreadUnreadCounts((current) => {
         if (!current[item.threadId!]) return current;
@@ -2556,26 +2559,16 @@ function App() {
 
   async function markAllInboxRead() {
     if (!data) return;
+    const markReadItems = allInboxItems.filter((item) => item.unread);
+    const dismissedUntil = new Date().toISOString();
     setDismissedInboxItems((current) => {
       const next = { ...current };
-      for (const item of inboxItems) {
-        next[item.id] = item.timestamp;
+      for (const item of markReadItems) {
+        next[item.id] = dismissedUntil;
       }
       return next;
     });
-    const channelIds = new Set<string>();
-    for (const item of inboxItems) {
-      if (item.channelId && (item.unread || channelAlertIds.has(item.channelId))) {
-        channelIds.add(item.channelId);
-      }
-    }
-    await Promise.all([
-      persistDismissedInboxItems(inboxItems),
-      ...[...channelIds].map((channelId) => apiInvoke("mark_channel_read", { channelId })),
-      ...data.reminders
-        .filter((reminder) => reminder.status === "fired")
-        .map((reminder) => apiInvoke("complete_reminder", { reminderId: reminder.id })),
-    ]);
+    await apiInvoke("mark_all_inbox_read");
     setChannelAlertIds(new Set());
     setThreadUnreadCounts({});
     await refresh();
