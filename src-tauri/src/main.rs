@@ -31,7 +31,7 @@ use tauri::{Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     process::Command,
-    sync::Mutex as AsyncMutex,
+    sync::{Mutex as AsyncMutex, Semaphore},
     time::{sleep, timeout},
 };
 use uuid::Uuid;
@@ -75,6 +75,8 @@ const INBOX_WAKE_OTHER_SUMMARY_LIMIT: i64 = 6;
 const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
+const CODEX_TURN_START_TIMEOUT: Duration = Duration::from_secs(90);
+const SUPERVISOR_COMMAND_CONCURRENCY: usize = 4;
 const CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS: i64 = 180_000;
 const CODEX_CONTEXT_ROTATE_MIN_INPUT_TOKENS: i64 = 50_000;
 const CODEX_CONTEXT_ROTATE_ENV: &str = "LANTOR_CODEX_CONTEXT_ROTATE_INPUT_TOKENS";
@@ -151,6 +153,13 @@ struct CodexActiveTurn {
 struct CodexSteerRequest {
     work_item_id: Uuid,
     run_id: Uuid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CodexActiveTurnScheduleState {
+    ReadyForSteer,
+    WaitingForTurnId,
+    StuckBeforeTurnId,
 }
 
 struct WarmClaudeRuntime {
@@ -11130,13 +11139,14 @@ async fn spawn_warm_codex_runtime(
     }
     tokio::spawn(wait_for_warm_codex_process(
         pool.clone(),
-        registry,
+        registry.clone(),
         agent_id,
         runtime.clone(),
         child,
     ));
     tokio::spawn(codex_warm_idle_reaper(
         pool.clone(),
+        registry.clone(),
         agent_id,
         runtime.clone(),
     ));
@@ -11164,8 +11174,10 @@ async fn run_supervisor() -> CommandResult<()> {
     }
 
     mark_orphaned_agent_runs(&pool).await?;
+    recover_supervisor_commands_at_startup(&pool).await?;
     let codex_registry = WarmCodexRegistry::default();
     let claude_registry = WarmClaudeRegistry::default();
+    let command_semaphore = Arc::new(Semaphore::new(SUPERVISOR_COMMAND_CONCURRENCY));
     let mut listener = PgListener::connect(&database_url)
         .await
         .map_err(to_string)?;
@@ -11183,12 +11195,28 @@ async fn run_supervisor() -> CommandResult<()> {
         }
         schedule_queued_work_items(&pool, &codex_registry).await?;
         let mut processed_command = false;
-        while let Some(command) = claim_next_supervisor_command(&pool).await? {
+        loop {
+            let Ok(permit) = command_semaphore.clone().try_acquire_owned() else {
+                break;
+            };
+            let Some(command) = claim_next_supervisor_command(&pool).await? else {
+                drop(permit);
+                break;
+            };
             processed_command = true;
             let command_id = command.id;
-            let result =
-                process_supervisor_command(&pool, &codex_registry, &claude_registry, command).await;
-            finish_supervisor_command(&pool, command_id, result.err()).await?;
+            let pool = pool.clone();
+            let codex_registry = codex_registry.clone();
+            let claude_registry = claude_registry.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let result =
+                    process_supervisor_command(&pool, &codex_registry, &claude_registry, command)
+                        .await;
+                if let Err(err) = finish_supervisor_command(&pool, command_id, result.err()).await {
+                    eprintln!("failed to finish supervisor command {command_id}: {err}");
+                }
+            });
         }
         if processed_command {
             continue;
@@ -11209,7 +11237,7 @@ async fn run_supervisor() -> CommandResult<()> {
 async fn active_codex_turn_surface(
     registry: &WarmCodexRegistry,
     agent_id: Uuid,
-) -> Option<(Option<Uuid>, Option<Uuid>, bool)> {
+) -> Option<(Option<Uuid>, Option<Uuid>, CodexActiveTurnScheduleState)> {
     let runtime = {
         let runtimes = registry.runtimes.lock().await;
         runtimes.get(&agent_id).cloned()
@@ -11219,8 +11247,26 @@ async fn active_codex_turn_surface(
     Some((
         active.channel_id,
         active.thread_root_id,
-        active.turn_id.is_some() && !active.steer_disabled,
+        codex_active_turn_schedule_state(
+            active.turn_id.as_deref(),
+            active.steer_disabled,
+            active.started_at.elapsed(),
+        ),
     ))
+}
+
+fn codex_active_turn_schedule_state(
+    turn_id: Option<&str>,
+    steer_disabled: bool,
+    elapsed: Duration,
+) -> CodexActiveTurnScheduleState {
+    if turn_id.is_some() && !steer_disabled {
+        return CodexActiveTurnScheduleState::ReadyForSteer;
+    }
+    if turn_id.is_none() && elapsed >= CODEX_TURN_START_TIMEOUT {
+        return CodexActiveTurnScheduleState::StuckBeforeTurnId;
+    }
+    CodexActiveTurnScheduleState::WaitingForTurnId
 }
 
 async fn same_codex_surface(
@@ -11262,13 +11308,18 @@ async fn should_schedule_queued_work_item(
         return Ok(!agent_has_active_or_pending_start(pool, agent_id).await?);
     }
 
-    let Some((active_channel_id, active_thread_root_id, has_turn_id)) =
+    let Some((active_channel_id, active_thread_root_id, schedule_state)) =
         active_codex_turn_surface(registry, agent_id).await
     else {
         return Ok(true);
     };
-    if !has_turn_id {
-        return Ok(false);
+    match schedule_state {
+        CodexActiveTurnScheduleState::ReadyForSteer => {}
+        CodexActiveTurnScheduleState::WaitingForTurnId => return Ok(false),
+        CodexActiveTurnScheduleState::StuckBeforeTurnId => {
+            reap_stuck_codex_turn(pool, registry, agent_id, "scheduler").await?;
+            return Ok(true);
+        }
     }
     same_codex_surface(
         pool,
@@ -11352,6 +11403,39 @@ async fn mark_orphaned_agent_runs(pool: &PgPool) -> CommandResult<()> {
         update agent_work_items
         set status = 'failed',
             completed_at = now(),
+            updated_at = now()
+        where status = 'running'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(())
+}
+
+async fn recover_supervisor_commands_at_startup(pool: &PgPool) -> CommandResult<()> {
+    sqlx::query(
+        r#"
+        update supervisor_commands c
+        set status = 'done',
+            error = 'skipped stale command for terminal work item',
+            updated_at = now()
+        from agent_work_items w
+        where c.work_item_id = w.id
+          and c.status in ('pending', 'running')
+          and w.status in ('cancelled', 'failed', 'done', 'silent')
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    sqlx::query(
+        r#"
+        update supervisor_commands
+        set status = 'pending',
+            error = 'requeued after supervisor restart',
             updated_at = now()
         where status = 'running'
         "#,
@@ -13258,24 +13342,117 @@ async fn terminate_process_group(pid: i32) -> CommandResult<()> {
     Ok(())
 }
 
-async fn codex_warm_idle_reaper(pool: PgPool, agent_id: Uuid, runtime: Arc<WarmCodexRuntime>) {
+async fn reap_stuck_codex_runtime(
+    pool: &PgPool,
+    registry: &WarmCodexRegistry,
+    agent_id: Uuid,
+    runtime: &Arc<WarmCodexRuntime>,
+    source: &str,
+) -> CommandResult<bool> {
+    let (pid, elapsed_ms) = {
+        let mut state = runtime.state.lock().await;
+        let Some(active) = state.active.as_ref() else {
+            return Ok(false);
+        };
+        let elapsed = active.started_at.elapsed();
+        if active.turn_id.is_some() || elapsed < CODEX_TURN_START_TIMEOUT {
+            return Ok(false);
+        }
+        let elapsed_ms = elapsed.as_millis();
+        state.alive = false;
+        (runtime.pid, elapsed_ms)
+    };
+
+    let detail = format!(
+        "no turn id after {elapsed_ms} ms; source={source}; process_group={}",
+        pid.map(|pid| pid.to_string())
+            .unwrap_or_else(|| "unavailable".to_owned())
+    );
+    finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(detail.clone())).await?;
+    if let Some(pid) = pid {
+        if let Err(err) = terminate_process_group(pid).await {
+            record_agent_activity(
+                pool,
+                Some(agent_id),
+                None,
+                "run_error",
+                "Codex zombie turn stop failed",
+                err,
+            )
+            .await?;
+        }
+    }
+    let _ = sqlx::query(
+        "update runtime_sessions set status = 'failed', updated_at = now() where agent_id = $1 and runtime = 'codex'",
+    )
+    .bind(agent_id)
+    .execute(pool)
+    .await;
+    remove_warm_codex_runtime_if_same(registry, agent_id, runtime).await;
+    record_agent_activity(
+        pool,
+        Some(agent_id),
+        None,
+        "run_error",
+        "Codex zombie turn recovered",
+        detail,
+    )
+    .await?;
+    let _ = notify_supervisor_wake(pool).await;
+    Ok(true)
+}
+
+async fn reap_stuck_codex_turn(
+    pool: &PgPool,
+    registry: &WarmCodexRegistry,
+    agent_id: Uuid,
+    source: &str,
+) -> CommandResult<bool> {
+    let runtime = {
+        let runtimes = registry.runtimes.lock().await;
+        runtimes.get(&agent_id).cloned()
+    };
+    let Some(runtime) = runtime else {
+        return Ok(false);
+    };
+    reap_stuck_codex_runtime(pool, registry, agent_id, &runtime, source).await
+}
+
+async fn codex_warm_idle_reaper(
+    pool: PgPool,
+    registry: WarmCodexRegistry,
+    agent_id: Uuid,
+    runtime: Arc<WarmCodexRuntime>,
+) {
     loop {
         sleep(CODEX_IDLE_REAPER_INTERVAL).await;
-        let should_stop = {
+        let stop_reason = {
             let mut state = runtime.state.lock().await;
-            let should_stop = state.alive
-                && state.active.is_none()
-                && state.last_activity.elapsed() >= CODEX_IDLE_TIMEOUT;
-            if should_stop {
-                state.alive = false;
-            }
-            should_stop
-        };
-        if !should_stop {
-            if !runtime.state.lock().await.alive {
+            if !state.alive {
                 return;
             }
+            if let Some(active) = state.active.as_ref() {
+                if active.turn_id.is_none()
+                    && active.started_at.elapsed() >= CODEX_TURN_START_TIMEOUT
+                {
+                    Some("zombie")
+                } else {
+                    None
+                }
+            } else if state.last_activity.elapsed() >= CODEX_IDLE_TIMEOUT {
+                state.alive = false;
+                Some("idle")
+            } else {
+                None
+            }
+        };
+        let Some(stop_reason) = stop_reason else {
             continue;
+        };
+        if stop_reason == "zombie" {
+            let _ =
+                reap_stuck_codex_runtime(&pool, &registry, agent_id, &runtime, "idle_reaper").await;
+            return;
         }
 
         let Some(pid) = runtime.pid else {
@@ -14049,9 +14226,10 @@ mod tests {
         build_streaming_work_item_prompt, build_work_item_prompt, capped_stream_delta,
         claim_agent_event, claim_next_supervisor_command, classify_agent_output_activity,
         claude_message_text, claude_result_error, claude_stream_event_activity,
-        claude_system_prompt, claude_text_delta, codex_context_rotate_input_tokens_from_env,
-        codex_error_notification_detail, codex_item_started_activity, codex_pending_stream_key,
-        codex_turn_id_from_value, consume_streaming_agent_control_lines,
+        claude_system_prompt, claude_text_delta, codex_active_turn_schedule_state,
+        codex_context_rotate_input_tokens_from_env, codex_error_notification_detail,
+        codex_item_started_activity, codex_pending_stream_key, codex_turn_id_from_value,
+        consume_streaming_agent_control_lines,
         context_tool::{
             agent_context_agent_inspect, agent_context_artifact_read_in_pool,
             agent_context_attachment_info, agent_context_history_read, agent_context_inbox_archive,
@@ -14067,18 +14245,20 @@ mod tests {
         load_runtime_thread_id, maybe_hide_silent_streaming_reply, migrate,
         normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
         parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
-        queue_mentions_as_work_items, record_agent_activity, send_owner_message_in_pool,
-        silent_reply_reason, split_streaming_agent_event_lines, streaming_message_body_is_empty,
+        queue_mentions_as_work_items, record_agent_activity,
+        recover_supervisor_commands_at_startup, send_owner_message_in_pool, silent_reply_reason,
+        split_streaming_agent_event_lines, streaming_message_body_is_empty,
         try_claim_unassigned_task, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
-        AgentAttachmentFile, AgentEvent, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
-        AGENT_MEMORY_CONTEXT_LIMIT, CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
-        DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
-        WORK_ITEM_FINISH_PROMPT,
+        AgentAttachmentFile, AgentEvent, CodexActiveTurnScheduleState, InboxWakeItem,
+        InboxWakeSummary, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
+        CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS, CODEX_TURN_START_TIMEOUT, DEFAULT_DATABASE_URL,
+        STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::{json, Value};
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+    use std::time::Duration;
     use uuid::Uuid;
 
     #[test]
@@ -19017,6 +19197,112 @@ mod tests {
         .await;
         drop_test_schema(pool, schema).await;
         assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_requeues_running_supervisor_commands_and_skips_terminal_work() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "recovery-agent").await?;
+            let channel_id = insert_test_channel(&pool, "recovery").await?;
+            let queued_work_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_work_items (agent_id, channel_id, title, context, status)
+                values ($1, $2, 'queued request', 'context', 'queued')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let cancelled_work_item_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_work_items (agent_id, channel_id, title, context, status)
+                values ($1, $2, 'cancelled request', 'context', 'cancelled')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let running_command_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into supervisor_commands (command_type, agent_id, work_item_id, status)
+                values ('start_agent', $1, $2, 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(queued_work_item_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let terminal_command_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into supervisor_commands (command_type, agent_id, work_item_id, status)
+                values ('start_agent', $1, $2, 'pending')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .bind(cancelled_work_item_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            recover_supervisor_commands_at_startup(&pool).await?;
+
+            let running_status: String =
+                sqlx::query_scalar("select status from supervisor_commands where id = $1")
+                    .bind(running_command_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            let terminal_status: String =
+                sqlx::query_scalar("select status from supervisor_commands where id = $1")
+                    .bind(terminal_command_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+
+            assert_eq!(running_status, "pending");
+            assert_eq!(terminal_status, "done");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[test]
+    fn codex_active_turn_without_turn_id_times_out_for_scheduling() {
+        assert_eq!(
+            codex_active_turn_schedule_state(
+                Some("turn-1"),
+                false,
+                CODEX_TURN_START_TIMEOUT + Duration::from_secs(1)
+            ),
+            CodexActiveTurnScheduleState::ReadyForSteer
+        );
+        assert_eq!(
+            codex_active_turn_schedule_state(None, false, Duration::from_secs(5)),
+            CodexActiveTurnScheduleState::WaitingForTurnId
+        );
+        assert_eq!(
+            codex_active_turn_schedule_state(
+                None,
+                false,
+                CODEX_TURN_START_TIMEOUT + Duration::from_secs(1)
+            ),
+            CodexActiveTurnScheduleState::StuckBeforeTurnId
+        );
     }
 
     #[tokio::test]
