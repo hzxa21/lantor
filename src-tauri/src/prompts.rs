@@ -13,6 +13,7 @@ fn lantor_operating_policy_prompt() -> &'static str {
 - Treat messages as conversation. A task is an explicit global work tracker used for durable work, ownership, and status; do not create tasks for greetings, quick clarifications, or ordinary chat.
 - Prefer the smallest useful surface. Keep quick follow-ups in the current thread, but create a channel when the work is durable, multi-agent, recurring, or needs its own context/memory. If the user explicitly asks to open or create a channel, use channel_create instead of only replying.
 - Before replying, decide whether a visible response is useful. Reply briefly to direct greetings, low-intent testing messages, or "are you there?" checks so the user can tell you are alive. For pure acknowledgements, thanks, emoji-only messages, or non-actionable chatter that does not need a response, output exactly `LANTOR_SILENT_REPLY: <short reason>` and nothing else.
+- If the latest owner message explicitly mentions another agent and does not mention you, do not perform the requested work. Treat it as assigned to the mentioned agent; reply silently unless the user directly asks you to acknowledge.
 - Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.
 - Activity events are the short progress notes a user would otherwise see in chat. When work takes more than a moment, emit them with a concrete user-facing title and detail that says what you are doing or what you just learned, not just a generic phase label.
 - Reminders are visible, cancelable future wakeups. Use them for user-requested future follow-up or state that needs re-checking later.
@@ -73,7 +74,8 @@ fn lantor_live_delivery_prompt() -> &'static str {
     r#"Live inbox delivery:
 - While you are working, Lantor may deliver same-channel/thread follow-ups directly into this active warm runtime turn. Treat them as newer input for the same live conversation.
 - You do not need to poll inbox-list just because live delivery exists. Use inbox-list only to inspect other active targets or recover missing context.
-- If a live follow-up changes priority or direction, adapt to the latest request; otherwise finish the current selected work and then handle any remaining active inbox items."#
+- If a live follow-up explicitly mentions another agent and does not mention you, stop the newly assigned work and do not summarize or submit old-direction results as if you still own it.
+- If a live follow-up changes priority or direction, adapt to the latest request; if it says to stop or ignore a topic, stop that work and state only any uncommitted local changes that now need confirmation or discard. Otherwise finish the current selected work and then handle any remaining active inbox items."#
 }
 
 fn streaming_activity_guidance_prompt() -> &'static str {
@@ -149,7 +151,7 @@ fn build_work_item_prompt_inner(
         lines.push(lantor_operating_policy_prompt().to_owned());
         lines.push(lantor_memory_management_prompt().to_owned());
     } else {
-        lines.push("Standing instructions are already installed for this warm runtime. Handle the current request directly. Same-channel/thread follow-ups may be delivered into this active turn; treat them as newer input for this live conversation. Use Lantor context tools only when needed, archive handled inbox items, and keep visible replies concise.".to_owned());
+        lines.push("Standing instructions are already installed for this warm runtime. Handle the current request directly. Same-channel/thread follow-ups may be delivered into this active turn; treat them as newer input for this live conversation. If the latest owner message explicitly mentions another agent and does not mention you, do not perform the requested work; treat it as assigned to the mentioned agent and reply silently unless directly asked to acknowledge. Use Lantor context tools only when needed, archive handled inbox items, and keep visible replies concise.".to_owned());
     }
     if let Some(agent_profile_hint) = agent_profile_hint {
         let agent_profile_hint = agent_profile_hint.trim();

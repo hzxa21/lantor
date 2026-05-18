@@ -3878,6 +3878,7 @@ fn build_steer_followup_prompt(items: &[InboxWakeItem]) -> String {
     let mut lines = vec![
         "Same-channel/thread live inbox follow-up.".to_owned(),
         "Treat the message header(s) below as newer input for the active turn.".to_owned(),
+        "If the latest owner message explicitly mentions another agent and does not mention you, stop that newly assigned work and reply silently unless directly asked to acknowledge.".to_owned(),
         format!("Default reply target for normal assistant text: {target}"),
         "Current work-item inbox item(s) are archived automatically when the active turn finishes; use inbox-archive only for unrelated or extra active items you intentionally clear.".to_owned(),
         String::new(),
@@ -4174,10 +4175,10 @@ async fn queue_mentions_as_work_items(
             }
         }
     } else {
-        for handle in mentions {
+        for handle in &mentions {
             let agent_id: Option<Uuid> =
                 sqlx::query_scalar("select id from agents where handle = $1")
-                    .bind(&handle)
+                    .bind(handle)
                     .fetch_optional(pool)
                     .await
                     .map_err(to_string)?;
@@ -4206,9 +4207,12 @@ async fn queue_mentions_as_work_items(
                     continue;
                 }
             }
-            targets.push((agent_id, handle));
+            targets.push((agent_id, handle.clone()));
         }
-        if targets.is_empty() && matches!(origin, MentionDispatchOrigin::Owner) {
+        if mentions.is_empty()
+            && targets.is_empty()
+            && matches!(origin, MentionDispatchOrigin::Owner)
+        {
             if let Some(thread_root_id) = thread_root_id {
                 targets = load_thread_followup_targets(pool, channel_id, thread_root_id).await?;
                 if !targets.is_empty() {
@@ -17603,6 +17607,179 @@ mod tests {
             assert!(work_items[0]
                 .get::<String, _>("body_preview")
                 .contains("这个复现"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn owner_thread_followup_with_explicit_mention_does_not_fan_out_to_thread_agents() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let mentioned_agent_id = insert_test_agent(&pool, "mentioned-agent").await?;
+            let bystander_agent_id = insert_test_agent(&pool, "bystander-agent").await?;
+            let channel_id = insert_test_channel(&pool, "thread-explicit-owner").await?;
+            for agent_id in [mentioned_agent_id, bystander_agent_id] {
+                sqlx::query(
+                    r#"
+                    insert into channel_members (channel_id, agent_id)
+                    values ($1, $2)
+                    "#,
+                )
+                .bind(channel_id)
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            }
+
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'root request', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            upsert_agent_thread_subscription(
+                &pool,
+                mentioned_agent_id,
+                channel_id,
+                root_id,
+                "mention",
+                Some(root_id),
+            )
+            .await?;
+            upsert_agent_thread_subscription(
+                &pool,
+                bystander_agent_id,
+                channel_id,
+                root_id,
+                "mention",
+                Some(root_id),
+            )
+            .await?;
+
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                Some(root_id),
+                "@mentioned-agent 这个后续只给被点名的 agent",
+                false,
+                vec![],
+            )
+            .await?;
+
+            let mentioned_inboxes: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_inbox_items
+                where agent_id = $1
+                  and source_message_id <> $2
+                  and kind = 'mention'
+                "#,
+            )
+            .bind(mentioned_agent_id)
+            .bind(root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let bystander_inboxes: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_inbox_items
+                where agent_id = $1
+                  and source_message_id <> $2
+                "#,
+            )
+            .bind(bystander_agent_id)
+            .bind(root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            assert_eq!(mentioned_inboxes, 1);
+            assert_eq!(bystander_inboxes, 0);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn owner_thread_followup_with_unknown_mention_does_not_fall_back_to_thread_agents() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "known-thread-agent").await?;
+            let channel_id = insert_test_channel(&pool, "thread-unknown-mention").await?;
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'root request', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            upsert_agent_thread_subscription(
+                &pool,
+                agent_id,
+                channel_id,
+                root_id,
+                "mention",
+                Some(root_id),
+            )
+            .await?;
+
+            send_owner_message_in_pool(
+                &pool,
+                channel_id,
+                Some(root_id),
+                "@missing-agent 这个后续不应该 fallback 给 thread 参与者",
+                false,
+                vec![],
+            )
+            .await?;
+
+            let inboxes: i64 = sqlx::query_scalar(
+                r#"
+                select count(*)::bigint
+                from agent_inbox_items
+                where agent_id = $1
+                  and source_message_id <> $2
+                "#,
+            )
+            .bind(agent_id)
+            .bind(root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            assert_eq!(inboxes, 0);
             Ok(())
         }
         .await;
