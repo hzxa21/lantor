@@ -1,7 +1,8 @@
 import { useMemo } from "react";
+import { Shuffle } from "lucide-react";
 import type { OwnerProfile } from "../types";
+import { randomDylanAvatarSpec } from "../avatar-utils";
 import { AgentAvatar } from "./AgentAvatar";
-import { AvatarInput } from "./AvatarInput";
 import { Modal } from "./Modal";
 
 export type OwnerProfileForm = {
@@ -59,26 +60,25 @@ export function OwnerProfileModal({
             <strong>{previewAgent.display_name}</strong>
             <span>{form.description.trim() || "local owner"}</span>
           </div>
+          <button
+            type="button"
+            className="agent-form-preview-avatar-action"
+            title="Random avatar"
+            aria-label="Random avatar"
+            onClick={() => onChange({ ...form, avatar: randomDylanAvatarSpec(seedForProfile(form)) })}
+          >
+            <Shuffle size={16} />
+          </button>
         </div>
-        <div className="two-col">
-          <label>
-            <span>Name</span>
-            <input
-              autoFocus
-              value={form.displayName}
-              onChange={(event) => onChange({ ...form, displayName: event.target.value })}
-              placeholder="Display name"
-            />
-          </label>
-          <label>
-            <span>Avatar</span>
-            <AvatarInput
-              value={form.avatar}
-              seedHint={seedForProfile(form)}
-              onChange={(avatar) => onChange({ ...form, avatar })}
-            />
-          </label>
-        </div>
+        <label>
+          <span>Name</span>
+          <input
+            autoFocus
+            value={form.displayName}
+            onChange={(event) => onChange({ ...form, displayName: event.target.value })}
+            placeholder="Display name"
+          />
+        </label>
         <label>
           <span>Description</span>
           <textarea

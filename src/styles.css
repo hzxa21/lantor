@@ -3630,7 +3630,7 @@ body.resizing-column * {
 }
 
 .owner-profile-preview {
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
 .agent-form-preview-avatar-action {
@@ -3675,27 +3675,6 @@ body.resizing-column * {
   font-size: 13px;
   line-height: 1.35;
   white-space: nowrap;
-}
-
-.avatar-input {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 42px;
-  gap: 8px;
-}
-
-.avatar-input button {
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(10, 132, 255, 0.16);
-  border-radius: 13px;
-  background: rgba(10, 132, 255, 0.08);
-  color: var(--accent);
-}
-
-.avatar-input button:hover,
-.avatar-input button:focus-visible {
-  background: rgba(10, 132, 255, 0.13);
-  outline: none;
 }
 
 .runtime-preflight {
