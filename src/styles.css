@@ -2521,7 +2521,7 @@ mark {
 .task-controls {
   display: grid;
   gap: 8px;
-  width: min(300px, 32vw);
+  width: min(332px, 34vw);
   margin: 0;
 }
 
@@ -2670,8 +2670,9 @@ mark {
 
 .status-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
+  grid-template-columns: repeat(4, max-content);
+  justify-content: space-between;
+  gap: 8px;
   padding: 3px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -2679,8 +2680,8 @@ mark {
 }
 
 .status-row button {
-  min-width: 0;
-  padding: 7px 6px;
+  min-width: max-content;
+  padding: 7px 8px;
   border-radius: 7px;
   background: transparent;
   color: var(--muted);
@@ -2688,6 +2689,7 @@ mark {
   font-weight: 850;
   line-height: 1;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .status-row button.active {
