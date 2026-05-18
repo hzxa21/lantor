@@ -950,19 +950,33 @@ button,
 
 .hash-card {
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 38px;
+  height: 38px;
   place-items: center;
   padding: 0;
-  border-radius: 14px;
-  background: var(--accent);
-  color: #fff;
+  border: 1px solid rgba(20, 23, 31, 0.1);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f6f7f9 100%);
+  color: #5f6672;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 1px 2px rgba(20, 23, 31, 0.04);
+}
+
+.hash-card svg {
+  width: 19px;
+  height: 19px;
+  stroke-width: 2.15;
 }
 
 .hash-card.dm-card {
+  width: 44px;
+  height: 44px;
+  border: 0;
   background: transparent;
   color: inherit;
   font-weight: 800;
+  box-shadow: none;
 }
 
 .hash-card.dm-card > span {
@@ -6019,6 +6033,17 @@ body.resizing-column * {
   }
 
   .hash-card {
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+  }
+
+  .hash-card.dm-card {
+    width: 38px;
+    height: 38px;
+  }
+
+  .hash-card.dm-card .agent-avatar {
     width: 38px;
     height: 38px;
     border-radius: 13px;
