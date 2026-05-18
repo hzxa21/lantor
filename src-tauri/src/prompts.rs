@@ -64,10 +64,12 @@ When a turn contains a default inbox item or source_message, handle that item di
 fn lantor_turn_startup_sequence_prompt() -> &'static str {
     r#"Turn startup sequence:
 1. If this turn already includes a concrete inbox message or live follow-up, classify it first: quick reply, blocker question, or work.
-2. If the provided header, preview, and current runtime context are enough, handle the message directly. Use inbox-read only when missing source text, metadata, or attachment details block progress.
-3. Use history-read or message-search only when older channel/thread context, a prior decision, or a user reference to earlier discussion is needed.
-4. Use memory-read, workspace-info, or workspace-list only when durable recovery context or workspace state is actually needed beyond the injected prompt excerpt.
-5. Complete useful work and verification before stopping. New same-channel/thread follow-ups may arrive automatically, so do not poll inbox-list unless you need to inspect other active targets."#
+2. Treat the provided inbox item, source message, channel, and thread as authoritative over stale warm-runtime context from another channel or task.
+3. If the message is a thread follow-up or contains contextual references such as "continue", "that change", "this fix", "above", "same issue", "继续", "这样修", "上面", or "这个", read the thread history before answering unless that relevant thread context is already present in the turn.
+4. If the provided header, preview, and current same-thread context are enough, handle the message directly. Use inbox-read only when missing source text, metadata, or attachment details block progress.
+5. Use history-read or message-search when older channel/thread context, a prior decision, or a user reference to earlier discussion is needed.
+6. Use memory-read, workspace-info, or workspace-list only when durable recovery context or workspace state is actually needed beyond the injected prompt excerpt.
+7. Complete useful work and verification before stopping. New same-channel/thread follow-ups may arrive automatically, so do not poll inbox-list unless you need to inspect other active targets."#
 }
 
 fn lantor_live_delivery_prompt() -> &'static str {
@@ -151,7 +153,7 @@ fn build_work_item_prompt_inner(
         lines.push(lantor_operating_policy_prompt().to_owned());
         lines.push(lantor_memory_management_prompt().to_owned());
     } else {
-        lines.push("Standing instructions are already installed for this warm runtime. Handle the current request directly. Same-channel/thread follow-ups may be delivered into this active turn; treat them as newer input for this live conversation. If the latest owner message explicitly mentions another agent and does not mention you, do not perform the requested work; treat it as assigned to the mentioned agent and reply silently unless directly asked to acknowledge. Use Lantor context tools only when needed, archive handled inbox items, and keep visible replies concise.".to_owned());
+        lines.push("Standing instructions are already installed for this warm runtime. Handle the current request directly, but treat the inbox message and its thread as authoritative over older warm-runtime context. Same-channel/thread follow-ups may be delivered into this active turn; treat them as newer input for this live conversation. If the latest owner message explicitly mentions another agent and does not mention you, do not perform the requested work; treat it as assigned to the mentioned agent and reply silently unless directly asked to acknowledge. Use Lantor context tools only when needed, archive handled inbox items, and keep visible replies concise.".to_owned());
     }
     if let Some(agent_profile_hint) = agent_profile_hint {
         let agent_profile_hint = agent_profile_hint.trim();

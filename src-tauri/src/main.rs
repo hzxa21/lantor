@@ -3830,6 +3830,8 @@ fn inbox_wake_context(items: &[InboxWakeItem], other_active: &[InboxWakeSummary]
             )
         },
         "The message headers below include target, source message id, created time, sender type/name, and preview. Handle directly from them when enough detail is present.".to_owned(),
+        "Warm-runtime guard: the inbox item and its thread are authoritative over older context from other channels or tasks.".to_owned(),
+        "For thread follow-ups or contextual references like continue/this fix/that change/above/same issue/继续/这样修/上面/这个, use history-read on the default reply target before answering unless the needed same-thread context is already present.".to_owned(),
         "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id <id> only if the preview/header is insufficient and you need a full source message or metadata.".to_owned(),
         "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20 only if you need to inspect or choose among other active inbox items.".to_owned(),
         "Current work-item inbox item(s) are archived automatically when this work item finishes; use inbox-archive only for unrelated or extra active items you intentionally clear.".to_owned(),
@@ -14273,6 +14275,7 @@ mod tests {
         );
 
         assert!(prompt.contains("Standing instructions are already installed"));
+        assert!(prompt.contains("authoritative over older warm-runtime context"));
         assert!(prompt.contains("Same-channel/thread follow-ups may be delivered"));
         assert!(prompt.contains("Latest user message: please review"));
         assert!(prompt.contains(WORK_ITEM_FINISH_PROMPT));
@@ -14331,6 +14334,8 @@ mod tests {
         assert!(context.contains(&format!("msg={}", short_id(source_message_id))));
         assert!(context.contains("type=owner"));
         assert!(context.contains("Dylan: please use the latest numbers and reply directly"));
+        assert!(context.contains("Warm-runtime guard"));
+        assert!(context.contains("use history-read on the default reply target"));
         assert!(context.contains(&format!("inbox_id: {inbox_id}")));
         assert!(context.contains("Other active inbox targets:"));
         assert!(context.contains("- dm:Hancock: 2 active"));

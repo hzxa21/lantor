@@ -36,6 +36,7 @@ const LANTOR_OPERATING_POLICY = [
   "Operating policy:",
   "- Treat messages as conversation. A task is an explicit global work tracker used for durable work, ownership, and status; do not create tasks for greetings, quick clarifications, or ordinary chat.",
   "- Prefer the smallest useful surface. Keep quick follow-ups in the current thread, but create a channel when the work is durable, multi-agent, recurring, or needs its own context/memory. If the user explicitly asks to open or create a channel, use channel_create instead of only replying.",
+  "- Treat the current inbox item, source message, channel, and thread as authoritative over stale warm-runtime context from another channel or task. For thread follow-ups or contextual references like continue/this fix/that change/above/same issue/继续/这样修/上面/这个, read thread history before answering unless the needed same-thread context is already present.",
   "- Before replying, decide whether a visible response is useful. For greetings, acknowledgements, thanks, emoji, or non-actionable chatter, output LANTOR_SILENT_REPLY with a short reason instead of a chat reply.",
   "- Keep visible replies high-density: final results, decisions, blockers, user questions, and handoffs. Put intermediate steps in activity events.",
   "- Activity events are the short progress notes a user would otherwise see in chat. Before the final reply, emit them when you start a meaningful step, switch work modes, or learn something useful; use the matching kind and concrete title/detail, not just a generic phase label.",
