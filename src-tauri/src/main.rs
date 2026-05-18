@@ -10246,6 +10246,18 @@ fn codex_request_error(value: &Value) -> Option<String> {
     })
 }
 
+fn codex_error_notification_detail(value: &Value) -> Option<String> {
+    if value.pointer("/params/willRetry").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    value
+        .pointer("/params/error/message")
+        .or_else(|| value.pointer("/params/message"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| Some("codex emitted error notification".to_owned()))
+}
+
 fn codex_thread_id_from_response(value: &Value) -> Option<String> {
     value
         .pointer("/result/thread/id")
@@ -13097,12 +13109,12 @@ async fn handle_codex_warm_stdout_line(
             }
         }
         Some("error") => {
-            let detail = value
-                .pointer("/params/message")
-                .and_then(Value::as_str)
-                .unwrap_or("codex emitted error notification")
-                .to_owned();
-            finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(detail)).await?;
+            if let Some(detail) = codex_error_notification_detail(&value) {
+                finish_warm_codex_active_turn(pool, agent_id, runtime, false, Some(detail)).await?;
+            } else {
+                let mut state = runtime.state.lock().await;
+                state.last_activity = Instant::now();
+            }
         }
         _ => {}
     }
@@ -14012,8 +14024,8 @@ mod tests {
         claim_agent_event, claim_next_supervisor_command, classify_agent_output_activity,
         claude_message_text, claude_result_error, claude_stream_event_activity,
         claude_system_prompt, claude_text_delta, codex_context_rotate_input_tokens_from_env,
-        codex_item_started_activity, codex_pending_stream_key, codex_turn_id_from_value,
-        consume_streaming_agent_control_lines,
+        codex_error_notification_detail, codex_item_started_activity, codex_pending_stream_key,
+        codex_turn_id_from_value, consume_streaming_agent_control_lines,
         context_tool::{
             agent_context_agent_inspect, agent_context_artifact_read_in_pool,
             agent_context_attachment_info, agent_context_history_read, agent_context_inbox_archive,
@@ -15463,6 +15475,30 @@ mod tests {
         assert_eq!(
             codex_turn_id_from_value(&json!({"params": {"turnId": "turn-3"}})),
             Some("turn-3".to_owned())
+        );
+    }
+
+    #[test]
+    fn ignores_retryable_codex_error_notifications() {
+        assert_eq!(
+            codex_error_notification_detail(&json!({
+                "method": "error",
+                "params": {
+                    "error": {"message": "Reconnecting... 2/5"},
+                    "willRetry": true
+                }
+            })),
+            None
+        );
+        assert_eq!(
+            codex_error_notification_detail(&json!({
+                "method": "error",
+                "params": {
+                    "error": {"message": "stream disconnected"},
+                    "willRetry": false
+                }
+            })),
+            Some("stream disconnected".to_owned())
         );
     }
 
