@@ -172,6 +172,10 @@ export function Conversation({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
+  function openLinkedAgentDetail(handle: string) {
+    const agent = agents.find((candidate) => candidate.handle.toLowerCase() === handle.toLowerCase());
+    if (agent) openAgentDetail(agent);
+  }
   const {
     mentionState,
     mentionIndex,
@@ -587,7 +591,7 @@ export function Conversation({
                   )}
                   <article className="system-message">
                     <div className="system-message-line">
-                      <MessageMarkdown body={message.body} />
+                      <MessageMarkdown body={message.body} onLocalAgentLink={openLinkedAgentDetail} />
                       <time>{formatTime(message.created_at)}</time>
                     </div>
                   </article>
@@ -695,7 +699,7 @@ export function Conversation({
                     {message.delivery_state !== "streaming" && (
                       <>
                         <div className={isLongChannelMessage && !isChannelMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
-                          <MessageMarkdown body={visibleMessageBody} />
+                          <MessageMarkdown body={visibleMessageBody} onLocalAgentLink={openLinkedAgentDetail} />
                         </div>
                         {isLongChannelMessage && (
                           <button

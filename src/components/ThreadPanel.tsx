@@ -128,6 +128,10 @@ export function ThreadPanel({
   const shouldFollowThreadRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  function openLinkedAgentDetail(handle: string) {
+    const agent = agents.find((candidate) => candidate.handle.toLowerCase() === handle.toLowerCase());
+    if (agent) openAgentDetail(agent);
+  }
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
   const rootAgent = activeRoot ? agentForMessageSender(activeRoot, agents) : null;
@@ -400,7 +404,7 @@ export function ThreadPanel({
               >
                 {activeRoot.sender_role === "system" ? (
                   <div className="system-message-line">
-                    <MessageMarkdown body={activeRoot.body} />
+                    <MessageMarkdown body={activeRoot.body} onLocalAgentLink={openLinkedAgentDetail} />
                     <time>{formatTime(activeRoot.created_at)}</time>
                   </div>
                 ) : (
@@ -451,7 +455,9 @@ export function ThreadPanel({
                           <Bookmark size={14} />
                         </button>
                       </div>
-                      {activeRoot.delivery_state !== "streaming" && <MessageMarkdown body={activeRoot.body} />}
+                      {activeRoot.delivery_state !== "streaming" && (
+                        <MessageMarkdown body={activeRoot.body} onLocalAgentLink={openLinkedAgentDetail} />
+                      )}
                       <MessageAttachments attachments={activeRoot.attachments} />
                       <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
                       {activeRoot.delivery_state === "error" && (
@@ -589,7 +595,7 @@ export function ThreadPanel({
                     )}
                     <article className="system-message">
                       <div className="system-message-line">
-                        <MessageMarkdown body={reply.body} />
+                        <MessageMarkdown body={reply.body} onLocalAgentLink={openLinkedAgentDetail} />
                         <time>{formatTime(reply.created_at)}</time>
                       </div>
                     </article>
@@ -675,7 +681,9 @@ export function ThreadPanel({
                           <Bookmark size={14} />
                         </button>
                       </div>
-                      {reply.delivery_state !== "streaming" && <MessageMarkdown body={reply.body} />}
+                      {reply.delivery_state !== "streaming" && (
+                        <MessageMarkdown body={reply.body} onLocalAgentLink={openLinkedAgentDetail} />
+                      )}
                       <MessageAttachments attachments={reply.attachments} />
                       <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
                       {reply.delivery_state === "error" && (

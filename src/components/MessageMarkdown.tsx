@@ -6,6 +6,7 @@ import { copyText } from "../clipboard";
 
 type MessageMarkdownProps = {
   body: string;
+  onLocalAgentLink?: (handle: string) => void;
 };
 
 const INLINE_CODE_SPLIT = /(`[^`\n]*(?:`|$))/g;
@@ -73,10 +74,30 @@ function isolateLinkEvent(event: MouseEvent<HTMLAnchorElement> | PointerEvent<HT
   event.stopPropagation();
 }
 
-function handleLinkClick(event: MouseEvent<HTMLAnchorElement>, href: string | undefined, isLocalLink: boolean) {
+function localAgentHandleFromHref(href: string | undefined) {
+  if (!href?.startsWith(`${LOCAL_ENTITY_PATH_PREFIX}agent/`)) return null;
+  const encodedHandle = href.slice(`${LOCAL_ENTITY_PATH_PREFIX}agent/`.length).split(/[?#]/, 1)[0];
+  try {
+    return decodeURIComponent(encodedHandle).replace(/^@/, "");
+  } catch {
+    return null;
+  }
+}
+
+function handleLinkClick(
+  event: MouseEvent<HTMLAnchorElement>,
+  href: string | undefined,
+  isLocalLink: boolean,
+  onLocalAgentLink: ((handle: string) => void) | undefined,
+) {
   event.preventDefault();
   event.stopPropagation();
-  if (isLocalLink || !href || event.detail > 1) return;
+  if (isLocalLink) {
+    const agentHandle = localAgentHandleFromHref(href);
+    if (agentHandle && event.detail <= 1) onLocalAgentLink?.(agentHandle);
+    return;
+  }
+  if (!href || event.detail > 1) return;
 
   void openExternalUrl(href).catch((err) => {
     console.error("Failed to open external link", err);
@@ -87,7 +108,7 @@ function transformMessageUrl(url: string) {
   return /^file:\/\//i.test(url) ? url : defaultUrlTransform(url);
 }
 
-export function MessageMarkdown({ body }: MessageMarkdownProps) {
+export function MessageMarkdown({ body, onLocalAgentLink }: MessageMarkdownProps) {
   const linkedBody = linkifyMessageBody(body);
   return (
     <div className="markdown-body">
@@ -106,7 +127,7 @@ export function MessageMarkdown({ body }: MessageMarkdownProps) {
                 rel={isLocalLink ? undefined : "noreferrer"}
                 onPointerDown={isolateLinkEvent}
                 onContextMenu={isolateLinkEvent}
-                onClick={(event) => handleLinkClick(event, href, isLocalLink)}
+                onClick={(event) => handleLinkClick(event, href, isLocalLink, onLocalAgentLink)}
               >
                 {children}
               </a>
