@@ -1717,9 +1717,21 @@ async fn check_runtime(runtime: String) -> CommandResult<RuntimeCheck> {
 #[tauri::command]
 async fn create_channel(
     name: String,
+    description: Option<String>,
+    agent_ids: Option<Vec<Uuid>>,
     state: State<'_, AppState>,
 ) -> CommandResult<CreateChannelResult> {
-    let channel_id = create_channel_in_pool(&state.pool, &name, "").await?;
+    let channel_id =
+        create_channel_in_pool(&state.pool, &name, description.as_deref().unwrap_or("")).await?;
+    if let Some(ids) = agent_ids {
+        let mut seen = std::collections::HashSet::new();
+        for agent_id in ids {
+            if !seen.insert(agent_id) {
+                continue;
+            }
+            add_agent_to_channel(&state.pool, channel_id, agent_id).await?;
+        }
+    }
     Ok(CreateChannelResult { channel_id })
 }
 
