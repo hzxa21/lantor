@@ -46,10 +46,11 @@ export function TaskAssigneePicker({
     onChange(agentId);
   }
 
-  const secondaryText = done
+  const assigneeLabel = assignee?.display_name ?? "Unassigned";
+  const triggerDetail = done
     ? "Done"
     : assignee
-      ? `@${assignee.handle} · ${assignee.runtime}`
+      ? `@${assignee.handle}`
       : "No agent";
 
   return (
@@ -68,8 +69,8 @@ export function TaskAssigneePicker({
           <span className="task-unassigned-avatar" aria-hidden="true" />
         )}
         <span className="task-assignee-copy">
-          <strong>{assignee?.display_name ?? "Unassigned"}</strong>
-          <span>{secondaryText}</span>
+          <strong>{assigneeLabel}</strong>
+          <span>{triggerDetail}</span>
         </span>
         <ChevronDown size={15} className="task-assignee-chevron" aria-hidden="true" />
       </button>
@@ -87,7 +88,9 @@ export function TaskAssigneePicker({
               <strong>Unassigned</strong>
               <span>No agent</span>
             </span>
-            {!assignee && <Check size={14} aria-hidden="true" />}
+            <span className="task-assignee-check" aria-hidden="true">
+              {!assignee && <Check size={14} />}
+            </span>
           </button>
           {agents.map((agent) => (
             <button
@@ -101,9 +104,15 @@ export function TaskAssigneePicker({
               <AgentAvatar agent={agent} size="sm" />
               <span className="task-assignee-option-copy">
                 <strong>{agent.display_name}</strong>
-                <span>@{agent.handle} · {agent.runtime}</span>
+                <span>
+                  @{agent.handle}
+                  <b aria-hidden="true">·</b>
+                  {agent.model || agent.runtime}
+                </span>
               </span>
-              {assignee?.id === agent.id && <Check size={14} aria-hidden="true" />}
+              <span className="task-assignee-check" aria-hidden="true">
+                {assignee?.id === agent.id && <Check size={14} />}
+              </span>
             </button>
           ))}
         </div>

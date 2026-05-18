@@ -1,4 +1,4 @@
-import { Shuffle } from "lucide-react";
+import { ChevronDown, Shuffle } from "lucide-react";
 import { Modal } from "./Modal";
 import {
   AgentForm,
@@ -76,50 +76,62 @@ export function AgentFormModal({
     ? Boolean(form.displayName.trim() || form.handle.trim())
     : Boolean(form.handle.trim() || form.displayName.trim());
   const runtimeSelect = (
-    <label>
+    <label className="agent-select-field">
       <span>Runtime</span>
-      <select value={form.runtime} onChange={(event) => onRuntimeChange(event.target.value)}>
-        <option value="codex">Codex</option>
-        <option value="claude">Claude</option>
-      </select>
+      <div className="agent-select-control">
+        <select value={form.runtime} onChange={(event) => onRuntimeChange(event.target.value)}>
+          <option value="codex">Codex</option>
+          <option value="claude">Claude</option>
+        </select>
+        <ChevronDown size={16} aria-hidden="true" />
+      </div>
     </label>
   );
   const modelSelect = (
-    <label>
+    <label className="agent-select-field">
       <span>Model</span>
-      <select
-        value={form.model}
-        onChange={(event) => onChange({ ...form, model: event.target.value })}
-      >
-        {modelOptionsForRuntime(form.runtime, form.model).map((model) => (
-          <option key={model} value={model}>{modelLabel(model)}</option>
-        ))}
-      </select>
+      <div className="agent-select-control">
+        <select
+          value={form.model}
+          onChange={(event) => onChange({ ...form, model: event.target.value })}
+        >
+          {modelOptionsForRuntime(form.runtime, form.model).map((model) => (
+            <option key={model} value={model}>{modelLabel(model)}</option>
+          ))}
+        </select>
+        <ChevronDown size={16} aria-hidden="true" />
+      </div>
     </label>
   );
   const codexControls = isCodex && (
     <>
-      <label>
+      <label className="agent-select-field">
         <span>Intelligence</span>
-        <select
-          value={form.reasoningEffort}
-          onChange={(event) => onChange({ ...form, reasoningEffort: event.target.value })}
-        >
-          {CODEX_REASONING_EFFORTS.map((effort) => (
-            <option key={effort.value} value={effort.value}>{effort.label}</option>
-          ))}
-        </select>
+        <div className="agent-select-control">
+          <select
+            value={form.reasoningEffort}
+            onChange={(event) => onChange({ ...form, reasoningEffort: event.target.value })}
+          >
+            {CODEX_REASONING_EFFORTS.map((effort) => (
+              <option key={effort.value} value={effort.value}>{effort.label}</option>
+            ))}
+          </select>
+          <ChevronDown size={16} aria-hidden="true" />
+        </div>
       </label>
-      <label>
+      <label className="agent-select-field">
         <span>Speed</span>
-        <select
-          value={form.serviceTier}
-          onChange={(event) => onChange({ ...form, serviceTier: event.target.value })}
-        >
-          {CODEX_SERVICE_TIERS.map((tier) => (
-            <option key={tier.value || "default"} value={tier.value}>{tier.label}</option>
-          ))}
-        </select>
+        <div className="agent-select-control">
+          <select
+            value={form.serviceTier}
+            onChange={(event) => onChange({ ...form, serviceTier: event.target.value })}
+          >
+            {CODEX_SERVICE_TIERS.map((tier) => (
+              <option key={tier.value || "default"} value={tier.value}>{tier.label}</option>
+            ))}
+          </select>
+          <ChevronDown size={16} aria-hidden="true" />
+        </div>
       </label>
     </>
   );
