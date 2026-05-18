@@ -1225,10 +1225,14 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
                 else 'acting'
             end,
             status = case
-                when kind in ('error', 'event_error', 'run_error')
-                    or lower(title) like '%failed%'
-                    or lower(title) like '%error%'
-                    or lower(title) like '%rejected%' then 'error'
+                when kind in ('error', 'event_error', 'run_error') then 'error'
+                when kind in ('command', 'run', 'dispatch', 'task', 'schedule')
+                    and (
+                        lower(title) like '%failed%'
+                        or lower(title) like '%error%'
+                        or lower(title) like '%rejected%'
+                    ) then 'error'
+                when lower(title) like '%warning%' then 'warning'
                 when lower(title) like '%cancel%' or lower(title) like '%stop%' then 'warning'
                 when lower(title) like '%completed%'
                     or lower(title) like '%complete%'
@@ -1250,6 +1254,35 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
                 else metadata
             end
         where summary = '' or metadata = '{}'::jsonb
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        update agent_activities
+        set kind = 'run',
+            phase = 'runtime',
+            status = 'warning',
+            title = 'Runtime warning',
+            summary = 'Runtime warning'
+        where title = 'Error output'
+          and (
+              detail like '%codex_api::endpoint::responses_websocket%failed to connect to websocket%'
+              or detail like '%codex_models_manager::manager%failed to refresh available models%'
+              or detail like '%rmcp::transport::worker%https://chatgpt.com/backend-api/wham/apps%'
+          )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        update agent_activities
+        set status = 'active'
+        where kind in ('thinking', 'tools', 'file_edit', 'acting')
+          and status = 'error'
+          and lower(title) like '%error%'
         "#,
     )
     .execute(pool)
@@ -6875,11 +6908,15 @@ fn normalize_agent_activity_kind(kind: Option<&str>) -> &'static str {
 }
 
 fn activity_status(kind: &str, title: &str) -> &'static str {
-    let lowered = format!("{} {}", kind, title).to_lowercase();
-    if matches!(kind, "error" | "event_error" | "run_error")
-        || lowered.contains("failed")
-        || lowered.contains("error")
-        || lowered.contains("rejected")
+    let lowered = title.to_lowercase();
+    let is_terminal_error_kind = matches!(kind, "error" | "event_error" | "run_error");
+    let can_infer_error_from_title =
+        matches!(kind, "command" | "run" | "dispatch" | "task" | "schedule");
+    if is_terminal_error_kind
+        || (can_infer_error_from_title
+            && (lowered.contains("failed")
+                || lowered.contains("error")
+                || lowered.contains("rejected")))
     {
         "error"
     } else if lowered.contains("warning") {
@@ -7388,6 +7425,37 @@ fn is_ignored_codex_legacy_notify_warning(
             .is_some_and(|error| error.contains("No such file or directory"))
 }
 
+fn strip_ansi_escape_sequences(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            output.push(ch);
+            continue;
+        }
+        if chars.peek() != Some(&'[') {
+            continue;
+        }
+        chars.next();
+        for next in chars.by_ref() {
+            if next.is_ascii_alphabetic() {
+                break;
+            }
+        }
+    }
+    output
+}
+
+fn is_retryable_codex_stderr_error(line: &str) -> bool {
+    let cleaned = strip_ansi_escape_sequences(line).to_lowercase();
+    (cleaned.contains("codex_api::endpoint::responses_websocket")
+        && cleaned.contains("failed to connect to websocket"))
+        || (cleaned.contains("codex_models_manager::manager")
+            && cleaned.contains("failed to refresh available models"))
+        || (cleaned.contains("rmcp::transport::worker")
+            && cleaned.contains("https://chatgpt.com/backend-api/wham/apps"))
+}
+
 fn classify_structured_stderr_log(
     line: &str,
 ) -> Option<Option<(&'static str, &'static str, String)>> {
@@ -7435,6 +7503,10 @@ fn classify_agent_output_activity(
     let lower = trimmed.to_lowercase();
     if let Some(activity) = classify_structured_stderr_log(trimmed) {
         return activity;
+    }
+
+    if label == "stderr" && is_retryable_codex_stderr_error(trimmed) {
+        return Some(("run", "Runtime warning", truncate_activity_detail(trimmed)));
     }
 
     let is_error = label == "stderr"
@@ -15650,9 +15722,34 @@ mod tests {
     fn marks_runtime_warning_activity_as_warning_status() {
         assert_eq!(activity_status("run", "Runtime warning"), "warning");
         assert_eq!(activity_status("error", "Error output"), "error");
-        assert_eq!(activity_status("tools", "检查当前改动"), "active");
-        assert_eq!(activity_status("file_edit", "调整进度展示"), "active");
+        assert_eq!(
+            activity_status("thinking", "Investigating Activity ERROR"),
+            "active"
+        );
+        assert_eq!(
+            activity_status("tools", "Checking current changes"),
+            "active"
+        );
+        assert_eq!(
+            activity_status("file_edit", "Adjusting progress display"),
+            "active"
+        );
         assert_eq!(activity_status("command", "Command finished"), "success");
+    }
+
+    #[test]
+    fn downgrades_retryable_codex_infra_stderr_to_warning() {
+        for line in [
+            "\u{1b}[2m2026-05-18T14:32:02.340702Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}[2mcodex_api::endpoint::responses_websocket\u{1b}[0m\u{1b}[2m:\u{1b}[0m failed to connect to websocket: IO error: tls handshake eof",
+            "\u{1b}[2m2026-05-18T14:32:21.393770Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}[2mcodex_models_manager::manager\u{1b}[0m\u{1b}[2m:\u{1b}[0m failed to refresh available models: timeout waiting for child process to exit",
+            "\u{1b}[2m2026-05-18T14:31:57.219245Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}[2mrmcp::transport::worker\u{1b}[0m\u{1b}[2m:\u{1b}[0m worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (https://chatgpt.com/backend-api/wham/apps)\")))",
+        ] {
+            let activity = classify_agent_output_activity("stderr", line)
+                .expect("retryable stderr should remain visible");
+            assert_eq!(activity.0, "run");
+            assert_eq!(activity.1, "Runtime warning");
+            assert_eq!(activity_status(activity.0, activity.1), "warning");
+        }
     }
 
     #[test]
