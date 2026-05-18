@@ -369,7 +369,7 @@ button,
 
 .channel {
   display: grid;
-  grid-template-columns: 22px 1fr auto;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   width: 100%;
   align-items: center;
   gap: 10px;
@@ -379,6 +379,13 @@ button,
   font-size: 16px;
   font-weight: 520;
   text-align: left;
+}
+
+.channel-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .channel.selected {
@@ -6542,6 +6549,7 @@ body.resizing-column * {
   }
 
   .topbar {
+    overflow: hidden;
     min-height: 58px;
     justify-content: flex-start;
     gap: 10px;
@@ -6578,16 +6586,21 @@ body.resizing-column * {
   }
 
   .channel-title {
-    flex: 1 1 auto;
+    flex: 1 1 0;
+    max-width: calc(100vw - 162px);
     min-width: 0;
+    overflow: hidden;
     gap: 10px;
   }
 
   .channel-title > div {
+    max-width: 100%;
     min-width: 0;
+    overflow: hidden;
   }
 
   .channel-title h1 {
+    max-width: 100%;
     overflow: hidden;
     font-size: 18px;
     line-height: 22px;
@@ -6597,10 +6610,30 @@ body.resizing-column * {
 
   .channel-title p {
     overflow: hidden;
-    max-width: 62vw;
+    max-width: 100%;
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .channel-title .hash-card {
+    flex: 0 0 auto;
+  }
+
+  .channel-header-actions {
+    flex: 0 0 auto;
+    max-width: 92px;
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .channel-agent-count-trigger {
+    min-width: 42px;
+    padding: 0 8px;
+  }
+
+  .channel-agent-preview {
+    display: none;
   }
 
   .tabs button {

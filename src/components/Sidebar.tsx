@@ -121,7 +121,8 @@ export function Sidebar({
               className={`channel ${item.id === channel?.id ? "selected" : ""} ${badge ? "has-unread" : ""}`}
               onClick={() => selectChannel(item.id)}
             >
-              <Hash size={17} /> {item.name}
+              <Hash size={17} />
+              <span className="channel-name">{item.name}</span>
               {badge && <strong>{badge}</strong>}
             </button>
           );
