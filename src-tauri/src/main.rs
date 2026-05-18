@@ -404,15 +404,16 @@ async fn maybe_insert_work_item_system_message(
     {
         return Ok(());
     }
-    if work_item.task_number.is_some() && work_item.source_kind == "inbox_wake" {
-        if let Some(inbox_item_id) = work_item.inbox_item_id {
-            let inbox_kind: Option<String> =
-                sqlx::query_scalar("select kind from agent_inbox_items where id = $1")
-                    .bind(inbox_item_id)
+    if work_item.task_number.is_some() {
+        if let Some(task_id) = work_item.task_id {
+            let is_assignee: Option<bool> =
+                sqlx::query_scalar("select assignee_agent_id = $2 from tasks where id = $1")
+                    .bind(task_id)
+                    .bind(work_item.agent_id)
                     .fetch_optional(pool)
                     .await
                     .map_err(to_string)?;
-            if inbox_kind.as_deref() == Some("task_available") {
+            if is_assignee != Some(true) {
                 return Ok(());
             }
         }
