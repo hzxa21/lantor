@@ -6,6 +6,7 @@ import {
   Bookmark,
   Plus,
   Search,
+  UserRound,
 } from "lucide-react";
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
@@ -29,6 +30,7 @@ type SidebarProps = {
   selectChannel: (channelId: string) => void;
   openCreateAgentModal: () => void;
   openDmWithAgent: (agent: Agent) => void;
+  openAgentDetail: (agent: Agent) => void;
   openOwnerProfileModal: () => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
@@ -45,6 +47,7 @@ export function Sidebar({
   selectChannel,
   openCreateAgentModal,
   openDmWithAgent,
+  openAgentDetail,
   openOwnerProfileModal,
   onResizeStart,
 }: SidebarProps) {
@@ -172,11 +175,22 @@ export function Sidebar({
               >
                 <div>
                   <strong>{agent.display_name}</strong>
-                  <span>@{agent.handle} · {agent.status}</span>
+                  <span>@{agent.handle}</span>
                 </div>
                 {badge && <strong className="dm-badge">{badge}</strong>}
-                <Circle className={`dot ${agent.status}`} size={10} />
               </button>
+              <div className="dm-row-actions">
+                <Circle className={`dot ${agent.status}`} size={10} />
+                <button
+                  type="button"
+                  className="dm-detail-trigger"
+                  title={`View @${agent.handle} details`}
+                  aria-label={`View @${agent.handle} details`}
+                  onClick={() => openAgentDetail(agent)}
+                >
+                  <UserRound size={15} />
+                </button>
+              </div>
             </div>
           );
         })}

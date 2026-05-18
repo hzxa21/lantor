@@ -2579,6 +2579,11 @@ function App() {
           setShowMobileSidebar(false);
           openDmWithAgent(agent);
         }}
+        openAgentDetail={(agent) => {
+          setShowMobileSidebar(false);
+          setMobileSidebarDragPx(0);
+          setSelectedAgentId(agent.id);
+        }}
         openOwnerProfileModal={() => {
           setOwnerProfileDraft(ownerProfileToForm(data.owner_profile));
           setShowMobileSidebar(false);
