@@ -1549,10 +1549,16 @@ button,
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .meta strong {
-  font-weight: 650;
+  color: #1d1c1d;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 18px;
 }
 
 .meta span,
@@ -1602,11 +1608,20 @@ mark {
   font-weight: 800;
 }
 
+.message-body,
+.thread-message-content,
+.reply-body {
+  color: #1d1c1d;
+  font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.48;
+}
+
 .message-body p,
-.thread-root p,
-.reply-list p {
+.thread-message-content p,
+.reply-body p {
   margin: 8px 0 0;
-  line-height: 1.5;
+  line-height: 1.48;
   white-space: pre-wrap;
 }
 
@@ -2093,6 +2108,8 @@ mark {
   gap: 6px;
   min-width: 0;
   max-width: 100%;
+  font-size: inherit;
+  line-height: inherit;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -6012,6 +6029,19 @@ body.resizing-column * {
 
   .message-hover-actions {
     display: none;
+  }
+
+  .message-body,
+  .thread-message-content,
+  .reply-body {
+    font-size: 16px;
+    line-height: 1.5;
+  }
+
+  .message-body p,
+  .thread-message-content p,
+  .reply-body p {
+    line-height: 1.5;
   }
 
   .message-card.compact,
