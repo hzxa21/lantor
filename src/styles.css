@@ -4018,6 +4018,8 @@ body.resizing-column * {
 .agent-detail-tabs {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-auto-rows: 50px;
+  align-self: start;
   gap: 4px;
   padding: 4px;
   border: 1px solid rgba(118, 118, 128, 0.12);
@@ -4033,7 +4035,7 @@ body.resizing-column * {
   justify-content: center;
   min-width: 0;
   gap: 2px;
-  min-height: 50px;
+  height: 50px;
   padding: 8px 6px;
   border-radius: 12px;
   background: transparent;
@@ -4070,6 +4072,8 @@ body.resizing-column * {
 
 .agent-detail-panel {
   display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
   gap: 14px;
   min-width: 0;
   min-height: 0;
@@ -4080,6 +4084,8 @@ body.resizing-column * {
 }
 
 .agent-detail-panel.panel-activity {
+  align-content: stretch;
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -4250,7 +4256,9 @@ body.resizing-column * {
 
 .workspace-tree {
   display: grid;
-  max-height: 260px;
+  align-content: start;
+  grid-auto-rows: max-content;
+  max-height: none;
   overflow: auto;
   border: 1px solid rgba(118, 118, 128, 0.1);
   border-radius: 14px;
@@ -4636,6 +4644,8 @@ body.resizing-column * {
 
 .activity-timeline {
   display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
   max-height: none;
   min-height: 0;
   overflow-y: auto;
@@ -4644,10 +4654,15 @@ body.resizing-column * {
   scrollbar-gutter: stable;
 }
 
+.live-activity-section {
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+}
+
 .activity-timeline-row {
   display: grid;
   grid-template-columns: 82px 14px minmax(0, 1fr);
-  align-items: stretch;
+  align-items: start;
   gap: 8px;
   padding: 7px 8px 8px 0;
   border-radius: 10px;
@@ -4965,6 +4980,10 @@ body.resizing-column * {
 .detail-work-actions button:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.agent-inbox-section {
+  align-content: start;
 }
 
 .channel.has-unread,
