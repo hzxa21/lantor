@@ -1,6 +1,7 @@
 import {
   ArrowLeft,
   CheckCircle2,
+  ChevronRight,
   Flag,
   Hash,
   Bookmark,
@@ -617,6 +618,7 @@ export function Conversation({
                             <span>View thread</span>
                           </span>
                         )}
+                        <ChevronRight className="thread-reply-summary-icon" size={18} aria-hidden="true" />
                       </button>
                     )}
                   </div>
