@@ -1389,6 +1389,8 @@ function App() {
         actor: latest?.sender_name ?? "",
         timestamp: timestamp(latest?.created_at),
         unread: true,
+        actorAgentId: latest?.sender_agent_id ?? dmAgent?.id ?? null,
+        actorRole: latest?.sender_role ?? (channel.kind === "dm" ? "agent" : null),
         channelId: channel.id,
         threadId: latest?.thread_root_id ?? null,
         messageId: latest?.id ?? null,
@@ -1412,6 +1414,8 @@ function App() {
         actor: currentMessage.sender_name,
         timestamp: timestamp(currentMessage.created_at),
         unread,
+        actorAgentId: currentMessage.sender_agent_id,
+        actorRole: currentMessage.sender_role,
         channelId: root.channel_id,
         threadId: root.id,
         messageId: currentMessage.id,
@@ -1437,6 +1441,8 @@ function App() {
           actor: message.sender_name,
           timestamp: message.created_at,
           unread: channelAlertIds.has(message.channel_id) || (message.thread_root_id ? (threadUnreadCounts[message.thread_root_id] ?? 0) > 0 : false),
+          actorAgentId: message.sender_agent_id,
+          actorRole: message.sender_role,
           channelId: message.channel_id,
           threadId: rootId,
           messageId: message.id,
@@ -1645,7 +1651,7 @@ function App() {
           createdAt: null,
           channelId: item.id,
           threadId: null,
-          agentId: null,
+          agentId: dmAgent?.id ?? null,
         };
         }).slice(0, 10));
     }
@@ -1683,7 +1689,8 @@ function App() {
         createdAt: item.created_at,
         channelId: item.channel_id,
         threadId: item.thread_root_id ?? item.id,
-        agentId: null,
+        agentId: item.sender_agent_id,
+        senderRole: item.sender_role,
       })).slice(0, 40));
     }
 
@@ -2579,6 +2586,8 @@ function App() {
         scope={searchScope}
         timeRange={searchTimeRange}
         results={searchResults}
+        agents={data.agents}
+        ownerProfile={data.owner_profile}
         onQueryChange={setSearchQuery}
         onScopeChange={setSearchScope}
         onTimeRangeChange={setSearchTimeRange}
@@ -2590,6 +2599,8 @@ function App() {
       <InboxModal
         open={showInboxModal}
         items={inboxItems}
+        agents={data.agents}
+        ownerProfile={data.owner_profile}
         onOpenItem={openInboxItem}
         onMarkItemRead={markInboxItemRead}
         onMarkAllRead={markAllInboxRead}
@@ -2599,6 +2610,8 @@ function App() {
       <SavedMessagesModal
         open={showSavedModal}
         items={data.saved_messages}
+        agents={data.agents}
+        ownerProfile={data.owner_profile}
         onOpenItem={openSavedMessage}
         onUnsaveItem={unsaveSavedMessage}
         onClose={() => closeMobileModal(() => setShowSavedModal(false))}

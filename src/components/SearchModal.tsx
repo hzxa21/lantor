@@ -1,7 +1,9 @@
 import { Activity, ArrowLeft, Bot, CalendarDays, FileText, Hash, LayoutList, MessageSquare, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
-import { SearchResult, SearchScope, SearchTimeRange } from "../types";
+import type { Agent, OwnerProfile, SearchResult, SearchScope, SearchTimeRange } from "../types";
 import { APP_DISPLAY_NAME } from "../branding";
+import { ownerAsAvatarAgent } from "../ui-utils";
+import { AgentAvatar } from "./AgentAvatar";
 
 type SearchModalProps = {
   open: boolean;
@@ -9,6 +11,8 @@ type SearchModalProps = {
   scope: SearchScope;
   timeRange: SearchTimeRange;
   results: SearchResult[];
+  agents: Agent[];
+  ownerProfile: OwnerProfile;
   onQueryChange: (value: string) => void;
   onScopeChange: (value: SearchScope) => void;
   onTimeRangeChange: (value: SearchTimeRange) => void;
@@ -70,12 +74,20 @@ function Highlight({ text, query }: { text: string; query: string }) {
   );
 }
 
+function resultAvatarAgent(result: SearchResult, agents: Agent[], ownerProfile: OwnerProfile) {
+  if (result.agentId) return agents.find((agent) => agent.id === result.agentId) ?? null;
+  if (result.senderRole === "owner") return ownerAsAvatarAgent(ownerProfile);
+  return null;
+}
+
 export function SearchModal({
   open,
   query,
   scope,
   timeRange,
   results,
+  agents,
+  ownerProfile,
   onQueryChange,
   onScopeChange,
   onTimeRangeChange,
@@ -125,7 +137,6 @@ export function SearchModal({
               <X size={18} />
             </button>
           )}
-          <button className="search-esc" onClick={onClose}>Esc</button>
         </header>
 
         <div className="search-filters">
@@ -173,16 +184,28 @@ export function SearchModal({
               <section key={group.key} className="search-result-group">
                 <h4><Icon size={15} /> {group.title}</h4>
                 <div className="search-result-list">
-                  {group.results.map((result) => (
-                    <button key={`${result.kind}-${result.id}`} onClick={() => onOpenResult(result)}>
-                      <span className="search-kind">{resultLabel(result.kind)}</span>
-                      <div>
-                        <strong><Highlight text={result.title} query={query} /></strong>
-                        <small>{result.detail}</small>
-                        {result.excerpt && <p><Highlight text={result.excerpt} query={query} /></p>}
-                      </div>
-                    </button>
-                  ))}
+                  {group.results.map((result) => {
+                    const avatarAgent = resultAvatarAgent(result, agents, ownerProfile);
+                    return (
+                      <button key={`${result.kind}-${result.id}`} onClick={() => onOpenResult(result)}>
+                        <span className="search-result-avatar" aria-hidden="true">
+                          {avatarAgent ? (
+                            <AgentAvatar agent={avatarAgent} size="md" showStatus={false} />
+                          ) : (
+                            <span className="search-result-fallback-avatar">{resultLabel(result.kind).slice(0, 1)}</span>
+                          )}
+                        </span>
+                        <div>
+                          <div className="search-result-meta">
+                            <strong><Highlight text={result.title} query={query} /></strong>
+                            <span>{resultLabel(result.kind)}</span>
+                            <small>{result.detail}</small>
+                          </div>
+                          {result.excerpt && <p><Highlight text={result.excerpt} query={query} /></p>}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </section>
             );

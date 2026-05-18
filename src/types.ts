@@ -300,6 +300,7 @@ export type SearchResult = {
   channelId: string | null;
   threadId: string | null;
   agentId: string | null;
+  senderRole?: string | null;
 };
 
 export type InboxKind = "mention" | "dm" | "thread" | "task" | "reminder" | "channel";
@@ -313,6 +314,8 @@ export type InboxItem = {
   actor: string;
   timestamp: string;
   unread: boolean;
+  actorAgentId?: string | null;
+  actorRole?: string | null;
   channelId: string | null;
   threadId: string | null;
   messageId: string | null;

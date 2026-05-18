@@ -1,4 +1,4 @@
-import { Check, MessageSquare } from "lucide-react";
+import { Check, MessageSquare, X } from "lucide-react";
 import { useEffect } from "react";
 import { Channel, Message } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
@@ -53,7 +53,9 @@ export function ThreadBrowserModal({
             <h2>Threads</h2>
             <p>{threads.length} active</p>
           </div>
-          <button className="search-esc" onClick={onClose}>Esc</button>
+          <button className="search-clear" onClick={onClose} aria-label="Close threads">
+            <X size={18} />
+          </button>
         </header>
 
         <div className="thread-browser-body">

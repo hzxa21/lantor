@@ -1,11 +1,14 @@
 import { Bookmark, Hash, MessageSquare, X } from "lucide-react";
 import { useEffect } from "react";
-import type { SavedMessage } from "../types";
-import { firstLines, formatTime } from "../ui-utils";
+import type { Agent, OwnerProfile, SavedMessage } from "../types";
+import { firstLines, formatTime, ownerAsAvatarAgent } from "../ui-utils";
+import { AgentAvatar } from "./AgentAvatar";
 
 type SavedMessagesModalProps = {
   open: boolean;
   items: SavedMessage[];
+  agents: Agent[];
+  ownerProfile: OwnerProfile;
   onOpenItem: (item: SavedMessage) => void;
   onUnsaveItem: (item: SavedMessage) => void;
   onClose: () => void;
@@ -14,6 +17,8 @@ type SavedMessagesModalProps = {
 export function SavedMessagesModal({
   open,
   items,
+  agents,
+  ownerProfile,
   onOpenItem,
   onUnsaveItem,
   onClose,
@@ -33,7 +38,9 @@ export function SavedMessagesModal({
     <div className="search-backdrop" onClick={onClose}>
       <section className="inbox-panel saved-panel" onClick={(event) => event.stopPropagation()}>
         <header className="inbox-head">
-          <button className="inbox-back" onClick={onClose} aria-label="Close saved messages">←</button>
+          <button className="inbox-back" onClick={onClose} aria-label="Close saved messages">
+            <X size={18} />
+          </button>
           <div>
             <h2>Saved</h2>
             <p>{items.length} saved {items.length === 1 ? "message" : "messages"}</p>
@@ -51,14 +58,25 @@ export function SavedMessagesModal({
 
           {items.map((item) => {
             const Icon = item.thread_root_id ? MessageSquare : Hash;
+            const senderAgent = item.sender_role === "owner"
+              ? ownerAsAvatarAgent(ownerProfile)
+              : agents.find((agent) => agent.display_name === item.sender_name || agent.handle === item.sender_name.replace(/^@/, "")) ?? null;
             return (
               <article
                 key={item.id}
                 className="inbox-row saved-row"
                 onClick={() => onOpenItem(item)}
               >
+                <span className="inbox-row-avatar" aria-hidden="true">
+                  {senderAgent ? (
+                    <AgentAvatar agent={senderAgent} size="md" showStatus={false} />
+                  ) : (
+                    <span className="search-result-fallback-avatar">{item.sender_name.slice(0, 1) || "S"}</span>
+                  )}
+                </span>
                 <div className="inbox-row-main">
                   <div className="inbox-row-meta">
+                    <strong>{item.sender_name || "Saved message"}</strong>
                     <span>#{item.channel_name}</span>
                     <time>{formatTime(item.message_created_at)}</time>
                     <em>{item.thread_root_id ? "thread" : "channel"}</em>

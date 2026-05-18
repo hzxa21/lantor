@@ -429,6 +429,7 @@ export function ThreadPanel({
                     <div className="thread-message-content">
                       <div className="meta">
                         <strong>{activeRoot.sender_name}</strong>
+                        <span>{activeRoot.sender_role}</span>
                         <time>{formatTime(activeRoot.created_at)}</time>
                         {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
                       </div>
@@ -651,6 +652,7 @@ export function ThreadPanel({
                       {!isCompact && (
                         <div className="meta">
                           <strong>{reply.sender_name}</strong>
+                          <span>{reply.sender_role}</span>
                           <time>{formatTime(reply.created_at)}</time>
                           {wasEdited(reply) && <span className="edited-indicator">edited</span>}
                         </div>
