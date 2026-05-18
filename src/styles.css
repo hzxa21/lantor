@@ -371,20 +371,25 @@ button,
   align-items: center;
   gap: 10px;
   padding: 11px 12px;
+  border: 1px solid transparent;
   border-radius: 14px;
   font-size: 16px;
+  font-weight: 520;
   text-align: left;
 }
 
 .channel.selected {
-  background: var(--accent);
-  color: var(--accent-ink);
-  box-shadow: 0 10px 20px rgba(10, 132, 255, 0.2);
+  border-color: rgba(20, 23, 31, 0.1);
+  background: linear-gradient(180deg, #ffffff 0%, #f6f7f9 100%);
+  color: #20242b;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 1px 2px rgba(20, 23, 31, 0.05);
 }
 
 .channel.selected strong {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: #eef0f4;
+  color: #4f5560;
 }
 
 .dm-row {
@@ -4894,6 +4899,10 @@ body.resizing-column * {
 .dm.has-unread,
 .dm-row.has-unread .dm {
   font-weight: 760;
+}
+
+.channel.has-unread {
+  color: #171a20;
 }
 
 .channel-agent-picker label {
