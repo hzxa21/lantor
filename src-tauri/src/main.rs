@@ -80,7 +80,7 @@ const CODEX_CONTEXT_ROTATE_MIN_INPUT_TOKENS: i64 = 50_000;
 const CODEX_CONTEXT_ROTATE_ENV: &str = "LANTOR_CODEX_CONTEXT_ROTATE_INPUT_TOKENS";
 const AGENT_WORKSPACE_PREVIEW_LIMIT: u64 = 256 * 1024;
 const DEFAULT_OWNER_DISPLAY_NAME: &str = "Me";
-const DEFAULT_OWNER_AVATAR: &str = "M";
+const DEFAULT_OWNER_AVATAR: &str = "dicebear:dylan:owner";
 const DEFAULT_OWNER_DESCRIPTION: &str = "local owner";
 
 fn expand_home_path(value: &str) -> String {
@@ -800,7 +800,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         create table if not exists owner_profile (
             id integer primary key default 1 check (id = 1),
             display_name text not null default 'Me',
-            avatar text not null default 'M',
+            avatar text not null default 'dicebear:dylan:owner',
             description text not null default 'local owner',
             updated_at timestamptz not null default now()
         )
@@ -812,7 +812,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         r#"
         alter table owner_profile
             alter column display_name set default 'Me',
-            alter column avatar set default 'M',
+            alter column avatar set default 'dicebear:dylan:owner',
             alter column description set default 'local owner'
         "#,
     )
@@ -821,8 +821,17 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
         insert into owner_profile (id, display_name, avatar, description)
-        values (1, 'Me', 'M', 'local owner')
+        values (1, 'Me', 'dicebear:dylan:owner', 'local owner')
         on conflict (id) do nothing
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        update owner_profile
+        set avatar = 'dicebear:dylan:owner'
+        where id = 1 and avatar = 'M'
         "#,
     )
     .execute(pool)
