@@ -103,7 +103,7 @@ function activityDetail(activity: AgentActivity) {
   if (typeof preferred === "string") return preferred.trim();
 
   const detail = activity.detail.trim();
-  if (!detail || detail.startsWith("{")) return "";
+  if (!detail || detail.startsWith("{") || detail.startsWith("[")) return "";
   return detail;
 }
 

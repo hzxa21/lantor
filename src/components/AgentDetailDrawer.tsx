@@ -138,9 +138,21 @@ function userFacingActivityCategory(activity: AgentActivity) {
   }
 }
 
+function isStructuredActivityDetail(detail: string) {
+  const trimmed = detail.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed !== null && typeof parsed === "object";
+  } catch {
+    return false;
+  }
+}
+
 function userFacingActivityDetail(activity: AgentActivity) {
   const detail = activity.detail.trim();
   if (!detail) return "";
+  if (isStructuredActivityDetail(detail)) return "";
   if (/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(detail)) return "";
   if (["content_block_stop", "message_stop", "status"].includes(detail)) return "";
   return detail

@@ -61,6 +61,7 @@ Lantor helps you land real work with an agent team you control.
 ## Requirements
 
 - macOS
+- [Homebrew](https://brew.sh/) for the commands below
 - Node.js 20+
 - Rust toolchain with [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/)
 - PostgreSQL 14+ (local install or container)
@@ -69,16 +70,64 @@ Lantor helps you land real work with an agent team you control.
 
 ## Quickstart
 
+Install Node.js and Rust first:
+
+```bash
+brew install node
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
+If Rust or Tauri reports missing Apple compiler/linker tools, install
+Apple's command line tools and retry:
+
+```bash
+xcode-select --install
+```
+
+Set up PostgreSQL. If you already have PostgreSQL 14+ running and `psql` is
+available, skip the install/start commands and only create the `lantor` role
+and database below.
+
+If you do not have PostgreSQL yet, install and start it with Homebrew:
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16
+export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+```
+
+Create the local Lantor role and database:
+
+```bash
+psql postgres -tc "select 1 from pg_roles where rolname = 'lantor'" | grep -q 1 \
+  || psql postgres -c "create role lantor login password 'lantor';"
+psql postgres -tc "select 1 from pg_database where datname = 'lantor'" | grep -q 1 \
+  || createdb -O lantor lantor
+```
+
+If your existing PostgreSQL uses a different host, port, user, or database
+name, set `LANTOR_DATABASE_URL` before starting the app.
+
+Then install and run Lantor:
+
 ```bash
 npm install
-psql postgres -c "create role lantor login password 'lantor';"
-psql postgres -c "create database lantor owner lantor;"
 npm run tauri:dev
 ```
 
 Schema setup and migrations run automatically when the app starts. The
 desktop app opens, and the same process serves the web UI at
 `http://127.0.0.1:8787/` (and `http://<your-mac>:8787/` over Tailscale).
+
+To use Codex or Claude agents, install and sign in to the CLI before adding
+agents in Lantor:
+
+```bash
+# examples only; install the CLIs you plan to use
+codex --version
+claude --version
+```
 
 ## Configuration
 
