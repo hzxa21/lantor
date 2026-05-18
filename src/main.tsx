@@ -118,9 +118,13 @@ type ConfirmRequest = {
 type ActiveTab = "chat" | "tasks";
 type MobileModal = "search" | "inbox" | "saved";
 
-type MobileHistoryState = {
+type AppHistoryState = {
+  __lantorUiHistory?: true;
   __lantorMobileUi?: true;
   index: number;
+  activeChannelId: string | null;
+  activeThreadId: string | null;
+  activeTab: "chat" | "tasks";
   showThread: boolean;
   showMobileSidebar: boolean;
   selectedAgentId: string | null;
@@ -162,11 +166,14 @@ function isMobileViewport() {
   return window.innerWidth <= MOBILE_BREAKPOINT;
 }
 
-function isMobileHistoryState(value: unknown): value is MobileHistoryState {
+function isAppHistoryState(value: unknown): value is AppHistoryState {
   if (!value || typeof value !== "object") return false;
   const state = value as Record<string, unknown>;
-  return state.__lantorMobileUi === true
+  return (state.__lantorUiHistory === true || state.__lantorMobileUi === true)
     && typeof state.index === "number"
+    && (state.activeChannelId === undefined || state.activeChannelId === null || typeof state.activeChannelId === "string")
+    && (state.activeThreadId === undefined || state.activeThreadId === null || typeof state.activeThreadId === "string")
+    && (state.activeTab === undefined || state.activeTab === "chat" || state.activeTab === "tasks")
     && typeof state.showThread === "boolean"
     && typeof state.showMobileSidebar === "boolean"
     && (state.selectedAgentId === null || typeof state.selectedAgentId === "string")
@@ -178,8 +185,11 @@ function isMobileHistoryState(value: unknown): value is MobileHistoryState {
     );
 }
 
-function mobileHistoryKey(state: MobileHistoryState) {
+function appHistoryKey(state: AppHistoryState) {
   return [
+    state.activeChannelId ?? "",
+    state.activeThreadId ?? "",
+    state.activeTab,
     state.showThread ? "thread" : "conversation",
     state.showMobileSidebar ? "sidebar" : "content",
     state.selectedAgentId ?? "",
@@ -549,10 +559,11 @@ function App() {
   const refreshQueuedRef = useRef(false);
   const messageDeltaBufferRef = useRef<Map<string, { append: string; deliveryState: Message["delivery_state"] }>>(new Map());
   const messageDeltaFlushTimerRef = useRef<number | null>(null);
-  const mobileHistoryReadyRef = useRef(false);
-  const mobileHistoryIndexRef = useRef(0);
-  const restoringMobileHistoryRef = useRef(false);
-  const lastMobileHistoryKeyRef = useRef<string | null>(null);
+  const appHistoryReadyRef = useRef(false);
+  const appHistoryIndexRef = useRef(0);
+  const restoringAppHistoryRef = useRef(false);
+  const lastAppHistoryKeyRef = useRef<string | null>(null);
+  const [appHistoryIndex, setAppHistoryIndex] = useState(0);
   const activeMobileModal: MobileModal | null = showSearchModal
     ? "search"
     : showInboxModal
@@ -561,10 +572,19 @@ function App() {
         ? "saved"
         : null;
 
-  function buildMobileHistoryState(index = mobileHistoryIndexRef.current): MobileHistoryState {
+  function setAppHistoryPosition(index: number) {
+    appHistoryIndexRef.current = index;
+    setAppHistoryIndex(index);
+  }
+
+  function buildAppHistoryState(index = appHistoryIndexRef.current): AppHistoryState {
     return {
+      __lantorUiHistory: true,
       __lantorMobileUi: true,
       index,
+      activeChannelId: activeChannelId || null,
+      activeThreadId,
+      activeTab,
       showThread,
       showMobileSidebar,
       selectedAgentId,
@@ -1009,10 +1029,22 @@ function App() {
         return;
       }
 
-      if (modifier && (event.key === "[" || event.key === "]") && channels.length > 0) {
+      if (modifier && event.key === "[") {
+        event.preventDefault();
+        navigateBack(() => {
+          if (showSearchModal) setShowSearchModal(false);
+          else if (showInboxModal) setShowInboxModal(false);
+          else if (showSavedModal) setShowSavedModal(false);
+          else if (selectedAgentId) setSelectedAgentId(null);
+          else if (showThread) setShowThread(false);
+        });
+        return;
+      }
+
+      if (modifier && event.key === "]" && channels.length > 0) {
         event.preventDefault();
         const currentIndex = Math.max(0, channels.findIndex((item) => item.id === activeChannelId));
-        const offset = event.key === "]" ? 1 : -1;
+        const offset = 1;
         const nextIndex = (currentIndex + offset + channels.length) % channels.length;
         selectChannel(channels[nextIndex].id);
         return;
@@ -1073,14 +1105,25 @@ function App() {
 
   useEffect(() => {
     function onPopState(event: PopStateEvent) {
-      if (!isMobileHistoryState(event.state)) return;
-      restoringMobileHistoryRef.current = true;
-      mobileHistoryReadyRef.current = true;
-      mobileHistoryIndexRef.current = event.state.index;
-      lastMobileHistoryKeyRef.current = mobileHistoryKey(event.state);
-      // Only restore navigation-layer state (sidebar/thread/agent-drawer pages).
-      // The active channel/thread/tab are content state and stay live across
-      // back navigation so the sidebar remembers what was last opened.
+      if (!isAppHistoryState(event.state)) return;
+      restoringAppHistoryRef.current = true;
+      appHistoryReadyRef.current = true;
+      setAppHistoryPosition(event.state.index);
+      const activeChannelIdFromState = event.state.activeChannelId ?? null;
+      const activeThreadIdFromState = event.state.activeThreadId ?? null;
+      const activeTabFromState = event.state.activeTab ?? "chat";
+      lastAppHistoryKeyRef.current = appHistoryKey({
+        ...event.state,
+        activeChannelId: activeChannelIdFromState,
+        activeThreadId: activeThreadIdFromState,
+        activeTab: activeTabFromState,
+      });
+      if (activeChannelIdFromState) {
+        setActiveChannelId(activeChannelIdFromState);
+        setActiveThreadId(activeThreadIdFromState);
+        rememberChannelThread(activeChannelIdFromState, activeThreadIdFromState);
+      }
+      setActiveTab(activeTabFromState);
       setShowThread(event.state.showThread);
       setShowMobileSidebar(event.state.showMobileSidebar);
       setMobileSidebarDragPx(0);
@@ -1095,59 +1138,64 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!data || !activeChannelId || !isMobileViewport()) return;
+    if (!data || !activeChannelId) return;
 
-    const currentState = buildMobileHistoryState(mobileHistoryIndexRef.current);
-    const currentKey = mobileHistoryKey(currentState);
+    const currentState = buildAppHistoryState(appHistoryIndexRef.current);
+    const currentKey = appHistoryKey(currentState);
 
-    if (restoringMobileHistoryRef.current) {
-      restoringMobileHistoryRef.current = false;
-      lastMobileHistoryKeyRef.current = currentKey;
+    if (restoringAppHistoryRef.current) {
+      restoringAppHistoryRef.current = false;
+      lastAppHistoryKeyRef.current = currentKey;
       return;
     }
 
-    if (!mobileHistoryReadyRef.current) {
+    if (!appHistoryReadyRef.current) {
       const existingState = window.history.state;
-      if (isMobileHistoryState(existingState)) {
-        mobileHistoryReadyRef.current = true;
-        mobileHistoryIndexRef.current = existingState.index;
-        const nextState = buildMobileHistoryState(existingState.index);
+      if (isAppHistoryState(existingState)) {
+        appHistoryReadyRef.current = true;
+        setAppHistoryPosition(existingState.index);
+        const nextState = buildAppHistoryState(existingState.index);
         window.history.replaceState(nextState, "");
-        lastMobileHistoryKeyRef.current = mobileHistoryKey(nextState);
+        lastAppHistoryKeyRef.current = appHistoryKey(nextState);
         return;
       }
 
-      const baseState: MobileHistoryState = {
+      const baseState: AppHistoryState = {
         ...currentState,
         index: 0,
-        showThread: false,
-        showMobileSidebar: true,
-        selectedAgentId: null,
-        activeModal: null,
+        ...(isMobileViewport()
+          ? {
+              showThread: false,
+              showMobileSidebar: true,
+              selectedAgentId: null,
+              activeModal: null,
+            }
+          : {}),
       };
-      const baseKey = mobileHistoryKey(baseState);
+      const baseKey = appHistoryKey(baseState);
       window.history.replaceState(baseState, "");
-      mobileHistoryReadyRef.current = true;
-      mobileHistoryIndexRef.current = 0;
-      lastMobileHistoryKeyRef.current = baseKey;
+      appHistoryReadyRef.current = true;
+      setAppHistoryPosition(0);
+      lastAppHistoryKeyRef.current = baseKey;
 
       if (baseKey === currentKey) return;
       const firstState = { ...currentState, index: 1 };
       window.history.pushState(firstState, "");
-      mobileHistoryIndexRef.current = 1;
-      lastMobileHistoryKeyRef.current = mobileHistoryKey(firstState);
+      setAppHistoryPosition(1);
+      lastAppHistoryKeyRef.current = appHistoryKey(firstState);
       return;
     }
 
-    if (lastMobileHistoryKeyRef.current === currentKey) return;
+    if (lastAppHistoryKeyRef.current === currentKey) return;
 
     const browserState = window.history.state;
     const isLeavingSidebar =
-      isMobileHistoryState(browserState) &&
+      isMobileViewport() &&
+      isAppHistoryState(browserState) &&
       browserState.showMobileSidebar &&
       !currentState.showMobileSidebar;
     if (isLeavingSidebar) {
-      const sidebarState: MobileHistoryState = {
+      const sidebarState: AppHistoryState = {
         ...currentState,
         index: browserState.index,
         showThread: false,
@@ -1156,16 +1204,19 @@ function App() {
         activeModal: null,
       };
       window.history.replaceState(sidebarState, "");
-      mobileHistoryIndexRef.current = sidebarState.index;
-      lastMobileHistoryKeyRef.current = mobileHistoryKey(sidebarState);
+      setAppHistoryPosition(sidebarState.index);
+      lastAppHistoryKeyRef.current = appHistoryKey(sidebarState);
     }
 
-    const nextState = { ...currentState, index: mobileHistoryIndexRef.current + 1 };
+    const nextState = { ...currentState, index: appHistoryIndexRef.current + 1 };
     window.history.pushState(nextState, "");
-    mobileHistoryIndexRef.current = nextState.index;
-    lastMobileHistoryKeyRef.current = mobileHistoryKey(nextState);
+    setAppHistoryPosition(nextState.index);
+    lastAppHistoryKeyRef.current = appHistoryKey(nextState);
   }, [
     data,
+    activeChannelId,
+    activeThreadId,
+    activeTab,
     selectedAgentId,
     activeMobileModal,
     showMobileSidebar,
@@ -1949,8 +2000,12 @@ function App() {
     }
   }
 
-  function navigateMobileBack(fallback: () => void) {
-    if (isMobileViewport() && mobileHistoryReadyRef.current && mobileHistoryIndexRef.current > 0) {
+  function canNavigateBack() {
+    return appHistoryReadyRef.current && appHistoryIndexRef.current > 0;
+  }
+
+  function navigateBack(fallback: () => void) {
+    if (canNavigateBack()) {
       window.history.back();
       return;
     }
@@ -1958,8 +2013,8 @@ function App() {
   }
 
   function openMobileSidebarFromContent() {
-    if (isMobileViewport() && mobileHistoryReadyRef.current && mobileHistoryIndexRef.current > 0) {
-      restoringMobileHistoryRef.current = true;
+    if (isMobileViewport() && canNavigateBack()) {
+      restoringAppHistoryRef.current = true;
       setShowThread(false);
       setSelectedAgentId(null);
       setShowMobileSidebar(true);
@@ -1991,8 +2046,8 @@ function App() {
     setShowSavedModal(true);
   }
 
-  function closeMobileModal(fallback: () => void) {
-    if (isMobileViewport() && activeMobileModal && mobileHistoryReadyRef.current && mobileHistoryIndexRef.current > 0) {
+  function closeAppModal(fallback: () => void) {
+    if (activeMobileModal && canNavigateBack()) {
       window.history.back();
       return;
     }
@@ -2000,11 +2055,11 @@ function App() {
   }
 
   function closeSelectedAgent() {
-    navigateMobileBack(() => setSelectedAgentId(null));
+    navigateBack(() => setSelectedAgentId(null));
   }
 
   function closeThreadPanel() {
-    navigateMobileBack(() => {
+    navigateBack(() => {
       openThread(null);
       setShowThread(false);
     });
@@ -2604,7 +2659,7 @@ function App() {
         onTimeRangeChange={setSearchTimeRange}
         onOpenResult={openSearchResult}
         onClear={() => setSearchQuery("")}
-        onClose={() => closeMobileModal(() => setShowSearchModal(false))}
+        onClose={() => closeAppModal(() => setShowSearchModal(false))}
       />
 
       <InboxModal
@@ -2615,7 +2670,7 @@ function App() {
         onOpenItem={openInboxItem}
         onMarkItemRead={markInboxItemRead}
         onMarkAllRead={markAllInboxRead}
-        onClose={() => closeMobileModal(() => setShowInboxModal(false))}
+        onClose={() => closeAppModal(() => setShowInboxModal(false))}
       />
 
       <SavedMessagesModal
@@ -2625,7 +2680,7 @@ function App() {
         ownerProfile={data.owner_profile}
         onOpenItem={openSavedMessage}
         onUnsaveItem={unsaveSavedMessage}
-        onClose={() => closeMobileModal(() => setShowSavedModal(false))}
+        onClose={() => closeAppModal(() => setShowSavedModal(false))}
       />
 
       <OwnerProfileModal
@@ -2657,6 +2712,8 @@ function App() {
         draft={draft}
         draftAttachments={draftAttachments}
         taskTitleDrafts={taskTitleDrafts}
+        canNavigateBack={appHistoryIndex > 0}
+        navigateBack={() => navigateBack(() => {})}
         setActiveTab={setActiveTab}
         setActiveThreadId={revealThread}
         openMobileSidebar={openMobileSidebarFromContent}

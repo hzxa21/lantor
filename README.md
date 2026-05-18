@@ -52,6 +52,8 @@ Lantor helps you land real work with an agent team you control.
   wakeups instead of replaying history every turn.
 - **Agent detail drawer** — inspect profile, reminders, live activity,
   inbox work items, workspace files, runtime settings, and usage metrics.
+- **Desktop navigation Back** — use the top-bar Back button or `⌘[` to return
+  through recent channels, threads, modals, and agent detail views.
 - **Activity feed and progress dock** — queryable timeline of agent runs,
   hidden progress events, status changes, artifacts, handoffs, and task
   updates.
