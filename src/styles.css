@@ -6670,6 +6670,14 @@ body.resizing-column * {
   .reply-body {
     font-size: 16px;
     line-height: 1.5;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  .message-card,
+  .thread-root,
+  .reply-list article {
+    -webkit-touch-callout: default;
   }
 
   .message-body p,

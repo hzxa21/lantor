@@ -123,7 +123,6 @@ export function ThreadPanel({
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
   const [tapFocusedMessageId, setTapFocusedMessageId] = useState<string | null>(null);
   const replyDragDepthRef = useRef(0);
-  const longPressTimerRef = useRef<number | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowThreadRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -278,23 +277,12 @@ export function ThreadPanel({
     element?.scrollIntoView({ block: "center" });
   }, [activeRoot?.id, focusedMessageId, replies.length]);
 
-  useEffect(() => clearLongPress, []);
-
-  function clearLongPress() {
-    if (longPressTimerRef.current === null) return;
-    window.clearTimeout(longPressTimerRef.current);
-    longPressTimerRef.current = null;
+  function hasSelectedText() {
+    return Boolean(window.getSelection()?.toString().trim());
   }
 
-  function startMessageLongPress(event: ReactPointerEvent<HTMLElement>, message: Message) {
-    if (event.pointerType === "mouse") return;
-    clearLongPress();
-    const x = event.clientX;
-    const y = event.clientY;
-    longPressTimerRef.current = window.setTimeout(() => {
-      setMessageMenu({ x, y, message });
-      longPressTimerRef.current = null;
-    }, 520);
+  function shouldUseNativeMessageSelection() {
+    return window.matchMedia("(hover: none)").matches;
   }
 
   async function copyMessageMarkdown(message: Message) {
@@ -384,23 +372,15 @@ export function ThreadPanel({
                 className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${tapFocusedMessageId === activeRoot.id ? "tap-focused" : ""} ${rootSaved ? "saved" : ""}`}
                 data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
                 onClick={() => {
+                  if (hasSelectedText()) return;
                   if (activeRoot.sender_role !== "system") setTapFocusedMessageId(activeRoot.id);
                 }}
                 onContextMenu={(event) => {
                   if (activeRoot.sender_role === "system") return;
+                  if (shouldUseNativeMessageSelection()) return;
                   event.preventDefault();
                   setMessageMenu({ x: event.clientX, y: event.clientY, message: activeRoot });
                 }}
-                onPointerDown={(event) => {
-                  if (activeRoot.sender_role !== "system") {
-                    setTapFocusedMessageId(activeRoot.id);
-                    startMessageLongPress(event, activeRoot);
-                  }
-                }}
-                onPointerMove={clearLongPress}
-                onPointerUp={clearLongPress}
-                onPointerCancel={clearLongPress}
-                onPointerLeave={clearLongPress}
               >
                 {activeRoot.sender_role === "system" ? (
                   <div className="system-message-line">
@@ -618,19 +598,15 @@ export function ThreadPanel({
                     data-message-id={reply.id}
                     className={`${isCompact ? "compact" : ""} ${replySaved ? "saved" : ""} ${tapFocusedMessageId === reply.id ? "tap-focused" : ""}`}
                     data-jump-focused={focusedMessageId === reply.id ? "true" : "false"}
-                    onClick={() => setTapFocusedMessageId(reply.id)}
+                    onClick={() => {
+                      if (hasSelectedText()) return;
+                      setTapFocusedMessageId(reply.id);
+                    }}
                     onContextMenu={(event) => {
+                      if (shouldUseNativeMessageSelection()) return;
                       event.preventDefault();
                       setMessageMenu({ x: event.clientX, y: event.clientY, message: reply });
                     }}
-                    onPointerDown={(event) => {
-                      setTapFocusedMessageId(reply.id);
-                      startMessageLongPress(event, reply);
-                    }}
-                    onPointerMove={clearLongPress}
-                    onPointerUp={clearLongPress}
-                    onPointerCancel={clearLongPress}
-                    onPointerLeave={clearLongPress}
                   >
                     {isCompact ? (
                       <time className="message-compact-time" dateTime={reply.created_at}>

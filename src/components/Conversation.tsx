@@ -161,7 +161,6 @@ export function Conversation({
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
   const [expandedChannelMessageIds, setExpandedChannelMessageIds] = useState<Set<string>>(() => new Set());
   const composerDragDepthRef = useRef(0);
-  const longPressTimerRef = useRef<number | null>(null);
   const taskToggleHandledAtRef = useRef(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowMessagesRef = useRef(true);
@@ -233,6 +232,10 @@ export function Conversation({
   function handleMessageListContentLoad() {
     if (!shouldFollowMessagesRef.current) return;
     scrollMessagesToBottom();
+  }
+
+  function hasSelectedText() {
+    return Boolean(window.getSelection()?.toString().trim());
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -370,21 +373,8 @@ export function Conversation({
     setShowChannelActions(false);
   }
 
-  function clearLongPress() {
-    if (longPressTimerRef.current === null) return;
-    window.clearTimeout(longPressTimerRef.current);
-    longPressTimerRef.current = null;
-  }
-
-  function startMessageLongPress(event: ReactPointerEvent<HTMLElement>, message: Message) {
-    if (event.pointerType === "mouse") return;
-    clearLongPress();
-    const x = event.clientX;
-    const y = event.clientY;
-    longPressTimerRef.current = window.setTimeout(() => {
-      setMessageMenu({ x, y, message });
-      longPressTimerRef.current = null;
-    }, 520);
+  function shouldUseNativeMessageSelection() {
+    return window.matchMedia("(hover: none)").matches;
   }
 
   async function copyMessageMarkdown(message: Message) {
@@ -413,8 +403,6 @@ export function Conversation({
     shouldFollowMessagesRef.current = true;
     scrollMessagesToBottom();
   }, [channel?.id]);
-
-  useEffect(() => clearLongPress, []);
 
   useEffect(() => {
     setExpandedChannelMessageIds(new Set());
@@ -636,19 +624,14 @@ export function Conversation({
                   className={`message-card ${isCompact ? "compact" : ""} ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""}`}
                   data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
                   onClick={() => {
+                    if (hasSelectedText()) return;
                     if (shouldOpenThreadFromMessageClick()) setActiveThreadId(message.id);
                   }}
                   onContextMenu={(event) => {
+                    if (shouldUseNativeMessageSelection()) return;
                     event.preventDefault();
                     setMessageMenu({ x: event.clientX, y: event.clientY, message });
                   }}
-                  onPointerDown={(event) => {
-                    startMessageLongPress(event, message);
-                  }}
-                  onPointerMove={clearLongPress}
-                  onPointerUp={clearLongPress}
-                  onPointerCancel={clearLongPress}
-                  onPointerLeave={clearLongPress}
                 >
                   {isCompact ? (
                     <time className="message-compact-time" dateTime={message.created_at}>
