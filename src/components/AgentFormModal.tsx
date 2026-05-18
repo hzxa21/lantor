@@ -1,3 +1,4 @@
+import { Shuffle } from "lucide-react";
 import { Modal } from "./Modal";
 import {
   AgentForm,
@@ -7,9 +8,9 @@ import {
   modelLabel,
   modelOptionsForRuntime,
 } from "../types";
+import { randomDylanAvatarSpec } from "../avatar-utils";
 import { APP_DISPLAY_NAME } from "../branding";
 import { AgentAvatar } from "./AgentAvatar";
-import { AvatarInput } from "./AvatarInput";
 
 type AgentFormModalProps = {
   open: boolean;
@@ -129,6 +130,15 @@ export function AgentFormModal({
         <strong>{previewName}</strong>
         <span>{modelLabel(form.model)}</span>
       </div>
+      <button
+        type="button"
+        className="agent-form-preview-avatar-action"
+        title="Random avatar"
+        aria-label="Random avatar"
+        onClick={() => onChange({ ...form, avatar: randomDylanAvatarSpec(seedForAgentForm(form)) })}
+      >
+        <Shuffle size={16} />
+      </button>
     </div>
   );
 
@@ -154,14 +164,6 @@ export function AgentFormModal({
               {modelSelect}
               {codexControls}
             </div>
-            <label>
-              <span>Avatar</span>
-              <AvatarInput
-                value={form.avatar}
-                seedHint={seedForAgentForm(form)}
-                onChange={(avatar) => onChange({ ...form, avatar })}
-              />
-            </label>
             <RuntimePreflight check={runtimeChecks[form.runtime]} />
             <details className="agent-advanced-settings">
               <summary>Advanced</summary>
@@ -192,14 +194,6 @@ export function AgentFormModal({
               {modelSelect}
             </div>
             {isCodex && <div className="two-col">{codexControls}</div>}
-            <label>
-              <span>Avatar</span>
-              <AvatarInput
-                value={form.avatar}
-                seedHint={seedForAgentForm(form)}
-                onChange={(avatar) => onChange({ ...form, avatar })}
-              />
-            </label>
             <RuntimePreflight check={runtimeChecks[form.runtime]} />
             {showNotes && (
               <label>

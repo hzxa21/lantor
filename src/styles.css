@@ -3278,13 +3278,37 @@ body.resizing-column * {
 .agent-form-preview,
 .owner-profile-preview {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 14px;
   padding: 14px;
   border: 1px solid rgba(142, 142, 147, 0.14);
   border-radius: 16px;
   background: #fff;
+}
+
+.agent-form-preview {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.owner-profile-preview {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.agent-form-preview-avatar-action {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid rgba(10, 132, 255, 0.16);
+  border-radius: 12px;
+  background: rgba(10, 132, 255, 0.08);
+  color: var(--accent);
+}
+
+.agent-form-preview-avatar-action:hover,
+.agent-form-preview-avatar-action:focus-visible {
+  background: rgba(10, 132, 255, 0.13);
+  outline: none;
 }
 
 .agent-form-preview strong,
