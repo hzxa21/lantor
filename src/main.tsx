@@ -2525,11 +2525,14 @@ function App() {
     if (item.messageId) {
       setFocusedMessageId(item.messageId);
     }
-    void markInboxItemRead(item);
+    if (item.unread) {
+      void markInboxItemRead(item);
+    }
     setShowInboxModal(false);
   }
 
   async function markInboxItemRead(item: InboxItem) {
+    if (!item.unread) return;
     const dismissedUntil = new Date().toISOString();
     setDismissedInboxItems((current) => ({ ...current, [item.id]: dismissedUntil }));
     const operations: Promise<unknown>[] = [persistDismissedInboxItems([item], dismissedUntil)];

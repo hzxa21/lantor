@@ -160,16 +160,18 @@ export function InboxModal({
                     </small>
                   )}
                 </div>
-                <button
-                  className="inbox-check"
-                  title="Mark read"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onMarkItemRead(item);
-                  }}
-                >
-                  <Check size={19} />
-                </button>
+                {item.unread ? (
+                  <button
+                    className="inbox-check"
+                    title="Mark read"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onMarkItemRead(item);
+                    }}
+                  >
+                    <Check size={19} />
+                  </button>
+                ) : null}
               </article>
             );
           })}
