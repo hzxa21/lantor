@@ -473,6 +473,7 @@ function App() {
   const [searchScope, setSearchScope] = useState<SearchScope>("all");
   const [searchTimeRange, setSearchTimeRange] = useState<SearchTimeRange>("any");
   const [newChannel, setNewChannel] = useState("");
+  const [newChannelAgentIds, setNewChannelAgentIds] = useState<Set<string>>(() => new Set());
   const [channelNameDraft, setChannelNameDraft] = useState("");
   const [channelDescriptionDraft, setChannelDescriptionDraft] = useState("");
   const [ownerProfileDraft, setOwnerProfileDraft] = useState<OwnerProfileForm>({
@@ -1793,8 +1794,13 @@ function App() {
   async function createChannel() {
     const name = newChannel.trim().replace(/^#/, "");
     if (!name) return;
-    const result = await mutate<{ channelId?: string }>("create_channel", { name });
+    const agentIds = Array.from(newChannelAgentIds);
+    const result = await mutate<{ channelId?: string }>("create_channel", {
+      name,
+      agentIds: agentIds.length > 0 ? agentIds : undefined,
+    });
     setNewChannel("");
+    setNewChannelAgentIds(new Set());
     setShowCreateChannelModal(false);
     if (result.channelId) {
       selectChannel(result.channelId);
@@ -2742,8 +2748,21 @@ function App() {
       <CreateChannelModal
         open={showCreateChannelModal}
         channelName={newChannel}
+        agents={data.agents}
+        selectedAgentIds={newChannelAgentIds}
         onChange={setNewChannel}
-        onCancel={() => setShowCreateChannelModal(false)}
+        onToggleAgent={(agentId, member) => {
+          setNewChannelAgentIds((current) => {
+            const next = new Set(current);
+            if (member) next.add(agentId);
+            else next.delete(agentId);
+            return next;
+          });
+        }}
+        onCancel={() => {
+          setShowCreateChannelModal(false);
+          setNewChannelAgentIds(new Set());
+        }}
         onSubmit={createChannel}
       />
 
