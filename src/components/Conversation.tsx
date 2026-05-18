@@ -21,7 +21,7 @@ import { APP_DISPLAY_NAME } from "../branding";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task, ThreadReplySummary } from "../types";
-import { agentForMessageSender, deletedAgentForMessageSender, firstLines, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
+import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
 import { ActivityProgressDock, activeProgressByAgent } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
@@ -78,6 +78,9 @@ type MessageMenuState = {
   message: Message;
 } | null;
 
+const CHANNEL_MESSAGE_PREVIEW_LINES = 12;
+const CHANNEL_MESSAGE_PREVIEW_CHARS = 1800;
+
 function taskStatusLabel(status: string) {
   return status.replace("_", " ");
 }
@@ -86,6 +89,28 @@ function replyingAgentsLabel(progress: ReturnType<typeof activeProgressByAgent>)
   if (progress.length === 0) return "";
   if (progress.length === 1) return `${progress[0].agent.display_name} is replying`;
   return `${progress.length} agents are replying`;
+}
+
+function shouldCollapseChannelMessage(body: string) {
+  const text = body.trim();
+  if (!text) return false;
+  return text.split("\n").length > CHANNEL_MESSAGE_PREVIEW_LINES || text.length > CHANNEL_MESSAGE_PREVIEW_CHARS;
+}
+
+function closeUnbalancedCodeFence(body: string) {
+  const fenceMatches = body.match(/(^|\n)```/g);
+  if (!fenceMatches || fenceMatches.length % 2 === 0) return body;
+  return `${body.replace(/\s+$/, "")}\n\`\`\``;
+}
+
+function channelMessagePreview(body: string) {
+  const text = body.trim();
+  const lines = text.split("\n");
+  const linePreview = lines.slice(0, CHANNEL_MESSAGE_PREVIEW_LINES).join("\n");
+  const preview = linePreview.length > CHANNEL_MESSAGE_PREVIEW_CHARS
+    ? `${linePreview.slice(0, CHANNEL_MESSAGE_PREVIEW_CHARS).replace(/\s+\S*$/, "")}`
+    : linePreview;
+  return closeUnbalancedCodeFence(preview);
 }
 
 export function Conversation({
@@ -132,6 +157,7 @@ export function Conversation({
   const [isComposerDragOver, setIsComposerDragOver] = useState(false);
   const [showChannelActions, setShowChannelActions] = useState(false);
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
+  const [expandedChannelMessageIds, setExpandedChannelMessageIds] = useState<Set<string>>(() => new Set());
   const composerDragDepthRef = useRef(0);
   const longPressTimerRef = useRef<number | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -327,12 +353,28 @@ export function Conversation({
     setMessageMenu(null);
   }
 
+  function toggleChannelMessageExpanded(messageId: string) {
+    setExpandedChannelMessageIds((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  }
+
   useLayoutEffect(() => {
     shouldFollowMessagesRef.current = true;
     scrollMessagesToBottom();
   }, [channel?.id]);
 
   useEffect(() => clearLongPress, []);
+
+  useEffect(() => {
+    setExpandedChannelMessageIds(new Set());
+  }, [channel?.id]);
 
   useLayoutEffect(() => {
     if (!shouldFollowMessagesRef.current) return;
@@ -512,6 +554,11 @@ export function Conversation({
             const isSaved = savedMessageIds.has(message.id);
             const isCompact = isCompactFollowupMessage(message, rootMessages[index - 1]);
             const showDateDivider = index === 0 || !isSameCalendarDay(message.created_at, rootMessages[index - 1]?.created_at ?? "");
+            const isLongChannelMessage = shouldCollapseChannelMessage(message.body);
+            const isChannelMessageExpanded = expandedChannelMessageIds.has(message.id);
+            const visibleMessageBody = isLongChannelMessage && !isChannelMessageExpanded
+              ? channelMessagePreview(message.body)
+              : message.body;
             if (message.sender_role === "system") {
               return (
                 <Fragment key={message.id}>
@@ -629,7 +676,27 @@ export function Conversation({
                         <Bookmark size={14} />
                       </button>
                     </div>
-                    {message.delivery_state !== "streaming" && <MessageMarkdown body={firstLines(message.body)} />}
+                    {message.delivery_state !== "streaming" && (
+                      <>
+                        <div className={isLongChannelMessage && !isChannelMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
+                          <MessageMarkdown body={visibleMessageBody} />
+                        </div>
+                        {isLongChannelMessage && (
+                          <button
+                            type="button"
+                            className="message-expand-button"
+                            aria-expanded={isChannelMessageExpanded}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleChannelMessageExpanded(message.id);
+                            }}
+                          >
+                            {isChannelMessageExpanded ? "Show less" : "Show more"}
+                          </button>
+                        )}
+                      </>
+                    )}
                     <MessageAttachments attachments={message.attachments} />
                     <MessageArtifacts artifacts={message.artifacts} onOpenArtifact={openArtifact} />
                     {message.delivery_state === "error" && (

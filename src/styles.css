@@ -1795,6 +1795,60 @@ mark {
   margin-top: 0;
 }
 
+.message-long-preview {
+  min-width: 0;
+}
+
+.message-long-preview.collapsed {
+  position: relative;
+  max-height: 360px;
+  overflow: hidden;
+}
+
+.message-long-preview.collapsed::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 56px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.96));
+}
+
+.message-card:hover .message-long-preview.collapsed::after,
+.message-card.focused .message-long-preview.collapsed::after,
+.message-card.tap-focused .message-long-preview.collapsed::after,
+.message-card[data-jump-focused="true"] .message-long-preview.collapsed::after {
+  background: linear-gradient(to bottom, rgba(248, 248, 248, 0), rgba(248, 248, 248, 0.98));
+}
+
+.message-expand-button {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 26px;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.message-expand-button:hover {
+  text-decoration: underline;
+}
+
+.message-expand-button:focus-visible {
+  outline: 2px solid rgba(10, 132, 255, 0.3);
+  outline-offset: 2px;
+}
+
 .local-entity-link {
   display: inline-flex;
   align-items: center;
