@@ -1,4 +1,4 @@
-import { ArrowLeft, Pencil, Trash2, X } from "lucide-react";
+import { ArrowLeft, Clock3, Inbox, Pencil, Trash2, X } from "lucide-react";
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { apiInvoke } from "../apiClient";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -226,6 +226,29 @@ function reminderStatusLabel(status: string) {
   if (status === "completed") return "Done";
   if (status === "cancelled") return "Cancelled";
   return status;
+}
+
+function workItemStatusLabel(status: string) {
+  if (status === "queued") return "Queued";
+  if (status === "running") return "Running";
+  if (status === "cancelling") return "Cancelling";
+  if (status === "done") return "Done";
+  if (status === "failed") return "Failed";
+  if (status === "cancelled") return "Cancelled";
+  return status.replace(/_/g, " ");
+}
+
+function workItemStatusTone(status: string) {
+  if (["queued", "running", "cancelling"].includes(status)) return "active";
+  if (status === "done") return "done";
+  if (["failed", "cancelled"].includes(status)) return "attention";
+  return "idle";
+}
+
+function workItemLocationLabel(item: AgentWorkItem) {
+  if (item.channel_name) return `#${item.channel_name}`;
+  if (item.channel_id) return "Direct message";
+  return "Agent inbox";
 }
 
 function formatDuration(value: number | null) {
@@ -730,10 +753,28 @@ export function AgentDetailDrawer({
         </div>
         {workItems.length === 0 && <p className="empty-mini">No agent requests yet.</p>}
         {workItems.map((item) => (
-          <article key={item.id} className="detail-work" onClick={() => onOpenWorkItem(item)}>
-            <div>
-              <strong>{item.title}</strong>
-              <span>{agentRequestSourceLabel(item.source_kind, item.task_number)} · {item.status}</span>
+          <article
+            key={item.id}
+            className="detail-work agent-inbox-row"
+            data-status={workItemStatusTone(item.status)}
+            onClick={() => onOpenWorkItem(item)}
+          >
+            <span className="agent-inbox-row-icon" aria-hidden="true">
+              <Inbox size={16} />
+            </span>
+            <div className="agent-inbox-row-main">
+              <div className="agent-inbox-row-meta">
+                <strong>{agentRequestSourceLabel(item.source_kind, item.task_number)}</strong>
+                <span>{workItemLocationLabel(item)}</span>
+                <time dateTime={item.created_at}>
+                  <Clock3 size={12} />
+                  {formatTime(item.created_at)}
+                </time>
+              </div>
+              <div className="agent-inbox-row-title">
+                <h5>{item.title}</h5>
+                <span data-status={workItemStatusTone(item.status)}>{workItemStatusLabel(item.status)}</span>
+              </div>
             </div>
             <div className="detail-work-actions">
               {["queued", "running", "cancelling"].includes(item.status) && (

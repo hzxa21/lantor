@@ -5148,6 +5148,112 @@ body.resizing-column * {
   align-content: start;
 }
 
+.agent-inbox-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-color: rgba(118, 118, 128, 0.14);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.agent-inbox-row:hover {
+  border-color: rgba(10, 132, 255, 0.22);
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.agent-inbox-row[data-status="active"] {
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+
+.agent-inbox-row-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(10, 132, 255, 0.09);
+  color: var(--accent);
+}
+
+.agent-inbox-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.agent-inbox-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.agent-inbox-row-meta strong {
+  color: #1d1c1d;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.agent-inbox-row-meta time {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.agent-inbox-row-title {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.agent-inbox-row-title h5 {
+  margin: 0;
+  overflow: hidden;
+  color: #1d1c1d;
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-inbox-row-title span {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.13);
+  color: #5f6368;
+  font-size: 10px;
+  font-weight: 760;
+  text-transform: capitalize;
+}
+
+.agent-inbox-row-title span[data-status="active"] {
+  background: rgba(10, 132, 255, 0.11);
+  color: #0067c5;
+}
+
+.agent-inbox-row-title span[data-status="done"] {
+  background: #f0f9f3;
+  color: #167a36;
+}
+
+.agent-inbox-row-title span[data-status="attention"] {
+  background: rgba(255, 59, 48, 0.1);
+  color: #c91810;
+}
+
 .channel.has-unread,
 .dm.has-unread,
 .dm-row.has-unread .dm {
