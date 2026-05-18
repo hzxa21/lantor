@@ -7134,7 +7134,7 @@ pub(crate) async fn create_channel_in_pool(
     Ok(channel_id)
 }
 
-async fn add_agent_to_channel(
+pub(crate) async fn add_agent_to_channel(
     pool: &PgPool,
     channel_id: Uuid,
     agent_id: Uuid,

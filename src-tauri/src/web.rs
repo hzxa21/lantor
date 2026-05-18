@@ -26,12 +26,12 @@ use uuid::Uuid;
 
 use crate::models::AttachmentUpload;
 use crate::{
-    agent_workspace_list_in_pool, agent_workspace_read_file_in_pool, complete_reminder_in_pool,
-    create_agent_in_pool, create_channel_in_pool, delete_agent_in_pool, delete_channel_in_pool,
-    load_artifact, load_bootstrap, mark_channel_read_in_pool, open_dm_with_agent_in_pool,
-    send_owner_message_in_pool, set_channel_agent_membership_in_pool, set_message_saved_in_pool,
-    to_string, update_agent_in_pool, update_channel_in_pool, update_owner_profile_in_pool,
-    UI_REFRESH_CHANNEL,
+    add_agent_to_channel, agent_workspace_list_in_pool, agent_workspace_read_file_in_pool,
+    complete_reminder_in_pool, create_agent_in_pool, create_channel_in_pool, delete_agent_in_pool,
+    delete_channel_in_pool, load_artifact, load_bootstrap, mark_channel_read_in_pool,
+    open_dm_with_agent_in_pool, send_owner_message_in_pool, set_channel_agent_membership_in_pool,
+    set_message_saved_in_pool, to_string, update_agent_in_pool, update_channel_in_pool,
+    update_owner_profile_in_pool, UI_REFRESH_CHANNEL,
 };
 
 const WEB_SEND_MESSAGE_BODY_LIMIT: usize = 128 * 1024 * 1024;
@@ -68,6 +68,10 @@ struct ChannelIdRequest {
 #[serde(rename_all = "camelCase")]
 struct CreateChannelRequest {
     name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    agent_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Deserialize)]
@@ -327,10 +331,22 @@ async fn api_create_channel(
     State(state): State<Arc<WebState>>,
     Json(request): Json<CreateChannelRequest>,
 ) -> Result<impl IntoResponse, Response> {
-    create_channel_in_pool(&state.pool, &request.name, "")
+    let description = request.description.unwrap_or_default();
+    let channel_id = create_channel_in_pool(&state.pool, &request.name, &description)
         .await
-        .map(|channel_id| Json(json!({ "ok": true, "channelId": channel_id })))
-        .map_err(api_error)
+        .map_err(api_error)?;
+    if let Some(ids) = request.agent_ids {
+        let mut seen = std::collections::HashSet::new();
+        for agent_id in ids {
+            if !seen.insert(agent_id) {
+                continue;
+            }
+            add_agent_to_channel(&state.pool, channel_id, agent_id)
+                .await
+                .map_err(api_error)?;
+        }
+    }
+    Ok(Json(json!({ "ok": true, "channelId": channel_id })))
 }
 
 async fn api_update_channel(
