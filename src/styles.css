@@ -2866,14 +2866,20 @@ mark {
   justify-content: center;
   width: 38px;
   height: 38px;
+  border: 1px solid rgba(20, 23, 31, 0.1);
   border-radius: 13px;
-  background: rgba(142, 142, 147, 0.12);
-  color: var(--muted);
+  background: linear-gradient(180deg, #ffffff 0%, #f6f7f9 100%);
+  color: #656c78;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 1px 2px rgba(20, 23, 31, 0.04);
 }
 
 .attach-button:hover:not(:disabled) {
-  background: rgba(10, 132, 255, 0.1);
-  color: var(--accent);
+  border-color: rgba(20, 23, 31, 0.16);
+  background: #fff;
+  color: #222832;
+  transform: translateY(-1px);
 }
 
 .task-toggle {
@@ -2883,25 +2889,29 @@ mark {
   justify-content: center;
   gap: 7px;
   padding: 0 12px;
-  border: 1px solid rgba(20, 23, 31, 0.12);
+  border: 1px solid rgba(20, 23, 31, 0.1);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.86);
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 760;
+  background: linear-gradient(180deg, #ffffff 0%, #f6f7f9 100%);
+  color: #5f6672;
+  font-size: 12px;
+  font-weight: 780;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 1px 2px rgba(20, 23, 31, 0.04);
 }
 
 .task-toggle:hover:not(:disabled) {
-  border-color: rgba(10, 132, 255, 0.3);
-  background: rgba(10, 132, 255, 0.08);
-  color: var(--accent);
+  border-color: rgba(20, 23, 31, 0.16);
+  background: #fff;
+  color: #222832;
+  transform: translateY(-1px);
 }
 
 .task-toggle.active {
-  border-color: rgba(10, 132, 255, 0.45);
-  background: rgba(10, 132, 255, 0.14);
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.14);
+  border-color: rgba(21, 128, 61, 0.24);
+  background: #f0f9f3;
+  color: #167a36;
+  box-shadow: inset 0 0 0 1px rgba(21, 128, 61, 0.08);
 }
 
 .send {
@@ -2913,10 +2923,20 @@ mark {
   justify-content: center;
   margin-left: auto;
   padding: 0;
+  border: 1px solid rgba(20, 23, 31, 0.2);
   border-radius: 13px;
-  background: var(--accent);
+  background: #20242b;
   color: #fff;
   font-weight: 850;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 6px 14px rgba(20, 23, 31, 0.16);
+}
+
+.send:hover:not(:disabled),
+.reply-composer .reply-send:hover:not(:disabled) {
+  background: #111318;
+  transform: translateY(-1px);
 }
 
 .thread {
@@ -3268,11 +3288,15 @@ body.resizing-column * {
   justify-content: center;
   margin-left: auto;
   padding: 0;
+  border: 1px solid rgba(20, 23, 31, 0.2);
   border-radius: 13px;
-  background: var(--accent);
+  background: #20242b;
   color: #fff;
   font-size: 13px;
   font-weight: 700;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 6px 14px rgba(20, 23, 31, 0.16);
 }
 
 .mention-picker {
