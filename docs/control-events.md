@@ -72,7 +72,7 @@ as normal message attachments:
 ```
 
 Pass absolute file paths, not base64. Lantor copies the files into its own
-attachment store and records metadata in PostgreSQL.
+attachment store and records metadata in SQLite.
 
 ## Handoff Example
 

@@ -51,6 +51,36 @@ button,
   color: #777;
 }
 
+.boot-panel {
+  display: grid;
+  gap: 10px;
+  max-width: 520px;
+  padding: 20px;
+  text-align: center;
+}
+
+.boot-panel strong {
+  color: #23252b;
+  font-size: 15px;
+}
+
+.boot-panel p {
+  margin: 0;
+  color: #b42318;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.boot-panel button {
+  justify-self: center;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: #1d4ed8;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .app {
   --sidebar: rgba(246, 247, 249, 0.8);
   --panel: rgba(255, 255, 255, 0.9);

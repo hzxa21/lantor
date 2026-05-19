@@ -2841,7 +2841,21 @@ function App() {
   }
 
   if (!data) {
-    return <div className="boot">Opening {APP_DISPLAY_NAME}...</div>;
+    return (
+      <div className="boot">
+        <div className="boot-panel">
+          <strong>Opening {APP_DISPLAY_NAME}...</strong>
+          {appError ? (
+            <>
+              <p>{appError}</p>
+              <button type="button" onClick={() => refreshWithError(`Failed to load ${APP_DISPLAY_NAME} state`)}>
+                Retry
+              </button>
+            </>
+          ) : null}
+        </div>
+      </div>
+    );
   }
 
   return (

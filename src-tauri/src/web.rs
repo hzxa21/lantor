@@ -20,8 +20,11 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::{postgres::PgListener, PgPool, Row};
-use tokio::net::TcpListener;
+use sqlx::{Row, SqlitePool};
+use tokio::{
+    net::TcpListener,
+    time::{sleep, Duration},
+};
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
@@ -36,14 +39,14 @@ use crate::{
     open_dm_with_agent_in_pool, retry_agent_work_in_pool, send_owner_message_in_pool,
     set_channel_agent_membership_in_pool, set_message_saved_in_pool, to_string,
     update_agent_in_pool, update_channel_in_pool, update_owner_profile_in_pool,
-    update_task_status_in_pool, update_task_title_in_pool, UI_REFRESH_CHANNEL,
+    update_task_status_in_pool, update_task_title_in_pool,
 };
 
 const WEB_SEND_MESSAGE_BODY_LIMIT: usize = 128 * 1024 * 1024;
 
 #[derive(Clone)]
 struct WebState {
-    pool: PgPool,
+    pool: SqlitePool,
     db_url: String,
 }
 
@@ -238,7 +241,7 @@ pub(crate) fn resolve_web_bind() -> Option<String> {
     }
 }
 
-pub(crate) fn spawn_web_server_if_configured(pool: PgPool, db_url: String) {
+pub(crate) fn spawn_web_server_if_configured(pool: SqlitePool, db_url: String) {
     let Some(bind) = resolve_web_bind() else {
         return;
     };
@@ -682,7 +685,7 @@ async fn api_uninstall_supervisor_service(
     State(state): State<Arc<WebState>>,
 ) -> Result<impl IntoResponse, Response> {
     let status = launch_agent::uninstall_supervisor_service().map_err(api_error)?;
-    sqlx::query("update supervisor_state set status = 'offline', updated_at = now() where id = 1")
+    sqlx::query("update supervisor_state set status = 'offline', updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where id = 1")
         .execute(&state.pool)
         .await
         .map_err(to_string)
@@ -732,28 +735,40 @@ async fn api_agent_workspace_read_file(
 }
 
 async fn api_events(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, Response> {
-    let db_url = state.db_url.clone();
+    let pool = state.pool.clone();
     let stream = async_stream::stream! {
-        match PgListener::connect(&db_url).await {
-            Ok(mut listener) => {
-                if let Err(err) = listener.listen(UI_REFRESH_CHANNEL).await {
-                    yield Ok::<Event, Infallible>(Event::default().event("error").data(err.to_string()));
-                    return;
+        let mut last_id: i64 = sqlx::query_scalar("select coalesce(max(id), 0) from ui_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
+        loop {
+            match sqlx::query(
+                r#"
+                select id, event_json
+                from ui_events
+                where id > $1
+                order by id asc
+                limit 80
+                "#,
+            )
+            .bind(last_id)
+            .fetch_all(&pool)
+            .await {
+                Ok(rows) if rows.is_empty() => {
+                    sleep(Duration::from_millis(500)).await;
                 }
-                loop {
-                    match listener.recv().await {
-                        Ok(notification) => {
-                            yield Ok(Event::default().event("lantor").data(notification.payload().to_owned()));
-                        }
-                        Err(err) => {
-                            yield Ok(Event::default().event("error").data(err.to_string()));
-                            return;
-                        }
+                Ok(rows) => {
+                    for row in rows {
+                        last_id = row.get("id");
+                        yield Ok::<Event, Infallible>(
+                            Event::default().event("lantor").data(row.get::<String, _>("event_json"))
+                        );
                     }
-                }
-            }
-            Err(err) => {
-                yield Ok(Event::default().event("error").data(err.to_string()));
+                },
+                Err(err) => {
+                    yield Ok(Event::default().event("error").data(err.to_string()));
+                    sleep(Duration::from_secs(2)).await;
+                },
             }
         }
     };

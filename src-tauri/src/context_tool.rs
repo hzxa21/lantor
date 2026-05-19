@@ -5,15 +5,12 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sqlx::{
-    postgres::{PgPoolOptions, PgRow},
-    PgPool, Row,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
     attachments::{attachment_summary_sql, format_attachment_size},
-    db_url, load_artifact, resolve_agent_by_handle,
+    db_connect, load_artifact, resolve_agent_by_handle,
     text::compact_chars_middle,
     to_string, CommandResult, AGENT_CONTEXT_TOOL_MESSAGE_LIMIT,
 };
@@ -92,7 +89,7 @@ fn split_context_target(raw_target: &str) -> (String, Option<String>) {
 }
 
 async fn resolve_agent_context_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_ref: &str,
 ) -> CommandResult<(Uuid, String)> {
     let channel_ref = channel_ref.trim();
@@ -165,7 +162,7 @@ async fn resolve_agent_context_channel(
 }
 
 async fn resolve_agent_context_thread(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
     raw_thread: &str,
 ) -> CommandResult<Uuid> {
@@ -181,7 +178,7 @@ async fn resolve_agent_context_thread(
         r#"
         select id
         from messages
-        where channel_id = $1 and id::text like $2
+        where channel_id = $1 and lower(hex(id)) like replace(lower($2), '-', '')
         order by created_at asc
         limit 1
         "#,
@@ -195,7 +192,7 @@ async fn resolve_agent_context_thread(
 }
 
 async fn resolve_agent_context_target(
-    pool: &PgPool,
+    pool: &SqlitePool,
     raw_target: &str,
     thread_override: Option<&str>,
 ) -> CommandResult<AgentContextTarget> {
@@ -222,7 +219,7 @@ async fn resolve_agent_context_target(
     })
 }
 
-fn format_context_message_target(row: &PgRow, target_label: Option<&str>) -> String {
+fn format_context_message_target(row: &SqliteRow, target_label: Option<&str>) -> String {
     if let Some(target_label) = target_label {
         return target_label.to_owned();
     }
@@ -248,7 +245,7 @@ fn format_context_message_target(row: &PgRow, target_label: Option<&str>) -> Str
     target
 }
 
-fn format_context_message_row(row: &PgRow, target_label: Option<&str>) -> String {
+fn format_context_message_row(row: &SqliteRow, target_label: Option<&str>) -> String {
     let id: Uuid = row.get("id");
     let sender_name: String = row.get("sender_name");
     let sender_role: String = row.get("sender_role");
@@ -289,7 +286,7 @@ fn format_context_message_row(row: &PgRow, target_label: Option<&str>) -> String
 }
 
 pub(crate) async fn agent_context_history_read(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let target = arg_value(args, "--target")
@@ -357,7 +354,7 @@ pub(crate) async fn agent_context_history_read(
 }
 
 pub(crate) async fn agent_context_message_search(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let query = arg_value(args, "--query")
@@ -386,7 +383,7 @@ pub(crate) async fn agent_context_message_search(
             join channels c on c.id = m.channel_id
             left join tasks t on t.message_id = m.id
             where m.channel_id = $1
-              and m.body ilike $2
+              and lower(m.body) like lower($2)
             order by m.created_at desc
             limit $3
             "#,
@@ -409,7 +406,7 @@ pub(crate) async fn agent_context_message_search(
             from messages m
             join channels c on c.id = m.channel_id
             left join tasks t on t.message_id = m.id
-            where m.body ilike $1
+            where lower(m.body) like lower($1)
             order by m.created_at desc
             limit $2
             "#,
@@ -435,7 +432,7 @@ pub(crate) async fn agent_context_message_search(
 }
 
 pub(crate) async fn agent_context_attachment_info(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let raw_id = arg_value(args, "--attachment-id")
@@ -499,7 +496,7 @@ pub(crate) async fn agent_context_attachment_info(
 }
 
 pub(crate) async fn agent_context_agent_inspect(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let target = arg_value(args, "--target")
@@ -637,7 +634,7 @@ pub(crate) async fn agent_context_agent_inspect(
 }
 
 pub(crate) async fn agent_context_artifact_read_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let raw_id = arg_value(args, "--artifact-id")
@@ -665,7 +662,7 @@ pub(crate) async fn agent_context_artifact_read_in_pool(
 }
 
 async fn resolve_agent_workspace_target(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<AgentWorkspaceTarget> {
     let explicit_target = arg_value(args, "--target").or_else(|| arg_value(args, "--agent"));
@@ -714,7 +711,7 @@ fn workspace_path(target: &AgentWorkspaceTarget) -> CommandResult<PathBuf> {
 }
 
 async fn resolve_agent_inbox_target(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<AgentInboxTarget> {
     let explicit_target = arg_value(args, "--target").or_else(|| arg_value(args, "--agent"));
@@ -796,7 +793,11 @@ fn inbox_history_target(channel_id: Uuid, thread_root_id: Option<Uuid>) -> Strin
     }
 }
 
-async fn resolve_inbox_item_id(pool: &PgPool, agent_id: Uuid, raw_id: &str) -> CommandResult<Uuid> {
+async fn resolve_inbox_item_id(
+    pool: &SqlitePool,
+    agent_id: Uuid,
+    raw_id: &str,
+) -> CommandResult<Uuid> {
     let raw_id = raw_id.trim().trim_start_matches("inbox:");
     if raw_id.is_empty() {
         return Err("inbox id is empty".to_owned());
@@ -816,7 +817,7 @@ async fn resolve_inbox_item_id(pool: &PgPool, agent_id: Uuid, raw_id: &str) -> C
         r#"
         select id
         from agent_inbox_items
-        where agent_id = $1 and id::text like $2
+        where agent_id = $1 and lower(hex(id)) like replace(lower($2), '-', '')
         order by created_at desc
         limit 2
         "#,
@@ -833,9 +834,8 @@ async fn resolve_inbox_item_id(pool: &PgPool, agent_id: Uuid, raw_id: &str) -> C
     }
 }
 
-async fn notify_context_tool_refresh(pool: &PgPool, reason: &str) {
-    let _ = sqlx::query("select pg_notify($1, $2)")
-        .bind("lantor_ui_refresh")
+async fn notify_context_tool_refresh(pool: &SqlitePool, reason: &str) {
+    let _ = sqlx::query("insert into ui_events (event_json) values ($1)")
         .bind(serde_json::json!({ "type": "refresh", "reason": reason }).to_string())
         .execute(pool)
         .await;
@@ -921,7 +921,7 @@ fn collect_workspace_entries(
 }
 
 pub(crate) async fn agent_context_workspace_info(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let target = resolve_agent_workspace_target(pool, args).await?;
@@ -954,7 +954,7 @@ pub(crate) async fn agent_context_workspace_info(
 }
 
 pub(crate) async fn agent_context_memory_read(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let target = resolve_agent_workspace_target(pool, args).await?;
@@ -988,7 +988,7 @@ pub(crate) async fn agent_context_memory_read(
 }
 
 pub(crate) async fn agent_context_workspace_list(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let target = resolve_agent_workspace_target(pool, args).await?;
@@ -1031,13 +1031,17 @@ pub(crate) async fn agent_context_workspace_list(
 }
 
 pub(crate) async fn agent_context_inbox_list(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let target = resolve_agent_inbox_target(pool, args).await?;
     let (state_label, states) = parse_inbox_states(args)?;
     let limit = parse_context_tool_limit(args, 20, 100)?;
-    let rows = sqlx::query(
+    let state_placeholders = (0..states.len())
+        .map(|index| format!("${}", index + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         r#"
         select
             i.id,
@@ -1058,20 +1062,20 @@ pub(crate) async fn agent_context_inbox_list(
         from agent_inbox_items i
         left join channels c on c.id = i.channel_id
         where i.agent_id = $1
-          and i.state = any($2)
+          and i.state in ({state_placeholders})
         order by
             case i.state when 'processing' then 0 when 'unread' then 1 else 2 end,
             i.priority desc,
             i.created_at asc
-        limit $3
+        limit ${limit_param}
         "#,
-    )
-    .bind(target.id)
-    .bind(states)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .map_err(to_string)?;
+        limit_param = states.len() + 2
+    );
+    let mut query = sqlx::query(&sql).bind(target.id);
+    for state in &states {
+        query = query.bind(state);
+    }
+    let rows = query.bind(limit).fetch_all(pool).await.map_err(to_string)?;
 
     let mut output = vec![format!(
         "Lantor inbox for @{}\nstate={} limit={} returned={}",
@@ -1131,7 +1135,7 @@ pub(crate) async fn agent_context_inbox_list(
 }
 
 pub(crate) async fn agent_context_inbox_read(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let target = resolve_agent_inbox_target(pool, args).await?;
@@ -1143,7 +1147,7 @@ pub(crate) async fn agent_context_inbox_read(
         r#"
         update agent_inbox_items
         set state = case when state = 'archived' then state else 'processing' end,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1 and agent_id = $2
         "#,
     )
@@ -1279,7 +1283,7 @@ pub(crate) async fn agent_context_inbox_read(
 }
 
 pub(crate) async fn agent_context_inbox_archive(
-    pool: &PgPool,
+    pool: &SqlitePool,
     args: &[String],
 ) -> CommandResult<String> {
     let target = resolve_agent_inbox_target(pool, args).await?;
@@ -1291,8 +1295,8 @@ pub(crate) async fn agent_context_inbox_archive(
         r#"
         update agent_inbox_items
         set state = 'archived',
-            archived_at = coalesce(archived_at, now()),
-            updated_at = now()
+            archived_at = coalesce(archived_at, strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1 and agent_id = $2
         returning id, kind, title
         "#,
@@ -1320,11 +1324,7 @@ pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<Str
         );
     }
 
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&db_url())
-        .await
-        .map_err(to_string)?;
+    let pool = db_connect(2).await.map_err(to_string)?;
     match args[0].as_str() {
         "inbox-list" | "inbox" | "inbox-check" => agent_context_inbox_list(&pool, args).await,
         "inbox-read" | "read-inbox" => agent_context_inbox_read(&pool, args).await,

@@ -1,5 +1,5 @@
 use serde_json::Value;
-use sqlx::{PgPool, Row};
+use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::{notify_ui_agent_run_changed, to_string, CommandResult};
@@ -93,7 +93,7 @@ fn model_cost_micros(runtime: &str, model: &str, input_tokens: i64, output_token
 }
 
 pub(crate) async fn record_run_usage(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     input_tokens: i64,
@@ -113,9 +113,9 @@ pub(crate) async fn record_run_usage(
     sqlx::query(
         r#"
         update agent_runs
-        set input_tokens = greatest(input_tokens, $2),
-            output_tokens = greatest(output_tokens, $3),
-            cost_micros = greatest(cost_micros, $4)
+        set input_tokens = max(input_tokens, $2),
+            output_tokens = max(output_tokens, $3),
+            cost_micros = max(cost_micros, $4)
         where id = $1
         "#,
     )
@@ -130,7 +130,7 @@ pub(crate) async fn record_run_usage(
     Ok(())
 }
 
-pub(crate) async fn backfill_agent_run_usage_from_logs(pool: &PgPool) -> sqlx::Result<()> {
+pub(crate) async fn backfill_agent_run_usage_from_logs(pool: &SqlitePool) -> sqlx::Result<()> {
     let rows = sqlx::query(
         r#"
         select id, agent_id, log
@@ -180,7 +180,7 @@ pub(crate) async fn backfill_agent_run_usage_from_logs(pool: &PgPool) -> sqlx::R
 }
 
 pub(crate) async fn agent_budget_exhausted(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
 ) -> CommandResult<Option<String>> {
     let daily_budget_micros: i64 =
@@ -194,10 +194,10 @@ pub(crate) async fn agent_budget_exhausted(
     }
     let spent: i64 = sqlx::query_scalar(
         r#"
-        select coalesce(sum(cost_micros), 0)::bigint
+        select coalesce(sum(cost_micros), 0)
         from agent_runs
         where agent_id = $1
-          and started_at >= date_trunc('day', now())
+          and started_at >= strftime('%Y-%m-%dT00:00:00.000+00:00','now')
         "#,
     )
     .bind(agent_id)

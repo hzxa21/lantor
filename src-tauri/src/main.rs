@@ -23,16 +23,22 @@ use std::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sqlx::{
-    postgres::{PgListener, PgPoolOptions, PgRow},
-    PgPool, Row,
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
+    },
+    Row, SqlitePool,
 };
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+use std::str::FromStr;
 use tauri::{Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     process::Command,
     sync::{Mutex as AsyncMutex, Semaphore},
-    time::{sleep, timeout},
+    time::sleep,
 };
 use uuid::Uuid;
 
@@ -59,8 +65,7 @@ use usage::{
     usage_from_runtime_event,
 };
 
-const DEFAULT_DATABASE_URL: &str = "postgres://lantor:lantor@127.0.0.1:5432/lantor";
-const SUPERVISOR_LOCK_ID: i64 = 2_026_050_101;
+const DEFAULT_DATABASE_URL: &str = "sqlite://~/Library/Application Support/Lantor/lantor.sqlite";
 const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";
 const SILENT_REPLY_PREFIX: &str = "LANTOR_SILENT_REPLY";
 pub(crate) const UI_REFRESH_CHANNEL: &str = "lantor_ui_refresh";
@@ -101,7 +106,7 @@ fn expand_home_path(value: &str) -> String {
 
 #[derive(Clone)]
 struct AppState {
-    pool: PgPool,
+    pool: SqlitePool,
     db_url: String,
 }
 
@@ -202,18 +207,107 @@ struct CreateChannelResult {
 }
 
 fn db_url() -> String {
-    env::var("LANTOR_DATABASE_URL")
-        .or_else(|_| env::var("DATABASE_URL"))
-        .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned())
+    let configured = env::var("LANTOR_DATABASE_URL").unwrap_or_else(|_| {
+        env::var("DATABASE_URL")
+            .ok()
+            .filter(|url| url.trim_start().starts_with("sqlite:"))
+            .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_owned())
+    });
+    if let Some(path) = configured.strip_prefix("sqlite://") {
+        return format!("sqlite://{}", expand_home_path(path));
+    }
+    if let Some(path) = configured.strip_prefix("sqlite:") {
+        return format!("sqlite:{}", expand_home_path(path));
+    }
+    configured
 }
 
-pub(crate) async fn notify_postgres(
-    pool: &PgPool,
+pub(crate) async fn db_connect_with_url(
+    database_url: &str,
+    max_connections: u32,
+) -> Result<SqlitePool, sqlx::Error> {
+    let options = SqliteConnectOptions::from_str(database_url)?
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(10));
+    if !database_url.contains(":memory:") {
+        if let Some(parent) = options.get_filename().parent() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    SqlitePoolOptions::new()
+        .max_connections(max_connections)
+        .connect_with(options)
+        .await
+}
+
+pub(crate) async fn db_connect(max_connections: u32) -> Result<SqlitePool, sqlx::Error> {
+    db_connect_with_url(&db_url(), max_connections).await
+}
+
+fn sqlite_database_file_path(database_url: &str) -> CommandResult<Option<PathBuf>> {
+    if database_url.contains(":memory:") {
+        return Ok(None);
+    }
+    let options = SqliteConnectOptions::from_str(database_url).map_err(to_string)?;
+    Ok(Some(options.get_filename().to_path_buf()))
+}
+
+#[cfg(unix)]
+fn try_lock_supervisor_file(file: &fs::File) -> std::io::Result<()> {
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    let result = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn try_lock_supervisor_file(_file: &fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn acquire_supervisor_lock(database_url: &str) -> CommandResult<Option<fs::File>> {
+    let Some(database_path) = sqlite_database_file_path(database_url)? else {
+        return Ok(None);
+    };
+    let lock_path = PathBuf::from(format!("{}.supervisor.lock", database_path.display()));
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).map_err(to_string)?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(to_string)?;
+    match try_lock_supervisor_file(&file) {
+        Ok(()) => Ok(Some(file)),
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Err(format!(
+            "another Lantor supervisor is already running for {}",
+            database_path.display()
+        )),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+pub(crate) async fn notify_database_event(
+    pool: &SqlitePool,
     channel: &str,
     payload: &str,
 ) -> CommandResult<()> {
-    sqlx::query("select pg_notify($1, $2)")
-        .bind(channel)
+    if channel != UI_REFRESH_CHANNEL {
+        return Ok(());
+    }
+    sqlx::query("insert into ui_events (event_json) values ($1)")
         .bind(payload)
         .execute(pool)
         .await
@@ -222,8 +316,8 @@ pub(crate) async fn notify_postgres(
     Ok(())
 }
 
-pub(crate) async fn notify_ui_refresh(pool: &PgPool, reason: &str) -> CommandResult<()> {
-    notify_postgres(
+pub(crate) async fn notify_ui_refresh(pool: &SqlitePool, reason: &str) -> CommandResult<()> {
+    notify_database_event(
         pool,
         UI_REFRESH_CHANNEL,
         &json!({ "type": "refresh", "reason": reason }).to_string(),
@@ -232,11 +326,11 @@ pub(crate) async fn notify_ui_refresh(pool: &PgPool, reason: &str) -> CommandRes
 }
 
 async fn notify_ui_message_upsert(
-    pool: &PgPool,
+    pool: &SqlitePool,
     message: &Message,
     reason: &str,
 ) -> CommandResult<()> {
-    notify_postgres(
+    notify_database_event(
         pool,
         UI_REFRESH_CHANNEL,
         &json!({ "type": "message_upsert", "reason": reason, "message": message }).to_string(),
@@ -245,13 +339,13 @@ async fn notify_ui_message_upsert(
 }
 
 async fn notify_ui_message_delta(
-    pool: &PgPool,
+    pool: &SqlitePool,
     message_id: Uuid,
     append: &str,
     delivery_state: &str,
     reason: &str,
 ) -> CommandResult<()> {
-    notify_postgres(
+    notify_database_event(
         pool,
         UI_REFRESH_CHANNEL,
         &json!({
@@ -267,11 +361,11 @@ async fn notify_ui_message_delta(
 }
 
 async fn notify_ui_message_delete(
-    pool: &PgPool,
+    pool: &SqlitePool,
     message_id: Uuid,
     reason: &str,
 ) -> CommandResult<()> {
-    notify_postgres(
+    notify_database_event(
         pool,
         UI_REFRESH_CHANNEL,
         &json!({ "type": "message_delete", "reason": reason, "message_id": message_id })
@@ -281,11 +375,11 @@ async fn notify_ui_message_delete(
 }
 
 async fn notify_ui_activity_upsert(
-    pool: &PgPool,
+    pool: &SqlitePool,
     activity: &AgentActivity,
     reason: &str,
 ) -> CommandResult<()> {
-    notify_postgres(
+    notify_database_event(
         pool,
         UI_REFRESH_CHANNEL,
         &json!({ "type": "activity_upsert", "reason": reason, "activity": activity }).to_string(),
@@ -294,11 +388,11 @@ async fn notify_ui_activity_upsert(
 }
 
 async fn notify_ui_agent_run_upsert(
-    pool: &PgPool,
+    pool: &SqlitePool,
     run: &AgentRunPatch,
     reason: &str,
 ) -> CommandResult<()> {
-    notify_postgres(
+    notify_database_event(
         pool,
         UI_REFRESH_CHANNEL,
         &json!({ "type": "agent_run_upsert", "reason": reason, "run": run }).to_string(),
@@ -307,11 +401,11 @@ async fn notify_ui_agent_run_upsert(
 }
 
 async fn notify_ui_work_item_upsert(
-    pool: &PgPool,
+    pool: &SqlitePool,
     work_item: &AgentWorkItemPatch,
     reason: &str,
 ) -> CommandResult<()> {
-    notify_postgres(
+    notify_database_event(
         pool,
         UI_REFRESH_CHANNEL,
         &json!({ "type": "work_item_upsert", "reason": reason, "work_item": work_item })
@@ -321,11 +415,11 @@ async fn notify_ui_work_item_upsert(
 }
 
 async fn notify_ui_artifact_upsert(
-    pool: &PgPool,
+    pool: &SqlitePool,
     artifact: &Artifact,
     reason: &str,
 ) -> CommandResult<()> {
-    notify_postgres(
+    notify_database_event(
         pool,
         UI_REFRESH_CHANNEL,
         &json!({ "type": "artifact_upsert", "reason": reason, "artifact": artifact }).to_string(),
@@ -333,7 +427,7 @@ async fn notify_ui_artifact_upsert(
     .await
 }
 
-async fn notify_ui_agent_run_changed(pool: &PgPool, run_id: Uuid, reason: &str) {
+async fn notify_ui_agent_run_changed(pool: &SqlitePool, run_id: Uuid, reason: &str) {
     if let Ok(run) = load_agent_run_patch(pool, run_id).await {
         let _ = notify_ui_agent_run_upsert(pool, &run, reason).await;
     } else {
@@ -341,7 +435,7 @@ async fn notify_ui_agent_run_changed(pool: &PgPool, run_id: Uuid, reason: &str) 
     }
 }
 
-async fn notify_ui_work_item_changed(pool: &PgPool, work_item_id: Uuid, reason: &str) {
+async fn notify_ui_work_item_changed(pool: &SqlitePool, work_item_id: Uuid, reason: &str) {
     let _ = sync_inbox_for_work_item(pool, work_item_id).await;
     if let Ok(work_item) = load_agent_work_item_patch(pool, work_item_id).await {
         let _ = notify_ui_work_item_upsert(pool, &work_item, reason).await;
@@ -352,7 +446,7 @@ async fn notify_ui_work_item_changed(pool: &PgPool, work_item_id: Uuid, reason: 
 }
 
 async fn insert_system_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
     body: impl AsRef<str>,
@@ -384,7 +478,7 @@ async fn insert_system_message(
 }
 
 async fn maybe_insert_work_item_system_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     work_item: &AgentWorkItemPatch,
     reason: &str,
 ) -> CommandResult<()> {
@@ -496,11 +590,11 @@ async fn maybe_insert_work_item_system_message(
     Ok(())
 }
 
-async fn notify_supervisor_wake(pool: &PgPool) -> CommandResult<()> {
-    notify_postgres(pool, SUPERVISOR_WAKE_CHANNEL, "wake").await
+async fn notify_supervisor_wake(pool: &SqlitePool) -> CommandResult<()> {
+    notify_database_event(pool, SUPERVISOR_WAKE_CHANNEL, "wake").await
 }
 
-fn spawn_reminder_worker(pool: PgPool) {
+fn spawn_reminder_worker(pool: SqlitePool) {
     tauri::async_runtime::spawn(async move {
         loop {
             if let Err(err) = process_due_reminders(&pool).await {
@@ -514,25 +608,24 @@ fn spawn_reminder_worker(pool: PgPool) {
     });
 }
 
-async fn process_due_reminders(pool: &PgPool) -> CommandResult<()> {
+async fn process_due_reminders(pool: &SqlitePool) -> CommandResult<()> {
     let rows = sqlx::query(
         r#"
         update reminders
         set status = case when recurrence = 'none' then 'fired' else 'scheduled' end,
-            fired_at = now(),
+            fired_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
             due_at = case
-                when recurrence = 'daily' then now() + interval '1 day'
-                when recurrence = 'weekly' then now() + interval '7 days'
+                when recurrence = 'daily' then strftime('%Y-%m-%dT%H:%M:%f+00:00','now','+1 day')
+                when recurrence = 'weekly' then strftime('%Y-%m-%dT%H:%M:%f+00:00','now','+7 days')
                 else due_at
             end,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id in (
             select id
             from reminders
             where status = 'scheduled'
-              and due_at <= now()
+              and due_at <= strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             order by due_at asc
-            for update skip locked
             limit 12
         )
         returning id, channel_id, creator_agent_id, thread_root_id, title, note, recurrence, status, due_at
@@ -599,7 +692,7 @@ async fn process_due_reminders(pool: &PgPool) -> CommandResult<()> {
 }
 
 async fn dispatch_due_reminder_to_agent(
-    pool: &PgPool,
+    pool: &SqlitePool,
     reminder_id: Uuid,
     agent_id: Uuid,
     channel_id: Uuid,
@@ -661,38 +754,37 @@ async fn dispatch_due_reminder_to_agent(
     Ok(())
 }
 
-async fn process_due_agent_schedules(pool: &PgPool) -> CommandResult<()> {
+async fn process_due_agent_schedules(pool: &SqlitePool) -> CommandResult<()> {
     let rows = sqlx::query(
         r#"
-        update agent_schedules s
-        set last_run_at = now(),
+        update agent_schedules
+        set last_run_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
             next_run_at = case
-                when s.cadence = 'hourly' then now() + interval '1 hour'
-                when s.cadence = 'daily' then now() + interval '1 day'
-                when s.cadence = 'weekly' then now() + interval '7 days'
-                else now() + interval '1 day'
+                when cadence = 'hourly' then strftime('%Y-%m-%dT%H:%M:%f+00:00','now','+1 hour')
+                when cadence = 'daily' then strftime('%Y-%m-%dT%H:%M:%f+00:00','now','+1 day')
+                when cadence = 'weekly' then strftime('%Y-%m-%dT%H:%M:%f+00:00','now','+7 days')
+                else strftime('%Y-%m-%dT%H:%M:%f+00:00','now','+1 day')
             end,
-            updated_at = now()
-        where s.id in (
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
+        where id in (
             select id
             from agent_schedules
             where status = 'active'
-              and next_run_at <= now()
+              and next_run_at <= strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             order by next_run_at asc
-            for update skip locked
             limit 8
         )
         returning
-            s.id,
-            s.agent_id,
-            (select handle from agents where id = s.agent_id) as agent_handle,
-            s.channel_id,
-            (select name from channels where id = s.channel_id) as channel_name,
-            s.thread_root_id,
-            s.title,
-            s.prompt,
-            s.cadence,
-            s.next_run_at
+            id,
+            agent_id,
+            (select handle from agents where id = agent_schedules.agent_id) as agent_handle,
+            channel_id,
+            (select name from channels where id = agent_schedules.channel_id) as channel_name,
+            thread_root_id,
+            title,
+            prompt,
+            cadence,
+            next_run_at
         "#,
     )
     .fetch_all(pool)
@@ -740,7 +832,7 @@ async fn process_due_agent_schedules(pool: &PgPool) -> CommandResult<()> {
         let work_item_id = wake.map(|(work_item_id, _)| work_item_id);
 
         sqlx::query(
-            "update agent_schedules set last_work_item_id = $2, updated_at = now() where id = $1",
+            "update agent_schedules set last_work_item_id = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where id = $1",
         )
         .bind(schedule_id)
         .bind(work_item_id)
@@ -776,90 +868,394 @@ async fn process_due_agent_schedules(pool: &PgPool) -> CommandResult<()> {
     Ok(())
 }
 
-fn spawn_ui_refresh_listener(app: tauri::AppHandle, database_url: String) {
+fn spawn_ui_refresh_listener(app: tauri::AppHandle, pool: SqlitePool) {
     tauri::async_runtime::spawn(async move {
+        let mut last_id: i64 = sqlx::query_scalar("select coalesce(max(id), 0) from ui_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
         loop {
-            match PgListener::connect(&database_url).await {
-                Ok(mut listener) => {
-                    if let Err(err) = listener.listen(UI_REFRESH_CHANNEL).await {
-                        eprintln!("Lantor UI refresh listener failed to listen: {err}");
-                    } else {
-                        loop {
-                            let first_payload = match listener.recv().await {
-                                Ok(notification) => notification.payload().to_owned(),
-                                Err(err) => {
-                                    eprintln!("Lantor UI refresh listener disconnected: {err}");
-                                    break;
-                                }
-                            };
-                            let mut payloads = vec![first_payload];
-                            let mut disconnected = false;
-                            while payloads.len() < 80 {
-                                match timeout(Duration::from_millis(25), listener.recv()).await {
-                                    Ok(Ok(notification)) => {
-                                        payloads.push(notification.payload().to_owned());
-                                    }
-                                    Ok(Err(err)) => {
-                                        eprintln!("Lantor UI refresh listener disconnected: {err}");
-                                        disconnected = true;
-                                        break;
-                                    }
-                                    Err(_) => break,
-                                }
-                            }
-                            if payloads.len() == 1 {
-                                if let Some(payload) = payloads.pop() {
-                                    let _ = app.emit(UI_REFRESH_EVENT, payload);
-                                }
-                            } else {
-                                let _ = app.emit(
-                                    UI_REFRESH_EVENT,
-                                    json!({ "type": "batch", "events": payloads }).to_string(),
-                                );
-                            }
-                            if disconnected {
-                                break;
-                            }
+            let rows = sqlx::query(
+                r#"
+                select id, event_json
+                from ui_events
+                where id > $1
+                order by id asc
+                limit 80
+                "#,
+            )
+            .bind(last_id)
+            .fetch_all(&pool)
+            .await;
+            match rows {
+                Ok(rows) if rows.is_empty() => {
+                    sleep(Duration::from_millis(150)).await;
+                }
+                Ok(rows) => {
+                    let mut payloads = Vec::with_capacity(rows.len());
+                    for row in rows {
+                        last_id = row.get("id");
+                        payloads.push(row.get::<String, _>("event_json"));
+                    }
+                    if payloads.len() == 1 {
+                        if let Some(payload) = payloads.pop() {
+                            let _ = app.emit(UI_REFRESH_EVENT, payload);
                         }
+                    } else {
+                        let _ = app.emit(
+                            UI_REFRESH_EVENT,
+                            json!({ "type": "batch", "events": payloads }).to_string(),
+                        );
                     }
                 }
                 Err(err) => {
-                    eprintln!("Lantor UI refresh listener failed to connect: {err}");
+                    eprintln!("Lantor UI refresh poller failed: {err}");
+                    sleep(Duration::from_secs(2)).await;
                 }
             }
-            sleep(Duration::from_secs(2)).await;
         }
     });
 }
 
-async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
-    sqlx::query("create extension if not exists pgcrypto")
-        .execute(pool)
-        .await?;
-
-    sqlx::query(
+async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    for statement in [
         r#"
         create table if not exists owner_profile (
             id integer primary key default 1 check (id = 1),
             display_name text not null default 'Me',
             avatar text not null default 'dicebear:dylan:owner',
             description text not null default 'local owner',
-            updated_at timestamptz not null default now()
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
         )
         "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
         r#"
-        alter table owner_profile
-            alter column display_name set default 'Me',
-            alter column avatar set default 'dicebear:dylan:owner',
-            alter column description set default 'local owner'
+        create table if not exists agents (
+            id blob primary key not null default (randomblob(16)),
+            handle text not null unique,
+            display_name text not null,
+            role text not null default 'agent',
+            status text not null default 'idle',
+            runtime text not null default 'codex',
+            model text not null default 'gpt-5.5',
+            avatar text not null default '',
+            description text not null default '',
+            launch_command text not null default '',
+            working_directory text not null default '',
+            daily_budget_micros integer not null default 0,
+            reasoning_effort text not null default 'medium',
+            service_tier text not null default '',
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
         "#,
-    )
-    .execute(pool)
-    .await?;
+        r#"
+        create table if not exists channels (
+            id blob primary key not null default (randomblob(16)),
+            name text not null unique,
+            description text not null default '',
+            unread_count integer not null default 0,
+            kind text not null default 'channel',
+            dm_agent_id blob references agents(id) on delete cascade,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists messages (
+            id blob primary key not null default (randomblob(16)),
+            channel_id blob not null references channels(id) on delete cascade,
+            thread_root_id blob references messages(id) on delete cascade,
+            sender_agent_id blob references agents(id) on delete set null,
+            sender_name text not null,
+            sender_role text not null default 'human',
+            body text not null,
+            is_task boolean not null default 0,
+            thread_followed boolean not null default 1,
+            delivery_state text not null default 'complete',
+            stream_key text not null default '',
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists message_attachments (
+            id blob primary key not null default (randomblob(16)),
+            message_id blob not null references messages(id) on delete cascade,
+            original_name text not null,
+            mime_type text not null,
+            size_bytes integer not null,
+            storage_path text not null,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists saved_messages (
+            id blob primary key not null default (randomblob(16)),
+            message_id blob not null unique references messages(id) on delete cascade,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists artifacts (
+            id blob primary key not null default (randomblob(16)),
+            message_id blob not null references messages(id) on delete cascade,
+            channel_id blob not null references channels(id) on delete cascade,
+            thread_root_id blob references messages(id) on delete set null,
+            creator_agent_id blob references agents(id) on delete set null,
+            kind text not null,
+            title text not null,
+            summary text not null default '',
+            content text not null,
+            metadata text not null default '{}',
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists runtime_sessions (
+            id blob primary key not null default (randomblob(16)),
+            agent_id blob not null references agents(id) on delete cascade,
+            runtime text not null,
+            provider_thread_id text not null,
+            status text not null default 'idle',
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            unique(agent_id, runtime)
+        )
+        "#,
+        r#"
+        create table if not exists tasks (
+            number integer primary key autoincrement,
+            id blob not null unique default (randomblob(16)),
+            message_id blob not null unique references messages(id) on delete cascade,
+            channel_id blob not null references channels(id) on delete cascade,
+            title text not null,
+            status text not null default 'todo',
+            assignee_agent_id blob references agents(id) on delete set null,
+            version integer not null default 0,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists reminders (
+            id blob primary key not null default (randomblob(16)),
+            channel_id blob references channels(id) on delete set null,
+            creator_agent_id blob references agents(id) on delete set null,
+            thread_root_id blob references messages(id) on delete set null,
+            message_id blob references messages(id) on delete set null,
+            title text not null,
+            note text not null default '',
+            status text not null default 'scheduled',
+            recurrence text not null default 'none',
+            due_at text not null,
+            fired_at text,
+            completed_at text,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists reminder_events (
+            id blob primary key not null default (randomblob(16)),
+            reminder_id blob not null references reminders(id) on delete cascade,
+            event_type text not null,
+            detail text not null default '',
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists agent_schedules (
+            id blob primary key not null default (randomblob(16)),
+            agent_id blob not null references agents(id) on delete cascade,
+            channel_id blob not null references channels(id) on delete cascade,
+            thread_root_id blob references messages(id) on delete set null,
+            title text not null,
+            prompt text not null default '',
+            cadence text not null default 'daily',
+            status text not null default 'active',
+            next_run_at text not null,
+            last_run_at text,
+            last_work_item_id blob,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists agent_runs (
+            id blob primary key not null default (randomblob(16)),
+            agent_id blob not null references agents(id) on delete cascade,
+            work_item_id blob references agent_work_items(id) on delete set null,
+            command text not null,
+            working_directory text not null default '',
+            status text not null default 'starting',
+            pid integer,
+            exit_code integer,
+            log text not null default '',
+            input_tokens integer not null default 0,
+            output_tokens integer not null default 0,
+            cost_micros integer not null default 0,
+            started_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            stopped_at text
+        )
+        "#,
+        r#"
+        create table if not exists agent_activities (
+            id blob primary key not null default (randomblob(16)),
+            agent_id blob references agents(id) on delete set null,
+            agent_handle text not null default '',
+            run_id blob references agent_runs(id) on delete set null,
+            kind text not null,
+            phase text not null default 'event',
+            status text not null default 'info',
+            title text not null,
+            summary text not null default '',
+            detail text not null default '',
+            metadata text not null default '{}',
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists agent_work_items (
+            id blob primary key not null default (randomblob(16)),
+            agent_id blob not null references agents(id) on delete cascade,
+            channel_id blob references channels(id) on delete set null,
+            thread_root_id blob references messages(id) on delete set null,
+            source_message_id blob references messages(id) on delete set null,
+            inbox_item_id blob,
+            task_id blob references tasks(id) on delete set null,
+            source_kind text not null default 'manual',
+            title text not null,
+            context text not null default '',
+            status text not null default 'queued',
+            run_id blob references agent_runs(id) on delete set null,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            completed_at text
+        )
+        "#,
+        r#"
+        create table if not exists agent_inbox_items (
+            id blob primary key not null default (randomblob(16)),
+            agent_id blob not null references agents(id) on delete cascade,
+            channel_id blob references channels(id) on delete set null,
+            thread_root_id blob references messages(id) on delete set null,
+            source_message_id blob references messages(id) on delete set null,
+            task_id blob references tasks(id) on delete set null,
+            kind text not null,
+            priority integer not null default 50,
+            state text not null default 'unread',
+            title text not null,
+            body_preview text not null default '',
+            payload text not null default '{}',
+            work_item_id blob references agent_work_items(id) on delete set null,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            archived_at text
+        )
+        "#,
+        r#"
+        create table if not exists agent_thread_subscriptions (
+            agent_id blob not null references agents(id) on delete cascade,
+            channel_id blob not null references channels(id) on delete cascade,
+            thread_root_id blob not null references messages(id) on delete cascade,
+            source_kind text not null default 'manual',
+            last_source_message_id blob references messages(id) on delete set null,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            primary key (agent_id, thread_root_id)
+        )
+        "#,
+        r#"
+        create table if not exists agent_event_receipts (
+            run_id blob not null references agent_runs(id) on delete cascade,
+            event_json text not null,
+            event_hash text not null,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            primary key (run_id, event_hash)
+        )
+        "#,
+        r#"
+        create table if not exists supervisor_commands (
+            id blob primary key not null default (randomblob(16)),
+            command_type text not null,
+            agent_id blob references agents(id) on delete cascade,
+            run_id blob references agent_runs(id) on delete cascade,
+            work_item_id blob references agent_work_items(id) on delete set null,
+            status text not null default 'pending',
+            error text not null default '',
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists supervisor_state (
+            id integer primary key default 1 check (id = 1),
+            pid integer,
+            status text not null default 'offline',
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists channel_read_state (
+            channel_id blob primary key references channels(id) on delete cascade,
+            last_read_at text not null default '0001-01-01T00:00:00+00:00'
+        )
+        "#,
+        r#"
+        create table if not exists owner_inbox_dismissals (
+            item_id text primary key,
+            dismissed_until text not null,
+            dismissed_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists owner_inbox_read_state (
+            item_id text primary key,
+            read_until text not null,
+            read_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists owner_inbox_hidden_items (
+            item_id text primary key,
+            hidden_until text not null,
+            hidden_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists channel_members (
+            channel_id blob not null references channels(id) on delete cascade,
+            agent_id blob not null references agents(id) on delete cascade,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            primary key (channel_id, agent_id)
+        )
+        "#,
+        r#"
+        create table if not exists ui_events (
+            id integer primary key autoincrement,
+            event_json text not null,
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
+
+    for statement in [
+        "create unique index if not exists channels_dm_unique on channels(dm_agent_id) where kind = 'dm' and dm_agent_id is not null",
+        "create unique index if not exists messages_stream_key_unique on messages(stream_key) where stream_key <> ''",
+        "create index if not exists message_attachments_message_id_idx on message_attachments(message_id)",
+        "create index if not exists saved_messages_created_at_idx on saved_messages(created_at desc)",
+        "create index if not exists artifacts_message_id_idx on artifacts(message_id)",
+        "create index if not exists artifacts_channel_id_idx on artifacts(channel_id)",
+        "create index if not exists reminders_due_idx on reminders(status, due_at)",
+        "create index if not exists agent_schedules_due_idx on agent_schedules(status, next_run_at)",
+        "create index if not exists agent_inbox_items_agent_state_idx on agent_inbox_items(agent_id, state, priority desc, created_at)",
+        "create unique index if not exists agent_inbox_items_source_unique on agent_inbox_items(agent_id, source_message_id, kind) where source_message_id is not null",
+        "create index if not exists ui_events_created_idx on ui_events(created_at)",
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
+
     sqlx::query(
         r#"
         insert into owner_profile (id, display_name, avatar, description)
@@ -878,770 +1274,7 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
-    sqlx::query(
-        r#"
-        create table if not exists agents (
-            id uuid primary key default gen_random_uuid(),
-            handle text not null unique,
-            display_name text not null,
-            role text not null default 'agent',
-            status text not null default 'idle',
-            runtime text not null default 'codex',
-            model text not null default 'gpt-5.5',
-            avatar text not null default '',
-            description text not null default '',
-            created_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "alter table agents add column if not exists launch_command text not null default ''",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table agents add column if not exists working_directory text not null default ''",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table agents add column if not exists daily_budget_micros bigint not null default 0",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table agents add column if not exists reasoning_effort text not null default 'medium'",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table agents add column if not exists service_tier text not null default ''",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists channels (
-            id uuid primary key default gen_random_uuid(),
-            name text not null unique,
-            description text not null default '',
-            unread_count integer not null default 0,
-            created_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table channels add column if not exists kind text not null default 'channel'",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table channels add column if not exists dm_agent_id uuid references agents(id) on delete cascade",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        r#"
-        create unique index if not exists channels_dm_unique
-        on channels(dm_agent_id)
-        where kind = 'dm' and dm_agent_id is not null
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query("update channels set description = '' where description = 'Local channel'")
-        .execute(pool)
-        .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists messages (
-            id uuid primary key default gen_random_uuid(),
-            channel_id uuid not null references channels(id) on delete cascade,
-            thread_root_id uuid references messages(id) on delete cascade,
-            sender_agent_id uuid references agents(id) on delete set null,
-            sender_name text not null,
-            sender_role text not null default 'human',
-            body text not null,
-            is_task boolean not null default false,
-            thread_followed boolean not null default true,
-            created_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table messages add column if not exists thread_followed boolean not null default true",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table messages add column if not exists delivery_state text not null default 'complete'",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table messages add column if not exists stream_key text not null default ''",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table messages add column if not exists updated_at timestamptz not null default now()",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        r#"
-        create unique index if not exists messages_stream_key_unique
-        on messages(stream_key)
-        where stream_key <> ''
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists message_attachments (
-            id uuid primary key default gen_random_uuid(),
-            message_id uuid not null references messages(id) on delete cascade,
-            original_name text not null,
-            mime_type text not null,
-            size_bytes bigint not null,
-            storage_path text not null,
-            created_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "create index if not exists message_attachments_message_id_idx on message_attachments(message_id)",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists saved_messages (
-            id uuid primary key default gen_random_uuid(),
-            message_id uuid not null unique references messages(id) on delete cascade,
-            created_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query("create index if not exists saved_messages_created_at_idx on saved_messages(created_at desc)")
-        .execute(pool)
-        .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists artifacts (
-            id uuid primary key default gen_random_uuid(),
-            message_id uuid not null references messages(id) on delete cascade,
-            channel_id uuid not null references channels(id) on delete cascade,
-            thread_root_id uuid references messages(id) on delete set null,
-            creator_agent_id uuid references agents(id) on delete set null,
-            kind text not null,
-            title text not null,
-            summary text not null default '',
-            content text not null,
-            metadata jsonb not null default '{}'::jsonb,
-            created_at timestamptz not null default now(),
-            updated_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query("create index if not exists artifacts_message_id_idx on artifacts(message_id)")
-        .execute(pool)
-        .await?;
-    sqlx::query("create index if not exists artifacts_channel_id_idx on artifacts(channel_id)")
-        .execute(pool)
-        .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists runtime_sessions (
-            id uuid primary key default gen_random_uuid(),
-            agent_id uuid not null references agents(id) on delete cascade,
-            runtime text not null,
-            provider_thread_id text not null,
-            status text not null default 'idle',
-            created_at timestamptz not null default now(),
-            updated_at timestamptz not null default now(),
-            unique(agent_id, runtime)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists tasks (
-            id uuid primary key default gen_random_uuid(),
-            number bigserial not null unique,
-            message_id uuid not null unique references messages(id) on delete cascade,
-            channel_id uuid not null references channels(id) on delete cascade,
-            title text not null,
-            status text not null default 'todo',
-            assignee_agent_id uuid references agents(id) on delete set null,
-            version bigint not null default 0,
-            created_at timestamptz not null default now(),
-            updated_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query("alter table tasks add column if not exists version bigint not null default 0")
-        .execute(pool)
-        .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists reminders (
-            id uuid primary key default gen_random_uuid(),
-            channel_id uuid references channels(id) on delete set null,
-            creator_agent_id uuid references agents(id) on delete set null,
-            thread_root_id uuid references messages(id) on delete set null,
-            message_id uuid references messages(id) on delete set null,
-            title text not null,
-            note text not null default '',
-            status text not null default 'scheduled',
-            recurrence text not null default 'none',
-            due_at timestamptz not null,
-            fired_at timestamptz,
-            completed_at timestamptz,
-            created_at timestamptz not null default now(),
-            updated_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table reminders add column if not exists creator_agent_id uuid references agents(id) on delete set null",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query("create index if not exists reminders_due_idx on reminders(status, due_at)")
-        .execute(pool)
-        .await?;
-    sqlx::query(
-        r#"
-        create table if not exists reminder_events (
-            id uuid primary key default gen_random_uuid(),
-            reminder_id uuid not null references reminders(id) on delete cascade,
-            event_type text not null,
-            detail text not null default '',
-            created_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists agent_schedules (
-            id uuid primary key default gen_random_uuid(),
-            agent_id uuid not null references agents(id) on delete cascade,
-            channel_id uuid not null references channels(id) on delete cascade,
-            thread_root_id uuid references messages(id) on delete set null,
-            title text not null,
-            prompt text not null default '',
-            cadence text not null default 'daily',
-            status text not null default 'active',
-            next_run_at timestamptz not null,
-            last_run_at timestamptz,
-            last_work_item_id uuid,
-            created_at timestamptz not null default now(),
-            updated_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "create index if not exists agent_schedules_due_idx on agent_schedules(status, next_run_at)",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists agent_runs (
-            id uuid primary key default gen_random_uuid(),
-            agent_id uuid not null references agents(id) on delete cascade,
-            command text not null,
-            working_directory text not null default '',
-            status text not null default 'starting',
-            pid integer,
-            exit_code integer,
-            log text not null default '',
-            started_at timestamptz not null default now(),
-            stopped_at timestamptz
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists agent_activities (
-            id uuid primary key default gen_random_uuid(),
-            agent_id uuid references agents(id) on delete set null,
-            agent_handle text not null default '',
-            run_id uuid references agent_runs(id) on delete set null,
-            kind text not null,
-            phase text not null default 'event',
-            status text not null default 'info',
-            title text not null,
-            summary text not null default '',
-            detail text not null default '',
-            metadata jsonb not null default '{}'::jsonb,
-            created_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    for statement in [
-        "alter table agent_activities add column if not exists phase text not null default 'event'",
-        "alter table agent_activities add column if not exists status text not null default 'info'",
-        "alter table agent_activities add column if not exists summary text not null default ''",
-        "alter table agent_activities add column if not exists metadata jsonb not null default '{}'::jsonb",
-    ] {
-        sqlx::query(statement).execute(pool).await?;
-    }
-    sqlx::query(
-        r#"
-        update agent_activities
-        set kind = 'run',
-            phase = 'runtime',
-            status = 'warning',
-            title = 'Runtime warning',
-            summary = 'Runtime warning'
-        where upper(coalesce(metadata->>'level', '')) in ('WARN', 'WARNING')
-          and coalesce(metadata->>'target', '') like 'codex_%'
-          and title in ('Thinking', 'Error output', 'Runtime output', 'Runtime warning')
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        r#"
-        update agent_activities
-        set phase = case
-                when kind = 'thinking' then 'thinking'
-                when kind = 'command' then 'command'
-                when kind = 'file_edit' then 'file_edit'
-                when kind = 'tools' then 'tools'
-                when kind in ('error', 'event_error', 'run_error') then 'error'
-                when kind = 'run' then 'runtime'
-                when kind in ('dispatch', 'mention', 'dm', 'task') then 'work'
-                when kind = 'profile' then 'profile'
-                else 'acting'
-            end,
-            status = case
-                when kind in ('error', 'event_error', 'run_error') then 'error'
-                when kind in ('command', 'run', 'dispatch', 'task', 'schedule')
-                    and (
-                        lower(title) like '%failed%'
-                        or lower(title) like '%error%'
-                        or lower(title) like '%rejected%'
-                    ) then 'error'
-                when lower(title) like '%warning%' then 'warning'
-                when lower(title) like '%cancel%' or lower(title) like '%stop%' then 'warning'
-                when lower(title) like '%completed%'
-                    or lower(title) like '%complete%'
-                    or lower(title) like '%done%'
-                    or lower(title) like '%exited%'
-                    or lower(title) like '%finished%'
-                    or lower(title) like '%ready%'
-                    or lower(title) like '%accepted%' then 'success'
-                when lower(title) like '%running%'
-                    or lower(title) like '%editing%'
-                    or lower(title) like '%started%'
-                    or lower(title) like '%queued%'
-                    or lower(title) like '%dispatched%' then 'active'
-                else 'info'
-            end,
-            summary = title,
-            metadata = case
-                when detail <> '' and metadata = '{}'::jsonb then jsonb_build_object('detail', detail)
-                else metadata
-            end
-        where summary = '' or metadata = '{}'::jsonb
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        r#"
-        update agent_activities
-        set kind = 'run',
-            phase = 'runtime',
-            status = 'warning',
-            title = 'Runtime warning',
-            summary = 'Runtime warning'
-        where title = 'Error output'
-          and (
-              detail like '%codex_api::endpoint::responses_websocket%failed to connect to websocket%'
-              or detail like '%codex_models_manager::manager%failed to refresh available models%'
-              or detail like '%rmcp::transport::worker%https://chatgpt.com/backend-api/wham/apps%'
-          )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        r#"
-        update agent_activities
-        set status = 'active'
-        where kind in ('thinking', 'tools', 'file_edit', 'acting')
-          and status = 'error'
-          and lower(title) like '%error%'
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        r#"
-        delete from agent_activities
-        where upper(coalesce(metadata->>'level', '')) in ('WARN', 'WARNING')
-          and (
-              (
-                  metadata->>'target' = 'codex_core_plugins::manifest'
-                  and coalesce(metadata #>> '{fields,message}', metadata->>'message', '') like 'ignoring interface.defaultPrompt:%'
-              )
-              or (
-                  metadata->>'target' = 'codex_core_skills::loader'
-                  and coalesce(metadata #>> '{fields,message}', metadata->>'message', '') in (
-                      'ignoring interface.icon_small: icon path must not contain ''..''',
-                      'ignoring interface.icon_large: icon path must not contain ''..'''
-                  )
-              )
-              or (
-                  metadata->>'target' = 'codex_core::session::turn'
-                  and coalesce(metadata #>> '{fields,message}', metadata->>'message', '') = 'after_agent hook failed; continuing'
-                  and coalesce(metadata #>> '{fields,hook_name}', metadata->>'hook_name', '') = 'legacy_notify'
-                  and coalesce(metadata #>> '{fields,error}', metadata->>'error', '') like '%No such file or directory%'
-              )
-          )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists agent_work_items (
-            id uuid primary key default gen_random_uuid(),
-            agent_id uuid not null references agents(id) on delete cascade,
-            channel_id uuid references channels(id) on delete set null,
-            thread_root_id uuid references messages(id) on delete set null,
-            source_message_id uuid references messages(id) on delete set null,
-            inbox_item_id uuid,
-            task_id uuid references tasks(id) on delete set null,
-            source_kind text not null default 'manual',
-            title text not null,
-            context text not null default '',
-            status text not null default 'queued',
-            run_id uuid references agent_runs(id) on delete set null,
-            created_at timestamptz not null default now(),
-            updated_at timestamptz not null default now(),
-            completed_at timestamptz
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "alter table agent_work_items add column if not exists source_message_id uuid references messages(id) on delete set null",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table agent_work_items add column if not exists source_kind text not null default 'manual'",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        r#"
-        create table if not exists agent_inbox_items (
-            id uuid primary key default gen_random_uuid(),
-            agent_id uuid not null references agents(id) on delete cascade,
-            channel_id uuid references channels(id) on delete set null,
-            thread_root_id uuid references messages(id) on delete set null,
-            source_message_id uuid references messages(id) on delete set null,
-            task_id uuid references tasks(id) on delete set null,
-            kind text not null,
-            priority integer not null default 50,
-            state text not null default 'unread',
-            title text not null,
-            body_preview text not null default '',
-            payload jsonb not null default '{}'::jsonb,
-            work_item_id uuid references agent_work_items(id) on delete set null,
-            created_at timestamptz not null default now(),
-            updated_at timestamptz not null default now(),
-            archived_at timestamptz
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table agent_work_items add column if not exists inbox_item_id uuid references agent_inbox_items(id) on delete set null",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        r#"
-        do $$
-        begin
-            alter table agent_work_items
-            add constraint agent_work_items_inbox_item_id_fkey
-            foreign key (inbox_item_id) references agent_inbox_items(id) on delete set null;
-        exception when duplicate_object then
-            null;
-        end $$;
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table agent_inbox_items add column if not exists task_id uuid references tasks(id) on delete set null",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "alter table agent_inbox_items add column if not exists work_item_id uuid references agent_work_items(id) on delete set null",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "create index if not exists agent_inbox_items_agent_state_idx on agent_inbox_items(agent_id, state, priority desc, created_at)",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "create unique index if not exists agent_inbox_items_source_unique on agent_inbox_items(agent_id, source_message_id, kind) where source_message_id is not null",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists agent_thread_subscriptions (
-            agent_id uuid not null references agents(id) on delete cascade,
-            channel_id uuid not null references channels(id) on delete cascade,
-            thread_root_id uuid not null references messages(id) on delete cascade,
-            source_kind text not null default 'manual',
-            last_source_message_id uuid references messages(id) on delete set null,
-            created_at timestamptz not null default now(),
-            updated_at timestamptz not null default now(),
-            primary key (agent_id, thread_root_id)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "alter table agent_runs add column if not exists work_item_id uuid references agent_work_items(id) on delete set null",
-    )
-    .execute(pool)
-    .await?;
-    for statement in [
-        "alter table agent_runs add column if not exists input_tokens bigint not null default 0",
-        "alter table agent_runs add column if not exists output_tokens bigint not null default 0",
-        "alter table agent_runs add column if not exists cost_micros bigint not null default 0",
-    ] {
-        sqlx::query(statement).execute(pool).await?;
-    }
     backfill_agent_run_usage_from_logs(pool).await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists agent_event_receipts (
-            run_id uuid not null references agent_runs(id) on delete cascade,
-            event_json text not null,
-            event_hash text not null,
-            created_at timestamptz not null default now(),
-            primary key (run_id, event_hash)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    for statement in [
-        "alter table agent_event_receipts add column if not exists event_hash text",
-        "update agent_event_receipts set event_hash = encode(digest(event_json, 'sha256'), 'hex') where event_hash is null",
-        "alter table agent_event_receipts alter column event_hash set not null",
-        "alter table agent_event_receipts drop constraint if exists agent_event_receipts_pkey",
-        "alter table agent_event_receipts add constraint agent_event_receipts_pkey primary key (run_id, event_hash)",
-    ] {
-        sqlx::query(statement).execute(pool).await?;
-    }
-
-    sqlx::query(
-        r#"
-        create table if not exists supervisor_commands (
-            id uuid primary key default gen_random_uuid(),
-            command_type text not null,
-            agent_id uuid references agents(id) on delete cascade,
-            run_id uuid references agent_runs(id) on delete cascade,
-            work_item_id uuid references agent_work_items(id) on delete set null,
-            status text not null default 'pending',
-            error text not null default '',
-            created_at timestamptz not null default now(),
-            updated_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "alter table supervisor_commands add column if not exists work_item_id uuid references agent_work_items(id) on delete set null",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists supervisor_state (
-            id integer primary key default 1 check (id = 1),
-            pid integer,
-            status text not null default 'offline',
-            updated_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists channel_read_state (
-            channel_id uuid primary key references channels(id) on delete cascade,
-            last_read_at timestamptz not null default '-infinity'::timestamptz
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists owner_inbox_dismissals (
-            item_id text primary key,
-            dismissed_until timestamptz not null,
-            dismissed_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    let owner_inbox_read_state_exists: bool =
-        sqlx::query_scalar("select to_regclass('owner_inbox_read_state') is not null")
-            .fetch_one(pool)
-            .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists owner_inbox_read_state (
-            item_id text primary key,
-            read_until timestamptz not null,
-            read_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        create table if not exists owner_inbox_hidden_items (
-            item_id text primary key,
-            hidden_until timestamptz not null,
-            hidden_at timestamptz not null default now()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    if !owner_inbox_read_state_exists {
-        sqlx::query(
-            r#"
-            insert into owner_inbox_read_state (item_id, read_until, read_at)
-            select item_id, dismissed_until, dismissed_at
-            from owner_inbox_dismissals
-            on conflict (item_id) do update set
-                read_until = greatest(owner_inbox_read_state.read_until, excluded.read_until),
-                read_at = greatest(owner_inbox_read_state.read_at, excluded.read_at)
-            "#,
-        )
-        .execute(pool)
-        .await?;
-        sqlx::query("delete from owner_inbox_dismissals")
-            .execute(pool)
-            .await?;
-    }
-
-    sqlx::query(
-        r#"
-        create table if not exists channel_members (
-            channel_id uuid not null references channels(id) on delete cascade,
-            agent_id uuid not null references agents(id) on delete cascade,
-            created_at timestamptz not null default now(),
-            primary key (channel_id, agent_id)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        with latest_task_work_item as (
-            select distinct on (task_id)
-                task_id,
-                status
-            from agent_work_items
-            where task_id is not null
-            order by task_id, coalesce(completed_at, updated_at, created_at) desc
-        )
-        update tasks t
-        set status = 'in_review',
-            updated_at = now()
-        from latest_task_work_item w
-        where w.task_id = t.id
-          and w.status = 'done'
-          and t.status in ('todo', 'in_progress')
-        "#,
-    )
-    .execute(pool)
-    .await?;
 
     Ok(())
 }
@@ -1757,7 +1390,7 @@ async fn open_external_url(url: String) -> CommandResult<()> {
         .map_err(to_string)?
 }
 
-pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResult<Bootstrap> {
+pub(crate) async fn load_bootstrap(pool: &SqlitePool, db_url: String) -> CommandResult<Bootstrap> {
     let owner_profile = load_owner_profile(pool).await?;
     let channels = load_channels(pool).await?;
     let channel_members = load_channel_members(pool).await?;
@@ -1882,7 +1515,7 @@ async fn update_channel(
 }
 
 pub(crate) async fn update_channel_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
     name: String,
     description: String,
@@ -1932,7 +1565,7 @@ async fn set_channel_agent_membership(
 }
 
 pub(crate) async fn set_channel_agent_membership_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
     agent_id: Uuid,
     member: bool,
@@ -2012,7 +1645,7 @@ async fn update_owner_profile(
 }
 
 pub(crate) async fn update_owner_profile_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     display_name: String,
     avatar: String,
     description: String,
@@ -2025,12 +1658,12 @@ pub(crate) async fn update_owner_profile_in_pool(
     sqlx::query(
         r#"
         insert into owner_profile (id, display_name, avatar, description, updated_at)
-        values (1, $1, $2, $3, now())
+        values (1, $1, $2, $3, strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
         on conflict (id) do update set
             display_name = excluded.display_name,
             avatar = excluded.avatar,
             description = excluded.description,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         "#,
     )
     .bind(display_name)
@@ -2049,7 +1682,10 @@ async fn delete_channel(channel_id: Uuid, state: State<'_, AppState>) -> Command
     delete_channel_in_pool(&state.pool, channel_id).await
 }
 
-pub(crate) async fn delete_channel_in_pool(pool: &PgPool, channel_id: Uuid) -> CommandResult<()> {
+pub(crate) async fn delete_channel_in_pool(
+    pool: &SqlitePool,
+    channel_id: Uuid,
+) -> CommandResult<()> {
     let result = sqlx::query("delete from channels where id = $1")
         .bind(channel_id)
         .execute(pool)
@@ -2075,10 +1711,13 @@ async fn artifact_read(artifact_id: Uuid, state: State<'_, AppState>) -> Command
 }
 
 pub(crate) async fn open_dm_with_agent_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
 ) -> CommandResult<String> {
-    let mut tx = pool.begin().await.map_err(to_string)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(to_string)?;
     let agent_row = sqlx::query("select handle from agents where id = $1")
         .bind(agent_id)
         .fetch_optional(&mut *tx)
@@ -2211,7 +1850,7 @@ async fn create_agent(
 }
 
 pub(crate) async fn create_agent_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     handle: String,
     display_name: String,
     role: Option<String>,
@@ -2355,7 +1994,7 @@ async fn update_agent(
 }
 
 pub(crate) async fn update_agent_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     handle: String,
     display_name: String,
@@ -2460,7 +2099,7 @@ async fn delete_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResu
     delete_agent_in_pool(&state.pool, agent_id).await
 }
 
-pub(crate) async fn delete_agent_in_pool(pool: &PgPool, agent_id: Uuid) -> CommandResult<()> {
+pub(crate) async fn delete_agent_in_pool(pool: &SqlitePool, agent_id: Uuid) -> CommandResult<()> {
     let active_run: Option<Uuid> = sqlx::query_scalar(
         r#"
         select id
@@ -2712,7 +2351,7 @@ async fn dispatch_agent_work(
             set assignee_agent_id = $2,
                 status = 'in_progress',
                 version = version + 1,
-                updated_at = now()
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1
             "#,
         )
@@ -2755,7 +2394,7 @@ async fn dispatch_agent_work(
 }
 
 async fn dispatch_task_assignment_to_agent(
-    pool: &PgPool,
+    pool: &SqlitePool,
     task_id: Uuid,
     agent_id: Uuid,
     reason: &str,
@@ -2843,7 +2482,10 @@ async fn dispatch_task_assignment_to_agent(
     Ok(())
 }
 
-async fn dispatch_unassigned_task_availability(pool: &PgPool, task_id: Uuid) -> CommandResult<()> {
+async fn dispatch_unassigned_task_availability(
+    pool: &SqlitePool,
+    task_id: Uuid,
+) -> CommandResult<()> {
     let Some(row) = sqlx::query(
         r#"
         select t.channel_id, t.message_id, t.title, t.status, t.assignee_agent_id, m.body, c.name as channel_name
@@ -2936,7 +2578,7 @@ async fn dispatch_unassigned_task_availability(pool: &PgPool, task_id: Uuid) -> 
 }
 
 async fn try_claim_unassigned_task(
-    pool: &PgPool,
+    pool: &SqlitePool,
     task_id: Uuid,
     agent_id: Uuid,
     expected_version: Option<i64>,
@@ -2944,15 +2586,15 @@ async fn try_claim_unassigned_task(
 ) -> CommandResult<Option<i64>> {
     let claimed = sqlx::query(
         r#"
-        update tasks t
+        update tasks as t
         set assignee_agent_id = $2,
             status = 'in_progress',
             version = t.version + 1,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where t.id = $1
           and t.assignee_agent_id is null
           and t.status = 'todo'
-          and ($3::bigint is null or t.version = $3)
+          and ($3 is null or t.version = $3)
           and exists (
               select 1
               from channel_members cm
@@ -2966,7 +2608,7 @@ async fn try_claim_unassigned_task(
                 and active.status in ('todo', 'in_progress')
                 and active.id <> t.id
           )
-        returning t.number
+        returning number
         "#,
     )
     .bind(task_id)
@@ -2984,8 +2626,8 @@ async fn try_claim_unassigned_task(
         r#"
         update agent_inbox_items
         set state = 'archived',
-            archived_at = now(),
-            updated_at = now()
+            archived_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where task_id = $1
           and kind = 'task_available'
           and state <> 'archived'
@@ -3015,7 +2657,7 @@ async fn try_claim_unassigned_task(
 }
 
 async fn mark_task_after_work_item_finished(
-    pool: &PgPool,
+    pool: &SqlitePool,
     work_item_id: Uuid,
     agent_id: Uuid,
     run_id: Uuid,
@@ -3046,7 +2688,7 @@ async fn mark_task_after_work_item_finished(
             r#"
             update tasks
             set status = 'in_review',
-                updated_at = now()
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1 and status in ('todo', 'in_progress')
             "#,
         )
@@ -3101,7 +2743,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
 }
 
 pub(crate) async fn cancel_agent_work_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     work_item_id: Uuid,
 ) -> CommandResult<()> {
     let row = sqlx::query(
@@ -3125,8 +2767,8 @@ pub(crate) async fn cancel_agent_work_in_pool(
                 r#"
                 update agent_work_items
                 set status = 'cancelled',
-                    completed_at = now(),
-                    updated_at = now()
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                 where id = $1
                 "#,
             )
@@ -3140,7 +2782,7 @@ pub(crate) async fn cancel_agent_work_in_pool(
                 update supervisor_commands
                 set status = 'done',
                     error = 'cancelled',
-                    updated_at = now()
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                 where work_item_id = $1 and status = 'pending'
                 "#,
             )
@@ -3157,7 +2799,7 @@ pub(crate) async fn cancel_agent_work_in_pool(
                 r#"
                 update agent_work_items
                 set status = 'cancelling',
-                    updated_at = now()
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                 where id = $1
                 "#,
             )
@@ -3220,7 +2862,7 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
 }
 
 pub(crate) async fn retry_agent_work_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     work_item_id: Uuid,
 ) -> CommandResult<Uuid> {
     let row = sqlx::query(
@@ -3288,7 +2930,7 @@ pub(crate) async fn retry_agent_work_in_pool(
     Ok(new_work_item_id)
 }
 
-async fn agent_runtime(pool: &PgPool, agent_id: Uuid) -> CommandResult<Option<String>> {
+async fn agent_runtime(pool: &SqlitePool, agent_id: Uuid) -> CommandResult<Option<String>> {
     sqlx::query_scalar("select runtime from agents where id = $1")
         .bind(agent_id)
         .fetch_optional(pool)
@@ -3296,7 +2938,7 @@ async fn agent_runtime(pool: &PgPool, agent_id: Uuid) -> CommandResult<Option<St
         .map_err(to_string)
 }
 
-async fn agent_has_active_run(pool: &PgPool, agent_id: Uuid) -> CommandResult<bool> {
+async fn agent_has_active_run(pool: &SqlitePool, agent_id: Uuid) -> CommandResult<bool> {
     let active_run: Option<Uuid> = sqlx::query_scalar(
         r#"
         select id
@@ -3315,7 +2957,10 @@ async fn agent_has_active_run(pool: &PgPool, agent_id: Uuid) -> CommandResult<bo
     Ok(active_run.is_some())
 }
 
-async fn agent_has_active_or_pending_start(pool: &PgPool, agent_id: Uuid) -> CommandResult<bool> {
+async fn agent_has_active_or_pending_start(
+    pool: &SqlitePool,
+    agent_id: Uuid,
+) -> CommandResult<bool> {
     if agent_has_active_run(pool, agent_id).await? {
         return Ok(true);
     }
@@ -3350,7 +2995,7 @@ fn codex_context_rotate_input_tokens() -> i64 {
 }
 
 async fn codex_context_rotation_candidate(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     threshold: i64,
 ) -> CommandResult<Option<(Uuid, i64)>> {
@@ -3376,7 +3021,7 @@ async fn codex_context_rotation_candidate(
 }
 
 async fn enqueue_agent_work_if_available(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     work_item_id: Uuid,
 ) -> CommandResult<bool> {
@@ -3600,7 +3245,7 @@ struct InboxWakeSummary {
 }
 
 async fn create_agent_inbox_item(
-    pool: &PgPool,
+    pool: &SqlitePool,
     input: AgentInboxItemInput<'_>,
 ) -> CommandResult<Uuid> {
     if let Some(source_message_id) = input.source_message_id {
@@ -3625,12 +3270,12 @@ async fn create_agent_inbox_item(
                 set channel_id = $2,
                     thread_root_id = $3,
                     task_id = $4,
-                    priority = greatest(priority, $5),
+                    priority = max(priority, $5),
                     state = case when state = 'archived' then 'unread' else state end,
                     title = $6,
                     body_preview = $7,
                     payload = $8,
-                    updated_at = now(),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
                     archived_at = case when state = 'archived' then null else archived_at end
                 where id = $1
                 "#,
@@ -3683,7 +3328,7 @@ async fn create_agent_inbox_item(
 }
 
 async fn attach_work_item_to_inbox(
-    pool: &PgPool,
+    pool: &SqlitePool,
     inbox_item_id: Uuid,
     work_item_id: Uuid,
 ) -> CommandResult<()> {
@@ -3691,28 +3336,30 @@ async fn attach_work_item_to_inbox(
 }
 
 async fn attach_work_item_to_inboxes(
-    pool: &PgPool,
+    pool: &SqlitePool,
     inbox_item_ids: &[Uuid],
     work_item_id: Uuid,
 ) -> CommandResult<()> {
     if inbox_item_ids.is_empty() {
         return Ok(());
     }
-    sqlx::query(
-        r#"
-        update agent_inbox_items
-        set work_item_id = $2,
-            state = 'processing',
-            updated_at = now(),
-            archived_at = null
-        where id = any($1::uuid[])
-        "#,
-    )
-    .bind(inbox_item_ids)
-    .bind(work_item_id)
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
+    for inbox_item_id in inbox_item_ids {
+        sqlx::query(
+            r#"
+            update agent_inbox_items
+            set work_item_id = $2,
+                state = 'processing',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+                archived_at = null
+            where id = $1
+            "#,
+        )
+        .bind(*inbox_item_id)
+        .bind(work_item_id)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+    }
     Ok(())
 }
 
@@ -3732,7 +3379,7 @@ fn format_inbox_target(
     }
 }
 
-fn inbox_wake_item_from_row(row: &PgRow) -> InboxWakeItem {
+fn inbox_wake_item_from_row(row: &SqliteRow) -> InboxWakeItem {
     InboxWakeItem {
         id: row.get("id"),
         channel_id: row.get("channel_id"),
@@ -3752,7 +3399,7 @@ fn inbox_wake_item_from_row(row: &PgRow) -> InboxWakeItem {
 }
 
 async fn next_unread_inbox_wake_item(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
 ) -> CommandResult<Option<InboxWakeItem>> {
     let row = sqlx::query(
@@ -3790,7 +3437,7 @@ async fn next_unread_inbox_wake_item(
 }
 
 async fn load_unread_inbox_wake_batch(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
@@ -3835,7 +3482,7 @@ async fn load_unread_inbox_wake_batch(
 }
 
 async fn load_inbox_wake_items_for_work_item(
-    pool: &PgPool,
+    pool: &SqlitePool,
     work_item_id: Uuid,
 ) -> CommandResult<Vec<InboxWakeItem>> {
     let rows = sqlx::query(
@@ -3871,7 +3518,7 @@ async fn load_inbox_wake_items_for_work_item(
 }
 
 async fn load_other_active_inbox_summary(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
@@ -3883,7 +3530,7 @@ async fn load_other_active_inbox_summary(
             c.name as channel_name,
             c.kind as channel_kind,
             i.thread_root_id,
-            count(*)::bigint as item_count,
+            count(*) as item_count,
             max(i.priority) as max_priority,
             min(i.created_at) as oldest_created_at
         from agent_inbox_items i
@@ -3926,7 +3573,7 @@ async fn load_other_active_inbox_summary(
 }
 
 async fn find_queued_inbox_wake_work_item_for_surface(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
@@ -4073,7 +3720,7 @@ fn build_steer_followup_prompt(items: &[InboxWakeItem]) -> String {
 }
 
 async fn refresh_inbox_wake_work_item(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     work_item_id: Uuid,
     items: &[InboxWakeItem],
@@ -4094,7 +3741,7 @@ async fn refresh_inbox_wake_work_item(
             task_id = $6,
             title = $7,
             context = $8,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         "#,
     )
@@ -4126,7 +3773,7 @@ fn prepend_inbox_context(inbox_item_id: Uuid, kind: &str, context: &str) -> Stri
     lines.join("\n")
 }
 
-async fn sync_inbox_for_work_item(pool: &PgPool, work_item_id: Uuid) -> CommandResult<()> {
+async fn sync_inbox_for_work_item(pool: &SqlitePool, work_item_id: Uuid) -> CommandResult<()> {
     let row = sqlx::query(
         r#"
         select agent_id, source_kind, status
@@ -4153,8 +3800,8 @@ async fn sync_inbox_for_work_item(pool: &PgPool, work_item_id: Uuid) -> CommandR
         r#"
         update agent_inbox_items
         set state = $2,
-            updated_at = now(),
-            archived_at = case when $2 = 'archived' then now() else null end
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+            archived_at = case when $2 = 'archived' then strftime('%Y-%m-%dT%H:%M:%f+00:00','now') else null end
         where work_item_id = $1
         "#,
     )
@@ -4170,7 +3817,7 @@ async fn sync_inbox_for_work_item(pool: &PgPool, work_item_id: Uuid) -> CommandR
 }
 
 async fn ensure_agent_inbox_wake_work_item(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
 ) -> CommandResult<Option<(Uuid, bool)>> {
     let Some(primary) = next_unread_inbox_wake_item(pool, agent_id).await? else {
@@ -4274,7 +3921,7 @@ async fn ensure_agent_inbox_wake_work_item(
 }
 
 async fn upsert_agent_thread_subscription(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Uuid,
@@ -4291,7 +3938,7 @@ async fn upsert_agent_thread_subscription(
         set channel_id = excluded.channel_id,
             source_kind = excluded.source_kind,
             last_source_message_id = coalesce(excluded.last_source_message_id, agent_thread_subscriptions.last_source_message_id),
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         "#,
     )
     .bind(agent_id)
@@ -4306,7 +3953,7 @@ async fn upsert_agent_thread_subscription(
 }
 
 async fn queue_mentions_as_work_items(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
     message_id: Uuid,
@@ -4444,7 +4091,7 @@ async fn queue_mentions_as_work_items(
             set assignee_agent_id = $2,
                 status = 'in_progress',
                 version = version + 1,
-                updated_at = now()
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1 and assignee_agent_id is null
             "#,
         )
@@ -4580,7 +4227,7 @@ async fn queue_mentions_as_work_items(
 }
 
 async fn load_thread_followup_targets(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
     thread_root_id: Uuid,
 ) -> CommandResult<Vec<(Uuid, String)>> {
@@ -4631,7 +4278,7 @@ async fn load_thread_followup_targets(
 }
 
 async fn load_channel_root_delivery_targets(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
 ) -> CommandResult<Vec<(Uuid, String)>> {
     let rows = sqlx::query(
@@ -4654,7 +4301,7 @@ async fn load_channel_root_delivery_targets(
 }
 
 async fn inter_agent_thread_message_count_since_last_owner(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
     thread_root_id: Uuid,
 ) -> CommandResult<i64> {
@@ -4676,7 +4323,7 @@ async fn inter_agent_thread_message_count_since_last_owner(
     let count = if let Some(last_owner_created_at) = last_owner_created_at {
         sqlx::query_scalar(
             r#"
-            select count(*)::bigint
+            select count(*)
             from messages
             where channel_id = $1
               and (id = $2 or thread_root_id = $2)
@@ -4693,7 +4340,7 @@ async fn inter_agent_thread_message_count_since_last_owner(
     } else {
         sqlx::query_scalar(
             r#"
-            select count(*)::bigint
+            select count(*)
             from messages
             where channel_id = $1
               and (id = $2 or thread_root_id = $2)
@@ -4709,7 +4356,7 @@ async fn inter_agent_thread_message_count_since_last_owner(
     Ok(count)
 }
 
-async fn queue_agent_message_mentions(pool: &PgPool, message_id: Uuid) -> CommandResult<()> {
+async fn queue_agent_message_mentions(pool: &SqlitePool, message_id: Uuid) -> CommandResult<()> {
     let Some(row) = sqlx::query(
         r#"
         select channel_id, thread_root_id, sender_agent_id, body, is_task
@@ -4818,7 +4465,7 @@ async fn uninstall_supervisor_service(
 ) -> CommandResult<LaunchAgentStatus> {
     let status = launch_agent::uninstall_supervisor_service()?;
 
-    sqlx::query("update supervisor_state set status = 'offline', updated_at = now() where id = 1")
+    sqlx::query("update supervisor_state set status = 'offline', updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where id = 1")
         .execute(&state.pool)
         .await
         .map_err(to_string)?;
@@ -4848,7 +4495,7 @@ async fn send_message(
 }
 
 pub(crate) async fn send_owner_message_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
     body: &str,
@@ -4858,7 +4505,10 @@ pub(crate) async fn send_owner_message_in_pool(
     if body.trim().is_empty() && attachments.is_empty() {
         return Err("message body or attachment is required".to_owned());
     }
-    let mut tx = pool.begin().await.map_err(to_string)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(to_string)?;
     let channel_kind: Option<String> =
         sqlx::query_scalar("select kind from channels where id = $1")
             .bind(channel_id)
@@ -4935,7 +4585,7 @@ pub(crate) async fn send_owner_message_in_pool(
 }
 
 async fn insert_message_attachments_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     message_id: Uuid,
     attachments: Vec<AttachmentUpload>,
 ) -> CommandResult<usize> {
@@ -5003,8 +4653,12 @@ async fn update_message(
         return Err("message body is empty".to_owned());
     }
 
-    let mut tx = state.pool.begin().await.map_err(to_string)?;
-    let result = sqlx::query("update messages set body = $2, updated_at = now() where id = $1")
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(to_string)?;
+    let result = sqlx::query("update messages set body = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where id = $1")
         .bind(message_id)
         .bind(body)
         .execute(&mut *tx)
@@ -5017,7 +4671,7 @@ async fn update_message(
     sqlx::query(
         r#"
         update tasks
-        set title = $2, updated_at = now()
+        set title = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where message_id = $1
         "#,
     )
@@ -5054,7 +4708,7 @@ async fn set_message_saved(
 }
 
 pub(crate) async fn set_message_saved_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     message_id: Uuid,
     saved: bool,
 ) -> CommandResult<()> {
@@ -5101,7 +4755,7 @@ async fn claim_task(
 }
 
 pub(crate) async fn claim_task_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     task_id: Uuid,
     agent_id: Option<Uuid>,
     expected_version: Option<i64>,
@@ -5136,7 +4790,7 @@ pub(crate) async fn claim_task_in_pool(
         set assignee_agent_id = $2,
             status = case when $2 is null then status else 'in_progress' end,
             version = version + 1,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         returning id
         "#,
@@ -5176,7 +4830,7 @@ async fn update_task_status(
 }
 
 pub(crate) async fn update_task_status_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     task_id: Uuid,
     status: String,
 ) -> CommandResult<()> {
@@ -5188,7 +4842,7 @@ pub(crate) async fn update_task_status_in_pool(
     let affected = sqlx::query(
         r#"
         update tasks
-        set status = $2, version = version + 1, updated_at = now()
+        set status = $2, version = version + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         "#,
     )
@@ -5225,7 +4879,7 @@ async fn update_task_title(
 }
 
 pub(crate) async fn update_task_title_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     task_id: Uuid,
     title: String,
 ) -> CommandResult<()> {
@@ -5234,11 +4888,14 @@ pub(crate) async fn update_task_title_in_pool(
         return Err("task title is empty".to_owned());
     }
 
-    let mut tx = pool.begin().await.map_err(to_string)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(to_string)?;
     let message_id: Uuid = sqlx::query_scalar(
         r#"
         update tasks
-        set title = $2, version = version + 1, updated_at = now()
+        set title = $2, version = version + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         returning message_id
         "#,
@@ -5249,7 +4906,7 @@ pub(crate) async fn update_task_title_in_pool(
     .await
     .map_err(to_string)?;
 
-    sqlx::query("update messages set body = $2, updated_at = now() where id = $1")
+    sqlx::query("update messages set body = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where id = $1")
         .bind(message_id)
         .bind(title)
         .execute(&mut *tx)
@@ -5297,7 +4954,7 @@ fn normalize_schedule_cadence(value: &str) -> CommandResult<String> {
 }
 
 async fn insert_reminder_event(
-    pool: &PgPool,
+    pool: &SqlitePool,
     reminder_id: Uuid,
     event_type: &str,
     detail: impl AsRef<str>,
@@ -5318,7 +4975,7 @@ async fn insert_reminder_event(
 }
 
 async fn create_reminder_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     creator_agent_id: Option<Uuid>,
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
@@ -5372,13 +5029,13 @@ async fn create_reminder_in_pool(
     Ok(reminder_id)
 }
 
-async fn cancel_reminder_in_pool(pool: &PgPool, reminder_id: Uuid) -> CommandResult<()> {
+async fn cancel_reminder_in_pool(pool: &SqlitePool, reminder_id: Uuid) -> CommandResult<()> {
     let affected = sqlx::query(
         r#"
         update reminders
         set status = 'cancelled',
-            completed_at = now(),
-            updated_at = now()
+            completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1 and status in ('scheduled', 'fired')
         "#,
     )
@@ -5434,8 +5091,8 @@ async fn snooze_reminder(
         r#"
         update reminders
         set status = 'scheduled',
-            due_at = now() + ($2::text || ' minutes')::interval,
-            updated_at = now()
+            due_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now','+' || $2 || ' minutes'),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1 and status in ('scheduled', 'fired')
         "#,
     )
@@ -5461,15 +5118,15 @@ async fn complete_reminder(reminder_id: Uuid, state: State<'_, AppState>) -> Com
 }
 
 pub(crate) async fn complete_reminder_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     reminder_id: Uuid,
 ) -> CommandResult<()> {
     sqlx::query(
         r#"
         update reminders
         set status = 'done',
-            completed_at = now(),
-            updated_at = now()
+            completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1 and status in ('scheduled', 'fired')
         "#,
     )
@@ -5613,7 +5270,7 @@ async fn update_agent_schedule_status(
         r#"
         update agent_schedules
         set status = $2,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1 and status <> 'cancelled'
         returning agent_id
         "#,
@@ -5678,7 +5335,7 @@ async fn mark_inbox_items_read(
     .await
 }
 
-pub(crate) async fn dismiss_inbox_items_in_pool<I>(pool: &PgPool, items: I) -> CommandResult<()>
+pub(crate) async fn dismiss_inbox_items_in_pool<I>(pool: &SqlitePool, items: I) -> CommandResult<()>
 where
     I: IntoIterator<Item = (String, DateTime<Utc>)>,
 {
@@ -5691,13 +5348,13 @@ where
         sqlx::query(
             r#"
             insert into owner_inbox_hidden_items (item_id, hidden_until, hidden_at)
-            values ($1, $2, now())
+            values ($1, $2, strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
             on conflict (item_id) do update set
-                hidden_until = greatest(
+                hidden_until = max(
                     owner_inbox_hidden_items.hidden_until,
                     excluded.hidden_until
                 ),
-                hidden_at = now()
+                hidden_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             "#,
         )
         .bind(item_id)
@@ -5714,7 +5371,10 @@ where
     Ok(())
 }
 
-pub(crate) async fn mark_inbox_items_read_in_pool<I>(pool: &PgPool, items: I) -> CommandResult<()>
+pub(crate) async fn mark_inbox_items_read_in_pool<I>(
+    pool: &SqlitePool,
+    items: I,
+) -> CommandResult<()>
 where
     I: IntoIterator<Item = (String, DateTime<Utc>)>,
 {
@@ -5727,13 +5387,13 @@ where
         sqlx::query(
             r#"
             insert into owner_inbox_read_state (item_id, read_until, read_at)
-            values ($1, $2, now())
+            values ($1, $2, strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
             on conflict (item_id) do update set
-                read_until = greatest(
+                read_until = max(
                     owner_inbox_read_state.read_until,
                     excluded.read_until
                 ),
-                read_at = now()
+                read_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             "#,
         )
         .bind(item_id)
@@ -5750,16 +5410,22 @@ where
     Ok(())
 }
 
-pub(crate) async fn mark_all_owner_inbox_read_in_pool(pool: &PgPool) -> CommandResult<()> {
+pub(crate) async fn mark_all_owner_inbox_read_in_pool(pool: &SqlitePool) -> CommandResult<()> {
     sqlx::query(
         r#"
         insert into owner_inbox_read_state (item_id, read_until, read_at)
-        select 'task:' || id::text, now(), now()
+        select 'task:' || lower(
+            substr(hex(id), 1, 8) || '-' ||
+            substr(hex(id), 9, 4) || '-' ||
+            substr(hex(id), 13, 4) || '-' ||
+            substr(hex(id), 17, 4) || '-' ||
+            substr(hex(id), 21, 12)
+        ), strftime('%Y-%m-%dT%H:%M:%f+00:00','now'), strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         from tasks
         where status = 'in_review'
         on conflict (item_id) do update set
-            read_until = greatest(owner_inbox_read_state.read_until, excluded.read_until),
-            read_at = now()
+            read_until = max(owner_inbox_read_state.read_until, excluded.read_until),
+            read_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         "#,
     )
     .execute(pool)
@@ -5769,12 +5435,18 @@ pub(crate) async fn mark_all_owner_inbox_read_in_pool(pool: &PgPool) -> CommandR
     sqlx::query(
         r#"
         insert into owner_inbox_read_state (item_id, read_until, read_at)
-        select 'reminder:' || id::text, now(), now()
+        select 'reminder:' || lower(
+            substr(hex(id), 1, 8) || '-' ||
+            substr(hex(id), 9, 4) || '-' ||
+            substr(hex(id), 13, 4) || '-' ||
+            substr(hex(id), 17, 4) || '-' ||
+            substr(hex(id), 21, 12)
+        ), strftime('%Y-%m-%dT%H:%M:%f+00:00','now'), strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         from reminders
         where status = 'fired'
         on conflict (item_id) do update set
-            read_until = greatest(owner_inbox_read_state.read_until, excluded.read_until),
-            read_at = now()
+            read_until = max(owner_inbox_read_state.read_until, excluded.read_until),
+            read_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         "#,
     )
     .execute(pool)
@@ -5784,8 +5456,9 @@ pub(crate) async fn mark_all_owner_inbox_read_in_pool(pool: &PgPool) -> CommandR
     sqlx::query(
         r#"
         insert into channel_read_state (channel_id, last_read_at)
-        select id, now()
+        select id, strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         from channels
+        where true
         on conflict (channel_id) do update set last_read_at = excluded.last_read_at
         "#,
     )
@@ -5803,13 +5476,13 @@ async fn mark_all_inbox_read(state: State<'_, AppState>) -> CommandResult<()> {
 }
 
 pub(crate) async fn mark_channel_read_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
 ) -> CommandResult<()> {
     sqlx::query(
         r#"
         insert into channel_read_state (channel_id, last_read_at)
-        values ($1, now())
+        values ($1, strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
         on conflict (channel_id) do update set last_read_at = excluded.last_read_at
         "#,
     )
@@ -5844,7 +5517,7 @@ async fn update_thread_followed(
     Ok(())
 }
 
-async fn load_owner_profile(pool: &PgPool) -> CommandResult<OwnerProfile> {
+async fn load_owner_profile(pool: &SqlitePool) -> CommandResult<OwnerProfile> {
     let row = sqlx::query(
         r#"
         select display_name, avatar, description
@@ -5869,7 +5542,7 @@ async fn load_owner_profile(pool: &PgPool) -> CommandResult<OwnerProfile> {
         }))
 }
 
-async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
+async fn load_channels(pool: &SqlitePool) -> CommandResult<Vec<Channel>> {
     let rows = sqlx::query(
         r#"
         select
@@ -5878,10 +5551,10 @@ async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
             c.description,
             c.kind,
             c.dm_agent_id,
-            count(m.id) filter (
-                where m.created_at > coalesce(r.last_read_at, '-infinity'::timestamptz)
+            cast(count(m.id) filter (
+                where m.created_at > coalesce(r.last_read_at, '-infinity')
                   and m.delivery_state <> 'streaming'
-            )::integer as unread_count
+            ) as integer) as unread_count
         from channels c
         left join channel_read_state r on r.channel_id = c.id
         left join messages m on m.channel_id = c.id
@@ -5912,7 +5585,7 @@ async fn load_channels(pool: &PgPool) -> CommandResult<Vec<Channel>> {
         .collect())
 }
 
-async fn load_channel_members(pool: &PgPool) -> CommandResult<Vec<ChannelMember>> {
+async fn load_channel_members(pool: &SqlitePool) -> CommandResult<Vec<ChannelMember>> {
     let rows = sqlx::query(
         r#"
         select
@@ -5943,7 +5616,7 @@ async fn load_channel_members(pool: &PgPool) -> CommandResult<Vec<ChannelMember>
         .collect())
 }
 
-async fn load_agents(pool: &PgPool) -> CommandResult<Vec<Agent>> {
+async fn load_agents(pool: &SqlitePool) -> CommandResult<Vec<Agent>> {
     let rows = sqlx::query(
         r#"
         select
@@ -6101,7 +5774,7 @@ fn path_to_slash_string(path: &Path) -> String {
         .join("/")
 }
 
-async fn agent_workspace_root(pool: &PgPool, agent_id: Uuid) -> CommandResult<PathBuf> {
+async fn agent_workspace_root(pool: &SqlitePool, agent_id: Uuid) -> CommandResult<PathBuf> {
     let row = sqlx::query("select working_directory from agents where id = $1")
         .bind(agent_id)
         .fetch_optional(pool)
@@ -6199,7 +5872,7 @@ async fn agent_workspace_list(
 }
 
 pub(crate) async fn agent_workspace_list_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     path: &str,
 ) -> CommandResult<AgentWorkspaceListing> {
@@ -6228,7 +5901,7 @@ async fn agent_workspace_read_file(
 }
 
 pub(crate) async fn agent_workspace_read_file_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     path: &str,
 ) -> CommandResult<AgentWorkspaceFile> {
@@ -6296,7 +5969,7 @@ fn workspace_preview_language(path: &Path) -> String {
     .to_owned()
 }
 
-async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
+async fn load_messages(pool: &SqlitePool) -> CommandResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
         select
@@ -6351,7 +6024,7 @@ async fn load_messages(pool: &PgPool) -> CommandResult<Vec<Message>> {
     Ok(messages)
 }
 
-async fn load_saved_messages(pool: &PgPool) -> CommandResult<Vec<SavedMessage>> {
+async fn load_saved_messages(pool: &SqlitePool) -> CommandResult<Vec<SavedMessage>> {
     let rows = sqlx::query(
         r#"
         select
@@ -6393,7 +6066,7 @@ async fn load_saved_messages(pool: &PgPool) -> CommandResult<Vec<SavedMessage>> 
 }
 
 async fn load_dismissed_inbox_items(
-    pool: &PgPool,
+    pool: &SqlitePool,
 ) -> CommandResult<HashMap<String, DateTime<Utc>>> {
     let rows = sqlx::query(
         r#"
@@ -6411,7 +6084,7 @@ async fn load_dismissed_inbox_items(
         .collect())
 }
 
-async fn load_read_inbox_items(pool: &PgPool) -> CommandResult<HashMap<String, DateTime<Utc>>> {
+async fn load_read_inbox_items(pool: &SqlitePool) -> CommandResult<HashMap<String, DateTime<Utc>>> {
     let rows = sqlx::query(
         r#"
         select item_id, max(read_until) as read_until
@@ -6435,7 +6108,7 @@ async fn load_read_inbox_items(pool: &PgPool) -> CommandResult<HashMap<String, D
         .collect())
 }
 
-async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message> {
+async fn load_message(pool: &SqlitePool, message_id: Uuid) -> CommandResult<Message> {
     let row = sqlx::query(
         r#"
         select
@@ -6488,23 +6161,31 @@ async fn load_message(pool: &PgPool, message_id: Uuid) -> CommandResult<Message>
     Ok(message)
 }
 
-async fn attach_message_attachments(pool: &PgPool, messages: &mut [Message]) -> CommandResult<()> {
+async fn attach_message_attachments(
+    pool: &SqlitePool,
+    messages: &mut [Message],
+) -> CommandResult<()> {
     if messages.is_empty() {
         return Ok(());
     }
     let ids: Vec<Uuid> = messages.iter().map(|message| message.id).collect();
-    let rows = sqlx::query(
+    let placeholders = (0..ids.len())
+        .map(|index| format!("${}", index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         r#"
         select id, message_id, original_name, mime_type, size_bytes, storage_path, created_at
         from message_attachments
-        where message_id = any($1)
+        where message_id in ({placeholders})
         order by created_at asc
         "#,
-    )
-    .bind(&ids)
-    .fetch_all(pool)
-    .await
-    .map_err(to_string)?;
+    );
+    let mut query = sqlx::query(&sql);
+    for id in &ids {
+        query = query.bind(*id);
+    }
+    let rows = query.fetch_all(pool).await.map_err(to_string)?;
     let mut attachments_by_message: HashMap<Uuid, Vec<MessageAttachment>> = HashMap::new();
     for row in rows {
         let attachment = MessageAttachment {
@@ -6529,7 +6210,7 @@ async fn attach_message_attachments(pool: &PgPool, messages: &mut [Message]) -> 
     Ok(())
 }
 
-fn artifact_from_row(row: &sqlx::postgres::PgRow) -> Artifact {
+fn artifact_from_row(row: &sqlx::sqlite::SqliteRow) -> Artifact {
     Artifact {
         id: row.get("id"),
         message_id: row.get("message_id"),
@@ -6547,7 +6228,7 @@ fn artifact_from_row(row: &sqlx::postgres::PgRow) -> Artifact {
     }
 }
 
-async fn load_artifacts(pool: &PgPool) -> CommandResult<Vec<Artifact>> {
+async fn load_artifacts(pool: &SqlitePool) -> CommandResult<Vec<Artifact>> {
     let rows = sqlx::query(
         r#"
         select
@@ -6575,7 +6256,7 @@ async fn load_artifacts(pool: &PgPool) -> CommandResult<Vec<Artifact>> {
     Ok(rows.iter().map(artifact_from_row).collect())
 }
 
-pub(crate) async fn load_artifact(pool: &PgPool, artifact_id: Uuid) -> CommandResult<Artifact> {
+pub(crate) async fn load_artifact(pool: &SqlitePool, artifact_id: Uuid) -> CommandResult<Artifact> {
     let row = sqlx::query(
         r#"
         select
@@ -6604,12 +6285,19 @@ pub(crate) async fn load_artifact(pool: &PgPool, artifact_id: Uuid) -> CommandRe
     Ok(artifact_from_row(&row))
 }
 
-async fn attach_message_artifacts(pool: &PgPool, messages: &mut [Message]) -> CommandResult<()> {
+async fn attach_message_artifacts(
+    pool: &SqlitePool,
+    messages: &mut [Message],
+) -> CommandResult<()> {
     if messages.is_empty() {
         return Ok(());
     }
     let ids: Vec<Uuid> = messages.iter().map(|message| message.id).collect();
-    let rows = sqlx::query(
+    let placeholders = (0..ids.len())
+        .map(|index| format!("${}", index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         r#"
         select
             ar.id,
@@ -6627,14 +6315,15 @@ async fn attach_message_artifacts(pool: &PgPool, messages: &mut [Message]) -> Co
             ar.updated_at
         from artifacts ar
         left join agents a on a.id = ar.creator_agent_id
-        where ar.message_id = any($1)
+        where ar.message_id in ({placeholders})
         order by ar.created_at asc
         "#,
-    )
-    .bind(&ids)
-    .fetch_all(pool)
-    .await
-    .map_err(to_string)?;
+    );
+    let mut query = sqlx::query(&sql);
+    for id in &ids {
+        query = query.bind(*id);
+    }
+    let rows = query.fetch_all(pool).await.map_err(to_string)?;
     let mut artifacts_by_message: HashMap<Uuid, Vec<Artifact>> = HashMap::new();
     for row in rows {
         let artifact = artifact_from_row(&row);
@@ -6649,7 +6338,7 @@ async fn attach_message_artifacts(pool: &PgPool, messages: &mut [Message]) -> Co
     Ok(())
 }
 
-async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
+async fn load_tasks(pool: &SqlitePool) -> CommandResult<Vec<Task>> {
     let rows = sqlx::query(
         r#"
         select
@@ -6694,7 +6383,7 @@ async fn load_tasks(pool: &PgPool) -> CommandResult<Vec<Task>> {
         .collect())
 }
 
-async fn load_reminders(pool: &PgPool) -> CommandResult<Vec<Reminder>> {
+async fn load_reminders(pool: &SqlitePool) -> CommandResult<Vec<Reminder>> {
     let rows = sqlx::query(
         r#"
         select
@@ -6751,7 +6440,7 @@ async fn load_reminders(pool: &PgPool) -> CommandResult<Vec<Reminder>> {
         .collect())
 }
 
-async fn load_agent_schedules(pool: &PgPool) -> CommandResult<Vec<AgentSchedule>> {
+async fn load_agent_schedules(pool: &SqlitePool) -> CommandResult<Vec<AgentSchedule>> {
     let rows = sqlx::query(
         r#"
         select
@@ -6808,7 +6497,7 @@ async fn load_agent_schedules(pool: &PgPool) -> CommandResult<Vec<AgentSchedule>
         .collect())
 }
 
-async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
+async fn load_agent_runs(pool: &SqlitePool) -> CommandResult<Vec<AgentRun>> {
     let rows = sqlx::query(
         r#"
         select
@@ -6859,7 +6548,7 @@ async fn load_agent_runs(pool: &PgPool) -> CommandResult<Vec<AgentRun>> {
         .collect())
 }
 
-async fn load_agent_run_patch(pool: &PgPool, run_id: Uuid) -> CommandResult<AgentRunPatch> {
+async fn load_agent_run_patch(pool: &SqlitePool, run_id: Uuid) -> CommandResult<AgentRunPatch> {
     let row = sqlx::query(
         r#"
         select
@@ -6905,7 +6594,7 @@ async fn load_agent_run_patch(pool: &PgPool, run_id: Uuid) -> CommandResult<Agen
     })
 }
 
-async fn load_agent_work_items(pool: &PgPool) -> CommandResult<Vec<AgentWorkItem>> {
+async fn load_agent_work_items(pool: &SqlitePool) -> CommandResult<Vec<AgentWorkItem>> {
     let rows = sqlx::query(
         r#"
         select
@@ -6965,7 +6654,7 @@ async fn load_agent_work_items(pool: &PgPool) -> CommandResult<Vec<AgentWorkItem
 }
 
 async fn load_agent_work_item_patch(
-    pool: &PgPool,
+    pool: &SqlitePool,
     work_item_id: Uuid,
 ) -> CommandResult<AgentWorkItemPatch> {
     let row = sqlx::query(
@@ -7021,7 +6710,7 @@ async fn load_agent_work_item_patch(
     })
 }
 
-async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity>> {
+async fn load_agent_activities(pool: &SqlitePool) -> CommandResult<Vec<AgentActivity>> {
     let rows = sqlx::query(
         r#"
         select
@@ -7035,13 +6724,13 @@ async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity
             title,
             summary,
             detail,
-            metadata::text as metadata,
+            metadata as metadata,
             created_at
         from (
             select
                 agent_activities.*,
                 row_number() over (
-                    partition by coalesce(agent_id::text, nullif(agent_handle, ''), 'unknown')
+                    partition by coalesce(case when agent_id is null then null else lower(hex(agent_id)) end, nullif(agent_handle, ''), 'unknown')
                     order by created_at desc
                 ) as activity_rank
             from agent_activities
@@ -7073,7 +6762,7 @@ async fn load_agent_activities(pool: &PgPool) -> CommandResult<Vec<AgentActivity
         .collect())
 }
 
-async fn load_agent_activity(pool: &PgPool, activity_id: Uuid) -> CommandResult<AgentActivity> {
+async fn load_agent_activity(pool: &SqlitePool, activity_id: Uuid) -> CommandResult<AgentActivity> {
     let row = sqlx::query(
         r#"
         select
@@ -7087,7 +6776,7 @@ async fn load_agent_activity(pool: &PgPool, activity_id: Uuid) -> CommandResult<
             title,
             summary,
             detail,
-            metadata::text as metadata,
+            metadata as metadata,
             created_at
         from agent_activities
         where id = $1
@@ -7114,7 +6803,7 @@ async fn load_agent_activity(pool: &PgPool, activity_id: Uuid) -> CommandResult<
     })
 }
 
-async fn load_supervisor_status(pool: &PgPool) -> CommandResult<SupervisorStatus> {
+async fn load_supervisor_status(pool: &SqlitePool) -> CommandResult<SupervisorStatus> {
     let row = sqlx::query(
         r#"
         select pid, status, updated_at
@@ -7298,7 +6987,7 @@ fn memory_path_for_workspace(working_directory: &str) -> CommandResult<PathBuf> 
     Ok(workspace.join("MEMORY.md"))
 }
 
-async fn agent_memory_path(pool: &PgPool, agent_id: Uuid) -> CommandResult<PathBuf> {
+async fn agent_memory_path(pool: &SqlitePool, agent_id: Uuid) -> CommandResult<PathBuf> {
     let row = sqlx::query("select handle, working_directory from agents where id = $1")
         .bind(agent_id)
         .fetch_one(pool)
@@ -7386,7 +7075,7 @@ fn insert_memory_index_entry(memory: &str, entry: &str) -> String {
     updated
 }
 
-async fn append_agent_memory(pool: &PgPool, agent_id: Uuid, body: &str) -> CommandResult<()> {
+async fn append_agent_memory(pool: &SqlitePool, agent_id: Uuid, body: &str) -> CommandResult<()> {
     let body = body.trim();
     if body.is_empty() {
         return Err("memory_append body is empty".to_owned());
@@ -7425,7 +7114,7 @@ async fn append_agent_memory(pool: &PgPool, agent_id: Uuid, body: &str) -> Comma
         .map_err(to_string)
 }
 
-async fn compact_agent_memory(pool: &PgPool, agent_id: Uuid, body: &str) -> CommandResult<()> {
+async fn compact_agent_memory(pool: &SqlitePool, agent_id: Uuid, body: &str) -> CommandResult<()> {
     let body = body.trim();
     if body.is_empty() {
         return Err("memory_compact body is empty".to_owned());
@@ -7439,7 +7128,7 @@ async fn compact_agent_memory(pool: &PgPool, agent_id: Uuid, body: &str) -> Comm
 }
 
 pub(crate) async fn create_channel_in_pool(
-    pool: &PgPool,
+    pool: &SqlitePool,
     name: &str,
     description: &str,
 ) -> CommandResult<Uuid> {
@@ -7470,7 +7159,7 @@ pub(crate) async fn create_channel_in_pool(
 }
 
 pub(crate) async fn add_agent_to_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Uuid,
     agent_id: Uuid,
 ) -> CommandResult<()> {
@@ -7499,7 +7188,7 @@ pub(crate) async fn add_agent_to_channel(
 }
 
 async fn record_agent_activity(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Option<Uuid>,
     run_id: Option<Uuid>,
     kind: &str,
@@ -7536,7 +7225,7 @@ async fn record_agent_activity(
             detail,
             metadata
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         returning id
         "#,
     )
@@ -7563,7 +7252,7 @@ async fn record_agent_activity(
 }
 
 async fn record_agent_activity_throttled(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Option<Uuid>,
     run_id: Option<Uuid>,
     kind: &str,
@@ -7582,7 +7271,7 @@ async fn record_agent_activity_throttled(
               and kind = $3
               and title = $4
               and detail = $5
-              and created_at > now() - interval '1 second'
+              and created_at > strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-1 second')
         )
         "#,
     )
@@ -7602,8 +7291,8 @@ async fn record_agent_activity_throttled(
     record_agent_activity(pool, agent_id, run_id, kind, title, detail).await
 }
 
-async fn append_run_log(pool: &PgPool, run_id: Uuid, line: String) -> CommandResult<()> {
-    sqlx::query("update agent_runs set log = right(log || $2, 20000) where id = $1")
+async fn append_run_log(pool: &SqlitePool, run_id: Uuid, line: String) -> CommandResult<()> {
+    sqlx::query("update agent_runs set log = substr(log || $2, -20000) where id = $1")
         .bind(run_id)
         .bind(line)
         .execute(pool)
@@ -7860,7 +7549,7 @@ fn classify_agent_output_activity(
 }
 
 async fn pipe_run_output<R>(
-    pool: PgPool,
+    pool: SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     stream: R,
@@ -7933,7 +7622,7 @@ async fn pipe_run_output<R>(
 }
 
 async fn ingest_agent_event_line(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     line: &str,
@@ -7950,17 +7639,19 @@ async fn ingest_agent_event_line(
         .map(Some)
 }
 
-async fn claim_agent_event(pool: &PgPool, run_id: Uuid, json: &str) -> CommandResult<bool> {
+async fn claim_agent_event(pool: &SqlitePool, run_id: Uuid, json: &str) -> CommandResult<bool> {
+    let event_hash = format!("{:x}", Sha256::digest(json.as_bytes()));
     let inserted: Option<bool> = sqlx::query_scalar(
         r#"
         insert into agent_event_receipts (run_id, event_json, event_hash)
-        values ($1, $2, encode(digest($2, 'sha256'), 'hex'))
+        values ($1, $2, $3)
         on conflict (run_id, event_hash) do nothing
         returning true
         "#,
     )
     .bind(run_id)
     .bind(json)
+    .bind(event_hash)
     .fetch_optional(pool)
     .await
     .map_err(to_string)?;
@@ -7969,7 +7660,7 @@ async fn claim_agent_event(pool: &PgPool, run_id: Uuid, json: &str) -> CommandRe
 }
 
 async fn replay_agent_events_from_run_log_if_needed(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
 ) -> CommandResult<usize> {
@@ -8106,7 +7797,7 @@ fn complete_json_object_end(value: &str) -> Option<usize> {
 }
 
 async fn handle_agent_event(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     event: AgentEvent,
@@ -8269,7 +7960,7 @@ async fn handle_agent_event(
             let affected = sqlx::query(
                 r#"
                 update tasks
-                set status = $2, version = version + 1, updated_at = now()
+                set status = $2, version = version + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                 where number = $1
                 "#,
             )
@@ -8317,7 +8008,7 @@ async fn handle_agent_event(
                     update tasks
                     set assignee_agent_id = null,
                         version = version + 1,
-                        updated_at = now()
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                     where id = $1
                       and assignee_agent_id = $2
                       and status <> 'done'
@@ -8384,7 +8075,7 @@ async fn handle_agent_event(
                 set assignee_agent_id = $2,
                     status = 'in_progress',
                     version = version + 1,
-                    updated_at = now()
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                 where id = $1
                   and assignee_agent_id = $3
                   and status <> 'done'
@@ -8845,7 +8536,7 @@ async fn handle_agent_event(
 }
 
 async fn resolve_run_reminder_anchor(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
 ) -> CommandResult<(Option<Uuid>, Option<Uuid>, Option<Uuid>)> {
@@ -8874,7 +8565,7 @@ async fn resolve_run_reminder_anchor(
 }
 
 async fn resolve_event_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Option<Uuid>,
     channel_name: Option<&str>,
 ) -> CommandResult<Uuid> {
@@ -8903,7 +8594,7 @@ async fn resolve_event_channel(
 }
 
 async fn resolve_task_for_handoff(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     task_number: Option<i64>,
@@ -8965,7 +8656,7 @@ async fn resolve_task_for_handoff(
     ))
 }
 
-async fn resolve_agent_by_handle(pool: &PgPool, handle: &str) -> CommandResult<Uuid> {
+async fn resolve_agent_by_handle(pool: &SqlitePool, handle: &str) -> CommandResult<Uuid> {
     let normalized = handle.trim().trim_start_matches('@');
     if normalized.is_empty() {
         return Err("assignee handle is empty".to_owned());
@@ -8978,7 +8669,7 @@ async fn resolve_agent_by_handle(pool: &PgPool, handle: &str) -> CommandResult<U
         .ok_or_else(|| format!("agent @{normalized} does not exist"))
 }
 
-async fn resolve_agent_handle(pool: &PgPool, agent_id: Uuid) -> CommandResult<String> {
+async fn resolve_agent_handle(pool: &SqlitePool, agent_id: Uuid) -> CommandResult<String> {
     sqlx::query_scalar("select handle from agents where id = $1")
         .bind(agent_id)
         .fetch_one(pool)
@@ -8987,7 +8678,7 @@ async fn resolve_agent_handle(pool: &PgPool, agent_id: Uuid) -> CommandResult<St
 }
 
 async fn ensure_agent_channel_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     event_name: &str,
@@ -9015,7 +8706,7 @@ async fn ensure_agent_channel_member(
 }
 
 async fn create_agent_handoff(
-    pool: &PgPool,
+    pool: &SqlitePool,
     source_agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Uuid,
@@ -9224,7 +8915,7 @@ fn default_attachment_message_body(uploads: &[AttachmentUpload]) -> String {
 }
 
 async fn insert_agent_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -9244,7 +8935,7 @@ async fn insert_agent_message(
 }
 
 async fn insert_agent_handoff_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Uuid,
@@ -9263,7 +8954,7 @@ async fn insert_agent_handoff_message(
 }
 
 async fn insert_agent_message_with_options(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -9309,7 +9000,10 @@ async fn insert_agent_message_with_options(
     let sender_name: String = sender.get("display_name");
     let sender_role: String = sender.get("role");
 
-    let mut tx = pool.begin().await.map_err(to_string)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(to_string)?;
     let msg_id: Uuid = sqlx::query_scalar(
         r#"
         insert into messages (
@@ -9369,7 +9063,7 @@ async fn insert_agent_message_with_options(
 }
 
 async fn insert_agent_attachment_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -9404,7 +9098,10 @@ async fn insert_agent_attachment_message(
     let sender_name: String = sender.get("display_name");
     let sender_role: String = sender.get("role");
 
-    let mut tx = pool.begin().await.map_err(to_string)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(to_string)?;
     let msg_id: Uuid = sqlx::query_scalar(
         r#"
         insert into messages (
@@ -9450,7 +9147,7 @@ async fn insert_agent_attachment_message(
 }
 
 async fn create_agent_task_thread(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     title: &str,
@@ -9483,7 +9180,7 @@ async fn create_agent_task_thread(
             status = $3,
             assignee_agent_id = case when $4 then $5 else null end,
             version = version + 1,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where message_id = $1
         returning number
         "#,
@@ -9529,7 +9226,7 @@ fn normalize_artifact_kind(kind: &str) -> CommandResult<String> {
 }
 
 async fn create_agent_artifact(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -9614,7 +9311,7 @@ fn capped_stream_delta(delta: &str, current_len: usize) -> (String, bool) {
 }
 
 async fn append_streaming_agent_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -9636,7 +9333,7 @@ async fn append_streaming_agent_message(
     }
 
     if let Some(row) = sqlx::query(
-        "select id, delivery_state, char_length(body) as body_len from messages where stream_key = $1",
+        "select id, delivery_state, length(body) as body_len from messages where stream_key = $1",
     )
     .bind(stream_key)
     .fetch_optional(pool)
@@ -9662,15 +9359,24 @@ async fn append_streaming_agent_message(
             .await
             .map_err(to_string)?;
         let delivery_state = if truncated { "complete" } else { "streaming" };
-        let _ =
-            notify_ui_message_delta(pool, message_id, &append_delta, delivery_state, "stream_delta")
-                .await;
+        let _ = notify_ui_message_delta(
+            pool,
+            message_id,
+            &append_delta,
+            delivery_state,
+            "stream_delta",
+        )
+        .await;
         if let Some((control_agent_id, run_id, _)) =
             load_streaming_control_context(pool, stream_key).await?
         {
-            let _ =
-                consume_complete_streaming_agent_control_lines(pool, control_agent_id, run_id, stream_key)
-                    .await;
+            let _ = consume_complete_streaming_agent_control_lines(
+                pool,
+                control_agent_id,
+                run_id,
+                stream_key,
+            )
+            .await;
         }
         if truncated {
             queue_agent_message_mentions(pool, message_id).await?;
@@ -9748,7 +9454,7 @@ async fn append_streaming_agent_message(
 }
 
 async fn ensure_streaming_agent_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -9810,7 +9516,7 @@ async fn ensure_streaming_agent_message(
 }
 
 async fn adopt_streaming_agent_message_key(
-    pool: &PgPool,
+    pool: &SqlitePool,
     pending_stream_key: &str,
     stream_key: &str,
 ) -> CommandResult<Option<Uuid>> {
@@ -9825,7 +9531,7 @@ async fn adopt_streaming_agent_message_key(
         r#"
         update messages
         set stream_key = $2,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where stream_key = $1
           and delivery_state = 'streaming'
           and body = ''
@@ -9848,7 +9554,10 @@ async fn adopt_streaming_agent_message_key(
     Ok(message_id)
 }
 
-async fn streaming_message_body_is_empty(pool: &PgPool, stream_key: &str) -> CommandResult<bool> {
+async fn streaming_message_body_is_empty(
+    pool: &SqlitePool,
+    stream_key: &str,
+) -> CommandResult<bool> {
     let body: Option<String> =
         sqlx::query_scalar("select body from messages where stream_key = $1")
             .bind(stream_key)
@@ -9859,7 +9568,7 @@ async fn streaming_message_body_is_empty(pool: &PgPool, stream_key: &str) -> Com
 }
 
 async fn delete_streaming_agent_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     message_id: Uuid,
     reason: &str,
 ) -> CommandResult<()> {
@@ -9873,7 +9582,7 @@ async fn delete_streaming_agent_message(
 }
 
 async fn delete_superseded_empty_run_progress_messages(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -9919,7 +9628,7 @@ async fn delete_superseded_empty_run_progress_messages(
 }
 
 async fn finish_streaming_agent_message(
-    pool: &PgPool,
+    pool: &SqlitePool,
     stream_key: &str,
     delivery_state: &str,
 ) -> CommandResult<()> {
@@ -9977,7 +9686,7 @@ async fn finish_streaming_agent_message(
 }
 
 async fn load_streaming_control_context(
-    pool: &PgPool,
+    pool: &SqlitePool,
     stream_key: &str,
 ) -> CommandResult<Option<(Uuid, Uuid, Option<Uuid>)>> {
     let Some(run_prefix) = stream_key
@@ -10021,7 +9730,7 @@ fn silent_reply_reason(body: &str) -> Option<String> {
 }
 
 async fn mark_work_item_silent(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     work_item_id: Uuid,
@@ -10031,8 +9740,8 @@ async fn mark_work_item_silent(
         r#"
         update agent_work_items
         set status = 'silent',
-            completed_at = coalesce(completed_at, now()),
-            updated_at = now()
+            completed_at = coalesce(completed_at, strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
           and status not in ('cancelled', 'failed')
         "#,
@@ -10063,7 +9772,7 @@ async fn mark_work_item_silent(
 }
 
 async fn mark_run_work_item_silent(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     reason: &str,
@@ -10093,7 +9802,7 @@ async fn mark_run_work_item_silent(
 }
 
 async fn maybe_hide_silent_streaming_reply(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     work_item_id: Option<Uuid>,
@@ -10209,7 +9918,7 @@ fn control_event_hides_empty_streaming_reply(json: &str) -> bool {
 }
 
 async fn handle_streaming_agent_event_json(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     json: &str,
@@ -10264,7 +9973,7 @@ async fn handle_streaming_agent_event_json(
 }
 
 async fn consume_complete_streaming_agent_control_lines(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     stream_key: &str,
@@ -10297,7 +10006,7 @@ async fn consume_complete_streaming_agent_control_lines(
         return Ok(true);
     }
 
-    sqlx::query("update messages set body = $2, updated_at = now() where id = $1")
+    sqlx::query("update messages set body = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where id = $1")
         .bind(message_id)
         .bind(&visible_body)
         .execute(pool)
@@ -10312,7 +10021,7 @@ async fn consume_complete_streaming_agent_control_lines(
 }
 
 async fn consume_streaming_agent_control_lines(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     work_item_id: Option<Uuid>,
@@ -10365,7 +10074,7 @@ async fn consume_streaming_agent_control_lines(
 }
 
 async fn load_runtime_thread_id(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     runtime: &str,
 ) -> CommandResult<Option<String>> {
@@ -10386,7 +10095,7 @@ async fn load_runtime_thread_id(
 }
 
 async fn upsert_runtime_thread_id(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     runtime: &str,
     provider_thread_id: &str,
@@ -10399,7 +10108,7 @@ async fn upsert_runtime_thread_id(
         on conflict (agent_id, runtime) do update set
             provider_thread_id = excluded.provider_thread_id,
             status = excluded.status,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         "#,
     )
     .bind(agent_id)
@@ -10413,7 +10122,7 @@ async fn upsert_runtime_thread_id(
 }
 
 async fn wait_for_agent_run(
-    pool: PgPool,
+    pool: SqlitePool,
     agent_id: Uuid,
     run_id: Uuid,
     work_item_id: Option<Uuid>,
@@ -10464,8 +10173,8 @@ async fn wait_for_agent_run(
         update agent_runs
         set status = $2,
             exit_code = $3,
-            log = right(log || $4, 20000),
-            stopped_at = now()
+            log = substr(log || $4, -20000),
+            stopped_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         "#,
     )
@@ -10504,8 +10213,8 @@ async fn wait_for_agent_run(
             r#"
             update agent_work_items
             set status = $2,
-                completed_at = now(),
-                updated_at = now()
+                completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1
             "#,
         )
@@ -10554,7 +10263,7 @@ fn effective_launch_command(
 }
 
 async fn load_channel_agent_roster(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Option<Uuid>,
     current_agent_id: Uuid,
 ) -> CommandResult<Vec<String>> {
@@ -10980,7 +10689,7 @@ fn claude_stream_event_activity(value: &Value) -> Option<(&'static str, &'static
     }
 }
 
-async fn streaming_message_exists(pool: &PgPool, stream_key: &str) -> CommandResult<bool> {
+async fn streaming_message_exists(pool: &SqlitePool, stream_key: &str) -> CommandResult<bool> {
     let exists: bool =
         sqlx::query_scalar("select exists(select 1 from messages where stream_key = $1)")
             .bind(stream_key)
@@ -10991,7 +10700,7 @@ async fn streaming_message_exists(pool: &PgPool, stream_key: &str) -> CommandRes
 }
 
 async fn get_or_spawn_warm_claude_runtime(
-    pool: &PgPool,
+    pool: &SqlitePool,
     registry: &WarmClaudeRegistry,
     agent_id: Uuid,
     handle: &str,
@@ -11057,7 +10766,7 @@ async fn claude_write_input(
 }
 
 async fn spawn_warm_claude_runtime(
-    pool: &PgPool,
+    pool: &SqlitePool,
     registry: WarmClaudeRegistry,
     agent_id: Uuid,
     handle: &str,
@@ -11191,7 +10900,7 @@ async fn spawn_warm_claude_runtime(
 }
 
 async fn get_or_spawn_warm_codex_runtime(
-    pool: &PgPool,
+    pool: &SqlitePool,
     registry: &WarmCodexRegistry,
     agent_id: Uuid,
     handle: &str,
@@ -11247,7 +10956,7 @@ async fn get_or_spawn_warm_codex_runtime(
 }
 
 async fn spawn_warm_codex_runtime(
-    pool: &PgPool,
+    pool: &SqlitePool,
     registry: WarmCodexRegistry,
     agent_id: Uuid,
     handle: &str,
@@ -11509,35 +11218,17 @@ async fn spawn_warm_codex_runtime(
 
 async fn run_supervisor() -> CommandResult<()> {
     let database_url = db_url();
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
+    let _supervisor_lock = acquire_supervisor_lock(&database_url)?;
+    let pool = db_connect_with_url(&database_url, 5)
         .await
         .map_err(to_string)?;
     migrate(&pool).await.map_err(to_string)?;
-
-    let acquired: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)")
-        .bind(SUPERVISOR_LOCK_ID)
-        .fetch_one(&pool)
-        .await
-        .map_err(to_string)?;
-
-    if !acquired {
-        return Ok(());
-    }
 
     mark_orphaned_agent_runs(&pool).await?;
     recover_supervisor_commands_at_startup(&pool).await?;
     let codex_registry = WarmCodexRegistry::default();
     let claude_registry = WarmClaudeRegistry::default();
     let command_semaphore = Arc::new(Semaphore::new(SUPERVISOR_COMMAND_CONCURRENCY));
-    let mut listener = PgListener::connect(&database_url)
-        .await
-        .map_err(to_string)?;
-    listener
-        .listen(SUPERVISOR_WAKE_CHANNEL)
-        .await
-        .map_err(to_string)?;
     let mut last_command_cleanup = Instant::now() - Duration::from_secs(3600);
 
     loop {
@@ -11574,16 +11265,7 @@ async fn run_supervisor() -> CommandResult<()> {
         if processed_command {
             continue;
         }
-        tokio::select! {
-            _ = sleep(Duration::from_secs(2)) => {}
-            notification = listener.recv() => {
-                if let Err(err) = notification {
-                    eprintln!("Lantor supervisor wake listener disconnected: {err}");
-                    listener = PgListener::connect(&database_url).await.map_err(to_string)?;
-                    listener.listen(SUPERVISOR_WAKE_CHANNEL).await.map_err(to_string)?;
-                }
-            }
-        }
+        sleep(Duration::from_secs(2)).await;
     }
 }
 
@@ -11623,7 +11305,7 @@ fn codex_active_turn_schedule_state(
 }
 
 async fn same_codex_surface(
-    pool: &PgPool,
+    pool: &SqlitePool,
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
     active_channel_id: Option<Uuid>,
@@ -11647,7 +11329,7 @@ async fn same_codex_surface(
 }
 
 async fn should_schedule_queued_work_item(
-    pool: &PgPool,
+    pool: &SqlitePool,
     registry: &WarmCodexRegistry,
     agent_id: Uuid,
     channel_id: Option<Uuid>,
@@ -11685,7 +11367,7 @@ async fn should_schedule_queued_work_item(
 }
 
 async fn schedule_queued_work_items(
-    pool: &PgPool,
+    pool: &SqlitePool,
     registry: &WarmCodexRegistry,
 ) -> CommandResult<()> {
     let rows = sqlx::query(
@@ -11734,11 +11416,11 @@ async fn schedule_queued_work_items(
     Ok(())
 }
 
-async fn mark_orphaned_agent_runs(pool: &PgPool) -> CommandResult<()> {
+async fn mark_orphaned_agent_runs(pool: &SqlitePool) -> CommandResult<()> {
     sqlx::query(
         r#"
         update agent_runs
-        set status = 'unknown', stopped_at = coalesce(stopped_at, now())
+        set status = 'unknown', stopped_at = coalesce(stopped_at, strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
         where stopped_at is null and status in ('starting', 'running', 'stopping')
         "#,
     )
@@ -11755,8 +11437,8 @@ async fn mark_orphaned_agent_runs(pool: &PgPool) -> CommandResult<()> {
         r#"
         update agent_work_items
         set status = 'failed',
-            completed_at = now(),
-            updated_at = now()
+            completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where status = 'running'
         "#,
     )
@@ -11767,17 +11449,20 @@ async fn mark_orphaned_agent_runs(pool: &PgPool) -> CommandResult<()> {
     Ok(())
 }
 
-async fn recover_supervisor_commands_at_startup(pool: &PgPool) -> CommandResult<()> {
+async fn recover_supervisor_commands_at_startup(pool: &SqlitePool) -> CommandResult<()> {
     sqlx::query(
         r#"
-        update supervisor_commands c
+        update supervisor_commands
         set status = 'done',
             error = 'skipped stale command for terminal work item',
-            updated_at = now()
-        from agent_work_items w
-        where c.work_item_id = w.id
-          and c.status in ('pending', 'running')
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
+        where status in ('pending', 'running')
+          and exists (
+              select 1
+              from agent_work_items w
+              where w.id = supervisor_commands.work_item_id
           and w.status in ('cancelled', 'failed', 'done', 'silent')
+          )
         "#,
     )
     .execute(pool)
@@ -11789,7 +11474,7 @@ async fn recover_supervisor_commands_at_startup(pool: &PgPool) -> CommandResult<
         update supervisor_commands
         set status = 'pending',
             error = 'requeued after supervisor restart',
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where status = 'running'
         "#,
     )
@@ -11800,11 +11485,11 @@ async fn recover_supervisor_commands_at_startup(pool: &PgPool) -> CommandResult<
     Ok(())
 }
 
-async fn write_supervisor_heartbeat(pool: &PgPool) -> CommandResult<()> {
+async fn write_supervisor_heartbeat(pool: &SqlitePool) -> CommandResult<()> {
     sqlx::query(
         r#"
         insert into supervisor_state (id, pid, status, updated_at)
-        values (1, $1, 'running', now())
+        values (1, $1, 'running', strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
         on conflict (id) do update set
             pid = excluded.pid,
             status = excluded.status,
@@ -11819,18 +11504,19 @@ async fn write_supervisor_heartbeat(pool: &PgPool) -> CommandResult<()> {
     Ok(())
 }
 
-async fn claim_next_supervisor_command(pool: &PgPool) -> CommandResult<Option<SupervisorCommand>> {
+async fn claim_next_supervisor_command(
+    pool: &SqlitePool,
+) -> CommandResult<Option<SupervisorCommand>> {
     let row = sqlx::query(
         r#"
         update supervisor_commands
         set status = 'running',
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = (
             select id
             from supervisor_commands
             where status = 'pending'
             order by created_at asc
-            for update skip locked
             limit 1
         )
         returning id, command_type, agent_id, run_id, work_item_id
@@ -11856,7 +11542,7 @@ async fn claim_next_supervisor_command(pool: &PgPool) -> CommandResult<Option<Su
 }
 
 async fn finish_supervisor_command(
-    pool: &PgPool,
+    pool: &SqlitePool,
     command_id: Uuid,
     error: Option<String>,
 ) -> CommandResult<()> {
@@ -11868,7 +11554,7 @@ async fn finish_supervisor_command(
     sqlx::query(
         r#"
         update supervisor_commands
-        set status = $2, error = $3, updated_at = now()
+        set status = $2, error = $3, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         "#,
     )
@@ -11882,12 +11568,12 @@ async fn finish_supervisor_command(
     Ok(())
 }
 
-async fn cleanup_supervisor_commands(pool: &PgPool) -> CommandResult<()> {
+async fn cleanup_supervisor_commands(pool: &SqlitePool) -> CommandResult<()> {
     sqlx::query(
         r#"
         delete from supervisor_commands
         where status in ('done', 'failed')
-          and updated_at < now() - interval '7 days'
+          and updated_at < strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-7 days')
         "#,
     )
     .execute(pool)
@@ -11897,7 +11583,7 @@ async fn cleanup_supervisor_commands(pool: &PgPool) -> CommandResult<()> {
 }
 
 async fn process_supervisor_command(
-    pool: &PgPool,
+    pool: &SqlitePool,
     codex_registry: &WarmCodexRegistry,
     claude_registry: &WarmClaudeRegistry,
     command: SupervisorCommand,
@@ -11927,7 +11613,7 @@ async fn process_supervisor_command(
 }
 
 async fn interrupt_warm_codex_turn(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     runtime: &Arc<WarmCodexRuntime>,
     run_id: Uuid,
@@ -11992,7 +11678,7 @@ async fn interrupt_warm_codex_turn(
 }
 
 async fn steer_warm_codex_turn_if_same_surface(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     runtime: &Arc<WarmCodexRuntime>,
     work_item_id: Uuid,
@@ -12096,7 +11782,7 @@ async fn steer_warm_codex_turn_if_same_surface(
         update agent_work_items
         set status = 'running',
             run_id = $2,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         "#,
     )
@@ -12140,7 +11826,7 @@ async fn steer_warm_codex_turn_if_same_surface(
             update agent_work_items
             set status = 'queued',
                 run_id = null,
-                updated_at = now()
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1
             "#,
         )
@@ -12162,7 +11848,7 @@ async fn steer_warm_codex_turn_if_same_surface(
 }
 
 async fn supervisor_start_codex_streaming_agent(
-    pool: &PgPool,
+    pool: &SqlitePool,
     codex_registry: &WarmCodexRegistry,
     agent_id: Uuid,
     work_item_id: Option<Uuid>,
@@ -12267,7 +11953,7 @@ async fn supervisor_start_codex_streaming_agent(
             update agent_work_items
             set status = 'running',
                 run_id = $2,
-                updated_at = now()
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1
             "#,
         )
@@ -12399,7 +12085,7 @@ async fn supervisor_start_codex_streaming_agent(
 }
 
 async fn supervisor_start_claude_streaming_agent(
-    pool: &PgPool,
+    pool: &SqlitePool,
     claude_registry: &WarmClaudeRegistry,
     agent_id: Uuid,
     work_item_id: Option<Uuid>,
@@ -12434,8 +12120,8 @@ async fn supervisor_start_claude_streaming_agent(
                     r#"
                     update agent_work_items
                     set status = 'failed',
-                        completed_at = now(),
-                        updated_at = now()
+                        completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                     where id = $1
                     "#,
                 )
@@ -12535,7 +12221,7 @@ async fn supervisor_start_claude_streaming_agent(
             update agent_work_items
             set status = 'running',
                 run_id = $2,
-                updated_at = now()
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1
             "#,
         )
@@ -12642,7 +12328,7 @@ fn display_optional_uuid(id: Option<Uuid>) -> String {
 }
 
 async fn append_claude_thread_context(
-    pool: &PgPool,
+    pool: &SqlitePool,
     context: &str,
     channel_id: Option<Uuid>,
     channel_name: Option<&str>,
@@ -12738,7 +12424,7 @@ fn claude_context_target(
 }
 
 async fn supervisor_start_agent(
-    pool: &PgPool,
+    pool: &SqlitePool,
     codex_registry: &WarmCodexRegistry,
     claude_registry: &WarmClaudeRegistry,
     agent_id: Uuid,
@@ -12771,8 +12457,8 @@ async fn supervisor_start_agent(
                 r#"
                 update agent_work_items
                 set status = 'failed',
-                    completed_at = now(),
-                    updated_at = now()
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                 where id = $1
                 "#,
             )
@@ -12968,7 +12654,7 @@ async fn supervisor_start_agent(
             update agent_work_items
             set status = 'running',
                 run_id = $2,
-                updated_at = now()
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1
             "#,
         )
@@ -13023,7 +12709,7 @@ async fn supervisor_start_agent(
             sqlx::query(
                 r#"
                 update agent_runs
-                set status = 'failed', log = right(log || $2, 20000), stopped_at = now()
+                set status = 'failed', log = substr(log || $2, -20000), stopped_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                 where id = $1
                 "#,
             )
@@ -13043,8 +12729,8 @@ async fn supervisor_start_agent(
                     r#"
                     update agent_work_items
                     set status = 'failed',
-                        completed_at = now(),
-                        updated_at = now()
+                        completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                     where id = $1
                     "#,
                 )
@@ -13126,7 +12812,7 @@ async fn supervisor_start_agent(
 }
 
 async fn codex_warm_stdout_reader(
-    pool: PgPool,
+    pool: SqlitePool,
     registry: WarmCodexRegistry,
     agent_id: Uuid,
     runtime: Arc<WarmCodexRuntime>,
@@ -13182,14 +12868,18 @@ async fn codex_warm_stdout_reader(
 }
 
 async fn finish_codex_steer_request(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     steer: CodexSteerRequest,
     success: bool,
     error: Option<String>,
 ) -> CommandResult<()> {
     let (status, completed_at, run_id) = if success {
-        ("done", "now()", Some(steer.run_id))
+        (
+            "done",
+            "strftime('%Y-%m-%dT%H:%M:%f+00:00','now')",
+            Some(steer.run_id),
+        )
     } else {
         ("queued", "null", None)
     };
@@ -13199,7 +12889,7 @@ async fn finish_codex_steer_request(
         set status = $2,
             run_id = $3,
             completed_at = {completed_at},
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         "#
     ))
@@ -13228,7 +12918,7 @@ async fn finish_codex_steer_request(
 }
 
 async fn claude_warm_stdout_reader<R>(
-    pool: PgPool,
+    pool: SqlitePool,
     registry: WarmClaudeRegistry,
     agent_id: Uuid,
     runtime: Arc<WarmClaudeRuntime>,
@@ -13286,7 +12976,7 @@ async fn claude_warm_stdout_reader<R>(
 }
 
 async fn handle_claude_warm_stdout_line(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     runtime: &Arc<WarmClaudeRuntime>,
     line: &str,
@@ -13419,7 +13109,7 @@ async fn handle_claude_warm_stdout_line(
 }
 
 async fn claude_warm_stderr_reader<R>(
-    pool: PgPool,
+    pool: SqlitePool,
     agent_id: Uuid,
     runtime: Arc<WarmClaudeRuntime>,
     stream: R,
@@ -13455,7 +13145,7 @@ async fn claude_warm_stderr_reader<R>(
 }
 
 async fn handle_codex_warm_stdout_line(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     runtime: &Arc<WarmCodexRuntime>,
     line: &str,
@@ -13731,7 +13421,7 @@ async fn handle_codex_warm_stdout_line(
 }
 
 async fn codex_warm_stderr_reader<R>(
-    pool: PgPool,
+    pool: SqlitePool,
     agent_id: Uuid,
     runtime: Arc<WarmCodexRuntime>,
     stream: R,
@@ -13767,7 +13457,7 @@ async fn codex_warm_stderr_reader<R>(
 }
 
 async fn wait_for_warm_codex_process(
-    pool: PgPool,
+    pool: SqlitePool,
     registry: WarmCodexRegistry,
     agent_id: Uuid,
     runtime: Arc<WarmCodexRuntime>,
@@ -13787,7 +13477,7 @@ async fn wait_for_warm_codex_process(
     let _ = sqlx::query(
         r#"
         update runtime_sessions
-        set status = 'stopped', updated_at = now()
+        set status = 'stopped', updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where agent_id = $1
           and runtime = 'codex'
           and provider_thread_id = $2
@@ -13841,7 +13531,7 @@ async fn terminate_process_group(pid: i32) -> CommandResult<()> {
 }
 
 async fn reap_stuck_codex_runtime(
-    pool: &PgPool,
+    pool: &SqlitePool,
     registry: &WarmCodexRegistry,
     agent_id: Uuid,
     runtime: &Arc<WarmCodexRuntime>,
@@ -13881,7 +13571,7 @@ async fn reap_stuck_codex_runtime(
         }
     }
     let _ = sqlx::query(
-        "update runtime_sessions set status = 'failed', updated_at = now() where agent_id = $1 and runtime = 'codex'",
+        "update runtime_sessions set status = 'failed', updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where agent_id = $1 and runtime = 'codex'",
     )
     .bind(agent_id)
     .execute(pool)
@@ -13901,7 +13591,7 @@ async fn reap_stuck_codex_runtime(
 }
 
 async fn reap_stuck_codex_turn(
-    pool: &PgPool,
+    pool: &SqlitePool,
     registry: &WarmCodexRegistry,
     agent_id: Uuid,
     source: &str,
@@ -13917,7 +13607,7 @@ async fn reap_stuck_codex_turn(
 }
 
 async fn codex_warm_idle_reaper(
-    pool: PgPool,
+    pool: SqlitePool,
     registry: WarmCodexRegistry,
     agent_id: Uuid,
     runtime: Arc<WarmCodexRuntime>,
@@ -13959,7 +13649,7 @@ async fn codex_warm_idle_reaper(
         match terminate_process_group(pid).await {
             Ok(()) => {
                 let _ = sqlx::query(
-                    "update runtime_sessions set status = 'stopping', updated_at = now() where agent_id = $1 and runtime = 'codex'",
+                    "update runtime_sessions set status = 'stopping', updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where agent_id = $1 and runtime = 'codex'",
                 )
                 .bind(agent_id)
                 .execute(&pool)
@@ -13996,7 +13686,7 @@ async fn codex_warm_idle_reaper(
 }
 
 async fn wait_for_warm_claude_process(
-    pool: PgPool,
+    pool: SqlitePool,
     registry: WarmClaudeRegistry,
     agent_id: Uuid,
     runtime: Arc<WarmClaudeRuntime>,
@@ -14014,7 +13704,7 @@ async fn wait_for_warm_claude_process(
     let _ = finish_warm_claude_active_turn(&pool, agent_id, &runtime, false, Some(detail.clone()))
         .await;
     let _ = sqlx::query(
-        "update runtime_sessions set status = 'stopped', updated_at = now() where agent_id = $1 and runtime = 'claude'",
+        "update runtime_sessions set status = 'stopped', updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where agent_id = $1 and runtime = 'claude'",
     )
     .bind(agent_id)
     .execute(&pool)
@@ -14047,7 +13737,11 @@ async fn remove_warm_claude_runtime_if_same(
     }
 }
 
-async fn claude_warm_idle_reaper(pool: PgPool, agent_id: Uuid, runtime: Arc<WarmClaudeRuntime>) {
+async fn claude_warm_idle_reaper(
+    pool: SqlitePool,
+    agent_id: Uuid,
+    runtime: Arc<WarmClaudeRuntime>,
+) {
     loop {
         sleep(CODEX_IDLE_REAPER_INTERVAL).await;
         let should_stop = {
@@ -14073,7 +13767,7 @@ async fn claude_warm_idle_reaper(pool: PgPool, agent_id: Uuid, runtime: Arc<Warm
         match terminate_process_group(pid).await {
             Ok(()) => {
                 let _ = sqlx::query(
-                    "update runtime_sessions set status = 'stopping', updated_at = now() where agent_id = $1 and runtime = 'claude'",
+                    "update runtime_sessions set status = 'stopping', updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where agent_id = $1 and runtime = 'claude'",
                 )
                 .bind(agent_id)
                 .execute(&pool)
@@ -14110,7 +13804,7 @@ async fn claude_warm_idle_reaper(pool: PgPool, agent_id: Uuid, runtime: Arc<Warm
 }
 
 async fn finish_warm_claude_active_turn(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     runtime: &Arc<WarmClaudeRuntime>,
     success: bool,
@@ -14195,8 +13889,8 @@ async fn finish_warm_claude_active_turn(
         update agent_runs
         set status = $2,
             exit_code = null,
-            log = right(log || $3, 20000),
-            stopped_at = now()
+            log = substr(log || $3, -20000),
+            stopped_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         "#,
     )
@@ -14236,8 +13930,8 @@ async fn finish_warm_claude_active_turn(
             r#"
             update agent_work_items
             set status = $2,
-                completed_at = now(),
-                updated_at = now()
+                completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1
             "#,
         )
@@ -14312,7 +14006,7 @@ async fn finish_warm_claude_active_turn(
 }
 
 async fn finish_warm_codex_active_turn(
-    pool: &PgPool,
+    pool: &SqlitePool,
     agent_id: Uuid,
     runtime: &Arc<WarmCodexRuntime>,
     success: bool,
@@ -14406,8 +14100,8 @@ async fn finish_warm_codex_active_turn(
         update agent_runs
         set status = $2,
             exit_code = null,
-            log = right(log || $3, 20000),
-            stopped_at = now()
+            log = substr(log || $3, -20000),
+            stopped_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         "#,
     )
@@ -14447,8 +14141,8 @@ async fn finish_warm_codex_active_turn(
             r#"
             update agent_work_items
             set status = $2,
-                completed_at = now(),
-                updated_at = now()
+                completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1
             "#,
         )
@@ -14517,7 +14211,7 @@ async fn finish_warm_codex_active_turn(
 }
 
 async fn supervisor_stop_run(
-    pool: &PgPool,
+    pool: &SqlitePool,
     codex_registry: &WarmCodexRegistry,
     run_id: Uuid,
 ) -> CommandResult<()> {
@@ -14558,7 +14252,7 @@ async fn supervisor_stop_run(
             r#"
             update agent_work_items
             set status = 'cancelling',
-                updated_at = now()
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
             where id = $1 and status in ('queued', 'running')
             "#,
         )
@@ -14623,13 +14317,8 @@ pub(crate) fn to_string(error: impl std::fmt::Display) -> String {
 
 pub fn run() {
     let database_url = db_url();
-    let pool = tauri::async_runtime::block_on(async {
-        PgPoolOptions::new()
-            .max_connections(5)
-            .connect(&database_url)
-            .await
-    })
-    .expect("failed to connect Lantor Postgres database");
+    let pool = tauri::async_runtime::block_on(db_connect_with_url(&database_url, 5))
+        .expect("failed to connect Lantor SQLite database");
 
     tauri::async_runtime::block_on(migrate(&pool)).expect("failed to initialize Lantor schema");
     launch_agent::spawn_supervisor_process(&database_url);
@@ -14642,7 +14331,7 @@ pub fn run() {
             db_url: state_db_url,
         })
         .setup(move |app| {
-            spawn_ui_refresh_listener(app.handle().clone(), database_url.clone());
+            spawn_ui_refresh_listener(app.handle().clone(), reminder_pool.clone());
             web::spawn_web_server_if_configured(reminder_pool.clone(), database_url.clone());
             spawn_reminder_worker(reminder_pool.clone());
             if let Some(window) = app.get_webview_window("main") {
@@ -14718,6 +14407,7 @@ fn main() {
     if args.iter().any(|arg| arg == "--supervisor") {
         if let Err(err) = tauri::async_runtime::block_on(run_supervisor()) {
             eprintln!("Lantor supervisor stopped: {err}");
+            std::process::exit(1);
         }
     } else {
         run();
@@ -14743,7 +14433,7 @@ mod tests {
             agent_context_message_search, agent_context_workspace_info,
             agent_context_workspace_list, short_id,
         },
-        create_agent_inbox_item, delete_agent_in_pool, delete_channel_in_pool,
+        create_agent_inbox_item, db_connect_with_url, delete_agent_in_pool, delete_channel_in_pool,
         dismiss_inbox_items_in_pool, ensure_agent_workspace, ensure_streaming_agent_message,
         extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
         format_memory_index_entry, handle_agent_event, inbox_wake_context, insert_agent_message,
@@ -14760,16 +14450,13 @@ mod tests {
         AgentAttachmentFile, AgentEvent, AgentInboxItemInput, ClaudeSurface,
         CodexActiveTurnScheduleState, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
         AGENT_MEMORY_CONTEXT_LIMIT, CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
-        CODEX_TURN_START_TIMEOUT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
-        STREAMING_TRUNCATION_MARKER, UI_REFRESH_CHANNEL, WORK_ITEM_FINISH_PROMPT,
+        CODEX_TURN_START_TIMEOUT, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
+        WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::{json, Value};
-    use sqlx::{
-        postgres::{PgListener, PgPoolOptions},
-        PgPool, Row,
-    };
-    use std::time::Duration;
+    use sqlx::{Row, SqlitePool};
+    use std::{fs as std_fs, time::Duration};
     use uuid::Uuid;
 
     #[test]
@@ -15615,18 +15302,17 @@ mod tests {
                 .contains("Lantor agent inbox wake"));
             assert_eq!(work_item.get::<String, _>("inbox_kind"), "handoff");
             assert_eq!(work_item.get::<String, _>("inbox_state"), "processing");
-            let target_work_items: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from agent_work_items where agent_id = $1",
-            )
-            .bind(target_agent_id)
-            .fetch_one(&pool)
-            .await
-            .map_err(|err| err.to_string())?;
+            let target_work_items: i64 =
+                sqlx::query_scalar("select count(*) from agent_work_items where agent_id = $1")
+                    .bind(target_agent_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
             assert_eq!(target_work_items, 1);
 
             let pending_start: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from supervisor_commands
                 where agent_id = $1 and work_item_id in (
                     select id from agent_work_items where source_message_id = $2
@@ -15798,7 +15484,7 @@ mod tests {
             .map_err(|err| err.to_string())?;
             assert!(target_is_member);
             let target_work_items: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from agent_work_items where agent_id = $1 and task_id = $2",
+                "select count(*) from agent_work_items where agent_id = $1 and task_id = $2",
             )
             .bind(target_agent_id)
             .bind(task_id)
@@ -15808,7 +15494,7 @@ mod tests {
             assert_eq!(target_work_items, 1);
             let activity_count: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_activities
                 where agent_id = $1
                   and title = $2
@@ -15983,13 +15669,12 @@ mod tests {
                     err.contains("channel_message_create requires source agent channel membership")
                 );
 
-                let message_count: i64 = sqlx::query_scalar(
-                    "select count(*)::bigint from messages where channel_id = $1",
-                )
-                .bind(channel_id)
-                .fetch_one(&pool)
-                .await
-                .map_err(|err| err.to_string())?;
+                let message_count: i64 =
+                    sqlx::query_scalar("select count(*) from messages where channel_id = $1")
+                        .bind(channel_id)
+                        .fetch_one(&pool)
+                        .await
+                        .map_err(|err| err.to_string())?;
                 assert_eq!(message_count, 0);
                 Ok(())
             }
@@ -16032,7 +15717,7 @@ mod tests {
             assert!(claim_agent_event(&pool, run_id, &event).await?);
             assert!(!claim_agent_event(&pool, run_id, &event).await?);
             let (count, max_len): (i64, i64) = sqlx::query_as(
-                "select count(*)::bigint, max(length(event_json))::bigint from agent_event_receipts where run_id = $1",
+                "select count(*), max(length(event_json)) from agent_event_receipts where run_id = $1",
             )
             .bind(run_id)
             .fetch_one(&pool)
@@ -16476,97 +16161,80 @@ mod tests {
         );
     }
 
-    async fn test_pool() -> Option<(PgPool, String)> {
+    async fn test_pool() -> Option<(SqlitePool, String)> {
         test_pool_with_connections(1).await
     }
 
-    async fn test_pool_with_connections(max_connections: u32) -> Option<(PgPool, String)> {
-        let database_url = std::env::var("LANTOR_TEST_DATABASE_URL")
-            .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
-        let bootstrap_pool = match PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-        {
+    async fn test_pool_with_connections(max_connections: u32) -> Option<(SqlitePool, String)> {
+        let database_path =
+            std::env::temp_dir().join(format!("lantor-test-{}.sqlite", Uuid::new_v4().simple()));
+        let database_path = database_path.to_string_lossy().into_owned();
+        let database_url = format!("sqlite://{database_path}");
+        let pool = match db_connect_with_url(&database_url, max_connections).await {
             Ok(pool) => pool,
             Err(err) => {
-                eprintln!("skipping postgres-backed Lantor DM test: {err}");
-                return None;
-            }
-        };
-        let schema = format!("lantor_test_{}", Uuid::new_v4().simple());
-        if let Err(err) = sqlx::query(&format!(r#"create schema "{schema}""#))
-            .execute(&bootstrap_pool)
-            .await
-        {
-            eprintln!("skipping postgres-backed Lantor DM test: {err}");
-            bootstrap_pool.close().await;
-            return None;
-        }
-        bootstrap_pool.close().await;
-
-        let schema_for_hook = schema.clone();
-        let pool = match PgPoolOptions::new()
-            .max_connections(max_connections)
-            .after_connect(move |conn, _meta| {
-                let schema = schema_for_hook.clone();
-                Box::pin(async move {
-                    sqlx::query(&format!(r#"set search_path to "{schema}", public"#))
-                        .execute(conn)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(&database_url)
-            .await
-        {
-            Ok(pool) => pool,
-            Err(err) => {
-                eprintln!("skipping postgres-backed Lantor DM test: {err}");
+                eprintln!("skipping SQLite-backed Lantor test: {err}");
                 return None;
             }
         };
         if let Err(err) = migrate(&pool).await {
-            eprintln!("skipping postgres-backed Lantor DM test: {err}");
-            let _ = sqlx::query(&format!(r#"drop schema if exists "{schema}" cascade"#))
-                .execute(&pool)
-                .await;
+            eprintln!("skipping SQLite-backed Lantor test: {err}");
             pool.close().await;
+            drop_sqlite_test_files(&database_path);
             return None;
         }
-        Some((pool, schema))
+        Some((pool, database_path))
     }
 
-    async fn drop_test_schema(pool: PgPool, schema: String) {
-        let _ = sqlx::query(&format!(r#"drop schema if exists "{schema}" cascade"#))
-            .execute(&pool)
-            .await;
+    fn drop_sqlite_test_files(database_path: &str) {
+        let _ = std_fs::remove_file(database_path);
+        let _ = std_fs::remove_file(format!("{database_path}-wal"));
+        let _ = std_fs::remove_file(format!("{database_path}-shm"));
+    }
+
+    async fn drop_test_schema(pool: SqlitePool, database_path: String) {
         pool.close().await;
+        drop_sqlite_test_files(&database_path);
+    }
+
+    async fn latest_ui_event_id(pool: &SqlitePool) -> Result<i64, String> {
+        sqlx::query_scalar("select coalesce(max(id), 0) from ui_events")
+            .fetch_one(pool)
+            .await
+            .map_err(|err| err.to_string())
     }
 
     async fn wait_for_ui_refresh_reason(
-        listener: &mut PgListener,
+        pool: &SqlitePool,
+        last_event_id: &mut i64,
         reason: &str,
     ) -> Result<(), String> {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                let payload = listener
-                    .recv()
-                    .await
-                    .map_err(|err| err.to_string())?
-                    .payload()
-                    .to_owned();
-                let value: Value = serde_json::from_str(&payload).map_err(|err| err.to_string())?;
-                if value.get("reason").and_then(Value::as_str) == Some(reason) {
-                    return Ok(());
+                let rows = sqlx::query(
+                    "select id, event_json from ui_events where id > $1 order by id asc",
+                )
+                .bind(*last_event_id)
+                .fetch_all(pool)
+                .await
+                .map_err(|err| err.to_string())?;
+                for row in rows {
+                    *last_event_id = row.get::<i64, _>("id");
+                    let payload: String = row.get("event_json");
+                    let value: Value =
+                        serde_json::from_str(&payload).map_err(|err| err.to_string())?;
+                    if value.get("reason").and_then(Value::as_str) == Some(reason) {
+                        return Ok(());
+                    }
                 }
+                tokio::time::sleep(Duration::from_millis(25)).await;
             }
         })
         .await
         .map_err(|_| format!("timed out waiting for {reason} notification"))?
     }
 
-    async fn insert_test_agent(pool: &PgPool, handle: &str) -> Result<Uuid, String> {
+    async fn insert_test_agent(pool: &SqlitePool, handle: &str) -> Result<Uuid, String> {
         sqlx::query_scalar(
             r#"
             insert into agents (handle, display_name, role, status, runtime, model, avatar, description)
@@ -16581,7 +16249,7 @@ mod tests {
         .map_err(|err| err.to_string())
     }
 
-    async fn insert_test_channel(pool: &PgPool, name: &str) -> Result<Uuid, String> {
+    async fn insert_test_channel(pool: &SqlitePool, name: &str) -> Result<Uuid, String> {
         sqlx::query_scalar(
             r#"
             insert into channels (name, description, kind)
@@ -16743,13 +16411,14 @@ mod tests {
                     .map_err(|err| err.to_string())?;
             let members: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from channel_members
-                where channel_id = $1 and agent_id = any($2)
+                where channel_id = $1 and agent_id in ($2, $3)
                 "#,
             )
             .bind(channel_id)
-            .bind(&[agent_id, reviewer_id])
+            .bind(agent_id)
+            .bind(reviewer_id)
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
@@ -17111,7 +16780,7 @@ mod tests {
             assert_eq!(row.get::<String, _>("delivery_state"), "complete");
 
             let activity_count: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from agent_activities where run_id = $1 and title = 'Checking source'",
+                "select count(*) from agent_activities where run_id = $1 and title = 'Checking source'",
             )
             .bind(run_id)
             .fetch_one(&pool)
@@ -17120,7 +16789,7 @@ mod tests {
             assert_eq!(activity_count, 1);
 
             let leaked_messages: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from messages where body like '%LANTOR_EVENT%'",
+                "select count(*) from messages where body like '%LANTOR_EVENT%'",
             )
             .fetch_one(&pool)
             .await
@@ -17185,7 +16854,7 @@ mod tests {
 
             assert_ne!(progress_message_id, final_message_id);
             let progress_message_count: i64 =
-                sqlx::query_scalar("select count(*)::bigint from messages where id = $1")
+                sqlx::query_scalar("select count(*) from messages where id = $1")
                     .bind(progress_message_id)
                     .fetch_one(&pool)
                     .await
@@ -17282,12 +16951,11 @@ mod tests {
                 .await?
             );
 
-            let remaining: i64 =
-                sqlx::query_scalar("select count(*)::bigint from messages where id = $1")
-                    .bind(message_id)
-                    .fetch_one(&pool)
-                    .await
-                    .map_err(|err| err.to_string())?;
+            let remaining: i64 = sqlx::query_scalar("select count(*) from messages where id = $1")
+                .bind(message_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
             assert_eq!(remaining, 0);
             let status: String =
                 sqlx::query_scalar("select status from agent_work_items where id = $1")
@@ -17485,7 +17153,7 @@ mod tests {
             assert!(hidden);
 
             let raw_remaining: i64 =
-                sqlx::query_scalar("select count(*)::bigint from messages where id = $1")
+                sqlx::query_scalar("select count(*) from messages where id = $1")
                     .bind(raw_control_message_id)
                     .fetch_one(&pool)
                     .await
@@ -17578,20 +17246,21 @@ mod tests {
                     .map_err(|err| err.to_string())?;
             let member_count: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from channel_members
-                where channel_id = $1 and agent_id = any($2)
+                where channel_id = $1 and agent_id in ($2, $3)
                 "#,
             )
             .bind(channel_id)
-            .bind(&[agent_id, reviewer_id])
+            .bind(agent_id)
+            .bind(reviewer_id)
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(member_count, 2);
 
             let leaked_messages: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from messages where body like '%LANTOR_EVENT%'",
+                "select count(*) from messages where body like '%LANTOR_EVENT%'",
             )
             .fetch_one(&pool)
             .await
@@ -17647,7 +17316,7 @@ mod tests {
             assert!(!hidden);
 
             let raw_remaining: i64 =
-                sqlx::query_scalar("select count(*)::bigint from messages where id = $1")
+                sqlx::query_scalar("select count(*) from messages where id = $1")
                     .bind(raw_control_message_id)
                     .fetch_one(&pool)
                     .await
@@ -17663,7 +17332,7 @@ mod tests {
             assert_eq!(raw_body, "");
 
             let artifact_count: i64 =
-                sqlx::query_scalar("select count(*)::bigint from artifacts where channel_id = $1")
+                sqlx::query_scalar("select count(*) from artifacts where channel_id = $1")
                     .bind(channel_id)
                     .fetch_one(&pool)
                     .await
@@ -17690,7 +17359,7 @@ mod tests {
             let dm_channel_id = Uuid::parse_str(&dm1).map_err(|err| err.to_string())?;
             let row = sqlx::query(
                 r#"
-                select c.kind, c.dm_agent_id, count(m.agent_id)::bigint as members
+                select c.kind, c.dm_agent_id, count(m.agent_id) as members
                 from channels c
                 left join channel_members m on m.channel_id = c.id
                 where c.id = $1
@@ -17713,12 +17382,11 @@ mod tests {
                 .execute(&pool)
                 .await
                 .map_err(|err| err.to_string())?;
-            let remaining: i64 =
-                sqlx::query_scalar("select count(*)::bigint from channels where id = $1")
-                    .bind(dm_channel_id)
-                    .fetch_one(&pool)
-                    .await
-                    .map_err(|err| err.to_string())?;
+            let remaining: i64 = sqlx::query_scalar("select count(*) from channels where id = $1")
+                .bind(dm_channel_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
             assert_eq!(remaining, 0);
             Ok(())
         }
@@ -17746,7 +17414,7 @@ mod tests {
             delete_agent_in_pool(&pool, agent_id).await?;
 
             let agent_count: i64 =
-                sqlx::query_scalar("select count(*)::bigint from agents where id = $1")
+                sqlx::query_scalar("select count(*) from agents where id = $1")
                     .bind(agent_id)
                     .fetch_one(&pool)
                     .await
@@ -17754,7 +17422,7 @@ mod tests {
             assert_eq!(agent_count, 0);
 
             let dm_count: i64 =
-                sqlx::query_scalar("select count(*)::bigint from channels where id = $1")
+                sqlx::query_scalar("select count(*) from channels where id = $1")
                     .bind(dm_channel_id)
                     .fetch_one(&pool)
                     .await
@@ -17762,7 +17430,7 @@ mod tests {
             assert_eq!(dm_count, 0);
 
             let deleted_activity: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from agent_activities where agent_handle = 'delete-me' and title = 'Agent profile deleted'",
+                "select count(*) from agent_activities where agent_handle = 'delete-me' and title = 'Agent profile deleted'",
             )
             .fetch_one(&pool)
             .await
@@ -17826,7 +17494,7 @@ mod tests {
             sqlx::query(
                 r#"
                 insert into reminders (channel_id, creator_agent_id, title, due_at)
-                values ($1, $2, 'channel reminder', now() + interval '1 hour')
+                values ($1, $2, 'channel reminder', strftime('%Y-%m-%dT%H:%M:%f+00:00','now','+1 hour'))
                 "#,
             )
             .bind(channel_id)
@@ -17851,14 +17519,14 @@ mod tests {
             delete_channel_in_pool(&pool, channel_id).await?;
 
             let channel_count: i64 =
-                sqlx::query_scalar("select count(*)::bigint from channels where id = $1")
+                sqlx::query_scalar("select count(*) from channels where id = $1")
                     .bind(channel_id)
                     .fetch_one(&pool)
                     .await
                     .map_err(|err| err.to_string())?;
             assert_eq!(channel_count, 0);
             let message_count: i64 =
-                sqlx::query_scalar("select count(*)::bigint from messages where id = $1")
+                sqlx::query_scalar("select count(*) from messages where id = $1")
                     .bind(message_id)
                     .fetch_one(&pool)
                     .await
@@ -17872,7 +17540,7 @@ mod tests {
                     .map_err(|err| err.to_string())?;
             assert_eq!(unlinked_work_item_channel, None);
             let reminder_channel_count: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from reminders where title = 'channel reminder' and channel_id is null",
+                "select count(*) from reminders where title = 'channel reminder' and channel_id is null",
             )
             .fetch_one(&pool)
             .await
@@ -17919,7 +17587,7 @@ mod tests {
             .await?;
             let work_items: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_work_items
                 where channel_id = $1 and agent_id = $2 and status = 'queued'
                 "#,
@@ -18134,8 +17802,8 @@ mod tests {
                     w.id,
                     w.title,
                     w.context,
-                    count(i.id)::bigint as inbox_count,
-                    count(*) filter (where i.state = 'processing')::bigint as processing_count
+                    count(i.id) as inbox_count,
+                    count(*) filter (where i.state = 'processing') as processing_count
                 from agent_work_items w
                 join agent_inbox_items i on i.work_item_id = w.id
                 where w.agent_id = $1
@@ -18167,7 +17835,7 @@ mod tests {
 
             let start_commands: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from supervisor_commands
                 where agent_id = $1 and command_type = 'start_agent'
                 "#,
@@ -18186,7 +17854,7 @@ mod tests {
             notify_ui_work_item_changed(&pool, work_item_id, "test_done").await;
             let archived: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_inbox_items
                 where agent_id = $1 and work_item_id = $2 and state = 'archived'
                 "#,
@@ -18534,7 +18202,7 @@ mod tests {
 
             let mentioned_inboxes: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_inbox_items
                 where agent_id = $1
                   and source_message_id <> $2
@@ -18548,7 +18216,7 @@ mod tests {
             .map_err(|err| err.to_string())?;
             let bystander_inboxes: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_inbox_items
                 where agent_id = $1
                   and source_message_id <> $2
@@ -18622,7 +18290,7 @@ mod tests {
 
             let inboxes: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_inbox_items
                 where agent_id = $1
                   and source_message_id <> $2
@@ -18737,7 +18405,7 @@ mod tests {
                 vec![],
             )
             .await?;
-            let task_count: i64 = sqlx::query_scalar("select count(*)::bigint from tasks")
+            let task_count: i64 = sqlx::query_scalar("select count(*) from tasks")
                 .fetch_one(&pool)
                 .await
                 .map_err(|err| err.to_string())?;
@@ -18760,7 +18428,7 @@ mod tests {
                 vec![],
             )
             .await?;
-            let task_count: i64 = sqlx::query_scalar("select count(*)::bigint from tasks")
+            let task_count: i64 = sqlx::query_scalar("select count(*) from tasks")
                 .fetch_one(&pool)
                 .await
                 .map_err(|err| err.to_string())?;
@@ -18884,7 +18552,7 @@ mod tests {
             assert_eq!(task.get::<Option<Uuid>, _>("assignee_agent_id"), None);
             let inbox_count: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_inbox_items
                 where task_id = (select id from tasks limit 1)
                   and kind = 'task_available'
@@ -18967,7 +18635,7 @@ mod tests {
             assert_eq!(task.get::<i64, _>("version"), 1);
 
             let assigned_inboxes: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from agent_inbox_items where task_id = $1 and kind = 'task_assigned'",
+                "select count(*) from agent_inbox_items where task_id = $1 and kind = 'task_assigned'",
             )
             .bind(task_id)
             .fetch_one(&pool)
@@ -19067,7 +18735,7 @@ mod tests {
                 Some(winner_agent_id)
             );
             let stale_inboxes: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from agent_inbox_items where task_id = $1 and agent_id = $2 and kind = 'task_assigned'",
+                "select count(*) from agent_inbox_items where task_id = $1 and agent_id = $2 and kind = 'task_assigned'",
             )
             .bind(task_id)
             .bind(stale_agent_id)
@@ -19170,7 +18838,7 @@ mod tests {
 
             let system_messages: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from messages
                 where channel_id = $1
                   and sender_role = 'system'
@@ -19250,7 +18918,7 @@ mod tests {
 
             let system_messages: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from messages
                 where channel_id = $1
                   and thread_root_id = $2
@@ -19325,7 +18993,7 @@ mod tests {
                     agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id,
                     task_id, source_kind, title, context, status, completed_at
                 )
-                values ($1, $2, $3, $3, $4, $5, 'inbox_wake', 'Race this task', 'context', 'done', now())
+                values ($1, $2, $3, $3, $4, $5, 'inbox_wake', 'Race this task', 'context', 'done', strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
                 returning id
                 "#,
             )
@@ -19391,7 +19059,7 @@ mod tests {
                     agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id,
                     task_id, source_kind, title, context, status, completed_at
                 )
-                values ($1, $2, $3, $3, $4, $5, 'inbox_wake', 'Run this task', 'context', 'done', now())
+                values ($1, $2, $3, $3, $4, $5, 'inbox_wake', 'Run this task', 'context', 'done', strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
                 returning id
                 "#,
             )
@@ -19413,7 +19081,7 @@ mod tests {
 
             let claim_opportunity_messages: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from messages
                 where channel_id = $1
                   and thread_root_id = $2
@@ -19430,7 +19098,7 @@ mod tests {
 
             let assigned_messages: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from messages
                 where channel_id = $1
                   and thread_root_id = $2
@@ -19454,7 +19122,7 @@ mod tests {
 
             let assigned_messages: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from messages
                 where channel_id = $1
                   and thread_root_id = $2
@@ -19496,7 +19164,7 @@ mod tests {
             let task_id: Uuid = sqlx::query_scalar(
                 r#"
                 insert into tasks (message_id, channel_id, title, status, updated_at)
-                values ($1, $2, 'Review this task', 'in_review', now() - interval '1 hour')
+                values ($1, $2, 'Review this task', 'in_review', strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-1 hour'))
                 returning id
                 "#,
             )
@@ -19511,7 +19179,7 @@ mod tests {
                     .fetch_one(&pool)
                     .await
                     .map_err(|err| err.to_string())?;
-            let before_mark_all: DateTime<Utc> = sqlx::query_scalar("select now()")
+            let before_mark_all: DateTime<Utc> = sqlx::query_scalar("select strftime('%Y-%m-%dT%H:%M:%f+00:00','now')")
                 .fetch_one(&pool)
                 .await
                 .map_err(|err| err.to_string())?;
@@ -19551,7 +19219,7 @@ mod tests {
         let result: Result<(), String> = async {
             let item_id = "thread:root:latest".to_owned();
             let hidden_until: DateTime<Utc> =
-                sqlx::query_scalar("select now() + interval '5 seconds'")
+                sqlx::query_scalar("select strftime('%Y-%m-%dT%H:%M:%f+00:00','now','+5 seconds')")
                     .fetch_one(&pool)
                     .await
                     .map_err(|err| err.to_string())?;
@@ -19588,25 +19256,18 @@ mod tests {
             return;
         };
         let result: Result<(), String> = async {
-            let database_url = std::env::var("LANTOR_TEST_DATABASE_URL")
-                .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
-            let mut listener = PgListener::connect(&database_url)
-                .await
-                .map_err(|err| err.to_string())?;
-            listener
-                .listen(UI_REFRESH_CHANNEL)
-                .await
-                .map_err(|err| err.to_string())?;
-            let cutoff: DateTime<Utc> = sqlx::query_scalar("select now()")
-                .fetch_one(&pool)
-                .await
-                .map_err(|err| err.to_string())?;
+            let mut last_event_id = latest_ui_event_id(&pool).await?;
+            let cutoff: DateTime<Utc> =
+                sqlx::query_scalar("select strftime('%Y-%m-%dT%H:%M:%f+00:00','now')")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
 
             dismiss_inbox_items_in_pool(&pool, [("thread:root".to_owned(), cutoff)]).await?;
-            wait_for_ui_refresh_reason(&mut listener, "owner_inbox_dismissed").await?;
+            wait_for_ui_refresh_reason(&pool, &mut last_event_id, "owner_inbox_dismissed").await?;
 
             mark_inbox_items_read_in_pool(&pool, [("thread:root".to_owned(), cutoff)]).await?;
-            wait_for_ui_refresh_reason(&mut listener, "owner_inbox_read").await?;
+            wait_for_ui_refresh_reason(&pool, &mut last_event_id, "owner_inbox_read").await?;
             Ok(())
         }
         .await;
@@ -19639,7 +19300,7 @@ mod tests {
                     agent_id, channel_id, thread_root_id, source_message_id,
                     source_kind, title, context, status, completed_at
                 )
-                values ($1, $2, $3, $3, 'mention', 'Please answer in thread', 'context', 'done', now())
+                values ($1, $2, $3, $3, 'mention', 'Please answer in thread', 'context', 'done', strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
                 returning id
                 "#,
             )
@@ -19654,7 +19315,7 @@ mod tests {
 
             let system_messages: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from messages
                 where channel_id = $1
                   and thread_root_id = $2
@@ -19814,7 +19475,7 @@ mod tests {
             assert_eq!(row.get::<String, _>("status"), "active");
             assert_eq!(row.get::<String, _>("title"), "Running tests");
             assert_eq!(row.get::<String, _>("detail"), "cargo test");
-            let messages: i64 = sqlx::query_scalar("select count(*)::bigint from messages")
+            let messages: i64 = sqlx::query_scalar("select count(*) from messages")
                 .fetch_one(&pool)
                 .await
                 .map_err(|err| err.to_string())?;
@@ -19924,7 +19585,7 @@ mod tests {
             .await?;
             let work_items: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_work_items
                 where channel_id = $1 and agent_id = $2
                 "#,
@@ -20031,7 +19692,7 @@ mod tests {
 
             let work_items: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_work_items
                 where channel_id = $1 and agent_id = $2
                 "#,
@@ -20044,7 +19705,7 @@ mod tests {
             assert_eq!(work_items, 0);
             let system_messages: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from messages
                 where channel_id = $1
                   and thread_root_id = $2
@@ -20075,7 +19736,7 @@ mod tests {
             let reminder_id: Uuid = sqlx::query_scalar(
                 r#"
                 insert into reminders (channel_id, title, note, due_at, recurrence, status)
-                values ($1, 'Check thread', 'Follow up with Dylan', now() - interval '1 minute', 'none', 'scheduled')
+                values ($1, 'Check thread', 'Follow up with Dylan', strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-1 minute'), 'none', 'scheduled')
                 returning id
                 "#,
             )
@@ -20094,7 +19755,7 @@ mod tests {
             assert_eq!(status, "fired");
             let system_messages: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from messages
                 where channel_id = $1
                   and sender_role = 'system'
@@ -20192,7 +19853,7 @@ mod tests {
             let reminder_id: Uuid = sqlx::query_scalar(
                 r#"
                 insert into reminders (channel_id, title, note, due_at, fired_at, recurrence, status)
-                values ($1, 'Due reminder', '', now() - interval '1 minute', now(), 'none', 'fired')
+                values ($1, 'Due reminder', '', strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-1 minute'), strftime('%Y-%m-%dT%H:%M:%f+00:00','now'), 'none', 'fired')
                 returning id
                 "#,
             )
@@ -20225,7 +19886,7 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             sqlx::query(
-                "insert into channel_read_state (channel_id, last_read_at) values ($1, now())",
+                "insert into channel_read_state (channel_id, last_read_at) values ($1, strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))",
             )
             .bind(read_channel_id)
             .execute(&pool)
@@ -20235,7 +19896,7 @@ mod tests {
             mark_all_owner_inbox_read_in_pool(&pool).await?;
 
             let read_state_count: i64 = sqlx::query_scalar(
-                "select count(*)::bigint from channel_read_state where channel_id = $1",
+                "select count(*) from channel_read_state where channel_id = $1",
             )
             .bind(channel_id)
             .fetch_one(&pool)
@@ -20298,7 +19959,7 @@ mod tests {
                 insert into agent_schedules (
                     agent_id, channel_id, title, prompt, cadence, next_run_at, status
                 )
-                values ($1, $2, 'Daily check', 'Summarize open work', 'daily', now() - interval '1 minute', 'active')
+                values ($1, $2, 'Daily check', 'Summarize open work', 'daily', strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-1 minute'), 'active')
                 returning id
                 "#,
             )
@@ -20311,7 +19972,7 @@ mod tests {
             process_due_agent_schedules(&pool).await?;
 
             let schedule = sqlx::query(
-                "select last_run_at, last_work_item_id, next_run_at > now() as future from agent_schedules where id = $1",
+                "select last_run_at, last_work_item_id, next_run_at > strftime('%Y-%m-%dT%H:%M:%f+00:00','now') as future from agent_schedules where id = $1",
             )
             .bind(schedule_id)
             .fetch_one(&pool)
@@ -20326,7 +19987,7 @@ mod tests {
 
             let work_items: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from agent_work_items w
                 join agent_inbox_items i on i.work_item_id = w.id
                 where w.agent_id = $1
@@ -20345,7 +20006,7 @@ mod tests {
 
             let system_messages: i64 = sqlx::query_scalar(
                 r#"
-                select count(*)::bigint
+                select count(*)
                 from messages
                 where channel_id = $1
                   and sender_role = 'system'

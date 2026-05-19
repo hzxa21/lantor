@@ -8,7 +8,7 @@ also appear in [`.env.example`](../.env.example).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LANTOR_DATABASE_URL` | `postgres://lantor:lantor@127.0.0.1:5432/lantor` | Postgres connection string used by both the desktop process and the web server. `DATABASE_URL` is honored as a fallback when `LANTOR_DATABASE_URL` is unset. |
+| `LANTOR_DATABASE_URL` | `sqlite://~/Library/Application Support/Lantor/lantor.sqlite` | SQLite database URL used by both the desktop process and the web server. `DATABASE_URL` is honored as a fallback only when it is also a `sqlite:` URL. |
 | `LANTOR_WEB_BIND` | `0.0.0.0:8787` | Address the embedded web/SSE server binds to. Set to `127.0.0.1:8787` to stay loopback-only, or `off` / `none` to disable the browser UI entirely. |
 
 ## Web UI
