@@ -4328,7 +4328,7 @@ async fn inter_agent_thread_message_count_since_last_owner(
             where channel_id = $1
               and (id = $2 or thread_root_id = $2)
               and sender_agent_id is not null
-              and created_at > $3
+              and julianday(created_at) > julianday($3)
             "#,
         )
         .bind(channel_id)
@@ -5552,7 +5552,10 @@ async fn load_channels(pool: &SqlitePool) -> CommandResult<Vec<Channel>> {
             c.kind,
             c.dm_agent_id,
             cast(count(m.id) filter (
-                where m.created_at > coalesce(r.last_read_at, '-infinity')
+                where julianday(m.created_at) > julianday(
+                    coalesce(r.last_read_at, '0001-01-01T00:00:00+00:00')
+                )
+                  and m.sender_role <> 'owner'
                   and m.delivery_state <> 'streaming'
             ) as integer) as unread_count
         from channels c
@@ -5990,7 +5993,7 @@ async fn load_messages(pool: &SqlitePool) -> CommandResult<Vec<Message>> {
             m.updated_at
         from messages m
         left join tasks t on t.message_id = m.id
-        order by m.created_at asc
+        order by julianday(m.created_at) asc, m.created_at asc
         "#,
     )
     .fetch_all(pool)
@@ -14438,13 +14441,13 @@ mod tests {
         extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
         format_memory_index_entry, handle_agent_event, inbox_wake_context, insert_agent_message,
         insert_memory_index_entry, load_agent_memory_context, load_channel_agent_roster,
-        load_messages, load_reminders, load_runtime_thread_id, mark_all_owner_inbox_read_in_pool,
-        mark_inbox_items_read_in_pool, maybe_hide_silent_streaming_reply, migrate,
-        normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
-        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
-        queue_mentions_as_work_items, record_agent_activity,
-        recover_supervisor_commands_at_startup, send_owner_message_in_pool, silent_reply_reason,
-        split_streaming_agent_event_lines, streaming_message_body_is_empty,
+        load_channels, load_messages, load_reminders, load_runtime_thread_id,
+        mark_all_owner_inbox_read_in_pool, mark_inbox_items_read_in_pool,
+        maybe_hide_silent_streaming_reply, migrate, normalize_open_link_target,
+        notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
+        process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
+        record_agent_activity, recover_supervisor_commands_at_startup, send_owner_message_in_pool,
+        silent_reply_reason, split_streaming_agent_event_lines, streaming_message_body_is_empty,
         try_claim_unassigned_task, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, AgentInboxItemInput, ClaudeSurface,
@@ -16261,6 +16264,90 @@ mod tests {
         .fetch_one(pool)
         .await
         .map_err(|err| err.to_string())
+    }
+
+    #[tokio::test]
+    async fn channel_unread_count_compares_mixed_timezone_timestamps_by_instant() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "mixed-timezone-unread").await?;
+            sqlx::query(
+                r#"
+                insert into channel_read_state (channel_id, last_read_at)
+                values ($1, '2026-05-19T08:42:52.432+00:00')
+                "#,
+            )
+            .bind(channel_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, created_at)
+                values ($1, 'Dylan', 'owner', 'own message after read marker', '2026-05-19T08:42:52.433+00:00')
+                "#,
+            )
+            .bind(channel_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, created_at)
+                values ($1, 'Agent', 'agent', 'older in absolute time', '2026-05-19T13:20:09.372481+08:00')
+                "#,
+            )
+            .bind(channel_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let channels = load_channels(&pool).await?;
+            let channel = channels
+                .iter()
+                .find(|channel| channel.id == channel_id)
+                .ok_or_else(|| "missing test channel".to_owned())?;
+            assert_eq!(channel.unread_count, 0);
+
+            sqlx::query(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, created_at)
+                values ($1, 'Agent', 'agent', 'newer in absolute time', '2026-05-19T17:00:00+08:00')
+                "#,
+            )
+            .bind(channel_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let channels = load_channels(&pool).await?;
+            let channel = channels
+                .iter()
+                .find(|channel| channel.id == channel_id)
+                .ok_or_else(|| "missing test channel".to_owned())?;
+            assert_eq!(channel.unread_count, 1);
+
+            let messages = load_messages(&pool).await?;
+            let bodies: Vec<String> = messages
+                .iter()
+                .filter(|message| message.channel_id == channel_id)
+                .map(|message| message.body.clone())
+                .collect();
+            assert_eq!(
+                bodies,
+                vec![
+                    "older in absolute time",
+                    "own message after read marker",
+                    "newer in absolute time",
+                ]
+            );
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[tokio::test]

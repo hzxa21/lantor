@@ -642,8 +642,16 @@ function App() {
     setRuntimeChecks(Object.fromEntries(entries));
   }
 
+  function sortedMessages(messages: Message[]) {
+    return [...messages].sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
+  }
+
+  function normalizeBootstrap(next: Bootstrap): Bootstrap {
+    return { ...next, messages: sortedMessages(next.messages) };
+  }
+
   async function refresh(includeOptimistic = true) {
-    const next = await apiInvoke<Bootstrap>("bootstrap");
+    const next = normalizeBootstrap(await apiInvoke<Bootstrap>("bootstrap"));
     setData(includeOptimistic ? withOptimisticMessages(next) : next);
     setActiveChannelId((prev) => {
       if (next.channels.some((item) => item.id === prev)) return prev;
@@ -695,8 +703,7 @@ function App() {
       const messages = existingIndex >= 0
         ? current.messages.map((item) => item.id === message.id ? message : item)
         : [...current.messages, message];
-      messages.sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
-      return { ...current, messages };
+      return { ...current, messages: sortedMessages(messages) };
     });
   }
 
@@ -706,9 +713,7 @@ function App() {
     const optimisticMessages = Array.from(optimisticMessagesRef.current.values())
       .filter((message) => !existingIds.has(message.id));
     if (optimisticMessages.length === 0) return next;
-    const messages = [...next.messages, ...optimisticMessages];
-    messages.sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
-    return { ...next, messages };
+    return { ...next, messages: sortedMessages([...next.messages, ...optimisticMessages]) };
   }
 
   function flushMessageDeltas() {
@@ -994,7 +999,9 @@ function App() {
     }
 
     const known = knownMessageIdsRef.current;
-    const newMessages = data.messages.filter((message) => !isProgressOnlyMessage(message) && !known.has(message.id));
+    const newMessages = data.messages.filter((message) =>
+      message.sender_role !== "owner" && !isProgressOnlyMessage(message) && !known.has(message.id)
+    );
     if (newMessages.length === 0) return;
     newMessages.forEach((message) => known.add(message.id));
 
