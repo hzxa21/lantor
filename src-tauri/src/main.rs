@@ -7515,7 +7515,6 @@ fn classify_agent_output_activity(
         "npm ",
         "git ",
         "psql ",
-        "slock ",
         "rg ",
         "sed ",
     ]
@@ -17308,7 +17307,7 @@ mod tests {
             let event = json!({
                 "type": "channel_create",
                 "name": "lantor-ui-design",
-                "description": "讨论 SLock UI 设计后续工作",
+                "description": "讨论 Lantor UI 设计后续工作",
                 "agent_handles": ["hancock"]
             });
             let stream_key = format!("{run_id}:claude-assistant");
