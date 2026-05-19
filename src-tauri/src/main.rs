@@ -5630,6 +5630,7 @@ pub(crate) async fn dismiss_inbox_items_in_pool<I>(pool: &PgPool, items: I) -> C
 where
     I: IntoIterator<Item = (String, DateTime<Utc>)>,
 {
+    let mut updated = false;
     for item in items {
         let item_id = item.0.trim();
         if item_id.is_empty() {
@@ -5652,8 +5653,12 @@ where
         .execute(pool)
         .await
         .map_err(to_string)?;
+        updated = true;
     }
 
+    if updated {
+        notify_ui_refresh(pool, "owner_inbox_dismissed").await?;
+    }
     Ok(())
 }
 
@@ -5661,6 +5666,7 @@ pub(crate) async fn mark_inbox_items_read_in_pool<I>(pool: &PgPool, items: I) ->
 where
     I: IntoIterator<Item = (String, DateTime<Utc>)>,
 {
+    let mut updated = false;
     for item in items {
         let item_id = item.0.trim();
         if item_id.is_empty() {
@@ -5683,8 +5689,12 @@ where
         .execute(pool)
         .await
         .map_err(to_string)?;
+        updated = true;
     }
 
+    if updated {
+        notify_ui_refresh(pool, "owner_inbox_read").await?;
+    }
     Ok(())
 }
 
@@ -14685,22 +14695,26 @@ mod tests {
         format_memory_index_entry, handle_agent_event, inbox_wake_context, insert_agent_message,
         insert_memory_index_entry, load_agent_memory_context, load_channel_agent_roster,
         load_messages, load_reminders, load_runtime_thread_id, mark_all_owner_inbox_read_in_pool,
-        maybe_hide_silent_streaming_reply, migrate, normalize_open_link_target,
-        notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
-        process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
-        record_agent_activity, recover_supervisor_commands_at_startup, send_owner_message_in_pool,
-        silent_reply_reason, split_streaming_agent_event_lines, streaming_message_body_is_empty,
+        mark_inbox_items_read_in_pool, maybe_hide_silent_streaming_reply, migrate,
+        normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
+        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
+        queue_mentions_as_work_items, record_agent_activity,
+        recover_supervisor_commands_at_startup, send_owner_message_in_pool, silent_reply_reason,
+        split_streaming_agent_event_lines, streaming_message_body_is_empty,
         try_claim_unassigned_task, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, AgentInboxItemInput, ClaudeSurface,
         CodexActiveTurnScheduleState, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
         AGENT_MEMORY_CONTEXT_LIMIT, CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
         CODEX_TURN_START_TIMEOUT, DEFAULT_DATABASE_URL, STREAMING_MESSAGE_BODY_LIMIT,
-        STREAMING_TRUNCATION_MARKER, WORK_ITEM_FINISH_PROMPT,
+        STREAMING_TRUNCATION_MARKER, UI_REFRESH_CHANNEL, WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::{json, Value};
-    use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+    use sqlx::{
+        postgres::{PgListener, PgPoolOptions},
+        PgPool, Row,
+    };
     use std::time::Duration;
     use uuid::Uuid;
 
@@ -16474,6 +16488,28 @@ mod tests {
             .execute(&pool)
             .await;
         pool.close().await;
+    }
+
+    async fn wait_for_ui_refresh_reason(
+        listener: &mut PgListener,
+        reason: &str,
+    ) -> Result<(), String> {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let payload = listener
+                    .recv()
+                    .await
+                    .map_err(|err| err.to_string())?
+                    .payload()
+                    .to_owned();
+                let value: Value = serde_json::from_str(&payload).map_err(|err| err.to_string())?;
+                if value.get("reason").and_then(Value::as_str) == Some(reason) {
+                    return Ok(());
+                }
+            }
+        })
+        .await
+        .map_err(|_| format!("timed out waiting for {reason} notification"))?
     }
 
     async fn insert_test_agent(pool: &PgPool, handle: &str) -> Result<Uuid, String> {
@@ -19485,6 +19521,38 @@ mod tests {
 
             assert_eq!(stored_hidden_until, hidden_until);
             assert!(!read_exists);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn inbox_read_and_dismiss_emit_ui_refresh() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let database_url = std::env::var("LANTOR_TEST_DATABASE_URL")
+                .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
+            let mut listener = PgListener::connect(&database_url)
+                .await
+                .map_err(|err| err.to_string())?;
+            listener
+                .listen(UI_REFRESH_CHANNEL)
+                .await
+                .map_err(|err| err.to_string())?;
+            let cutoff: DateTime<Utc> = sqlx::query_scalar("select now()")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+
+            dismiss_inbox_items_in_pool(&pool, [("thread:root".to_owned(), cutoff)]).await?;
+            wait_for_ui_refresh_reason(&mut listener, "owner_inbox_dismissed").await?;
+
+            mark_inbox_items_read_in_pool(&pool, [("thread:root".to_owned(), cutoff)]).await?;
+            wait_for_ui_refresh_reason(&mut listener, "owner_inbox_read").await?;
             Ok(())
         }
         .await;
