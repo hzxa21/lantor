@@ -1485,7 +1485,7 @@ function App() {
     const channelsById = new Map(data.channels.map((item) => [item.id, item]));
     const agentsById = new Map(data.agents.map((item) => [item.id, item]));
     const latestByChannel = new Map<string, Message>();
-    const latestReplyByRoot = new Map<string, Message>();
+    const repliesByRoot = new Map<string, Message[]>();
 
     for (const message of visibleMessages) {
       const currentChannelLatest = latestByChannel.get(message.channel_id);
@@ -1493,11 +1493,13 @@ function App() {
         latestByChannel.set(message.channel_id, message);
       }
       if (message.thread_root_id) {
-        const currentThreadLatest = latestReplyByRoot.get(message.thread_root_id);
-        if (!currentThreadLatest || new Date(message.created_at) > new Date(currentThreadLatest.created_at)) {
-          latestReplyByRoot.set(message.thread_root_id, message);
-        }
+        const currentReplies = repliesByRoot.get(message.thread_root_id) ?? [];
+        currentReplies.push(message);
+        repliesByRoot.set(message.thread_root_id, currentReplies);
       }
+    }
+    for (const replies of repliesByRoot.values()) {
+      replies.sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
     }
 
     const channelLabel = (channelId: string | null) => {
@@ -1541,15 +1543,20 @@ function App() {
     }
 
     for (const root of allThreadRootMessages) {
-      const latestReply = latestReplyByRoot.get(root.id);
-      const currentMessage = latestReply ?? root;
-      const unread = (threadUnreadCounts[root.id] ?? 0) > 0;
+      const replies = repliesByRoot.get(root.id) ?? [];
+      const unreadCount = threadUnreadCounts[root.id] ?? 0;
+      const unreadStartIndex = Math.max(0, replies.length - unreadCount);
+      const latestReply = replies.length > 0 ? replies[replies.length - 1] : null;
+      const currentMessage = unreadCount > 0
+        ? replies[unreadStartIndex] ?? latestReply ?? root
+        : latestReply ?? root;
+      const unread = unreadCount > 0;
       items.push({
         id: `thread:${root.id}`,
         dismissId: `thread:${root.id}`,
         kind: "thread",
         title: firstLines(currentMessage.body, 1),
-        excerpt: latestReply ? `Thread reply to: ${firstLines(root.body, 1)}` : root.body,
+        excerpt: currentMessage.body,
         surface: channelLabel(root.channel_id),
         actor: currentMessage.sender_name,
         timestamp: timestamp(currentMessage.created_at),
@@ -1562,7 +1569,7 @@ function App() {
         taskId: null,
         reminderId: null,
         replyCount: threadReplyCounts[root.id] ?? 0,
-        newCount: threadUnreadCounts[root.id] ?? 0,
+        newCount: unreadCount,
       });
     }
 
