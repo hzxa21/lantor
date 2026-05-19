@@ -12,28 +12,31 @@ export type TokenMentionState = MentionState & {
   kind: MentionKind;
 };
 
-export function getMentionState(text: string, cursor: number): MentionState | null {
+function isMentionBoundary(text: string, markerIndex: number) {
+  if (markerIndex === 0) return true;
+  const previous = text[markerIndex - 1];
+  return !/[A-Za-z0-9_-]/.test(previous);
+}
+
+function getTokenMentionState(text: string, cursor: number, marker: "@" | "#"): MentionState | null {
   const beforeCursor = text.slice(0, cursor);
-  const match = beforeCursor.match(/(^|\s)@([A-Za-z0-9_-]*)$/);
-  if (!match) return null;
-  const query = match[2] ?? "";
+  const match = beforeCursor.match(new RegExp(`\\${marker}([A-Za-z0-9_-]*)$`));
+  if (!match || match.index === undefined) return null;
+  if (!isMentionBoundary(beforeCursor, match.index)) return null;
+  const query = match[1] ?? "";
   return {
     query,
-    start: cursor - query.length - 1,
+    start: match.index,
     end: cursor,
   };
 }
 
+export function getMentionState(text: string, cursor: number): MentionState | null {
+  return getTokenMentionState(text, cursor, "@");
+}
+
 export function getChannelMentionState(text: string, cursor: number): MentionState | null {
-  const beforeCursor = text.slice(0, cursor);
-  const match = beforeCursor.match(/(^|\s)#([A-Za-z0-9_-]*)$/);
-  if (!match) return null;
-  const query = match[2] ?? "";
-  return {
-    query,
-    start: cursor - query.length - 1,
-    end: cursor,
-  };
+  return getTokenMentionState(text, cursor, "#");
 }
 
 export function insertAgentMention(text: string, state: MentionState, handle: string) {
@@ -82,7 +85,7 @@ export function filterMentionChannels(channels: Channel[], query: string) {
 
 export function mentionedAgentsForBody(body: string, agents: Agent[]) {
   return agents.filter((agent) => {
-    const pattern = new RegExp(`(^|\\s)@${escapeRegExp(agent.handle)}(?=$|\\s|[.,;:!?])`);
+    const pattern = new RegExp(`(^|[^A-Za-z0-9_-])@${escapeRegExp(agent.handle)}(?=$|\\s|[.,;:!?])`);
     return pattern.test(body);
   });
 }
