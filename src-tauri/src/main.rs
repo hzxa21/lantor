@@ -1801,6 +1801,10 @@ pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResu
 
 #[tauri::command]
 async fn check_runtime(runtime: String) -> CommandResult<RuntimeCheck> {
+    check_runtime_in_env(runtime).await
+}
+
+pub(crate) async fn check_runtime_in_env(runtime: String) -> CommandResult<RuntimeCheck> {
     let runtime = runtime.trim().to_owned();
     let command = match runtime.as_str() {
         "codex" => "codex",
@@ -1993,6 +1997,7 @@ pub(crate) async fn set_channel_agent_membership_in_pool(
     )
     .await?;
 
+    let _ = notify_ui_refresh(pool, "channel_membership_updated").await;
     Ok(())
 }
 
@@ -2134,6 +2139,7 @@ pub(crate) async fn open_dm_with_agent_in_pool(
     )
     .await?;
 
+    let _ = notify_ui_refresh(pool, "dm_opened").await;
     Ok(channel_id.to_string())
 }
 
@@ -2308,6 +2314,7 @@ pub(crate) async fn create_agent_in_pool(
     )
     .await?;
 
+    let _ = notify_ui_refresh(pool, "agent_created").await;
     Ok(agent_id)
 }
 
@@ -2444,6 +2451,7 @@ pub(crate) async fn update_agent_in_pool(
     )
     .await?;
 
+    let _ = notify_ui_refresh(pool, "agent_updated").await;
     Ok(())
 }
 
@@ -3002,6 +3010,7 @@ async fn try_claim_unassigned_task(
         .to_string(),
     )
     .await?;
+    let _ = notify_ui_refresh(pool, "task_claimed").await;
     Ok(Some(task_number))
 }
 
@@ -3088,6 +3097,13 @@ async fn mark_task_after_work_item_finished(
 
 #[tauri::command]
 async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    cancel_agent_work_in_pool(&state.pool, work_item_id).await
+}
+
+pub(crate) async fn cancel_agent_work_in_pool(
+    pool: &PgPool,
+    work_item_id: Uuid,
+) -> CommandResult<()> {
     let row = sqlx::query(
         r#"
         select agent_id, run_id, status
@@ -3096,7 +3112,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
         "#,
     )
     .bind(work_item_id)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .map_err(to_string)?;
     let agent_id: Uuid = row.get("agent_id");
@@ -3115,10 +3131,10 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
                 "#,
             )
             .bind(work_item_id)
-            .execute(&state.pool)
+            .execute(pool)
             .await
             .map_err(to_string)?;
-            notify_ui_work_item_changed(&state.pool, work_item_id, "work_item_cancelled").await;
+            notify_ui_work_item_changed(pool, work_item_id, "work_item_cancelled").await;
             sqlx::query(
                 r#"
                 update supervisor_commands
@@ -3129,7 +3145,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
                 "#,
             )
             .bind(work_item_id)
-            .execute(&state.pool)
+            .execute(pool)
             .await
             .map_err(to_string)?;
         }
@@ -3146,10 +3162,10 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
                 "#,
             )
             .bind(work_item_id)
-            .execute(&state.pool)
+            .execute(pool)
             .await
             .map_err(to_string)?;
-            notify_ui_work_item_changed(&state.pool, work_item_id, "work_item_cancelling").await;
+            notify_ui_work_item_changed(pool, work_item_id, "work_item_cancelling").await;
             let pending_stop: Option<Uuid> = sqlx::query_scalar(
                 r#"
                 select id
@@ -3161,7 +3177,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
                 "#,
             )
             .bind(run_id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(pool)
             .await
             .map_err(to_string)?;
             if pending_stop.is_none() {
@@ -3174,11 +3190,11 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
                 .bind(agent_id)
                 .bind(run_id)
                 .bind(work_item_id)
-                .execute(&state.pool)
+                .execute(pool)
                 .await
                 .map_err(to_string)?;
-                let _ = notify_supervisor_wake(&state.pool).await;
-                let _ = notify_ui_refresh(&state.pool, "supervisor_command").await;
+                let _ = notify_supervisor_wake(pool).await;
+                let _ = notify_ui_refresh(pool, "supervisor_command").await;
             }
         }
         "cancelling" => return Ok(()),
@@ -3186,7 +3202,7 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
     }
 
     record_agent_activity(
-        &state.pool,
+        pool,
         Some(agent_id),
         run_id,
         "dispatch",
@@ -3200,6 +3216,13 @@ async fn cancel_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Co
 
 #[tauri::command]
 async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> CommandResult<Uuid> {
+    retry_agent_work_in_pool(&state.pool, work_item_id).await
+}
+
+pub(crate) async fn retry_agent_work_in_pool(
+    pool: &PgPool,
+    work_item_id: Uuid,
+) -> CommandResult<Uuid> {
     let row = sqlx::query(
         r#"
         select agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id, task_id, source_kind, title, context, status
@@ -3208,7 +3231,7 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
         "#,
     )
     .bind(work_item_id)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .map_err(to_string)?;
     let old_status: String = row.get("status");
@@ -3239,18 +3262,17 @@ async fn retry_agent_work(work_item_id: Uuid, state: State<'_, AppState>) -> Com
     .bind(row.get::<String, _>("source_kind"))
     .bind(&title)
     .bind(&context)
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await
     .map_err(to_string)?;
     if let Some(inbox_item_id) = row.get::<Option<Uuid>, _>("inbox_item_id") {
-        attach_work_item_to_inbox(&state.pool, inbox_item_id, new_work_item_id).await?;
+        attach_work_item_to_inbox(pool, inbox_item_id, new_work_item_id).await?;
     }
-    notify_ui_work_item_changed(&state.pool, new_work_item_id, "work_item_created").await;
+    notify_ui_work_item_changed(pool, new_work_item_id, "work_item_created").await;
 
-    let scheduled =
-        enqueue_agent_work_if_available(&state.pool, agent_id, new_work_item_id).await?;
+    let scheduled = enqueue_agent_work_if_available(pool, agent_id, new_work_item_id).await?;
     record_agent_activity(
-        &state.pool,
+        pool,
         Some(agent_id),
         None,
         "dispatch",
@@ -4785,7 +4807,9 @@ async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<(
 async fn install_supervisor_service(
     state: State<'_, AppState>,
 ) -> CommandResult<LaunchAgentStatus> {
-    launch_agent::install_supervisor_service(&state.db_url)
+    let status = launch_agent::install_supervisor_service(&state.db_url)?;
+    let _ = notify_ui_refresh(&state.pool, "supervisor_service_installed").await;
+    Ok(status)
 }
 
 #[tauri::command]
@@ -4799,6 +4823,7 @@ async fn uninstall_supervisor_service(
         .await
         .map_err(to_string)?;
 
+    let _ = notify_ui_refresh(&state.pool, "supervisor_service_uninstalled").await;
     Ok(status)
 }
 
@@ -5025,9 +5050,7 @@ async fn set_message_saved(
     saved: bool,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
-    set_message_saved_in_pool(&state.pool, message_id, saved).await?;
-    let _ = notify_ui_refresh(&state.pool, "saved_message_updated").await;
-    Ok(())
+    set_message_saved_in_pool(&state.pool, message_id, saved).await
 }
 
 pub(crate) async fn set_message_saved_in_pool(
@@ -5063,6 +5086,7 @@ pub(crate) async fn set_message_saved_in_pool(
             .await
             .map_err(to_string)?;
     }
+    let _ = notify_ui_refresh(pool, "saved_message_updated").await;
     Ok(())
 }
 
@@ -5073,10 +5097,19 @@ async fn claim_task(
     expected_version: Option<i64>,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
+    claim_task_in_pool(&state.pool, task_id, agent_id, expected_version).await
+}
+
+pub(crate) async fn claim_task_in_pool(
+    pool: &PgPool,
+    task_id: Uuid,
+    agent_id: Option<Uuid>,
+    expected_version: Option<i64>,
+) -> CommandResult<()> {
     let current_status: Option<String> =
         sqlx::query_scalar("select status from tasks where id = $1")
             .bind(task_id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(pool)
             .await
             .map_err(to_string)?;
     let current_status = current_status.ok_or_else(|| "task does not exist".to_owned())?;
@@ -5086,7 +5119,7 @@ async fn claim_task(
 
     if let (Some(agent_id), Some(expected_version)) = (agent_id, expected_version) {
         return try_claim_unassigned_task(
-            &state.pool,
+            pool,
             task_id,
             agent_id,
             Some(expected_version),
@@ -5110,16 +5143,16 @@ async fn claim_task(
     )
     .bind(task_id)
     .bind(agent_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(pool)
     .await
     .map_err(to_string)?
     .ok_or_else(|| "task does not exist".to_owned())?;
 
     if let Some(agent_id) = agent_id {
-        dispatch_task_assignment_to_agent(&state.pool, task_id, agent_id, "manual_claim").await?;
+        dispatch_task_assignment_to_agent(pool, task_id, agent_id, "manual_claim").await?;
     } else {
         record_agent_activity(
-            &state.pool,
+            pool,
             None,
             None,
             "task",
@@ -5129,6 +5162,7 @@ async fn claim_task(
         .await?;
     }
 
+    let _ = notify_ui_refresh(pool, "task_claimed").await;
     Ok(())
 }
 
@@ -5137,6 +5171,14 @@ async fn update_task_status(
     task_id: Uuid,
     status: String,
     state: State<'_, AppState>,
+) -> CommandResult<()> {
+    update_task_status_in_pool(&state.pool, task_id, status).await
+}
+
+pub(crate) async fn update_task_status_in_pool(
+    pool: &PgPool,
+    task_id: Uuid,
+    status: String,
 ) -> CommandResult<()> {
     let status = status.trim();
     if !matches!(status, "todo" | "in_progress" | "in_review" | "done") {
@@ -5152,7 +5194,7 @@ async fn update_task_status(
     )
     .bind(task_id)
     .bind(status)
-    .execute(&state.pool)
+    .execute(pool)
     .await
     .map_err(to_string)?
     .rows_affected();
@@ -5160,7 +5202,7 @@ async fn update_task_status(
         return Err("task does not exist".to_owned());
     }
     record_agent_activity(
-        &state.pool,
+        pool,
         None,
         None,
         "task",
@@ -5169,6 +5211,7 @@ async fn update_task_status(
     )
     .await?;
 
+    let _ = notify_ui_refresh(pool, "task_status_updated").await;
     Ok(())
 }
 
@@ -5178,12 +5221,20 @@ async fn update_task_title(
     title: String,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
+    update_task_title_in_pool(&state.pool, task_id, title).await
+}
+
+pub(crate) async fn update_task_title_in_pool(
+    pool: &PgPool,
+    task_id: Uuid,
+    title: String,
+) -> CommandResult<()> {
     let title = title.trim();
     if title.is_empty() {
         return Err("task title is empty".to_owned());
     }
 
-    let mut tx = state.pool.begin().await.map_err(to_string)?;
+    let mut tx = pool.begin().await.map_err(to_string)?;
     let message_id: Uuid = sqlx::query_scalar(
         r#"
         update tasks
@@ -5207,7 +5258,7 @@ async fn update_task_title(
 
     tx.commit().await.map_err(to_string)?;
     record_agent_activity(
-        &state.pool,
+        pool,
         None,
         None,
         "task",
@@ -5215,6 +5266,7 @@ async fn update_task_title(
         json!({ "task_id": task_id, "title": title }).to_string(),
     )
     .await?;
+    let _ = notify_ui_refresh(pool, "task_title_updated").await;
     Ok(())
 }
 
@@ -5766,6 +5818,7 @@ pub(crate) async fn mark_channel_read_in_pool(
     .await
     .map_err(to_string)?;
 
+    let _ = notify_ui_refresh(pool, "channel_read").await;
     Ok(())
 }
 
@@ -7441,6 +7494,7 @@ pub(crate) async fn add_agent_to_channel(
     .execute(pool)
     .await
     .map_err(to_string)?;
+    let _ = notify_ui_refresh(pool, "channel_membership_updated").await;
     Ok(())
 }
 
