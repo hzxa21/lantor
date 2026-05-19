@@ -122,10 +122,13 @@ function isUsefulActivity(activity: AgentActivity) {
 
 function compactProgressActivities(activities: AgentActivity[]) {
   const seen = new Set<string>();
+  let lastSignature = "";
   return activities.filter((activity) => {
-    const key = activity.phase || activity.kind || activity.id;
-    if (seen.has(key)) return false;
-    seen.add(key);
+    if (seen.has(activity.id)) return false;
+    seen.add(activity.id);
+    const signature = `${activity.phase || activity.kind || ""}|${activityTitle(activity)}|${activity.detail.trim()}`;
+    if (signature === lastSignature) return false;
+    lastSignature = signature;
     return true;
   });
 }

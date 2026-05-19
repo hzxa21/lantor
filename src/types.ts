@@ -305,12 +305,12 @@ export type SearchResult = {
   senderRole?: string | null;
 };
 
-export type InboxKind = "mention" | "dm" | "thread" | "task" | "reminder" | "channel";
+export type ActivityFeedKind = "mention" | "dm" | "thread" | "task" | "reminder" | "channel";
 
-export type InboxItem = {
+export type ActivityFeedItem = {
   id: string;
   dismissId: string;
-  kind: InboxKind;
+  kind: ActivityFeedKind;
   title: string;
   excerpt: string;
   surface: string;
@@ -367,7 +367,7 @@ export const RUNTIME_PRESETS: Record<string, { label: string; defaultModel: stri
     label: "Codex",
     defaultModel: "gpt-5.5",
     commandName: "codex",
-    models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+    models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"],
   },
   claude: {
     label: "Claude",
@@ -382,6 +382,7 @@ const MODEL_LABELS: Record<string, string> = {
   "gpt-5.4": "GPT-5.4",
   "gpt-5.4-mini": "GPT-5.4 Mini",
   "gpt-5.3-codex": "GPT-5.3 Codex",
+  "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
 };
 
 export const CODEX_REASONING_EFFORTS = [

@@ -36,9 +36,9 @@ export function SavedMessagesModal({
 
   return (
     <div className="search-backdrop" onClick={onClose}>
-      <section className="inbox-panel saved-panel" onClick={(event) => event.stopPropagation()}>
-        <header className="inbox-head">
-          <button className="inbox-back" onClick={onClose} aria-label="Close saved messages">
+      <section className="activity-feed-panel saved-panel" onClick={(event) => event.stopPropagation()}>
+        <header className="activity-feed-head">
+          <button className="activity-feed-back" onClick={onClose} aria-label="Close saved messages">
             <X size={18} />
           </button>
           <div>
@@ -47,7 +47,7 @@ export function SavedMessagesModal({
           </div>
         </header>
 
-        <div className="inbox-body">
+        <div className="activity-feed-body">
           {items.length === 0 && (
             <div className="search-empty">
               <Bookmark size={34} />
@@ -64,18 +64,18 @@ export function SavedMessagesModal({
             return (
               <article
                 key={item.id}
-                className="inbox-row saved-row"
+                className="activity-feed-row saved-row"
                 onClick={() => onOpenItem(item)}
               >
-                <span className="inbox-row-avatar" aria-hidden="true">
+                <span className="activity-feed-row-avatar" aria-hidden="true">
                   {senderAgent ? (
                     <AgentAvatar agent={senderAgent} size="md" showStatus={false} />
                   ) : (
                     <span className="search-result-fallback-avatar">{item.sender_name.slice(0, 1) || "S"}</span>
                   )}
                 </span>
-                <div className="inbox-row-main">
-                  <div className="inbox-row-meta">
+                <div className="activity-feed-row-main">
+                  <div className="activity-feed-row-meta">
                     <strong>{item.sender_name || "Saved message"}</strong>
                     <span>#{item.channel_name}</span>
                     <time>{formatTime(item.message_created_at)}</time>
@@ -89,7 +89,7 @@ export function SavedMessagesModal({
                   <small>Open source</small>
                 </div>
                 <button
-                  className="inbox-check saved-unsave"
+                  className="activity-feed-check saved-unsave"
                   title="Unsave"
                   onClick={(event) => {
                     event.stopPropagation();

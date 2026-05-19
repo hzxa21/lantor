@@ -23,7 +23,7 @@ import { ChannelSettingsModal } from "./components/ChannelSettingsModal";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { Conversation } from "./components/Conversation";
 import { CreateChannelModal } from "./components/CreateChannelModal";
-import { InboxModal } from "./components/InboxModal";
+import { ActivityFeedModal } from "./components/ActivityFeedModal";
 import { OwnerProfileModal, ownerProfileToForm, type OwnerProfileForm } from "./components/OwnerProfileModal";
 import { SavedMessagesModal } from "./components/SavedMessagesModal";
 import { SearchModal } from "./components/SearchModal";
@@ -41,7 +41,7 @@ import {
   Bootstrap,
   DraftAttachment,
   EMPTY_AGENT_FORM,
-  InboxItem,
+  ActivityFeedItem,
   Message,
   MessageAttachment,
   RUNTIME_PRESETS,
@@ -99,7 +99,7 @@ const MOBILE_EDGE_SWIPE_MAX_VERTICAL_PX = 48;
 const MOBILE_SIDEBAR_PEEK_PX = 18;
 const MOBILE_SIDEBAR_FLING_VELOCITY = 0.45;
 const SAVED_MESSAGES_READ_DISMISS_ID = "saved-messages";
-const INBOX_KIND_PRIORITY: Record<InboxItem["kind"], number> = {
+const ACTIVITY_FEED_KIND_PRIORITY: Record<ActivityFeedItem["kind"], number> = {
   reminder: 0,
   mention: 1,
   dm: 2,
@@ -127,7 +127,7 @@ type ConfirmRequest = {
 };
 
 type ActiveTab = "chat" | "tasks";
-type MobileModal = "search" | "inbox" | "saved";
+type MobileModal = "search" | "activity" | "saved";
 
 type AppHistoryState = {
   __lantorUiHistory?: true;
@@ -196,7 +196,7 @@ function isAppHistoryState(value: unknown): value is AppHistoryState {
     && (
       state.activeModal === null ||
       state.activeModal === "search" ||
-      state.activeModal === "inbox" ||
+      state.activeModal === "activity" ||
       state.activeModal === "saved"
     );
 }
@@ -516,7 +516,7 @@ function App() {
   const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
-  const [showInboxModal, setShowInboxModal] = useState(false);
+  const [showActivityFeedModal, setShowActivityFeedModal] = useState(false);
   const [showSavedModal, setShowSavedModal] = useState(false);
   const [showOwnerProfileModal, setShowOwnerProfileModal] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(() => isMobileViewport());
@@ -569,8 +569,8 @@ function App() {
   }, [focusedMessageId]);
   const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
-  const [dismissedInboxItems, setDismissedInboxItems] = useState<Record<string, string>>({});
-  const [readInboxItems, setReadInboxItems] = useState<Record<string, string>>({});
+  const [dismissedActivityFeedItems, setDismissedActivityFeedItems] = useState<Record<string, string>>({});
+  const [readActivityFeedItems, setReadActivityFeedItems] = useState<Record<string, string>>({});
   const [locallyUnfollowedThreadIds, setLocallyUnfollowedThreadIds] = useState<Set<string>>(() => new Set());
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
@@ -589,8 +589,8 @@ function App() {
   const [appHistoryMaxIndex, setAppHistoryMaxIndex] = useState(0);
   const activeMobileModal: MobileModal | null = showSearchModal
     ? "search"
-    : showInboxModal
-      ? "inbox"
+    : showActivityFeedModal
+      ? "activity"
       : showSavedModal
         ? "saved"
         : null;
@@ -1073,11 +1073,11 @@ function App() {
   }, [channelThreadMemory]);
 
   useEffect(() => {
-    setDismissedInboxItems(data?.dismissed_inbox_items ?? {});
+    setDismissedActivityFeedItems(data?.dismissed_inbox_items ?? {});
   }, [data?.dismissed_inbox_items]);
 
   useEffect(() => {
-    setReadInboxItems(data?.read_inbox_items ?? {});
+    setReadActivityFeedItems(data?.read_inbox_items ?? {});
   }, [data?.read_inbox_items]);
 
   useEffect(() => {
@@ -1094,7 +1094,7 @@ function App() {
         event.preventDefault();
         navigateBack(() => {
           if (showSearchModal) setShowSearchModal(false);
-          else if (showInboxModal) setShowInboxModal(false);
+          else if (showActivityFeedModal) setShowActivityFeedModal(false);
           else if (showSavedModal) setShowSavedModal(false);
           else if (selectedAgentId) setSelectedAgentId(null);
           else if (showThread) setShowThread(false);
@@ -1114,7 +1114,7 @@ function App() {
         showChannelAgentsModal ||
         showCreateAgentModal ||
         showSearchModal ||
-        showInboxModal ||
+        showActivityFeedModal ||
         showSavedModal ||
         showOwnerProfileModal ||
         Boolean(editingAgentId);
@@ -1137,7 +1137,7 @@ function App() {
     showChannelSettingsModal,
     showCreateAgentModal,
     showCreateChannelModal,
-    showInboxModal,
+    showActivityFeedModal,
     showOwnerProfileModal,
     showSavedModal,
     showSearchModal,
@@ -1186,7 +1186,7 @@ function App() {
       setMobileSidebarDragPx(0);
       setSelectedAgentId(event.state.selectedAgentId);
       setShowSearchModal(event.state.activeModal === "search");
-      setShowInboxModal(event.state.activeModal === "inbox");
+      setShowActivityFeedModal(event.state.activeModal === "activity");
       setShowSavedModal(event.state.activeModal === "saved");
     }
 
@@ -1285,7 +1285,7 @@ function App() {
       showChannelSettingsModal ||
       showCreateAgentModal ||
       showCreateChannelModal ||
-      showInboxModal ||
+      showActivityFeedModal ||
       showOwnerProfileModal ||
       showSavedModal ||
       showSearchModal;
@@ -1382,7 +1382,7 @@ function App() {
     showChannelSettingsModal,
     showCreateAgentModal,
     showCreateChannelModal,
-    showInboxModal,
+    showActivityFeedModal,
     showMobileSidebar,
     showOwnerProfileModal,
     showSavedModal,
@@ -1491,7 +1491,7 @@ function App() {
       .sort((left, right) => (latestByRoot.get(right.id) ?? 0) - (latestByRoot.get(left.id) ?? 0));
   }, [visibleMessages, locallyUnfollowedThreadIds, threadUnreadCounts]);
 
-  const allInboxItems = useMemo(() => {
+  const allActivityFeedItems = useMemo(() => {
     if (!data) return [];
     const channelsById = new Map(data.channels.map((item) => [item.id, item]));
     const agentsById = new Map(data.agents.map((item) => [item.id, item]));
@@ -1524,14 +1524,14 @@ function App() {
       return `#${target.name}`;
     };
     const timestamp = (value: string | null | undefined) => value || new Date(0).toISOString();
-    const items: InboxItem[] = [];
-    const threadInboxRootIds = new Set(allThreadRootMessages.map((message) => message.id));
+    const items: ActivityFeedItem[] = [];
+    const threadRootIdsForActivityFeed = new Set(allThreadRootMessages.map((message) => message.id));
 
     for (const channel of data.channels) {
       const unread = channel.unread_count > 0 || channelAlertIds.has(channel.id);
       if (!unread) continue;
       const latest = latestByChannel.get(channel.id);
-      if (latest?.thread_root_id && threadInboxRootIds.has(latest.thread_root_id)) continue;
+      if (latest?.thread_root_id && threadRootIdsForActivityFeed.has(latest.thread_root_id)) continue;
       const dmAgent = channel.kind === "dm" && channel.dm_agent_id ? agentsById.get(channel.dm_agent_id) : null;
       items.push({
         id: `${channel.kind}:${channel.id}`,
@@ -1662,15 +1662,15 @@ function App() {
     return items;
   }, [allThreadRootMessages, channelAlertIds, data, threadReplyCounts, threadUnreadCounts, visibleMessages]);
 
-  const inboxItems = useMemo(() => {
-    return allInboxItems
+  const activityFeedItems = useMemo(() => {
+    return allActivityFeedItems
       .filter((item) => {
-        const dismissedAt = dismissedInboxItems[item.dismissId];
+        const dismissedAt = dismissedActivityFeedItems[item.dismissId];
         if (!dismissedAt) return true;
         return new Date(item.timestamp).getTime() > new Date(dismissedAt).getTime();
       })
       .map((item) => {
-        const readAt = readInboxItems[item.id];
+        const readAt = readActivityFeedItems[item.id];
         if (!readAt || new Date(item.timestamp).getTime() > new Date(readAt).getTime()) {
           return item;
         }
@@ -1678,16 +1678,16 @@ function App() {
       })
       .sort((left, right) => {
         if (left.unread !== right.unread) return left.unread ? -1 : 1;
-        const priority = INBOX_KIND_PRIORITY[left.kind] - INBOX_KIND_PRIORITY[right.kind];
+        const priority = ACTIVITY_FEED_KIND_PRIORITY[left.kind] - ACTIVITY_FEED_KIND_PRIORITY[right.kind];
         if (priority !== 0) return priority;
         return new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime();
       })
       .slice(0, 120);
-  }, [allInboxItems, dismissedInboxItems, readInboxItems]);
+  }, [allActivityFeedItems, dismissedActivityFeedItems, readActivityFeedItems]);
 
-  const inboxUnreadCount = useMemo(() => {
-    return inboxItems.filter((item) => item.unread).length;
-  }, [inboxItems]);
+  const activityFeedUnreadCount = useMemo(() => {
+    return activityFeedItems.filter((item) => item.unread).length;
+  }, [activityFeedItems]);
 
   const savedMessageIds = useMemo(() => {
     return new Set(data?.saved_messages.map((item) => item.message_id) ?? []);
@@ -1696,12 +1696,12 @@ function App() {
   const savedUnreadCount = useMemo(() => {
     const items = data?.saved_messages ?? [];
     if (items.length === 0) return 0;
-    const readUntil = dismissedInboxItems[SAVED_MESSAGES_READ_DISMISS_ID];
+    const readUntil = dismissedActivityFeedItems[SAVED_MESSAGES_READ_DISMISS_ID];
     if (!readUntil) return items.length;
     const readUntilTime = new Date(readUntil).getTime();
     if (!Number.isFinite(readUntilTime)) return items.length;
     return items.filter((item) => new Date(item.created_at).getTime() > readUntilTime).length;
-  }, [data?.saved_messages, dismissedInboxItems]);
+  }, [data?.saved_messages, dismissedActivityFeedItems]);
 
   const shareBaseUrl = useMemo(() => {
     if (!data) return window.location.origin;
@@ -2160,7 +2160,7 @@ function App() {
 
   function openMobileHome() {
     setShowSearchModal(false);
-    setShowInboxModal(false);
+    setShowActivityFeedModal(false);
     setShowSavedModal(false);
     setSelectedAgentId(null);
     setShowThread(false);
@@ -2172,24 +2172,24 @@ function App() {
   function openSearchModal() {
     setShowMobileSidebar(false);
     setMobileSidebarFocus("home");
-    setShowInboxModal(false);
+    setShowActivityFeedModal(false);
     setShowSavedModal(false);
     setShowSearchModal(true);
   }
 
-  function openInboxModal() {
+  function openActivityFeedModal() {
     setShowMobileSidebar(false);
     setMobileSidebarFocus("home");
     setShowSearchModal(false);
     setShowSavedModal(false);
-    setShowInboxModal(true);
+    setShowActivityFeedModal(true);
   }
 
   function openSavedModal() {
     setShowMobileSidebar(false);
     setMobileSidebarFocus("home");
     setShowSearchModal(false);
-    setShowInboxModal(false);
+    setShowActivityFeedModal(false);
     setShowSavedModal(true);
     void markSavedMessagesRead();
   }
@@ -2202,9 +2202,9 @@ function App() {
       return Number.isFinite(savedAt) ? Math.max(latest, savedAt) : latest;
     }, 0);
     const cutoff = new Date(Math.max(Date.now(), latestSavedAt)).toISOString();
-    const current = dismissedInboxItems[SAVED_MESSAGES_READ_DISMISS_ID];
+    const current = dismissedActivityFeedItems[SAVED_MESSAGES_READ_DISMISS_ID];
     if (current && new Date(current).getTime() >= new Date(cutoff).getTime()) return;
-    setDismissedInboxItems((existing) => ({ ...existing, [SAVED_MESSAGES_READ_DISMISS_ID]: cutoff }));
+    setDismissedActivityFeedItems((existing) => ({ ...existing, [SAVED_MESSAGES_READ_DISMISS_ID]: cutoff }));
     await apiInvoke("dismiss_inbox_items", {
       items: [{ itemId: SAVED_MESSAGES_READ_DISMISS_ID, dismissedUntil: cutoff }],
     });
@@ -2622,36 +2622,36 @@ function App() {
     setShowSavedModal(false);
   }
 
-  async function persistReadInboxItems(items: InboxItem[], readUntil?: string | ((item: InboxItem) => string)) {
+  async function persistReadActivityFeedItems(items: ActivityFeedItem[], readUntil?: string | ((item: ActivityFeedItem) => string)) {
     const reads = items.map((item) => ({
       itemId: item.id,
-      dismissedUntil: typeof readUntil === "function" ? readUntil(item) : (readUntil ?? inboxItemCutoff(item)),
+      dismissedUntil: typeof readUntil === "function" ? readUntil(item) : (readUntil ?? activityFeedItemCutoff(item)),
     }));
     if (reads.length === 0) return;
     await apiInvoke("mark_inbox_items_read", { items: reads });
   }
 
-  async function persistDismissedInboxItems(
-    items: InboxItem[],
-    dismissedUntil?: string | ((item: InboxItem) => string),
+  async function persistDismissedActivityFeedItems(
+    items: ActivityFeedItem[],
+    dismissedUntil?: string | ((item: ActivityFeedItem) => string),
   ) {
     const dismissals = items.map((item) => ({
       itemId: item.dismissId,
-      dismissedUntil: typeof dismissedUntil === "function" ? dismissedUntil(item) : (dismissedUntil ?? inboxItemCutoff(item)),
+      dismissedUntil: typeof dismissedUntil === "function" ? dismissedUntil(item) : (dismissedUntil ?? activityFeedItemCutoff(item)),
     }));
     if (dismissals.length === 0) return;
     await apiInvoke("dismiss_inbox_items", { items: dismissals });
   }
 
-  function inboxItemCutoff(item: InboxItem) {
+  function activityFeedItemCutoff(item: ActivityFeedItem) {
     const itemTime = new Date(item.timestamp).getTime();
     const cutoffTime = Math.max(Date.now(), Number.isFinite(itemTime) ? itemTime : 0);
     return new Date(cutoffTime).toISOString();
   }
 
-  function openInboxItem(item: InboxItem) {
+  function openActivityFeedItem(item: ActivityFeedItem) {
     if (item.unread) {
-      void markInboxItemRead(item);
+      void markActivityFeedItemRead(item);
     }
     const targetThreadId = item.threadId ?? item.messageId;
     if (item.channelId) selectChannel(item.channelId);
@@ -2666,14 +2666,14 @@ function App() {
     if (item.messageId) {
       setFocusedMessageId(item.messageId);
     }
-    setShowInboxModal(false);
+    setShowActivityFeedModal(false);
   }
 
-  async function markInboxItemRead(item: InboxItem) {
+  async function markActivityFeedItemRead(item: ActivityFeedItem) {
     if (!item.unread) return;
-    const dismissedUntil = inboxItemCutoff(item);
-    setReadInboxItems((current) => ({ ...current, [item.id]: dismissedUntil }));
-    const operations: Promise<unknown>[] = [persistReadInboxItems([item], dismissedUntil)];
+    const dismissedUntil = activityFeedItemCutoff(item);
+    setReadActivityFeedItems((current) => ({ ...current, [item.id]: dismissedUntil }));
+    const operations: Promise<unknown>[] = [persistReadActivityFeedItems([item], dismissedUntil)];
     if (item.threadId) {
       setThreadUnreadCounts((current) => {
         if (!current[item.threadId!]) return current;
@@ -2695,39 +2695,39 @@ function App() {
     await refresh();
   }
 
-  async function dismissInboxItem(item: InboxItem) {
-    const dismissedUntil = inboxItemCutoff(item);
-    setDismissedInboxItems((current) => ({ ...current, [item.dismissId]: dismissedUntil }));
-    await persistDismissedInboxItems([item], dismissedUntil);
+  async function dismissActivityFeedItem(item: ActivityFeedItem) {
+    const dismissedUntil = activityFeedItemCutoff(item);
+    setDismissedActivityFeedItems((current) => ({ ...current, [item.dismissId]: dismissedUntil }));
+    await persistDismissedActivityFeedItems([item], dismissedUntil);
     await refresh();
   }
 
-  async function dismissInboxItems(items: InboxItem[]) {
+  async function dismissActivityFeedItems(items: ActivityFeedItem[]) {
     if (items.length === 0) return;
     const cutoffByDismissId = new Map<string, string>();
     for (const item of items) {
-      const cutoff = inboxItemCutoff(item);
+      const cutoff = activityFeedItemCutoff(item);
       const existing = cutoffByDismissId.get(item.dismissId);
       if (!existing || new Date(cutoff).getTime() > new Date(existing).getTime()) {
         cutoffByDismissId.set(item.dismissId, cutoff);
       }
     }
-    setDismissedInboxItems((current) => {
+    setDismissedActivityFeedItems((current) => {
       const next = { ...current };
       for (const [dismissId, dismissedUntil] of cutoffByDismissId) {
         next[dismissId] = dismissedUntil;
       }
       return next;
     });
-    await persistDismissedInboxItems(items, (item) => cutoffByDismissId.get(item.dismissId) ?? item.timestamp);
+    await persistDismissedActivityFeedItems(items, (item) => cutoffByDismissId.get(item.dismissId) ?? item.timestamp);
     await refresh();
   }
 
-  async function markAllInboxRead(items: InboxItem[]) {
+  async function markAllActivityFeedRead(items: ActivityFeedItem[]) {
     const markReadItems = items.filter((item) => item.unread);
     if (markReadItems.length === 0) return;
-    const cutoffByItemId = new Map(markReadItems.map((item) => [item.id, inboxItemCutoff(item)]));
-    setReadInboxItems((current) => {
+    const cutoffByItemId = new Map(markReadItems.map((item) => [item.id, activityFeedItemCutoff(item)]));
+    setReadActivityFeedItems((current) => {
       const next = { ...current };
       for (const item of markReadItems) {
         next[item.id] = cutoffByItemId.get(item.id) ?? item.timestamp;
@@ -2753,7 +2753,7 @@ function App() {
       return next;
     });
     await Promise.all([
-      persistReadInboxItems(markReadItems, (item) => cutoffByItemId.get(item.id) ?? item.timestamp),
+      persistReadActivityFeedItems(markReadItems, (item) => cutoffByItemId.get(item.id) ?? item.timestamp),
       ...Array.from(
         new Set(markReadItems.map((item) => item.channelId).filter((id): id is string => Boolean(id))),
         (channelId) => apiInvoke("mark_channel_read", { channelId }),
@@ -2892,10 +2892,10 @@ function App() {
         data={data}
         channel={channel}
         channelAlertIds={channelAlertIds}
-        inboxUnreadCount={inboxUnreadCount}
+        activityFeedUnreadCount={activityFeedUnreadCount}
         savedUnreadCount={savedUnreadCount}
         openSearch={openSearchModal}
-        openInbox={openInboxModal}
+        openActivityFeed={openActivityFeedModal}
         openSaved={openSavedModal}
         mobileFocus={mobileSidebarFocus}
         openCreateChannelModal={() => {
@@ -2945,17 +2945,17 @@ function App() {
         onClose={() => closeAppModal(() => setShowSearchModal(false))}
       />
 
-      <InboxModal
-        open={showInboxModal}
-        items={inboxItems}
+      <ActivityFeedModal
+        open={showActivityFeedModal}
+        items={activityFeedItems}
         agents={data.agents}
         ownerProfile={data.owner_profile}
-        onOpenItem={openInboxItem}
-        onMarkItemRead={markInboxItemRead}
-        onDismissItem={dismissInboxItem}
-        onDismissItems={dismissInboxItems}
-        onMarkAllRead={markAllInboxRead}
-        onClose={() => closeAppModal(() => setShowInboxModal(false))}
+        onOpenItem={openActivityFeedItem}
+        onMarkItemRead={markActivityFeedItemRead}
+        onDismissItem={dismissActivityFeedItem}
+        onDismissItems={dismissActivityFeedItems}
+        onMarkAllRead={markAllActivityFeedRead}
+        onClose={() => closeAppModal(() => setShowActivityFeedModal(false))}
       />
 
       <SavedMessagesModal
@@ -3105,12 +3105,12 @@ function App() {
         </button>
         <button
           type="button"
-          className={`${showInboxModal ? "active" : ""} ${inboxUnreadCount ? "has-unread" : ""}`}
-          onClick={openInboxModal}
+          className={`${showActivityFeedModal ? "active" : ""} ${activityFeedUnreadCount ? "has-unread" : ""}`}
+          onClick={openActivityFeedModal}
         >
           <span className="mobile-bottom-nav-icon">
             <Inbox size={20} />
-            {inboxUnreadCount > 0 && <strong>{inboxUnreadCount}</strong>}
+            {activityFeedUnreadCount > 0 && <strong>{activityFeedUnreadCount}</strong>}
           </span>
           <span>Activity</span>
         </button>

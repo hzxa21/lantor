@@ -22,10 +22,10 @@ type SidebarProps = {
   data: Bootstrap;
   channel: Channel | null;
   channelAlertIds: Set<string>;
-  inboxUnreadCount: number;
+  activityFeedUnreadCount: number;
   savedUnreadCount: number;
   openSearch: () => void;
-  openInbox: () => void;
+  openActivityFeed: () => void;
   openSaved: () => void;
   mobileFocus: "home" | "dms";
   openCreateChannelModal: () => void;
@@ -41,10 +41,10 @@ export function Sidebar({
   data,
   channel,
   channelAlertIds,
-  inboxUnreadCount,
+  activityFeedUnreadCount,
   savedUnreadCount,
   openSearch,
-  openInbox,
+  openActivityFeed,
   openSaved,
   mobileFocus,
   openCreateChannelModal,
@@ -108,12 +108,12 @@ export function Sidebar({
           <kbd>⌘K</kbd>
         </button>
         <button
-          className={`sidebar-nav-trigger ${inboxUnreadCount ? "has-unread" : ""}`}
-          onClick={openInbox}
+          className={`sidebar-nav-trigger ${activityFeedUnreadCount ? "has-unread" : ""}`}
+          onClick={openActivityFeed}
         >
           <Inbox size={18} />
           <span>Activity</span>
-          {inboxUnreadCount > 0 && <strong>{inboxUnreadCount}</strong>}
+          {activityFeedUnreadCount > 0 && <strong>{activityFeedUnreadCount}</strong>}
         </button>
         <button
           className={`sidebar-nav-trigger ${savedUnreadCount ? "has-unread" : ""}`}

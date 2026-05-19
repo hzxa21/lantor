@@ -1,26 +1,26 @@
 import { Bell, Check, Hash, Inbox, MessageSquare, UserRound, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent } from "react";
-import type { Agent, InboxItem, InboxKind, OwnerProfile } from "../types";
+import type { Agent, ActivityFeedItem, ActivityFeedKind, OwnerProfile } from "../types";
 import { firstLines, formatTime, ownerAsAvatarAgent } from "../ui-utils";
 import { AgentAvatar } from "./AgentAvatar";
 
-type InboxFilter = "all" | "unread" | InboxKind;
+type ActivityFeedFilter = "all" | "unread" | ActivityFeedKind;
 
-type InboxModalProps = {
+type ActivityFeedModalProps = {
   open: boolean;
-  items: InboxItem[];
+  items: ActivityFeedItem[];
   agents: Agent[];
   ownerProfile: OwnerProfile;
-  onOpenItem: (item: InboxItem) => void;
-  onMarkItemRead: (item: InboxItem) => void;
-  onDismissItem: (item: InboxItem) => void;
-  onDismissItems: (items: InboxItem[]) => void;
-  onMarkAllRead: (items: InboxItem[]) => void;
+  onOpenItem: (item: ActivityFeedItem) => void;
+  onMarkItemRead: (item: ActivityFeedItem) => void;
+  onDismissItem: (item: ActivityFeedItem) => void;
+  onDismissItems: (items: ActivityFeedItem[]) => void;
+  onMarkAllRead: (items: ActivityFeedItem[]) => void;
   onClose: () => void;
 };
 
-const FILTERS: { value: InboxFilter; label: string }[] = [
+const FILTERS: { value: ActivityFeedFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "unread", label: "Unread" },
   { value: "mention", label: "Mentions" },
@@ -32,25 +32,27 @@ const FILTERS: { value: InboxFilter; label: string }[] = [
 
 const SWIPE_DISMISS_THRESHOLD_PX = 86;
 const SWIPE_REVEAL_MAX_PX = 96;
+const ACTIVITY_FEED_INITIAL_VISIBLE = 30;
+const ACTIVITY_FEED_LOAD_MORE_STEP = 30;
 
-function iconFor(kind: InboxKind) {
+function iconFor(kind: ActivityFeedKind) {
   if (kind === "reminder") return Bell;
   if (kind === "dm") return UserRound;
   if (kind === "thread" || kind === "mention") return MessageSquare;
   return Hash;
 }
 
-function kindLabel(kind: InboxKind) {
+function kindLabel(kind: ActivityFeedKind) {
   return kind === "dm" ? "DM" : kind;
 }
 
-function actorAvatarAgent(item: InboxItem, agents: Agent[], ownerProfile: OwnerProfile) {
+function actorAvatarAgent(item: ActivityFeedItem, agents: Agent[], ownerProfile: OwnerProfile) {
   if (item.actorAgentId) return agents.find((agent) => agent.id === item.actorAgentId) ?? null;
   if (item.actorRole === "owner") return ownerAsAvatarAgent(ownerProfile);
   return null;
 }
 
-export function InboxModal({
+export function ActivityFeedModal({
   open,
   items,
   agents,
@@ -61,8 +63,9 @@ export function InboxModal({
   onDismissItems,
   onMarkAllRead,
   onClose,
-}: InboxModalProps) {
-  const [filter, setFilter] = useState<InboxFilter>("all");
+}: ActivityFeedModalProps) {
+  const [filter, setFilter] = useState<ActivityFeedFilter>("all");
+  const [visibleCount, setVisibleCount] = useState(ACTIVITY_FEED_INITIAL_VISIBLE);
   const [swipeState, setSwipeState] = useState<{
     itemId: string;
     startX: number;
@@ -78,6 +81,15 @@ export function InboxModal({
     return items.filter((item) => item.kind === filter);
   }, [filter, items]);
   const filteredUnreadCount = filteredItems.filter((item) => item.unread).length;
+  const visibleItems = useMemo(
+    () => filteredItems.slice(0, visibleCount),
+    [filteredItems, visibleCount],
+  );
+  const hiddenCount = Math.max(0, filteredItems.length - visibleItems.length);
+
+  useEffect(() => {
+    setVisibleCount(ACTIVITY_FEED_INITIAL_VISIBLE);
+  }, [filter, items.length]);
 
   useEffect(() => {
     if (!open) return;
@@ -90,7 +102,7 @@ export function InboxModal({
 
   if (!open) return null;
 
-  function startSwipe(item: InboxItem, event: PointerEvent<HTMLElement>) {
+  function startSwipe(item: ActivityFeedItem, event: PointerEvent<HTMLElement>) {
     if (event.pointerType === "mouse") return;
     if ((event.target as HTMLElement).closest("button")) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -103,7 +115,7 @@ export function InboxModal({
     });
   }
 
-  function moveSwipe(item: InboxItem, event: PointerEvent<HTMLElement>) {
+  function moveSwipe(item: ActivityFeedItem, event: PointerEvent<HTMLElement>) {
     setSwipeState((current) => {
       if (!current || current.itemId !== item.id || !current.tracking) return current;
       const deltaX = event.clientX - current.startX;
@@ -117,7 +129,7 @@ export function InboxModal({
     });
   }
 
-  function endSwipe(item: InboxItem) {
+  function endSwipe(item: ActivityFeedItem) {
     const current = swipeState;
     setSwipeState(null);
     if (!current || current.itemId !== item.id) return;
@@ -132,7 +144,7 @@ export function InboxModal({
     }
   }
 
-  function openItem(item: InboxItem) {
+  function openItem(item: ActivityFeedItem) {
     if (suppressNextClickRef.current) {
       suppressNextClickRef.current = false;
       return;
@@ -142,25 +154,25 @@ export function InboxModal({
 
   return (
     <div className="search-backdrop" onClick={onClose}>
-      <section className="inbox-panel" onClick={(event) => event.stopPropagation()}>
-        <header className="inbox-head">
-          <button className="inbox-back" onClick={onClose} aria-label="Close inbox">
+      <section className="activity-feed-panel activity-panel" onClick={(event) => event.stopPropagation()}>
+        <header className="activity-feed-head">
+          <button className="activity-feed-back" onClick={onClose} aria-label="Close activity">
             <X size={18} />
           </button>
           <div>
             <h2>Activity</h2>
             <p>{items.length} active · {unreadCount} unread</p>
           </div>
-          <div className="inbox-head-actions">
+          <div className="activity-feed-head-actions">
             <button
-              className="inbox-mark-all"
+              className="activity-feed-mark-all"
               disabled={filteredUnreadCount === 0}
               onClick={() => onMarkAllRead(filteredItems)}
             >
               Mark all read
             </button>
             <button
-              className="inbox-dismiss-all"
+              className="activity-feed-dismiss-all"
               disabled={filteredItems.length === 0}
               onClick={() => onDismissItems(filteredItems)}
             >
@@ -169,7 +181,7 @@ export function InboxModal({
           </div>
         </header>
 
-        <div className="inbox-filters">
+        <div className="activity-feed-filters">
           {FILTERS.map((item) => (
             <button
               key={item.value}
@@ -181,16 +193,16 @@ export function InboxModal({
           ))}
         </div>
 
-        <div className="inbox-body">
+        <div className="activity-feed-body">
           {filteredItems.length === 0 && (
             <div className="search-empty">
               <Inbox size={34} />
-              <h3>No inbox items</h3>
+              <h3>No activity</h3>
               <p>Mentions, DMs, followed thread updates, active tasks, and due reminders will appear here.</p>
             </div>
           )}
 
-          {filteredItems.map((item) => {
+          {visibleItems.map((item) => {
             const Icon = iconFor(item.kind);
             const avatarAgent = actorAvatarAgent(item, agents, ownerProfile);
             const swipeOffset = swipeState?.itemId === item.id ? swipeState.offsetX : 0;
@@ -198,30 +210,30 @@ export function InboxModal({
             return (
               <div
                 key={item.id}
-                className={`inbox-row-shell ${swipeOffset < 0 ? "swiping" : ""}`}
-                style={{ "--inbox-swipe-x": `${swipeOffset}px` } as CSSProperties}
+                className={`activity-feed-row-shell ${swipeOffset < 0 ? "swiping" : ""}`}
+                style={{ "--activity-feed-swipe-x": `${swipeOffset}px` } as CSSProperties}
                 onPointerDown={(event) => startSwipe(item, event)}
                 onPointerMove={(event) => moveSwipe(item, event)}
                 onPointerUp={() => endSwipe(item)}
                 onPointerCancel={() => setSwipeState(null)}
               >
-                <div className="inbox-swipe-action" aria-hidden="true">
+                <div className="activity-feed-swipe-action" aria-hidden="true">
                   <X size={18} />
                   <span>Dismiss</span>
                 </div>
                 <article
-                  className={`inbox-row ${item.unread ? "unread" : ""}`}
+                  className={`activity-feed-row ${item.unread ? "unread" : ""}`}
                   onClick={() => openItem(item)}
                 >
-                  <span className="inbox-row-avatar" aria-hidden="true">
+                  <span className="activity-feed-row-avatar" aria-hidden="true">
                     {avatarAgent ? (
                       <AgentAvatar agent={avatarAgent} size="md" showStatus={false} />
                     ) : (
                       <span className="search-result-fallback-avatar">{item.actor?.slice(0, 1) || kindLabel(item.kind).slice(0, 1)}</span>
                     )}
                   </span>
-                  <div className="inbox-row-main">
-                    <div className="inbox-row-meta">
+                  <div className="activity-feed-row-main">
+                    <div className="activity-feed-row-meta">
                       {item.actor && <strong>{item.actor}</strong>}
                       <span>{item.surface}</span>
                       <time>{formatTime(item.timestamp)}</time>
@@ -237,11 +249,11 @@ export function InboxModal({
                       {item.newCount > 0 ? <b>{item.newCount} new</b> : null}
                     </small>
                   </div>
-                  <div className="inbox-row-actions">
-                    {item.unread ? <span className="inbox-unread-dot" aria-label="Unread" /> : null}
+                  <div className="activity-feed-row-actions">
+                    {item.unread ? <span className="activity-feed-unread-dot" aria-label="Unread" /> : null}
                     {item.unread ? (
                       <button
-                        className="inbox-check"
+                        className="activity-feed-check"
                         title="Mark read"
                         onClick={(event) => {
                           event.stopPropagation();
@@ -252,7 +264,7 @@ export function InboxModal({
                       </button>
                     ) : null}
                     <button
-                      className="inbox-dismiss"
+                      className="activity-feed-dismiss"
                       title="Dismiss"
                       onClick={(event) => {
                         event.stopPropagation();
@@ -266,6 +278,22 @@ export function InboxModal({
               </div>
             );
           })}
+
+          {hiddenCount > 0 && (
+            <div className="activity-feed-load-more">
+              <button
+                type="button"
+                onClick={() =>
+                  setVisibleCount((current) =>
+                    Math.min(filteredItems.length, current + ACTIVITY_FEED_LOAD_MORE_STEP),
+                  )
+                }
+              >
+                Show {Math.min(hiddenCount, ACTIVITY_FEED_LOAD_MORE_STEP)} more
+                <span>{hiddenCount} hidden</span>
+              </button>
+            </div>
+          )}
         </div>
       </section>
     </div>
