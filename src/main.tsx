@@ -80,7 +80,7 @@ const MIN_AGENT_DRAWER_WIDTH = 320;
 const DEFAULT_SIDEBAR_WIDTH = 292;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 460;
-const MIN_CONVERSATION_WIDTH = 360;
+const MIN_CONVERSATION_WIDTH = 480;
 const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -257,12 +257,23 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
   }
 }
 
-function maxThreadPanelWidth() {
-  return Math.max(MIN_THREAD_PANEL_WIDTH, Math.floor(window.innerWidth * (2 / 3)));
+function maxRightPanelWidth(sidebarWidth: number, minPanelWidth: number, capToViewport = true) {
+  const contentWidth = Math.max(0, window.innerWidth - sidebarWidth);
+  const preserveConversationMax = contentWidth - MIN_CONVERSATION_WIDTH;
+  const viewportMax = Math.floor(window.innerWidth * (2 / 3));
+  const maxWidth = capToViewport
+    ? Math.min(viewportMax, preserveConversationMax)
+    : preserveConversationMax;
+  const fallbackWidth = Math.min(minPanelWidth, Math.max(0, preserveConversationMax));
+  return Math.max(fallbackWidth, maxWidth);
 }
 
-function maxAgentDrawerWidth() {
-  return Math.max(MIN_AGENT_DRAWER_WIDTH, Math.floor(window.innerWidth * (2 / 3)));
+function maxThreadPanelWidth(sidebarWidth = DEFAULT_SIDEBAR_WIDTH) {
+  return maxRightPanelWidth(sidebarWidth, MIN_THREAD_PANEL_WIDTH, false);
+}
+
+function maxAgentDrawerWidth(sidebarWidth = DEFAULT_SIDEBAR_WIDTH) {
+  return maxRightPanelWidth(sidebarWidth, MIN_AGENT_DRAWER_WIDTH);
 }
 
 function matchesSearchTime(value: string | null, range: SearchTimeRange) {
@@ -534,7 +545,7 @@ function App() {
       DEFAULT_THREAD_PANEL_WIDTH,
     );
     return Number.isFinite(value)
-      ? Math.min(maxThreadPanelWidth(), Math.max(MIN_THREAD_PANEL_WIDTH, value))
+      ? Math.min(maxThreadPanelWidth(DEFAULT_SIDEBAR_WIDTH), Math.max(MIN_THREAD_PANEL_WIDTH, value))
       : DEFAULT_THREAD_PANEL_WIDTH;
   });
   const [agentDrawerWidth, setAgentDrawerWidth] = useState(() => {
@@ -543,7 +554,7 @@ function App() {
       DEFAULT_AGENT_DRAWER_WIDTH,
     );
     return Number.isFinite(value)
-      ? Math.min(maxAgentDrawerWidth(), Math.max(MIN_AGENT_DRAWER_WIDTH, value))
+      ? Math.min(maxAgentDrawerWidth(DEFAULT_SIDEBAR_WIDTH), Math.max(MIN_AGENT_DRAWER_WIDTH, value))
       : DEFAULT_AGENT_DRAWER_WIDTH;
   });
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -567,6 +578,18 @@ function App() {
     const timer = window.setTimeout(() => setFocusedMessageId(null), 2600);
     return () => window.clearTimeout(timer);
   }, [focusedMessageId]);
+
+  useEffect(() => {
+    function clampRightPanels() {
+      setThreadPanelWidth((current) => Math.min(maxThreadPanelWidth(sidebarWidth), current));
+      setAgentDrawerWidth((current) => Math.min(maxAgentDrawerWidth(sidebarWidth), current));
+    }
+
+    clampRightPanels();
+    window.addEventListener("resize", clampRightPanels);
+    return () => window.removeEventListener("resize", clampRightPanels);
+  }, [sidebarWidth]);
+
   const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
   const [dismissedActivityFeedItems, setDismissedActivityFeedItems] = useState<Record<string, string>>({});
@@ -2792,10 +2815,7 @@ function App() {
 
     function onPointerMove(moveEvent: PointerEvent) {
       const delta = startX - moveEvent.clientX;
-      const maxWidth = Math.max(
-        MIN_THREAD_PANEL_WIDTH,
-        Math.min(maxThreadPanelWidth(), window.innerWidth - sidebarWidth - MIN_CONVERSATION_WIDTH),
-      );
+      const maxWidth = maxThreadPanelWidth(sidebarWidth);
       const next = Math.min(maxWidth, Math.max(MIN_THREAD_PANEL_WIDTH, startWidth + delta));
       setThreadPanelWidth(next);
     }
@@ -2818,10 +2838,7 @@ function App() {
 
     function onPointerMove(moveEvent: PointerEvent) {
       const delta = startX - moveEvent.clientX;
-      const maxWidth = Math.max(
-        MIN_AGENT_DRAWER_WIDTH,
-        Math.min(maxAgentDrawerWidth(), window.innerWidth - sidebarWidth - MIN_CONVERSATION_WIDTH),
-      );
+      const maxWidth = maxAgentDrawerWidth(sidebarWidth);
       const next = Math.min(maxWidth, Math.max(MIN_AGENT_DRAWER_WIDTH, startWidth + delta));
       setAgentDrawerWidth(next);
     }
