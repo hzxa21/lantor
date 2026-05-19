@@ -582,9 +582,11 @@ function App() {
   const messageDeltaFlushTimerRef = useRef<number | null>(null);
   const appHistoryReadyRef = useRef(false);
   const appHistoryIndexRef = useRef(0);
+  const appHistoryMaxIndexRef = useRef(0);
   const restoringAppHistoryRef = useRef(false);
   const lastAppHistoryKeyRef = useRef<string | null>(null);
   const [appHistoryIndex, setAppHistoryIndex] = useState(0);
+  const [appHistoryMaxIndex, setAppHistoryMaxIndex] = useState(0);
   const activeMobileModal: MobileModal | null = showSearchModal
     ? "search"
     : showInboxModal
@@ -603,9 +605,12 @@ function App() {
     };
   }, []);
 
-  function setAppHistoryPosition(index: number) {
+  function setAppHistoryPosition(index: number, maxIndex?: number) {
+    const nextMaxIndex = maxIndex ?? Math.max(appHistoryMaxIndexRef.current, index);
     appHistoryIndexRef.current = index;
+    appHistoryMaxIndexRef.current = nextMaxIndex;
     setAppHistoryIndex(index);
+    setAppHistoryMaxIndex(nextMaxIndex);
   }
 
   function buildAppHistoryState(index = appHistoryIndexRef.current): AppHistoryState {
@@ -1067,7 +1072,6 @@ function App() {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const modifier = event.metaKey || event.ctrlKey;
-      const channels = data?.channels ?? [];
 
       if (modifier && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -1087,12 +1091,9 @@ function App() {
         return;
       }
 
-      if (modifier && event.key === "]" && channels.length > 0) {
+      if (modifier && event.key === "]") {
         event.preventDefault();
-        const currentIndex = Math.max(0, channels.findIndex((item) => item.id === activeChannelId));
-        const offset = 1;
-        const nextIndex = (currentIndex + offset + channels.length) % channels.length;
-        selectChannel(channels[nextIndex].id);
+        navigateForward();
         return;
       }
 
@@ -1119,7 +1120,6 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     activeChannelId,
-    data?.channels,
     editingAgentId,
     selectedAgentId,
     showChannelAgentsModal,
@@ -1221,13 +1221,13 @@ function App() {
       const baseKey = appHistoryKey(baseState);
       window.history.replaceState(baseState, "");
       appHistoryReadyRef.current = true;
-      setAppHistoryPosition(0);
+      setAppHistoryPosition(0, 0);
       lastAppHistoryKeyRef.current = baseKey;
 
       if (baseKey === currentKey) return;
       const firstState = { ...currentState, index: 1 };
       window.history.pushState(firstState, "");
-      setAppHistoryPosition(1);
+      setAppHistoryPosition(1, 1);
       lastAppHistoryKeyRef.current = appHistoryKey(firstState);
       return;
     }
@@ -1256,7 +1256,7 @@ function App() {
 
     const nextState = { ...currentState, index: appHistoryIndexRef.current + 1 };
     window.history.pushState(nextState, "");
-    setAppHistoryPosition(nextState.index);
+    setAppHistoryPosition(nextState.index, nextState.index);
     lastAppHistoryKeyRef.current = appHistoryKey(nextState);
   }, [
     data,
@@ -2115,12 +2115,22 @@ function App() {
     return appHistoryReadyRef.current && appHistoryIndexRef.current > 0;
   }
 
+  function canNavigateForward() {
+    return appHistoryReadyRef.current && appHistoryIndexRef.current < appHistoryMaxIndexRef.current;
+  }
+
   function navigateBack(fallback: () => void) {
     if (canNavigateBack()) {
       window.history.back();
       return;
     }
     fallback();
+  }
+
+  function navigateForward() {
+    if (canNavigateForward()) {
+      window.history.forward();
+    }
   }
 
   function openMobileSidebarFromContent() {
@@ -2979,6 +2989,10 @@ function App() {
         setActiveTab={setActiveTab}
         setActiveThreadId={revealThread}
         openMobileSidebar={openMobileSidebarFromContent}
+        canNavigateBack={appHistoryIndex > 0}
+        canNavigateForward={appHistoryIndex < appHistoryMaxIndex}
+        navigateBack={() => navigateBack(() => {})}
+        navigateForward={navigateForward}
         openChannelSettingsModal={() => setShowChannelSettingsModal(true)}
         deleteChannel={deleteChannel}
         openChannelAgentsModal={() => setShowChannelAgentsModal(true)}

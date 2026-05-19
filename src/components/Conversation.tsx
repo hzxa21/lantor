@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  ArrowRight,
   CheckCircle2,
   ChevronRight,
   Flag,
@@ -52,6 +53,10 @@ type ConversationProps = {
   setActiveTab: (tab: "chat" | "tasks") => void;
   setActiveThreadId: (threadId: string | null) => void;
   openMobileSidebar: () => void;
+  canNavigateBack: boolean;
+  canNavigateForward: boolean;
+  navigateBack: () => void;
+  navigateForward: () => void;
   openChannelSettingsModal: () => void;
   deleteChannel: () => void;
   openChannelAgentsModal: () => void;
@@ -135,6 +140,10 @@ export function Conversation({
   setActiveTab,
   setActiveThreadId,
   openMobileSidebar,
+  canNavigateBack,
+  canNavigateForward,
+  navigateBack,
+  navigateForward,
   openChannelSettingsModal,
   deleteChannel,
   openChannelAgentsModal,
@@ -430,6 +439,28 @@ export function Conversation({
         >
           <ArrowLeft size={18} />
         </button>
+        <div className="desktop-history-controls" aria-label="Navigation history">
+          <button
+            type="button"
+            className="desktop-history-button"
+            aria-label="Go back"
+            title="Back"
+            disabled={!canNavigateBack}
+            onClick={navigateBack}
+          >
+            <ArrowLeft size={17} />
+          </button>
+          <button
+            type="button"
+            className="desktop-history-button"
+            aria-label="Go forward"
+            title="Forward"
+            disabled={!canNavigateForward}
+            onClick={navigateForward}
+          >
+            <ArrowRight size={17} />
+          </button>
+        </div>
         <div className="channel-title">
           {isDm && dmAgent ? (
             <button
