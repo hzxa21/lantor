@@ -345,6 +345,7 @@ pub(crate) struct Bootstrap {
     pub(crate) messages: Vec<Message>,
     pub(crate) saved_messages: Vec<SavedMessage>,
     pub(crate) dismissed_inbox_items: HashMap<String, DateTime<Utc>>,
+    pub(crate) read_inbox_items: HashMap<String, DateTime<Utc>>,
     pub(crate) artifacts: Vec<Artifact>,
     pub(crate) tasks: Vec<Task>,
     pub(crate) reminders: Vec<Reminder>,

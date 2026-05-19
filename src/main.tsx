@@ -566,6 +566,7 @@ function App() {
   const [channelAlertIds, setChannelAlertIds] = useState<Set<string>>(() => new Set());
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>({});
   const [dismissedInboxItems, setDismissedInboxItems] = useState<Record<string, string>>({});
+  const [readInboxItems, setReadInboxItems] = useState<Record<string, string>>({});
   const [locallyUnfollowedThreadIds, setLocallyUnfollowedThreadIds] = useState<Set<string>>(() => new Set());
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
@@ -1056,6 +1057,10 @@ function App() {
   }, [data?.dismissed_inbox_items]);
 
   useEffect(() => {
+    setReadInboxItems(data?.read_inbox_items ?? {});
+  }, [data?.read_inbox_items]);
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const modifier = event.metaKey || event.ctrlKey;
       const channels = data?.channels ?? [];
@@ -1484,7 +1489,8 @@ function App() {
       const latest = latestByChannel.get(channel.id);
       const dmAgent = channel.kind === "dm" && channel.dm_agent_id ? agentsById.get(channel.dm_agent_id) : null;
       items.push({
-        id: `${channel.kind}:${channel.id}:${latest?.id ?? "unread"}`,
+        id: `${channel.kind}:${channel.id}`,
+        dismissId: `${channel.kind}:${channel.id}`,
         kind: channel.kind === "dm" ? "dm" : "channel",
         title: channel.kind === "dm" ? `DM with @${dmAgent?.handle ?? "agent"}` : `New activity in #${channel.name}`,
         excerpt: latest?.body ?? visibleChannelDescription(channel.description),
@@ -1509,7 +1515,8 @@ function App() {
       const currentMessage = latestReply ?? root;
       const unread = (threadUnreadCounts[root.id] ?? 0) > 0;
       items.push({
-        id: `thread:${root.id}:${currentMessage.id}`,
+        id: `thread:${root.id}`,
+        dismissId: `thread:${root.id}`,
         kind: "thread",
         title: firstLines(currentMessage.body, 1),
         excerpt: latestReply ? `Thread reply to: ${firstLines(root.body, 1)}` : root.body,
@@ -1536,6 +1543,7 @@ function App() {
         const rootId = message.thread_root_id ?? message.id;
         items.push({
           id: `mention:${message.id}`,
+          dismissId: `mention:${message.id}`,
           kind: "mention",
           title: firstLines(message.body, 1),
           excerpt: message.body,
@@ -1560,6 +1568,7 @@ function App() {
       .forEach((task) => {
         items.push({
           id: `task:${task.id}`,
+          dismissId: `task:${task.id}`,
           kind: "task",
           title: `Task #${task.number}: ${task.title}`,
           excerpt: task.assignee_name ? `Assigned to ${task.assignee_name}` : "Unassigned",
@@ -1582,6 +1591,7 @@ function App() {
       .forEach((reminder) => {
         items.push({
           id: `reminder:${reminder.id}`,
+          dismissId: `reminder:${reminder.id}`,
           kind: "reminder",
           title: reminder.title,
           excerpt: reminder.note,
@@ -1605,9 +1615,16 @@ function App() {
   const inboxItems = useMemo(() => {
     return allInboxItems
       .filter((item) => {
-        const dismissedAt = dismissedInboxItems[item.id];
+        const dismissedAt = dismissedInboxItems[item.dismissId];
         if (!dismissedAt) return true;
         return new Date(item.timestamp).getTime() > new Date(dismissedAt).getTime();
+      })
+      .map((item) => {
+        const readAt = readInboxItems[item.id];
+        if (!readAt || new Date(item.timestamp).getTime() > new Date(readAt).getTime()) {
+          return item;
+        }
+        return { ...item, unread: false };
       })
       .sort((left, right) => {
         if (left.unread !== right.unread) return left.unread ? -1 : 1;
@@ -1616,7 +1633,7 @@ function App() {
         return new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime();
       })
       .slice(0, 120);
-  }, [allInboxItems, dismissedInboxItems]);
+  }, [allInboxItems, dismissedInboxItems, readInboxItems]);
 
   const inboxUnreadCount = useMemo(() => {
     return inboxItems.filter((item) => item.unread).length;
@@ -2502,13 +2519,31 @@ function App() {
     setShowSavedModal(false);
   }
 
-  async function persistDismissedInboxItems(items: InboxItem[], dismissedUntil?: string) {
-    const dismissals = items.map((item) => ({
+  async function persistReadInboxItems(items: InboxItem[], readUntil?: string | ((item: InboxItem) => string)) {
+    const reads = items.map((item) => ({
       itemId: item.id,
-      dismissedUntil: dismissedUntil ?? item.timestamp,
+      dismissedUntil: typeof readUntil === "function" ? readUntil(item) : (readUntil ?? inboxItemCutoff(item)),
+    }));
+    if (reads.length === 0) return;
+    await apiInvoke("mark_inbox_items_read", { items: reads });
+  }
+
+  async function persistDismissedInboxItems(
+    items: InboxItem[],
+    dismissedUntil?: string | ((item: InboxItem) => string),
+  ) {
+    const dismissals = items.map((item) => ({
+      itemId: item.dismissId,
+      dismissedUntil: typeof dismissedUntil === "function" ? dismissedUntil(item) : (dismissedUntil ?? inboxItemCutoff(item)),
     }));
     if (dismissals.length === 0) return;
     await apiInvoke("dismiss_inbox_items", { items: dismissals });
+  }
+
+  function inboxItemCutoff(item: InboxItem) {
+    const itemTime = new Date(item.timestamp).getTime();
+    const cutoffTime = Math.max(Date.now(), Number.isFinite(itemTime) ? itemTime : 0);
+    return new Date(cutoffTime).toISOString();
   }
 
   function openInboxItem(item: InboxItem) {
@@ -2525,17 +2560,14 @@ function App() {
     if (item.messageId) {
       setFocusedMessageId(item.messageId);
     }
-    if (item.unread) {
-      void markInboxItemRead(item);
-    }
     setShowInboxModal(false);
   }
 
   async function markInboxItemRead(item: InboxItem) {
     if (!item.unread) return;
-    const dismissedUntil = new Date().toISOString();
-    setDismissedInboxItems((current) => ({ ...current, [item.id]: dismissedUntil }));
-    const operations: Promise<unknown>[] = [persistDismissedInboxItems([item], dismissedUntil)];
+    const dismissedUntil = inboxItemCutoff(item);
+    setReadInboxItems((current) => ({ ...current, [item.id]: dismissedUntil }));
+    const operations: Promise<unknown>[] = [persistReadInboxItems([item], dismissedUntil)];
     if (item.threadId) {
       setThreadUnreadCounts((current) => {
         if (!current[item.threadId!]) return current;
@@ -2553,27 +2585,74 @@ function App() {
       });
       operations.push(apiInvoke("mark_channel_read", { channelId: item.channelId }));
     }
-    if (item.reminderId) {
-      operations.push(apiInvoke("complete_reminder", { reminderId: item.reminderId }));
-    }
     await Promise.all(operations);
     await refresh();
   }
 
-  async function markAllInboxRead() {
-    if (!data) return;
-    const markReadItems = allInboxItems.filter((item) => item.unread);
-    const dismissedUntil = new Date().toISOString();
+  async function dismissInboxItem(item: InboxItem) {
+    const dismissedUntil = inboxItemCutoff(item);
+    setDismissedInboxItems((current) => ({ ...current, [item.dismissId]: dismissedUntil }));
+    await persistDismissedInboxItems([item], dismissedUntil);
+    await refresh();
+  }
+
+  async function dismissInboxItems(items: InboxItem[]) {
+    if (items.length === 0) return;
+    const cutoffByDismissId = new Map<string, string>();
+    for (const item of items) {
+      const cutoff = inboxItemCutoff(item);
+      const existing = cutoffByDismissId.get(item.dismissId);
+      if (!existing || new Date(cutoff).getTime() > new Date(existing).getTime()) {
+        cutoffByDismissId.set(item.dismissId, cutoff);
+      }
+    }
     setDismissedInboxItems((current) => {
       const next = { ...current };
-      for (const item of markReadItems) {
-        next[item.id] = dismissedUntil;
+      for (const [dismissId, dismissedUntil] of cutoffByDismissId) {
+        next[dismissId] = dismissedUntil;
       }
       return next;
     });
-    await apiInvoke("mark_all_inbox_read");
-    setChannelAlertIds(new Set());
-    setThreadUnreadCounts({});
+    await persistDismissedInboxItems(items, (item) => cutoffByDismissId.get(item.dismissId) ?? item.timestamp);
+    await refresh();
+  }
+
+  async function markAllInboxRead(items: InboxItem[]) {
+    const markReadItems = items.filter((item) => item.unread);
+    if (markReadItems.length === 0) return;
+    const cutoffByItemId = new Map(markReadItems.map((item) => [item.id, inboxItemCutoff(item)]));
+    setReadInboxItems((current) => {
+      const next = { ...current };
+      for (const item of markReadItems) {
+        next[item.id] = cutoffByItemId.get(item.id) ?? item.timestamp;
+      }
+      return next;
+    });
+    setChannelAlertIds((current) => {
+      const channelIds = new Set(markReadItems.map((item) => item.channelId).filter((id): id is string => Boolean(id)));
+      if (channelIds.size === 0) return current;
+      const next = new Set(current);
+      for (const channelId of channelIds) {
+        next.delete(channelId);
+      }
+      return next;
+    });
+    setThreadUnreadCounts((current) => {
+      const threadIds = new Set(markReadItems.map((item) => item.threadId).filter((id): id is string => Boolean(id)));
+      if (threadIds.size === 0) return current;
+      const next = { ...current };
+      for (const threadId of threadIds) {
+        delete next[threadId];
+      }
+      return next;
+    });
+    await Promise.all([
+      persistReadInboxItems(markReadItems, (item) => cutoffByItemId.get(item.id) ?? item.timestamp),
+      ...Array.from(
+        new Set(markReadItems.map((item) => item.channelId).filter((id): id is string => Boolean(id))),
+        (channelId) => apiInvoke("mark_channel_read", { channelId }),
+      ),
+    ]);
     await refresh();
   }
 
@@ -2750,6 +2829,8 @@ function App() {
         ownerProfile={data.owner_profile}
         onOpenItem={openInboxItem}
         onMarkItemRead={markInboxItemRead}
+        onDismissItem={dismissInboxItem}
+        onDismissItems={dismissInboxItems}
         onMarkAllRead={markAllInboxRead}
         onClose={() => closeAppModal(() => setShowInboxModal(false))}
       />

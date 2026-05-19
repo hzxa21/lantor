@@ -1561,6 +1561,53 @@ async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    let owner_inbox_read_state_exists: bool =
+        sqlx::query_scalar("select to_regclass('owner_inbox_read_state') is not null")
+            .fetch_one(pool)
+            .await?;
+
+    sqlx::query(
+        r#"
+        create table if not exists owner_inbox_read_state (
+            item_id text primary key,
+            read_until timestamptz not null,
+            read_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        create table if not exists owner_inbox_hidden_items (
+            item_id text primary key,
+            hidden_until timestamptz not null,
+            hidden_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    if !owner_inbox_read_state_exists {
+        sqlx::query(
+            r#"
+            insert into owner_inbox_read_state (item_id, read_until, read_at)
+            select item_id, dismissed_until, dismissed_at
+            from owner_inbox_dismissals
+            on conflict (item_id) do update set
+                read_until = greatest(owner_inbox_read_state.read_until, excluded.read_until),
+                read_at = greatest(owner_inbox_read_state.read_at, excluded.read_at)
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("delete from owner_inbox_dismissals")
+            .execute(pool)
+            .await?;
+    }
+
     sqlx::query(
         r#"
         create table if not exists channel_members (
@@ -1718,6 +1765,7 @@ pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResu
     let messages = load_messages(pool).await?;
     let saved_messages = load_saved_messages(pool).await?;
     let dismissed_inbox_items = load_dismissed_inbox_items(pool).await?;
+    let read_inbox_items = load_read_inbox_items(pool).await?;
     let artifacts = load_artifacts(pool).await?;
     let tasks = load_tasks(pool).await?;
     let reminders = load_reminders(pool).await?;
@@ -1738,6 +1786,7 @@ pub(crate) async fn load_bootstrap(pool: &PgPool, db_url: String) -> CommandResu
         messages,
         saved_messages,
         dismissed_inbox_items,
+        read_inbox_items,
         artifacts,
         tasks,
         reminders,
@@ -5563,6 +5612,20 @@ async fn dismiss_inbox_items(
     .await
 }
 
+#[tauri::command]
+async fn mark_inbox_items_read(
+    items: Vec<DismissInboxItemInput>,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    mark_inbox_items_read_in_pool(
+        &state.pool,
+        items
+            .into_iter()
+            .map(|item| (item.item_id, item.dismissed_until)),
+    )
+    .await
+}
+
 pub(crate) async fn dismiss_inbox_items_in_pool<I>(pool: &PgPool, items: I) -> CommandResult<()>
 where
     I: IntoIterator<Item = (String, DateTime<Utc>)>,
@@ -5574,14 +5637,14 @@ where
         }
         sqlx::query(
             r#"
-            insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
+            insert into owner_inbox_hidden_items (item_id, hidden_until, hidden_at)
             values ($1, $2, now())
             on conflict (item_id) do update set
-                dismissed_until = greatest(
-                    owner_inbox_dismissals.dismissed_until,
-                    excluded.dismissed_until
+                hidden_until = greatest(
+                    owner_inbox_hidden_items.hidden_until,
+                    excluded.hidden_until
                 ),
-                dismissed_at = now()
+                hidden_at = now()
             "#,
         )
         .bind(item_id)
@@ -5594,94 +5657,47 @@ where
     Ok(())
 }
 
-async fn upsert_owner_inbox_dismissals_from_query(pool: &PgPool, query: &str) -> CommandResult<()> {
-    sqlx::query(query).execute(pool).await.map_err(to_string)?;
+pub(crate) async fn mark_inbox_items_read_in_pool<I>(pool: &PgPool, items: I) -> CommandResult<()>
+where
+    I: IntoIterator<Item = (String, DateTime<Utc>)>,
+{
+    for item in items {
+        let item_id = item.0.trim();
+        if item_id.is_empty() {
+            continue;
+        }
+        sqlx::query(
+            r#"
+            insert into owner_inbox_read_state (item_id, read_until, read_at)
+            values ($1, $2, now())
+            on conflict (item_id) do update set
+                read_until = greatest(
+                    owner_inbox_read_state.read_until,
+                    excluded.read_until
+                ),
+                read_at = now()
+            "#,
+        )
+        .bind(item_id)
+        .bind(item.1)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+    }
+
     Ok(())
 }
 
 pub(crate) async fn mark_all_owner_inbox_read_in_pool(pool: &PgPool) -> CommandResult<()> {
-    upsert_owner_inbox_dismissals_from_query(
-        pool,
+    sqlx::query(
         r#"
-        insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
+        insert into owner_inbox_read_state (item_id, read_until, read_at)
         select 'task:' || id::text, now(), now()
         from tasks
         where status = 'in_review'
         on conflict (item_id) do update set
-            dismissed_until = greatest(owner_inbox_dismissals.dismissed_until, excluded.dismissed_until),
-            dismissed_at = now()
-        "#,
-    )
-    .await?;
-
-    upsert_owner_inbox_dismissals_from_query(
-        pool,
-        r#"
-        insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
-        select 'reminder:' || id::text, now(), now()
-        from reminders
-        where status = 'fired'
-        on conflict (item_id) do update set
-            dismissed_until = greatest(owner_inbox_dismissals.dismissed_until, excluded.dismissed_until),
-            dismissed_at = now()
-        "#,
-    )
-    .await?;
-
-    upsert_owner_inbox_dismissals_from_query(
-        pool,
-        r#"
-        insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
-        select 'mention:' || id::text, now(), now()
-        from messages
-        left join channel_read_state r on r.channel_id = messages.channel_id
-        where sender_role <> 'owner'
-          and (lower(body) like '%@theo%' or lower(body) like '%@dylan%')
-          and created_at > coalesce(r.last_read_at, '-infinity'::timestamptz)
-        on conflict (item_id) do update set
-            dismissed_until = greatest(owner_inbox_dismissals.dismissed_until, excluded.dismissed_until),
-            dismissed_at = now()
-        "#,
-    )
-    .await?;
-
-    upsert_owner_inbox_dismissals_from_query(
-        pool,
-        r#"
-        insert into owner_inbox_dismissals (item_id, dismissed_until, dismissed_at)
-        select
-            'thread:' || root.id::text || ':' || coalesce(latest.id, root.id)::text,
-            now(),
-            now()
-        from messages root
-        left join lateral (
-            select reply.id, reply.created_at
-            from messages reply
-            where reply.thread_root_id = root.id
-              and reply.delivery_state <> 'streaming'
-            order by reply.created_at desc
-            limit 1
-        ) latest on true
-        where root.thread_root_id is null
-          and root.delivery_state <> 'streaming'
-          and latest.created_at > coalesce((
-              select last_read_at
-              from channel_read_state
-              where channel_id = root.channel_id
-          ), '-infinity'::timestamptz)
-        on conflict (item_id) do update set
-            dismissed_until = greatest(owner_inbox_dismissals.dismissed_until, excluded.dismissed_until),
-            dismissed_at = now()
-        "#,
-    )
-    .await?;
-
-    sqlx::query(
-        r#"
-        insert into channel_read_state (channel_id, last_read_at)
-        select id, now()
-        from channels
-        on conflict (channel_id) do update set last_read_at = excluded.last_read_at
+            read_until = greatest(owner_inbox_read_state.read_until, excluded.read_until),
+            read_at = now()
         "#,
     )
     .execute(pool)
@@ -5690,9 +5706,25 @@ pub(crate) async fn mark_all_owner_inbox_read_in_pool(pool: &PgPool) -> CommandR
 
     sqlx::query(
         r#"
-        update reminders
-        set status = 'completed', updated_at = now()
+        insert into owner_inbox_read_state (item_id, read_until, read_at)
+        select 'reminder:' || id::text, now(), now()
+        from reminders
         where status = 'fired'
+        on conflict (item_id) do update set
+            read_until = greatest(owner_inbox_read_state.read_until, excluded.read_until),
+            read_at = now()
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    sqlx::query(
+        r#"
+        insert into channel_read_state (channel_id, last_read_at)
+        select id, now()
+        from channels
+        on conflict (channel_id) do update set last_read_at = excluded.last_read_at
         "#,
     )
     .execute(pool)
@@ -6302,8 +6334,8 @@ async fn load_dismissed_inbox_items(
 ) -> CommandResult<HashMap<String, DateTime<Utc>>> {
     let rows = sqlx::query(
         r#"
-        select item_id, dismissed_until
-        from owner_inbox_dismissals
+        select item_id, hidden_until
+        from owner_inbox_hidden_items
         "#,
     )
     .fetch_all(pool)
@@ -6312,7 +6344,31 @@ async fn load_dismissed_inbox_items(
 
     Ok(rows
         .into_iter()
-        .map(|row| (row.get("item_id"), row.get("dismissed_until")))
+        .map(|row| (row.get("item_id"), row.get("hidden_until")))
+        .collect())
+}
+
+async fn load_read_inbox_items(pool: &PgPool) -> CommandResult<HashMap<String, DateTime<Utc>>> {
+    let rows = sqlx::query(
+        r#"
+        select item_id, max(read_until) as read_until
+        from (
+            select item_id, read_until
+            from owner_inbox_read_state
+            union all
+            select item_id, dismissed_until as read_until
+            from owner_inbox_dismissals
+        ) reads
+        group by item_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.get("item_id"), row.get("read_until")))
         .collect())
 }
 
@@ -14550,6 +14606,7 @@ pub fn run() {
             dispatch_agent_work,
             install_supervisor_service,
             dismiss_inbox_items,
+            mark_inbox_items_read,
             mark_all_inbox_read,
             mark_channel_read,
             open_dm_with_agent,
@@ -14623,11 +14680,11 @@ mod tests {
             agent_context_workspace_list, short_id,
         },
         create_agent_inbox_item, delete_agent_in_pool, delete_channel_in_pool,
-        ensure_agent_workspace, ensure_streaming_agent_message, extract_agent_event_json,
-        extract_agent_mentions, finish_streaming_agent_message, format_memory_index_entry,
-        handle_agent_event, inbox_wake_context, insert_agent_message, insert_memory_index_entry,
-        load_agent_memory_context, load_channel_agent_roster, load_messages, load_reminders,
-        load_runtime_thread_id, mark_all_owner_inbox_read_in_pool,
+        dismiss_inbox_items_in_pool, ensure_agent_workspace, ensure_streaming_agent_message,
+        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
+        format_memory_index_entry, handle_agent_event, inbox_wake_context, insert_agent_message,
+        insert_memory_index_entry, load_agent_memory_context, load_channel_agent_roster,
+        load_messages, load_reminders, load_runtime_thread_id, mark_all_owner_inbox_read_in_pool,
         maybe_hide_silent_streaming_reply, migrate, normalize_open_link_target,
         notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
         process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
@@ -19329,7 +19386,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mark_all_inbox_read_uses_current_cutoff_for_active_tasks() {
+    async fn mark_all_inbox_read_uses_current_cutoff_without_dismissing_tasks() {
         let Some((pool, schema)) = test_pool().await else {
             return;
         };
@@ -19371,16 +19428,63 @@ mod tests {
 
             mark_all_owner_inbox_read_in_pool(&pool).await?;
 
-            let dismissed_until: DateTime<Utc> = sqlx::query_scalar(
-                "select dismissed_until from owner_inbox_dismissals where item_id = $1",
+            let read_until: DateTime<Utc> = sqlx::query_scalar(
+                "select read_until from owner_inbox_read_state where item_id = $1",
+            )
+            .bind(format!("task:{task_id}"))
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let hidden: bool = sqlx::query_scalar(
+                "select exists(select 1 from owner_inbox_hidden_items where item_id = $1)",
             )
             .bind(format!("task:{task_id}"))
             .fetch_one(&pool)
             .await
             .map_err(|err| err.to_string())?;
 
-            assert!(dismissed_until > task_updated_at);
-            assert!(dismissed_until >= before_mark_all);
+            assert!(read_until > task_updated_at);
+            assert!(read_until >= before_mark_all);
+            assert!(!hidden);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn dismiss_inbox_item_hides_without_marking_read() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let item_id = "thread:root:latest".to_owned();
+            let hidden_until: DateTime<Utc> =
+                sqlx::query_scalar("select now() + interval '5 seconds'")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+
+            dismiss_inbox_items_in_pool(&pool, [(item_id.clone(), hidden_until)]).await?;
+
+            let stored_hidden_until: DateTime<Utc> = sqlx::query_scalar(
+                "select hidden_until from owner_inbox_hidden_items where item_id = $1",
+            )
+            .bind(&item_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let read_exists: bool = sqlx::query_scalar(
+                "select exists(select 1 from owner_inbox_read_state where item_id = $1)",
+            )
+            .bind(&item_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            assert_eq!(stored_hidden_until, hidden_until);
+            assert!(!read_exists);
             Ok(())
         }
         .await;
@@ -20017,14 +20121,9 @@ mod tests {
             .map_err(|err| err.to_string())?;
             assert_eq!(read_state_count, 1);
 
-            for item_id in [
-                format!("thread:{root_id}:{reply_id}"),
-                format!("mention:{reply_id}"),
-                format!("task:{task_id}"),
-                format!("reminder:{reminder_id}"),
-            ] {
+            for item_id in [format!("task:{task_id}"), format!("reminder:{reminder_id}")] {
                 let exists: bool = sqlx::query_scalar(
-                    "select exists(select 1 from owner_inbox_dismissals where item_id = $1)",
+                    "select exists(select 1 from owner_inbox_read_state where item_id = $1)",
                 )
                 .bind(item_id)
                 .fetch_one(&pool)
@@ -20033,12 +20132,15 @@ mod tests {
                 assert!(exists);
             }
             for item_id in [
+                format!("thread:{root_id}:{reply_id}"),
+                format!("mention:{reply_id}"),
                 format!("task:{active_task_id}"),
+                format!("reminder:{reminder_id}"),
                 format!("thread:{read_root_id}:{read_reply_id}"),
                 format!("mention:{read_reply_id}"),
             ] {
                 let exists: bool = sqlx::query_scalar(
-                    "select exists(select 1 from owner_inbox_dismissals where item_id = $1)",
+                    "select exists(select 1 from owner_inbox_hidden_items where item_id = $1)",
                 )
                 .bind(item_id)
                 .fetch_one(&pool)
@@ -20053,7 +20155,7 @@ mod tests {
                     .fetch_one(&pool)
                     .await
                     .map_err(|err| err.to_string())?;
-            assert_eq!(reminder_status, "completed");
+            assert_eq!(reminder_status, "fired");
             Ok(())
         }
         .await;

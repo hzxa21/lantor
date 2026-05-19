@@ -13,7 +13,9 @@ type InboxModalProps = {
   ownerProfile: OwnerProfile;
   onOpenItem: (item: InboxItem) => void;
   onMarkItemRead: (item: InboxItem) => void;
-  onMarkAllRead: () => void;
+  onDismissItem: (item: InboxItem) => void;
+  onDismissItems: (items: InboxItem[]) => void;
+  onMarkAllRead: (items: InboxItem[]) => void;
   onClose: () => void;
 };
 
@@ -51,6 +53,8 @@ export function InboxModal({
   ownerProfile,
   onOpenItem,
   onMarkItemRead,
+  onDismissItem,
+  onDismissItems,
   onMarkAllRead,
   onClose,
 }: InboxModalProps) {
@@ -61,6 +65,7 @@ export function InboxModal({
     if (filter === "unread") return items.filter((item) => item.unread);
     return items.filter((item) => item.kind === filter);
   }, [filter, items]);
+  const filteredUnreadCount = filteredItems.filter((item) => item.unread).length;
 
   useEffect(() => {
     if (!open) return;
@@ -84,9 +89,22 @@ export function InboxModal({
             <h2>Inbox</h2>
             <p>{items.length} active · {unreadCount} unread</p>
           </div>
-          <button className="inbox-mark-all" disabled={unreadCount === 0} onClick={onMarkAllRead}>
-            Mark all read
-          </button>
+          <div className="inbox-head-actions">
+            <button
+              className="inbox-mark-all"
+              disabled={filteredUnreadCount === 0}
+              onClick={() => onMarkAllRead(filteredItems)}
+            >
+              Mark all read
+            </button>
+            <button
+              className="inbox-dismiss-all"
+              disabled={filteredItems.length === 0}
+              onClick={() => onDismissItems(filteredItems)}
+            >
+              Dismiss all
+            </button>
+          </div>
         </header>
 
         <div className="inbox-filters">
@@ -160,18 +178,30 @@ export function InboxModal({
                     </small>
                   )}
                 </div>
-                {item.unread ? (
+                <div className="inbox-row-actions">
+                  {item.unread ? (
+                    <button
+                      className="inbox-check"
+                      title="Mark read"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onMarkItemRead(item);
+                      }}
+                    >
+                      <Check size={19} />
+                    </button>
+                  ) : null}
                   <button
-                    className="inbox-check"
-                    title="Mark read"
+                    className="inbox-dismiss"
+                    title="Dismiss"
                     onClick={(event) => {
                       event.stopPropagation();
-                      onMarkItemRead(item);
+                      onDismissItem(item);
                     }}
                   >
-                    <Check size={19} />
+                    <X size={18} />
                   </button>
-                ) : null}
+                </div>
               </article>
             );
           })}

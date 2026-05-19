@@ -6077,7 +6077,8 @@ body.resizing-column * {
 }
 
 .inbox-back,
-.inbox-mark-all {
+.inbox-mark-all,
+.inbox-dismiss-all {
   border: 1px solid rgba(20, 23, 31, 0.1);
   border-radius: 12px;
   background: linear-gradient(180deg, #ffffff 0%, #f6f7f9 100%);
@@ -6089,7 +6090,8 @@ body.resizing-column * {
 }
 
 .inbox-back:hover,
-.inbox-mark-all:hover:not(:disabled) {
+.inbox-mark-all:hover:not(:disabled),
+.inbox-dismiss-all:hover:not(:disabled) {
   background: #fff;
   color: #20242b;
 }
@@ -6102,12 +6104,26 @@ body.resizing-column * {
   font-size: 24px;
 }
 
-.inbox-mark-all {
-  height: 38px;
-  padding: 0 14px;
+.inbox-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.inbox-mark-all:disabled {
+.inbox-mark-all,
+.inbox-dismiss-all {
+  height: 38px;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+.inbox-dismiss-all:hover:not(:disabled) {
+  border-color: rgba(196, 35, 29, 0.24);
+  color: #c4231d;
+}
+
+.inbox-mark-all:disabled,
+.inbox-dismiss-all:disabled {
   opacity: 0.46;
 }
 
@@ -6327,7 +6343,15 @@ body.resizing-column * {
   line-height: 16px;
 }
 
-.inbox-check {
+.inbox-row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.inbox-check,
+.inbox-dismiss {
   display: grid;
   width: 38px;
   height: 38px;
@@ -6341,6 +6365,11 @@ body.resizing-column * {
 .inbox-check:hover {
   background: rgba(52, 199, 89, 0.12);
   color: #168a36;
+}
+
+.inbox-dismiss:hover {
+  background: rgba(255, 59, 48, 0.1);
+  color: #c4231d;
 }
 
 .fatal-shell {
@@ -7121,11 +7150,16 @@ body.resizing-column * {
     font-size: 12px;
   }
 
-  .inbox-mark-all {
+  .inbox-head-actions {
+    gap: 6px;
+  }
+
+  .inbox-mark-all,
+  .inbox-dismiss-all {
     grid-column: auto;
     width: auto;
     height: 40px;
-    padding: 0 11px;
+    padding: 0 10px;
     white-space: nowrap;
     font-size: 12px;
   }
@@ -7153,7 +7187,7 @@ body.resizing-column * {
   .inbox-row {
     grid-template-areas:
       "avatar main action";
-    grid-template-columns: 42px minmax(0, 1fr) 40px;
+    grid-template-columns: 42px minmax(0, 1fr) auto;
     gap: 12px;
     padding: 14px;
     border-radius: 16px;
@@ -7199,11 +7233,15 @@ body.resizing-column * {
     flex: 1 1 140px;
   }
 
-  .inbox-check {
+  .inbox-row-actions {
     grid-area: action;
+    align-self: start;
+  }
+
+  .inbox-check,
+  .inbox-dismiss {
     width: 40px;
     height: 40px;
-    align-self: start;
   }
 
   .message-action-menu {

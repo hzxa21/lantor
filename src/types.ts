@@ -276,6 +276,7 @@ export type Bootstrap = {
   messages: Message[];
   saved_messages: SavedMessage[];
   dismissed_inbox_items: Record<string, string>;
+  read_inbox_items: Record<string, string>;
   artifacts: Artifact[];
   tasks: Task[];
   reminders: Reminder[];
@@ -308,6 +309,7 @@ export type InboxKind = "mention" | "dm" | "thread" | "task" | "reminder" | "cha
 
 export type InboxItem = {
   id: string;
+  dismissId: string;
   kind: InboxKind;
   title: string;
   excerpt: string;
