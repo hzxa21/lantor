@@ -3042,11 +3042,6 @@ function App() {
           onEdit={(agent) => {
             startEditAgent(agent);
           }}
-          onOpenDm={(agent) => {
-            setShowMobileSidebar(false);
-            setMobileSidebarDragPx(0);
-            void openDmWithAgent(agent);
-          }}
           onOpenWorkItem={(item) => {
             openWorkItem(item);
             setSelectedAgentId(null);

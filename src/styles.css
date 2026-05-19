@@ -4296,24 +4296,6 @@ body.resizing-column * {
   white-space: nowrap;
 }
 
-.agent-dm-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  width: fit-content;
-  margin-top: 12px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: #20242b;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 780;
-}
-
-.agent-dm-action:hover {
-  background: #111318;
-}
-
 .agent-detail-tabs {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
