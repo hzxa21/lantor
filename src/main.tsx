@@ -647,7 +647,11 @@ function App() {
   }
 
   function normalizeBootstrap(next: Bootstrap): Bootstrap {
-    return { ...next, messages: sortedMessages(next.messages) };
+    return {
+      ...next,
+      messages: sortedMessages(next.messages),
+      agent_activities: limitActivitiesPerAgent(next.agent_activities),
+    };
   }
 
   async function refresh(includeOptimistic = true) {

@@ -6734,12 +6734,12 @@ async fn load_agent_activities(pool: &SqlitePool) -> CommandResult<Vec<AgentActi
                 agent_activities.*,
                 row_number() over (
                     partition by coalesce(case when agent_id is null then null else lower(hex(agent_id)) end, nullif(agent_handle, ''), 'unknown')
-                    order by created_at desc
+                    order by julianday(created_at) desc, created_at desc
                 ) as activity_rank
             from agent_activities
         ) ranked
         where activity_rank <= 80
-        order by created_at desc
+        order by julianday(created_at) desc, created_at desc
         "#,
     )
     .fetch_all(pool)
@@ -7274,7 +7274,7 @@ async fn record_agent_activity_throttled(
               and kind = $3
               and title = $4
               and detail = $5
-              and created_at > strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-1 second')
+              and julianday(created_at) > julianday(strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-1 second'))
         )
         "#,
     )
@@ -14440,9 +14440,9 @@ mod tests {
         dismiss_inbox_items_in_pool, ensure_agent_workspace, ensure_streaming_agent_message,
         extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
         format_memory_index_entry, handle_agent_event, inbox_wake_context, insert_agent_message,
-        insert_memory_index_entry, load_agent_memory_context, load_channel_agent_roster,
-        load_channels, load_messages, load_reminders, load_runtime_thread_id,
-        mark_all_owner_inbox_read_in_pool, mark_inbox_items_read_in_pool,
+        insert_memory_index_entry, load_agent_activities, load_agent_memory_context,
+        load_channel_agent_roster, load_channels, load_messages, load_reminders,
+        load_runtime_thread_id, mark_all_owner_inbox_read_in_pool, mark_inbox_items_read_in_pool,
         maybe_hide_silent_streaming_reply, migrate, normalize_open_link_target,
         notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
         process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
@@ -19567,6 +19567,77 @@ mod tests {
                 .await
                 .map_err(|err| err.to_string())?;
             assert_eq!(messages, 0);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn load_agent_activities_compares_mixed_timezone_timestamps_by_instant() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "activity-clock").await?;
+            for index in 0..80 {
+                let created_at =
+                    format!("2026-05-19T{:02}:{:02}:00+08:00", 15 + index / 60, index % 60);
+                sqlx::query(
+                    r#"
+                    insert into agent_activities (
+                        agent_id,
+                        agent_handle,
+                        kind,
+                        phase,
+                        status,
+                        title,
+                        summary,
+                        detail,
+                        created_at
+                    )
+                    values ($1, 'activity-clock', 'thinking', 'thinking', 'active', $2, $2, '', $3)
+                    "#,
+                )
+                .bind(agent_id)
+                .bind(format!("older-local-{index:02}"))
+                .bind(created_at)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            }
+            sqlx::query(
+                r#"
+                insert into agent_activities (
+                    agent_id,
+                    agent_handle,
+                    kind,
+                    phase,
+                    status,
+                    title,
+                    summary,
+                    detail,
+                    created_at
+                )
+                values ($1, 'activity-clock', 'thinking', 'thinking', 'active', 'newer-utc', 'newer-utc', '', '2026-05-19T09:14:24+00:00')
+                "#,
+            )
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let activities = load_agent_activities(&pool).await?;
+            let agent_activities = activities
+                .into_iter()
+                .filter(|activity| activity.agent_id == Some(agent_id))
+                .collect::<Vec<_>>();
+            assert_eq!(agent_activities.len(), 80);
+            assert_eq!(agent_activities[0].title, "newer-utc");
+            assert!(agent_activities
+                .iter()
+                .any(|activity| activity.title == "newer-utc"));
             Ok(())
         }
         .await;
