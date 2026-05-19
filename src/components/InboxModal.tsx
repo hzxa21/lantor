@@ -179,6 +179,7 @@ export function InboxModal({
                   )}
                 </div>
                 <div className="inbox-row-actions">
+                  {item.unread ? <span className="inbox-unread-dot" aria-label="Unread" /> : null}
                   {item.unread ? (
                     <button
                       className="inbox-check"

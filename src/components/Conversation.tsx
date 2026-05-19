@@ -672,6 +672,20 @@ export function Conversation({
                             <CheckCircle2 size={14} /> #{linkedTask.number} · {linkedTask.status.replace("_", " ")}
                           </mark>
                         )}
+                        <button
+                          type="button"
+                          className={`message-save-button mobile-message-save-tag ${isSaved ? "saved" : ""}`}
+                          title={isSaved ? "Unsave message" : "Save message"}
+                          aria-label={isSaved ? "Unsave message" : "Save message"}
+                          aria-pressed={isSaved}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleMessageSaved(message, !isSaved);
+                          }}
+                        >
+                          <Bookmark size={14} />
+                        </button>
                       </div>
                     )}
                     <div className="message-hover-actions" aria-label="Message actions">

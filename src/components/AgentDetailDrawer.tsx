@@ -1,4 +1,4 @@
-import { ArrowLeft, Clock3, Inbox, Pencil, Trash2, X } from "lucide-react";
+import { ArrowLeft, Clock3, Inbox, MessageCircle, Pencil, Trash2, X } from "lucide-react";
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { apiInvoke } from "../apiClient";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -47,6 +47,7 @@ type AgentDetailDrawerProps = {
   onClose: () => void;
   onDelete: (agent: Agent) => void;
   onEdit: (agent: Agent) => void;
+  onOpenDm: (agent: Agent) => void;
   onOpenWorkItem: (item: AgentWorkItem) => void;
   onCancelWorkItem: (item: AgentWorkItem) => void;
   onRetryWorkItem: (item: AgentWorkItem) => void;
@@ -322,6 +323,7 @@ export function AgentDetailDrawer({
   onClose,
   onDelete,
   onEdit,
+  onOpenDm,
   onOpenWorkItem,
   onCancelWorkItem,
   onRetryWorkItem,
@@ -869,6 +871,14 @@ export function AgentDetailDrawer({
                   <small>{phase.detail}</small>
                 </div>
               )}
+              <button
+                type="button"
+                className="agent-dm-action"
+                onClick={() => onOpenDm(agent)}
+              >
+                <MessageCircle size={16} />
+                <span>Message</span>
+              </button>
             </div>
           </section>
           <nav className="agent-detail-tabs" role="tablist" aria-label={`${agent.handle} detail sections`}>

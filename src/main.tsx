@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { Bookmark, Home, Inbox, Search } from "lucide-react";
 import { apiInvoke, isTauriRuntime, subscribeBackendEvents } from "./apiClient";
 import { APP_DISPLAY_NAME } from "./branding";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
@@ -97,6 +98,7 @@ const MOBILE_EDGE_SWIPE_OPEN_PX = 72;
 const MOBILE_EDGE_SWIPE_MAX_VERTICAL_PX = 48;
 const MOBILE_SIDEBAR_PEEK_PX = 18;
 const MOBILE_SIDEBAR_FLING_VELOCITY = 0.45;
+const SAVED_MESSAGES_READ_DISMISS_ID = "saved-messages";
 const INBOX_KIND_PRIORITY: Record<InboxItem["kind"], number> = {
   reminder: 0,
   mention: 1,
@@ -518,7 +520,9 @@ function App() {
   const [showSavedModal, setShowSavedModal] = useState(false);
   const [showOwnerProfileModal, setShowOwnerProfileModal] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(() => isMobileViewport());
+  const [mobileSidebarFocus, setMobileSidebarFocus] = useState<"home" | "dms">("home");
   const [mobileSidebarDragPx, setMobileSidebarDragPx] = useState(0);
+  const [mobileComposerFocused, setMobileComposerFocused] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
@@ -1390,6 +1394,32 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    function updateComposerFocus() {
+      const activeElement = document.activeElement;
+      const isFocused = Boolean(
+        isMobileViewport()
+          && activeElement instanceof HTMLElement
+          && activeElement.closest(".composer, .reply-composer"),
+      );
+      setMobileComposerFocused((current) => current === isFocused ? current : isFocused);
+    }
+
+    function onFocusOut() {
+      window.requestAnimationFrame(updateComposerFocus);
+    }
+
+    window.addEventListener("focusin", updateComposerFocus);
+    window.addEventListener("focusout", onFocusOut);
+    window.addEventListener("resize", updateComposerFocus);
+    updateComposerFocus();
+    return () => {
+      window.removeEventListener("focusin", updateComposerFocus);
+      window.removeEventListener("focusout", onFocusOut);
+      window.removeEventListener("resize", updateComposerFocus);
+    };
+  }, []);
+
   const visibleMessages = useMemo(() => {
     return (data?.messages ?? []).filter((message) => !isProgressOnlyMessage(message));
   }, [data?.messages]);
@@ -1642,6 +1672,16 @@ function App() {
   const savedMessageIds = useMemo(() => {
     return new Set(data?.saved_messages.map((item) => item.message_id) ?? []);
   }, [data?.saved_messages]);
+
+  const savedUnreadCount = useMemo(() => {
+    const items = data?.saved_messages ?? [];
+    if (items.length === 0) return 0;
+    const readUntil = dismissedInboxItems[SAVED_MESSAGES_READ_DISMISS_ID];
+    if (!readUntil) return items.length;
+    const readUntilTime = new Date(readUntil).getTime();
+    if (!Number.isFinite(readUntilTime)) return items.length;
+    return items.filter((item) => new Date(item.created_at).getTime() > readUntilTime).length;
+  }, [data?.saved_messages, dismissedInboxItems]);
 
   const shareBaseUrl = useMemo(() => {
     if (!data) return window.location.origin;
@@ -2075,6 +2115,7 @@ function App() {
   }
 
   function openMobileSidebarFromContent() {
+    setMobileSidebarFocus("home");
     if (isMobileViewport() && canNavigateBack()) {
       restoringAppHistoryRef.current = true;
       setShowThread(false);
@@ -2087,8 +2128,20 @@ function App() {
     setShowMobileSidebar(true);
   }
 
+  function openMobileHome() {
+    setShowSearchModal(false);
+    setShowInboxModal(false);
+    setShowSavedModal(false);
+    setSelectedAgentId(null);
+    setShowThread(false);
+    setShowMobileSidebar(true);
+    setMobileSidebarDragPx(0);
+    setMobileSidebarFocus("home");
+  }
+
   function openSearchModal() {
     setShowMobileSidebar(false);
+    setMobileSidebarFocus("home");
     setShowInboxModal(false);
     setShowSavedModal(false);
     setShowSearchModal(true);
@@ -2096,6 +2149,7 @@ function App() {
 
   function openInboxModal() {
     setShowMobileSidebar(false);
+    setMobileSidebarFocus("home");
     setShowSearchModal(false);
     setShowSavedModal(false);
     setShowInboxModal(true);
@@ -2103,9 +2157,27 @@ function App() {
 
   function openSavedModal() {
     setShowMobileSidebar(false);
+    setMobileSidebarFocus("home");
     setShowSearchModal(false);
     setShowInboxModal(false);
     setShowSavedModal(true);
+    void markSavedMessagesRead();
+  }
+
+  async function markSavedMessagesRead() {
+    const items = data?.saved_messages ?? [];
+    if (items.length === 0) return;
+    const latestSavedAt = items.reduce((latest, item) => {
+      const savedAt = new Date(item.created_at).getTime();
+      return Number.isFinite(savedAt) ? Math.max(latest, savedAt) : latest;
+    }, 0);
+    const cutoff = new Date(Math.max(Date.now(), latestSavedAt)).toISOString();
+    const current = dismissedInboxItems[SAVED_MESSAGES_READ_DISMISS_ID];
+    if (current && new Date(current).getTime() >= new Date(cutoff).getTime()) return;
+    setDismissedInboxItems((existing) => ({ ...existing, [SAVED_MESSAGES_READ_DISMISS_ID]: cutoff }));
+    await apiInvoke("dismiss_inbox_items", {
+      items: [{ itemId: SAVED_MESSAGES_READ_DISMISS_ID, dismissedUntil: cutoff }],
+    });
   }
 
   function closeAppModal(fallback: () => void) {
@@ -2512,6 +2584,7 @@ function App() {
   }
 
   function openSavedMessage(item: SavedMessage) {
+    void markSavedMessagesRead();
     selectChannel(item.channel_id);
     revealThread(item.thread_root_id ?? item.message_id, item.channel_id);
     setFocusedMessageId(item.message_id);
@@ -2547,6 +2620,9 @@ function App() {
   }
 
   function openInboxItem(item: InboxItem) {
+    if (item.unread) {
+      void markInboxItemRead(item);
+    }
     const targetThreadId = item.threadId ?? item.messageId;
     if (item.channelId) selectChannel(item.channelId);
     setSelectedAgentId(null);
@@ -2761,7 +2837,7 @@ function App() {
 
   return (
     <main
-      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"} ${showMobileSidebar ? "mobile-sidebar-open" : ""} ${mobileSidebarDragPx > 0 ? "mobile-sidebar-dragging" : ""}`}
+      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"} ${showMobileSidebar ? "mobile-sidebar-open" : ""} ${mobileSidebarDragPx > 0 ? "mobile-sidebar-dragging" : ""} ${mobileComposerFocused ? "mobile-composer-focused" : ""}`}
       style={{
         "--sidebar-width": `${sidebarWidth}px`,
         "--thread-width": `${selectedAgent ? agentDrawerWidth : threadPanelWidth}px`,
@@ -2773,15 +2849,18 @@ function App() {
         channel={channel}
         channelAlertIds={channelAlertIds}
         inboxUnreadCount={inboxUnreadCount}
+        savedUnreadCount={savedUnreadCount}
         openSearch={openSearchModal}
         openInbox={openInboxModal}
         openSaved={openSavedModal}
+        mobileFocus={mobileSidebarFocus}
         openCreateChannelModal={() => {
           setShowMobileSidebar(false);
           setShowCreateChannelModal(true);
         }}
         selectChannel={(channelId) => {
           setShowMobileSidebar(false);
+          setMobileSidebarFocus("home");
           setMobileSidebarDragPx(0);
           selectChannel(channelId);
         }}
@@ -2915,6 +2994,11 @@ function App() {
           onEdit={(agent) => {
             startEditAgent(agent);
           }}
+          onOpenDm={(agent) => {
+            setShowMobileSidebar(false);
+            setMobileSidebarDragPx(0);
+            void openDmWithAgent(agent);
+          }}
           onOpenWorkItem={(item) => {
             openWorkItem(item);
             setSelectedAgentId(null);
@@ -2961,6 +3045,47 @@ function App() {
           onResizeStart={startThreadResize}
         />
       )}
+
+      <nav className="mobile-bottom-nav" aria-label="Primary mobile navigation">
+        <button
+          type="button"
+          className={showMobileSidebar && mobileSidebarFocus === "home" ? "active" : ""}
+          onClick={openMobileHome}
+        >
+          <Home size={20} />
+          <span>Home</span>
+        </button>
+        <button
+          type="button"
+          className={`${showInboxModal ? "active" : ""} ${inboxUnreadCount ? "has-unread" : ""}`}
+          onClick={openInboxModal}
+        >
+          <span className="mobile-bottom-nav-icon">
+            <Inbox size={20} />
+            {inboxUnreadCount > 0 && <strong>{inboxUnreadCount}</strong>}
+          </span>
+          <span>Activity</span>
+        </button>
+        <button
+          type="button"
+          className={`${showSavedModal ? "active" : ""} ${savedUnreadCount ? "has-unread" : ""}`}
+          onClick={openSavedModal}
+        >
+          <span className="mobile-bottom-nav-icon">
+            <Bookmark size={20} />
+            {savedUnreadCount > 0 && <strong>{savedUnreadCount}</strong>}
+          </span>
+          <span>Saved</span>
+        </button>
+        <button
+          type="button"
+          className={showSearchModal ? "active" : ""}
+          onClick={openSearchModal}
+        >
+          <Search size={20} />
+          <span>Search</span>
+        </button>
+      </nav>
 
       {appError && (
         <div className="app-toast error" role="alert">

@@ -8,7 +8,7 @@ import {
   Search,
   UserRound,
 } from "lucide-react";
-import { useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Agent,
   Bootstrap,
@@ -23,9 +23,11 @@ type SidebarProps = {
   channel: Channel | null;
   channelAlertIds: Set<string>;
   inboxUnreadCount: number;
+  savedUnreadCount: number;
   openSearch: () => void;
   openInbox: () => void;
   openSaved: () => void;
+  mobileFocus: "home" | "dms";
   openCreateChannelModal: () => void;
   selectChannel: (channelId: string) => void;
   openCreateAgentModal: () => void;
@@ -40,9 +42,11 @@ export function Sidebar({
   channel,
   channelAlertIds,
   inboxUnreadCount,
+  savedUnreadCount,
   openSearch,
   openInbox,
   openSaved,
+  mobileFocus,
   openCreateChannelModal,
   selectChannel,
   openCreateAgentModal,
@@ -52,11 +56,36 @@ export function Sidebar({
   onResizeStart,
 }: SidebarProps) {
   const [collapsedSections, setCollapsedSections] = useState({ channels: false, dms: false });
+  const dmListRef = useRef<HTMLElement | null>(null);
   const normalChannels = data.channels.filter((item) => item.kind !== "dm");
   const dmChannels = data.channels.filter((item) => item.kind === "dm");
+  const showDmConversations = mobileFocus === "dms" && window.matchMedia("(max-width: 760px)").matches;
+  const dmRows = showDmConversations
+    ? dmChannels
+      .map((item) => {
+        const agent = item.dm_agent_id ? data.agents.find((candidate) => candidate.id === item.dm_agent_id) ?? null : null;
+        return agent ? { agent, item } : null;
+      })
+      .filter((row): row is { agent: Agent; item: Channel } => Boolean(row))
+    : data.agents.map((agent) => ({
+      agent,
+      item: dmChannels.find((candidate) => candidate.dm_agent_id === agent.id) ?? null,
+    }));
   const toggleSection = (section: "channels" | "dms") => {
     setCollapsedSections((current) => ({ ...current, [section]: !current[section] }));
   };
+  const openAgentDmTarget = (agent: Agent, dmChannel: Channel | null) => {
+    if (dmChannel) selectChannel(dmChannel.id);
+    else openDmWithAgent(agent);
+  };
+
+  useEffect(() => {
+    if (mobileFocus !== "dms") return;
+    setCollapsedSections((current) => current.dms ? { ...current, dms: false } : current);
+    window.requestAnimationFrame(() => {
+      dmListRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  }, [mobileFocus]);
 
   return (
     <aside className="sidebar">
@@ -83,16 +112,16 @@ export function Sidebar({
           onClick={openInbox}
         >
           <Inbox size={18} />
-          <span>Inbox</span>
+          <span>Activity</span>
           {inboxUnreadCount > 0 && <strong>{inboxUnreadCount}</strong>}
         </button>
         <button
-          className={`sidebar-nav-trigger ${data.saved_messages.length ? "has-unread" : ""}`}
+          className={`sidebar-nav-trigger ${savedUnreadCount ? "has-unread" : ""}`}
           onClick={openSaved}
         >
           <Bookmark size={18} />
           <span>Saved</span>
-          {data.saved_messages.length > 0 && <strong>{data.saved_messages.length}</strong>}
+          {savedUnreadCount > 0 && <strong>{savedUnreadCount}</strong>}
         </button>
       </section>
 
@@ -132,23 +161,22 @@ export function Sidebar({
         )}
       </section>
 
-      <section className={`dm-list ${collapsedSections.dms ? "collapsed" : ""}`}>
+      <section ref={dmListRef} className={`dm-list ${collapsedSections.dms ? "collapsed" : ""}`}>
         <div className="section-title">
           <div className="section-label">
             <button
               className={`section-collapse ${collapsedSections.dms ? "collapsed" : ""}`}
               onClick={() => toggleSection("dms")}
               aria-expanded={!collapsedSections.dms}
-              title={collapsedSections.dms ? "Show agents" : "Hide agents"}
+              title={collapsedSections.dms ? (showDmConversations ? "Show DMs" : "Show agents") : (showDmConversations ? "Hide DMs" : "Hide agents")}
             >
               <ChevronDown size={14} />
             </button>
-            <span>Agents</span>
+            <span>{showDmConversations ? "DMs" : "Agents"}</span>
           </div>
-          <button onClick={openCreateAgentModal} title="Add agent"><Plus size={18} /></button>
+          {!showDmConversations && <button onClick={openCreateAgentModal} title="Add agent"><Plus size={18} /></button>}
         </div>
-        {!collapsedSections.dms && data.agents.map((agent) => {
-          const item = dmChannels.find((candidate) => candidate.dm_agent_id === agent.id) ?? null;
+        {!collapsedSections.dms && dmRows.map(({ agent, item }) => {
           const badge = item
             ? item.unread_count > 0
               ? String(item.unread_count)
@@ -165,14 +193,14 @@ export function Sidebar({
                 type="button"
                 className="dm-avatar-shell"
                 aria-label={`Open DM with @${agent.handle}`}
-                onClick={() => item ? selectChannel(item.id) : openDmWithAgent(agent)}
+                onClick={() => openAgentDmTarget(agent, item)}
               >
                 <AgentAvatar agent={agent} size="sm" />
               </button>
               <button
                 type="button"
                 className="dm"
-                onClick={() => item ? selectChannel(item.id) : openDmWithAgent(agent)}
+                onClick={() => openAgentDmTarget(agent, item)}
               >
                 <div>
                   <strong>{agent.display_name}</strong>
@@ -195,8 +223,8 @@ export function Sidebar({
             </div>
           );
         })}
-        {!collapsedSections.dms && data.agents.length === 0 && (
-          <div className="empty-mini">Add an agent to start chatting.</div>
+        {!collapsedSections.dms && dmRows.length === 0 && (
+          <div className="empty-mini">{showDmConversations ? "No direct messages yet." : "Add an agent to start chatting."}</div>
         )}
       </section>
 

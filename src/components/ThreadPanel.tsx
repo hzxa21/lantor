@@ -418,6 +418,20 @@ export function ThreadPanel({
                         <span>{activeRoot.sender_role}</span>
                         <time>{formatTime(activeRoot.created_at)}</time>
                         {wasEdited(activeRoot) && <span className="edited-indicator">edited</span>}
+                        <button
+                          type="button"
+                          className={`message-save-button mobile-message-save-tag ${rootSaved ? "saved" : ""}`}
+                          title={rootSaved ? "Unsave message" : "Save message"}
+                          aria-label={rootSaved ? "Unsave message" : "Save message"}
+                          aria-pressed={rootSaved}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleMessageSaved(activeRoot, !rootSaved);
+                          }}
+                        >
+                          <Bookmark size={14} />
+                        </button>
                       </div>
                       <div className="message-hover-actions" aria-label="Message actions">
                         <button
@@ -642,6 +656,20 @@ export function ThreadPanel({
                           <span>{reply.sender_role}</span>
                           <time>{formatTime(reply.created_at)}</time>
                           {wasEdited(reply) && <span className="edited-indicator">edited</span>}
+                          <button
+                            type="button"
+                            className={`message-save-button mobile-message-save-tag ${replySaved ? "saved" : ""}`}
+                            title={replySaved ? "Unsave message" : "Save message"}
+                            aria-label={replySaved ? "Unsave message" : "Save message"}
+                            aria-pressed={replySaved}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onToggleMessageSaved(reply, !replySaved);
+                            }}
+                          >
+                            <Bookmark size={14} />
+                          </button>
                         </div>
                       )}
                       <div className="message-hover-actions" aria-label="Message actions">
