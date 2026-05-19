@@ -194,6 +194,7 @@ export function InboxModal({
             const Icon = iconFor(item.kind);
             const avatarAgent = actorAvatarAgent(item, agents, ownerProfile);
             const swipeOffset = swipeState?.itemId === item.id ? swipeState.offsetX : 0;
+            const excerpt = item.excerpt.trim() === item.title.trim() ? "" : item.excerpt;
             return (
               <div
                 key={item.id}
@@ -228,9 +229,9 @@ export function InboxModal({
                     </div>
                     <h3>
                       <Icon size={18} />
-                      {item.title}
+                      <span>{item.title}</span>
                     </h3>
-                    {item.excerpt && <p>{firstLines(item.excerpt, 2)}</p>}
+                    {excerpt && <p>{firstLines(excerpt, 3)}</p>}
                     <small>
                       Open
                       {item.newCount > 0 ? <b>{item.newCount} new</b> : null}

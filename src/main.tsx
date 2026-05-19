@@ -1514,11 +1514,13 @@ function App() {
     };
     const timestamp = (value: string | null | undefined) => value || new Date(0).toISOString();
     const items: InboxItem[] = [];
+    const threadInboxRootIds = new Set(allThreadRootMessages.map((message) => message.id));
 
     for (const channel of data.channels) {
       const unread = channel.unread_count > 0 || channelAlertIds.has(channel.id);
       if (!unread) continue;
       const latest = latestByChannel.get(channel.id);
+      if (latest?.thread_root_id && threadInboxRootIds.has(latest.thread_root_id)) continue;
       const dmAgent = channel.kind === "dm" && channel.dm_agent_id ? agentsById.get(channel.dm_agent_id) : null;
       items.push({
         id: `${channel.kind}:${channel.id}`,
