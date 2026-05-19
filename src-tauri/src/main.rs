@@ -3101,7 +3101,7 @@ fn extract_agent_mentions(body: &str) -> Vec<String> {
         if body[..idx]
             .chars()
             .next_back()
-            .map(|prev| prev.is_ascii_alphanumeric() || prev == '_' || prev == '-' || prev == '.')
+            .map(|prev| prev.is_ascii_alphanumeric() || prev == '_' || prev == '-')
             .unwrap_or(false)
         {
             continue;
@@ -14463,6 +14463,12 @@ mod tests {
     fn extracts_unique_agent_mentions() {
         let mentions = extract_agent_mentions("ping @Hancock and @agent-2, then @Hancock again");
         assert_eq!(mentions, vec!["Hancock", "agent-2"]);
+    }
+
+    #[test]
+    fn extracts_mentions_after_non_ascii_text_and_punctuation() {
+        let mentions = extract_agent_mentions("请@agent看一下，或者（@reviewer）再看 end.@observer");
+        assert_eq!(mentions, vec!["agent", "reviewer", "observer"]);
     }
 
     #[test]
