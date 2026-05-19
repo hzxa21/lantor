@@ -35,9 +35,6 @@ Lantor helps you land real work with an agent team you control.
 - **Bring your own CLI.** Codex, Claude, or any command you can launch
   from a shell. Each agent has a profile, avatar, runtime preset,
   working directory, and live edit preview.
-- **One mind across devices.** The same desktop process serves a mobile
-  web UI over Tailscale, so you can read threads, dispatch agents, and
-  manage tasks from your phone.
 - **Private by default.** No cloud sync, no telemetry, no auth proxy.
   SQLite state, attachments on disk, secrets in your own keychain.
 
@@ -60,66 +57,39 @@ Lantor helps you land real work with an agent team you control.
 - **Disk-backed attachments** — image thumbnails, lightbox preview, files
   stay on your Mac.
 
-## Requirements
-
-- macOS
-- [Homebrew](https://brew.sh/) for the commands below
-- Node.js 20+
-- Rust toolchain with [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/)
-- Optional: agent CLIs installed and authenticated locally, such as
-  `codex` and `claude`.
-
 ## Quickstart
 
-Install Node.js and Rust first:
+Lantor runs as a native macOS desktop app. Four commands get you from a
+clean Mac to a running workspace:
 
 ```bash
+# 1. Install prerequisites (Node 20+ and Rust)
 brew install node
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
-```
 
-If Rust or Tauri reports missing Apple compiler/linker tools, install
-Apple's command line tools and retry:
-
-```bash
-xcode-select --install
-```
-
-Then install and run Lantor:
-
-```bash
+# 2. Clone and launch
+git clone https://github.com/chenzl25/lantor.git
+cd lantor
 npm install
 npm run tauri:dev
 ```
 
-Lantor stores local state in SQLite by default at
-`~/Library/Application Support/Lantor/lantor.sqlite`. Schema setup and
-migrations run automatically when the app starts. The desktop app opens, and
-the same process serves the web UI at
-`http://127.0.0.1:8787/` (and `http://<your-mac>:8787/` over Tailscale).
+That's it — the desktop app opens, SQLite state lives at
+`~/Library/Application Support/Lantor/lantor.sqlite`, and migrations run
+automatically on every start.
 
-To use Codex or Claude agents, install and sign in to the CLI before adding
-agents in Lantor:
+> If Rust or Tauri reports missing Apple compiler/linker tools, run
+> `xcode-select --install` and try again.
+
+To use Codex or Claude agents, install and sign in to their CLI first, then
+add the agent inside Lantor:
 
 ```bash
 # examples only; install the CLIs you plan to use
 codex --version
 claude --version
 ```
-
-## Configuration
-
-Defaults work out of the box. The two settings most users care about:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `LANTOR_DATABASE_URL` | `sqlite://~/Library/Application Support/Lantor/lantor.sqlite` | SQLite database URL. |
-| `LANTOR_WEB_BIND` | `0.0.0.0:8787` | Web UI bind. Use `127.0.0.1:8787` for loopback only, or `off` to disable. |
-
-Advanced options — attachment paths, web public URL, web bundle override,
-warm Codex rotation — are in [`docs/configuration.md`](docs/configuration.md)
-and [`.env.example`](.env.example).
 
 ## How it works
 
@@ -136,21 +106,44 @@ Storage stays local:
 - **Agent workspaces** — `agents/<handle>/` (gitignored), including each
   agent's `MEMORY.md`.
 
-## Mobile / Tailscale access
+## Mobile
 
-The web UI is enabled by default on `0.0.0.0:8787`. From another device on
-your tailnet:
+The same desktop process also serves a mobile-friendly web UI, so you can
+read threads, dispatch agents, and manage tasks from your phone without a
+separate app, account, or cloud relay. The recommended way to reach it is
+over [Tailscale](https://tailscale.com/).
 
-```text
-http://<mac-tailscale-name>:8787/
-```
+1. Install Tailscale on your Mac and your phone, and sign both into the
+   same tailnet.
+2. Keep Lantor running on your Mac. The web UI is enabled by default on
+   `0.0.0.0:8787`.
+3. From your phone's browser, open:
 
-It does **not** perform its own auth — only expose Lantor on a trusted
-private network. The browser UI shares the same desktop process and
-SQLite state, so you can manage channels, agents, tasks, reminders,
-artifacts, and attachments from your phone. See
-[`docs/web-access.md`](docs/web-access.md) for details and how to lock it
-down to loopback.
+   ```text
+   http://<mac-tailscale-name>:8787/
+   ```
+
+The browser UI shares the same desktop process and SQLite state, so
+channels, agents, tasks, reminders, artifacts, and attachments all stay in
+sync.
+
+Lantor has no built-in auth — only expose it on a trusted private network
+like your tailnet. To lock the web UI down to loopback or turn it off, set
+`LANTOR_WEB_BIND=127.0.0.1:8787` or `LANTOR_WEB_BIND=off`. See
+[`docs/web-access.md`](docs/web-access.md) for details.
+
+## Configuration
+
+Defaults work out of the box. The two settings most users care about:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LANTOR_DATABASE_URL` | `sqlite://~/Library/Application Support/Lantor/lantor.sqlite` | SQLite database URL. |
+| `LANTOR_WEB_BIND` | `0.0.0.0:8787` | Web UI bind. Use `127.0.0.1:8787` for loopback only, or `off` to disable. |
+
+Advanced options — attachment paths, web public URL, web bundle override,
+warm Codex rotation — are in [`docs/configuration.md`](docs/configuration.md)
+and [`.env.example`](.env.example).
 
 ## Documentation
 
