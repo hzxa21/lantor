@@ -10,12 +10,6 @@ use crate::{to_string, CommandResult};
 const CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT: i64 = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ClaudeSurface {
-    pub(crate) channel_id: Option<Uuid>,
-    pub(crate) thread_root_id: Option<Uuid>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CodexActiveTurnScheduleState {
     ReadyForSteer,
     WaitingForTurnId,
@@ -48,28 +42,6 @@ pub(crate) async fn same_codex_surface(
         return Ok(false);
     }
     Ok(thread_root_id == active_thread_root_id)
-}
-
-pub(crate) fn claude_surface_boundary_marker(
-    previous: Option<ClaudeSurface>,
-    current: ClaudeSurface,
-) -> Option<String> {
-    let previous = previous?;
-    if previous == current {
-        return None;
-    }
-    Some(format!(
-        "\n\n--- Lantor thread boundary ---\nPrevious surface: channel_id={}, thread_root_id={}\nCurrent surface: channel_id={}, thread_root_id={}\nThe warm Claude conversation may contain older turns from the previous surface. Treat this current surface and the injected current-thread context as authoritative. Do not use details from the previous surface unless the current prompt explicitly includes them.\n--- end boundary ---\n\n",
-        display_optional_uuid(previous.channel_id),
-        display_optional_uuid(previous.thread_root_id),
-        display_optional_uuid(current.channel_id),
-        display_optional_uuid(current.thread_root_id),
-    ))
-}
-
-fn display_optional_uuid(id: Option<Uuid>) -> String {
-    id.map(|id| id.to_string())
-        .unwrap_or_else(|| "none".to_owned())
 }
 
 pub(crate) async fn append_claude_thread_context(
