@@ -1273,6 +1273,10 @@ function ConversationComposer({
       <textarea
         ref={textareaRef}
         value={text}
+        autoCapitalize="none"
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
         onChange={(event) => {
           updateText(event.target.value);
           refreshMentionState(event.target.value, event.target.selectionStart);
