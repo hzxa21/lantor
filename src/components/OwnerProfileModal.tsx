@@ -52,7 +52,14 @@ export function OwnerProfileModal({
   }), [form.avatar, form.description, form.displayName]);
 
   return (
-    <Modal open={open} title="Edit Profile" onClose={onCancel} width={560}>
+    <Modal
+      open={open}
+      title="Edit Profile"
+      onClose={onCancel}
+      width={560}
+      closeOnBackdrop={false}
+      closeOnEscape={false}
+    >
       <div className="modal-form owner-profile-form">
         <div className="owner-profile-preview">
           <AgentAvatar agent={previewAgent} size="lg" showStatus={false} />

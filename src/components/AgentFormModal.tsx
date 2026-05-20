@@ -166,7 +166,14 @@ export function AgentFormModal({
   }, [open]);
 
   return (
-    <Modal open={open} title={title} onClose={onCancel} width={700}>
+    <Modal
+      open={open}
+      title={title}
+      onClose={onCancel}
+      width={700}
+      closeOnBackdrop={false}
+      closeOnEscape={false}
+    >
       <div className="modal-form agent-modal-form">
         {createMode ? (
           <>

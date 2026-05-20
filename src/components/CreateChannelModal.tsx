@@ -24,7 +24,14 @@ export function CreateChannelModal({
   onSubmit,
 }: CreateChannelModalProps) {
   return (
-    <Modal open={open} title="Create Channel" onClose={onCancel} width={560}>
+    <Modal
+      open={open}
+      title="Create Channel"
+      onClose={onCancel}
+      width={560}
+      closeOnBackdrop={false}
+      closeOnEscape={false}
+    >
       <div className="modal-form">
         <label>
           <span>Channel name</span>

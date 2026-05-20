@@ -86,7 +86,14 @@ export function ReminderModal({
   };
 
   return (
-    <Modal open={open} title="Reminders" onClose={onClose} width={880}>
+    <Modal
+      open={open}
+      title="Reminders"
+      onClose={onClose}
+      width={880}
+      closeOnBackdrop={false}
+      closeOnEscape={false}
+    >
       <div className="reminder-modal">
         <section className="reminder-create">
           <div className="reminder-hero">
