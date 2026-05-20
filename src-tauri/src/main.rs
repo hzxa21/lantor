@@ -67,6 +67,10 @@ use runtime::process::{
     pipe_run_output, terminate_process_group, wait_for_agent_run,
 };
 use runtime::streaming::mark_run_work_item_silent;
+use runtime::supervisor::{
+    claim_next_supervisor_command, cleanup_supervisor_commands, finish_supervisor_command,
+    mark_orphaned_agent_runs, recover_supervisor_commands_at_startup, write_supervisor_heartbeat,
+};
 use runtime::surface::{
     append_claude_thread_context, same_codex_surface, CodexActiveTurnScheduleState,
 };
@@ -7872,172 +7876,6 @@ async fn schedule_queued_work_items(
     Ok(())
 }
 
-async fn mark_orphaned_agent_runs(pool: &SqlitePool) -> CommandResult<()> {
-    sqlx::query(
-        r#"
-        update agent_runs
-        set status = 'unknown', stopped_at = coalesce(stopped_at, strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
-        where stopped_at is null and status in ('starting', 'running', 'stopping')
-        "#,
-    )
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-    sqlx::query(
-        "update agents set status = 'idle' where status in ('queued', 'running', 'stopping')",
-    )
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-    sqlx::query(
-        r#"
-        update agent_work_items
-        set status = 'failed',
-            completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
-            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-        where status = 'running'
-        "#,
-    )
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-
-    Ok(())
-}
-
-async fn recover_supervisor_commands_at_startup(pool: &SqlitePool) -> CommandResult<()> {
-    sqlx::query(
-        r#"
-        update supervisor_commands
-        set status = 'done',
-            error = 'skipped stale command for terminal work item',
-            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-        where status in ('pending', 'running')
-          and exists (
-              select 1
-              from agent_work_items w
-              where w.id = supervisor_commands.work_item_id
-          and w.status in ('cancelled', 'failed', 'done', 'silent')
-          )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-
-    sqlx::query(
-        r#"
-        update supervisor_commands
-        set status = 'pending',
-            error = 'requeued after supervisor restart',
-            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-        where status = 'running'
-        "#,
-    )
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-
-    Ok(())
-}
-
-async fn write_supervisor_heartbeat(pool: &SqlitePool) -> CommandResult<()> {
-    sqlx::query(
-        r#"
-        insert into supervisor_state (id, pid, status, updated_at)
-        values (1, $1, 'running', strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
-        on conflict (id) do update set
-            pid = excluded.pid,
-            status = excluded.status,
-            updated_at = excluded.updated_at
-        "#,
-    )
-    .bind(std::process::id() as i32)
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-
-    Ok(())
-}
-
-async fn claim_next_supervisor_command(
-    pool: &SqlitePool,
-) -> CommandResult<Option<SupervisorCommand>> {
-    let row = sqlx::query(
-        r#"
-        update supervisor_commands
-        set status = 'running',
-            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-        where id = (
-            select id
-            from supervisor_commands
-            where status = 'pending'
-            order by created_at asc
-            limit 1
-        )
-        returning id, command_type, agent_id, run_id, work_item_id
-        "#,
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(to_string)?;
-
-    let Some(row) = row else {
-        return Ok(None);
-    };
-
-    let command = SupervisorCommand {
-        id: row.get("id"),
-        command_type: row.get("command_type"),
-        agent_id: row.get("agent_id"),
-        run_id: row.get("run_id"),
-        work_item_id: row.get("work_item_id"),
-    };
-
-    Ok(Some(command))
-}
-
-async fn finish_supervisor_command(
-    pool: &SqlitePool,
-    command_id: Uuid,
-    error: Option<String>,
-) -> CommandResult<()> {
-    let (status, error) = match error {
-        Some(error) => ("failed", error),
-        None => ("done", String::new()),
-    };
-
-    sqlx::query(
-        r#"
-        update supervisor_commands
-        set status = $2, error = $3, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-        where id = $1
-        "#,
-    )
-    .bind(command_id)
-    .bind(status)
-    .bind(error)
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-
-    Ok(())
-}
-
-async fn cleanup_supervisor_commands(pool: &SqlitePool) -> CommandResult<()> {
-    sqlx::query(
-        r#"
-        delete from supervisor_commands
-        where status in ('done', 'failed')
-          and updated_at < strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-7 days')
-        "#,
-    )
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-    Ok(())
-}
-
 async fn process_supervisor_command(
     pool: &SqlitePool,
     codex_registry: &WarmCodexRegistry,
@@ -8672,7 +8510,6 @@ mod tests {
     use super::{
         activity_status, append_claude_thread_context, build_steer_followup_prompt,
         build_streaming_work_item_prompt, build_work_item_prompt, claim_agent_event,
-        claim_next_supervisor_command,
         context_tool::{
             agent_context_agent_inspect, agent_context_artifact_read_in_pool,
             agent_context_attachment_info, agent_context_history_read, agent_context_inbox_archive,
@@ -8689,10 +8526,10 @@ mod tests {
         mark_inbox_items_read_in_pool, migrate, normalize_open_link_target,
         notify_ui_work_item_changed, open_dm_with_agent_in_pool, process_due_agent_schedules,
         process_due_reminders, queue_mentions_as_work_items, record_agent_activity,
-        recover_supervisor_commands_at_startup, same_codex_surface, send_owner_message_in_pool,
-        try_claim_unassigned_task, update_channel_in_pool, upsert_agent_thread_subscription,
-        AgentAttachmentFile, AgentEvent, AgentInboxItemInput, InboxWakeItem, InboxWakeSummary,
-        MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT, WORK_ITEM_FINISH_PROMPT,
+        same_codex_surface, send_owner_message_in_pool, try_claim_unassigned_task,
+        update_channel_in_pool, upsert_agent_thread_subscription, AgentAttachmentFile, AgentEvent,
+        AgentInboxItemInput, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
+        AGENT_MEMORY_CONTEXT_LIMIT, WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::{json, Value};
@@ -14257,133 +14094,6 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
             assert_eq!(system_messages, 1);
-            Ok(())
-        }
-        .await;
-        drop_test_schema(pool, schema).await;
-        assert!(result.is_ok(), "{:?}", result.err());
-    }
-
-    #[tokio::test]
-    async fn startup_recovery_requeues_running_supervisor_commands_and_skips_terminal_work() {
-        let Some((pool, schema)) = test_pool().await else {
-            return;
-        };
-        let result: Result<(), String> = async {
-            let agent_id = insert_test_agent(&pool, "recovery-agent").await?;
-            let channel_id = insert_test_channel(&pool, "recovery").await?;
-            let queued_work_item_id: Uuid = sqlx::query_scalar(
-                r#"
-                insert into agent_work_items (agent_id, channel_id, title, context, status)
-                values ($1, $2, 'queued request', 'context', 'queued')
-                returning id
-                "#,
-            )
-            .bind(agent_id)
-            .bind(channel_id)
-            .fetch_one(&pool)
-            .await
-            .map_err(|err| err.to_string())?;
-            let cancelled_work_item_id: Uuid = sqlx::query_scalar(
-                r#"
-                insert into agent_work_items (agent_id, channel_id, title, context, status)
-                values ($1, $2, 'cancelled request', 'context', 'cancelled')
-                returning id
-                "#,
-            )
-            .bind(agent_id)
-            .bind(channel_id)
-            .fetch_one(&pool)
-            .await
-            .map_err(|err| err.to_string())?;
-
-            let running_command_id: Uuid = sqlx::query_scalar(
-                r#"
-                insert into supervisor_commands (command_type, agent_id, work_item_id, status)
-                values ('start_agent', $1, $2, 'running')
-                returning id
-                "#,
-            )
-            .bind(agent_id)
-            .bind(queued_work_item_id)
-            .fetch_one(&pool)
-            .await
-            .map_err(|err| err.to_string())?;
-            let terminal_command_id: Uuid = sqlx::query_scalar(
-                r#"
-                insert into supervisor_commands (command_type, agent_id, work_item_id, status)
-                values ('start_agent', $1, $2, 'pending')
-                returning id
-                "#,
-            )
-            .bind(agent_id)
-            .bind(cancelled_work_item_id)
-            .fetch_one(&pool)
-            .await
-            .map_err(|err| err.to_string())?;
-
-            recover_supervisor_commands_at_startup(&pool).await?;
-
-            let running_status: String =
-                sqlx::query_scalar("select status from supervisor_commands where id = $1")
-                    .bind(running_command_id)
-                    .fetch_one(&pool)
-                    .await
-                    .map_err(|err| err.to_string())?;
-            let terminal_status: String =
-                sqlx::query_scalar("select status from supervisor_commands where id = $1")
-                    .bind(terminal_command_id)
-                    .fetch_one(&pool)
-                    .await
-                    .map_err(|err| err.to_string())?;
-
-            assert_eq!(running_status, "pending");
-            assert_eq!(terminal_status, "done");
-            Ok(())
-        }
-        .await;
-        drop_test_schema(pool, schema).await;
-        assert!(result.is_ok(), "{:?}", result.err());
-    }
-
-    #[tokio::test]
-    async fn supervisor_command_claim_is_single_consumer() {
-        let Some((pool, schema)) = test_pool_with_connections(8).await else {
-            return;
-        };
-        let result: Result<(), String> = async {
-            let command_id: Uuid = sqlx::query_scalar(
-                r#"
-                insert into supervisor_commands (command_type)
-                values ('start_agent')
-                returning id
-                "#,
-            )
-            .fetch_one(&pool)
-            .await
-            .map_err(|err| err.to_string())?;
-
-            let (r1, r2, r3, r4) = tokio::join!(
-                claim_next_supervisor_command(&pool),
-                claim_next_supervisor_command(&pool),
-                claim_next_supervisor_command(&pool),
-                claim_next_supervisor_command(&pool)
-            );
-            let mut claimed = Vec::new();
-            for result in [r1, r2, r3, r4] {
-                if let Some(command) = result? {
-                    claimed.push(command.id);
-                }
-            }
-
-            assert_eq!(claimed, vec![command_id]);
-            let status: String =
-                sqlx::query_scalar("select status from supervisor_commands where id = $1")
-                    .bind(command_id)
-                    .fetch_one(&pool)
-                    .await
-                    .map_err(|err| err.to_string())?;
-            assert_eq!(status, "running");
             Ok(())
         }
         .await;
