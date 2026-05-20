@@ -1,3 +1,4 @@
+import { Check, UserPlus } from "lucide-react";
 import { Agent } from "../types";
 import { AgentAvatar } from "./AgentAvatar";
 import { Modal } from "./Modal";
@@ -23,6 +24,8 @@ export function CreateChannelModal({
   onCancel,
   onSubmit,
 }: CreateChannelModalProps) {
+  const selectedCount = agents.filter((agent) => selectedAgentIds.has(agent.id)).length;
+
   return (
     <Modal
       open={open}
@@ -50,34 +53,46 @@ export function CreateChannelModal({
             placeholder="lantor"
           />
         </label>
-        {agents.length > 0 && (
-          <label>
-            <span>Invite agents</span>
-            <div className="member-editor modal-member-editor channel-agent-picker">
-              {agents.map((agent) => {
-                const isMember = selectedAgentIds.has(agent.id);
-                return (
-                  <label key={agent.id} className={`channel-agent-option ${isMember ? "selected" : ""}`}>
-                    <input
-                      className="channel-agent-checkbox"
-                      type="checkbox"
-                      checked={isMember}
-                      onChange={(event) => onToggleAgent(agent.id, event.target.checked)}
-                      aria-label={`${isMember ? "Remove" : "Add"} @${agent.handle}`}
-                    />
-                    <div className="channel-agent-profile">
-                      <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
-                      <div className="agent-pick-row">
-                        <strong>{agent.display_name}</strong>
-                        <small>@{agent.handle}</small>
-                      </div>
-                    </div>
-                  </label>
-                );
-              })}
+        <label>
+          <span>Add agents</span>
+          <div className="channel-agent-modal-intro">
+            <span className="channel-agent-modal-icon" aria-hidden="true">
+              <UserPlus size={18} />
+            </span>
+            <div>
+              <strong>{selectedCount > 0 ? `${selectedCount} selected` : "Bring agents into this channel"}</strong>
+              <p>{agents.length > 0 ? "Pick agents now so the new channel is ready for work." : "Create an agent first, then add it to this channel."}</p>
             </div>
-          </label>
-        )}
+          </div>
+          <div className="member-editor modal-member-editor channel-agent-picker">
+            {agents.length === 0 && <span>No agents yet.</span>}
+            {agents.map((agent) => {
+              const isMember = selectedAgentIds.has(agent.id);
+              return (
+                <label key={agent.id} className={`channel-agent-option ${isMember ? "selected" : ""}`}>
+                  <input
+                    className="channel-agent-checkbox"
+                    type="checkbox"
+                    checked={isMember}
+                    onChange={(event) => onToggleAgent(agent.id, event.target.checked)}
+                    aria-label={`${isMember ? "Remove" : "Add"} @${agent.handle}`}
+                  />
+                  <div className="channel-agent-profile">
+                    <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
+                    <div className="agent-pick-row">
+                      <strong>{agent.display_name}</strong>
+                      <small>@{agent.handle}</small>
+                    </div>
+                  </div>
+                  <span className={`channel-agent-option-state ${isMember ? "selected" : ""}`}>
+                    {isMember ? <Check size={14} /> : <UserPlus size={14} />}
+                    {isMember ? "Added" : "Add"}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </label>
         <div className="modal-actions">
           <button onClick={onCancel}>Cancel</button>
           <button className="primary" disabled={!channelName.trim()} onClick={onSubmit}>Create</button>

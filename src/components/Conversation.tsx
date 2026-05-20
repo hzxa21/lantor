@@ -12,7 +12,7 @@ import {
   Send,
   Settings,
   Trash2,
-  Users,
+  UserPlus,
 } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
@@ -535,9 +535,9 @@ export function Conversation({
           <div className="channel-header-actions" ref={channelActionsRef} onBlur={handleChannelActionsBlur}>
             <button
               type="button"
-              className="channel-agent-count-trigger"
-              title="Manage channel agents"
-              aria-label="Manage channel agents"
+              className={`channel-agent-count-trigger ${channelAgents.length === 0 ? "empty" : ""}`}
+              title={channelAgents.length === 0 ? "Add agents to this channel" : "Manage channel agents"}
+              aria-label={channelAgents.length === 0 ? "Add agents to this channel" : "Manage channel agents"}
               onClick={() => {
                 setShowChannelActions(false);
                 openChannelAgentsModal();
@@ -552,9 +552,9 @@ export function Conversation({
                   ))}
                 </span>
               ) : (
-                <Users size={16} />
+                <UserPlus size={16} />
               )}
-              <span>{channelAgents.length}</span>
+              <span>{channelAgents.length > 0 ? channelAgents.length : "Add agent"}</span>
             </button>
             <button
               type="button"
@@ -629,8 +629,15 @@ export function Conversation({
                   <p>
                     {isDm
                       ? "Send a message here to talk directly with this agent."
-                      : "Send a root message from the composer. Replies belong in the right thread pane."}
+                      : channelAgents.length === 0
+                        ? "Add agents to this channel or send the first message."
+                        : "Send a root message from the composer. Replies belong in the right thread pane."}
                   </p>
+                  {!isDm && channelAgents.length === 0 && (
+                    <button type="button" className="empty-state-action" onClick={openChannelAgentsModal}>
+                      <UserPlus size={16} /> Add agent
+                    </button>
+                  )}
                 </div>
               )
             ) : (

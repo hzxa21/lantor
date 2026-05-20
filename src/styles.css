@@ -186,6 +186,13 @@ button,
   flex: 0 0 auto;
 }
 
+.sidebar-sections {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
 .workspace {
   padding: 20px 18px 14px;
 }
@@ -332,19 +339,31 @@ button,
 
 .channel-block,
 .dm-list {
+  display: flex;
   min-height: 0;
-  overflow: auto;
-  padding: 8px 18px;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 18px;
 }
 
 .channel-block {
-  flex: 0 1 auto;
-  max-height: min(44vh, 520px);
+  flex: 0 0 clamp(104px, var(--sidebar-channels-height, 260px), calc(100% - 118px));
 }
 
 .dm-list {
   flex: 1 1 auto;
-  border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.sidebar-sections.channels-collapsed .dm-list:not(.collapsed),
+.sidebar-sections.dms-collapsed .channel-block:not(.collapsed) {
+  flex: 1 1 auto;
+}
+
+.sidebar-section-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 0 8px;
 }
 
 .channel-block.collapsed,
@@ -353,8 +372,53 @@ button,
   overflow: hidden;
 }
 
+.channel-block.collapsed .sidebar-section-scroll,
+.dm-list.collapsed .sidebar-section-scroll {
+  display: none;
+}
+
+.sidebar-section-resize-handle {
+  position: relative;
+  flex: 0 0 14px;
+  margin: 0 18px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: row-resize;
+}
+
+.sidebar-section-resize-handle::before,
+.sidebar-section-resize-handle::after {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 1px;
+  border-radius: 999px;
+  content: "";
+  transform: translateY(-50%);
+  transition:
+    background-color 140ms ease,
+    height 140ms ease;
+}
+
+.sidebar-section-resize-handle::before {
+  background: rgba(20, 23, 31, 0.08);
+}
+
+.sidebar-section-resize-handle::after {
+  background: rgba(10, 132, 255, 0);
+}
+
+.sidebar-section-resize-handle:hover::after,
+.sidebar-section-resize-handle:focus-visible::after {
+  height: 2px;
+  background: rgba(10, 132, 255, 0.5);
+}
+
 .section-title {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   margin: 6px 0 10px;
@@ -1173,6 +1237,16 @@ button,
   font-weight: 780;
 }
 
+.channel-agent-count-trigger.empty {
+  gap: 7px;
+  min-width: 92px;
+  padding: 0 10px;
+}
+
+.channel-agent-count-trigger span {
+  white-space: nowrap;
+}
+
 .channel-agent-preview {
   display: inline-flex;
   align-items: center;
@@ -1349,6 +1423,26 @@ button,
   margin: 0;
   max-width: 320px;
   line-height: 1.45;
+}
+
+.empty-state-action {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  gap: 7px;
+  margin-top: 5px;
+  padding: 0 13px;
+  border: 1px solid rgba(10, 132, 255, 0.22);
+  border-radius: 12px;
+  background: rgba(10, 132, 255, 0.08);
+  color: #1262b3;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.empty-state-action:hover {
+  border-color: rgba(10, 132, 255, 0.34);
+  background: rgba(10, 132, 255, 0.13);
 }
 
 .beginning {
@@ -3441,6 +3535,12 @@ mark {
 body.resizing-column,
 body.resizing-column * {
   cursor: col-resize !important;
+  user-select: none;
+}
+
+body.resizing-row,
+body.resizing-row * {
+  cursor: row-resize !important;
   user-select: none;
 }
 
@@ -5658,9 +5758,46 @@ body.resizing-column * {
   color: #171a20;
 }
 
-.channel-agent-picker label {
-  grid-template-columns: minmax(0, 1fr);
+.modal-form .channel-agent-picker .channel-agent-option {
+  grid-template-columns: minmax(0, 1fr) 76px;
   align-items: center;
+  gap: 12px;
+}
+
+.channel-agent-modal-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid rgba(20, 23, 31, 0.07);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fff, #f7f8fa);
+}
+
+.channel-agent-modal-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(10, 132, 255, 0.16);
+  border-radius: 12px;
+  background: rgba(10, 132, 255, 0.08);
+  color: #1262b3;
+}
+
+.channel-agent-modal-intro strong {
+  display: block;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 780;
+}
+
+.channel-agent-modal-intro p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .channel-agent-picker .channel-agent-option {
@@ -5705,6 +5842,29 @@ body.resizing-column * {
 
 .channel-agent-profile .agent-avatar-glyph {
   color: var(--avatar-color);
+}
+
+.channel-agent-option-state {
+  display: inline-flex;
+  width: 76px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  justify-self: end;
+  padding: 0 9px;
+  border: 1px solid rgba(20, 23, 31, 0.08);
+  border-radius: 10px;
+  background: #fff;
+  color: #535967;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.channel-agent-option-state.selected {
+  border-color: rgba(10, 132, 255, 0.22);
+  background: rgba(10, 132, 255, 0.08);
+  color: #1262b3;
 }
 
 .agent-pick-row {
@@ -7027,12 +7187,15 @@ body.resizing-column * {
   .channel-block,
   .dm-list {
     max-height: none;
-    padding: 8px 14px;
+    padding: 0 14px;
   }
 
   .dm-list {
-    padding-bottom: 118px;
     scroll-margin-top: calc(14px + env(safe-area-inset-top));
+  }
+
+  .dm-list .sidebar-section-scroll {
+    padding-bottom: 118px;
   }
 
   .channel,
