@@ -608,7 +608,10 @@ function App() {
   const appHistoryIndexRef = useRef(0);
   const appHistoryMaxIndexRef = useRef(0);
   const restoringAppHistoryRef = useRef(false);
+  const replaceNextAppHistoryEntryRef = useRef(false);
   const lastAppHistoryKeyRef = useRef<string | null>(null);
+  const searchResultThreadIdRef = useRef<string | null>(null);
+  const searchResultAgentIdRef = useRef<string | null>(null);
   const [appHistoryIndex, setAppHistoryIndex] = useState(0);
   const [appHistoryMaxIndex, setAppHistoryMaxIndex] = useState(0);
   const activeMobileModal: MobileModal | null = showSearchModal
@@ -1287,6 +1290,15 @@ function App() {
       window.history.replaceState(sidebarState, "");
       setAppHistoryPosition(sidebarState.index);
       lastAppHistoryKeyRef.current = appHistoryKey(sidebarState);
+    }
+
+    if (replaceNextAppHistoryEntryRef.current) {
+      replaceNextAppHistoryEntryRef.current = false;
+      const nextState = { ...currentState, index: appHistoryIndexRef.current };
+      window.history.replaceState(nextState, "");
+      setAppHistoryPosition(nextState.index);
+      lastAppHistoryKeyRef.current = appHistoryKey(nextState);
+      return;
     }
 
     const nextState = { ...currentState, index: appHistoryIndexRef.current + 1 };
@@ -2243,14 +2255,22 @@ function App() {
   }
 
   function closeSelectedAgent() {
+    if (selectedAgentId && searchResultAgentIdRef.current === selectedAgentId) {
+      searchResultAgentIdRef.current = null;
+      replaceNextAppHistoryEntryRef.current = true;
+      setSelectedAgentId(null);
+      return;
+    }
     navigateBack(() => setSelectedAgentId(null));
   }
 
   function closeThreadPanel() {
-    navigateBack(() => {
-      openThread(null);
-      setShowThread(false);
-    });
+    if (activeThreadId && searchResultThreadIdRef.current === activeThreadId) {
+      searchResultThreadIdRef.current = null;
+    }
+    replaceNextAppHistoryEntryRef.current = true;
+    openThread(null);
+    setShowThread(false);
   }
 
   function optimisticMessageAttachments(messageId: string, attachments: DraftAttachment[]): MessageAttachment[] {
@@ -2625,14 +2645,24 @@ function App() {
   }
 
   function openSearchResult(result: SearchResult) {
+    const openedFromSearch = showSearchModal;
+    let openedAgentId: string | null = null;
     if (result.agentId) {
       const agent = data?.agents.find((item) => item.id === result.agentId);
-      if (agent) setSelectedAgentId(agent.id);
+      if (agent) {
+        openedAgentId = agent.id;
+        setSelectedAgentId(agent.id);
+      }
     }
     if (result.channelId) selectChannel(result.channelId);
     if (result.threadId) {
       revealThread(result.threadId, result.channelId ?? activeChannelId);
       setActiveTab("chat");
+    }
+    if (openedFromSearch) {
+      replaceNextAppHistoryEntryRef.current = true;
+      searchResultThreadIdRef.current = result.threadId ?? null;
+      searchResultAgentIdRef.current = result.threadId ? null : openedAgentId;
     }
     setShowSearchModal(false);
   }
