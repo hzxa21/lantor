@@ -85,6 +85,9 @@ const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
 const CODEX_TURN_START_TIMEOUT: Duration = Duration::from_secs(90);
 const SUPERVISOR_COMMAND_CONCURRENCY: usize = 4;
+const SUPERVISOR_IDLE_SLEEP: Duration = Duration::from_secs(2);
+const SUPERVISOR_ERROR_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
+const SUPERVISOR_ERROR_BACKOFF_MAX: Duration = Duration::from_secs(10);
 const CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS: i64 = 180_000;
 const CODEX_CONTEXT_ROTATE_MIN_INPUT_TOKENS: i64 = 50_000;
 const CODEX_CONTEXT_ROTATE_ENV: &str = "LANTOR_CODEX_CONTEXT_ROTATE_INPUT_TOKENS";
@@ -11291,43 +11294,77 @@ async fn run_supervisor() -> CommandResult<()> {
     let claude_registry = WarmClaudeRegistry::default();
     let command_semaphore = Arc::new(Semaphore::new(SUPERVISOR_COMMAND_CONCURRENCY));
     let mut last_command_cleanup = Instant::now() - Duration::from_secs(3600);
+    let mut error_backoff = SUPERVISOR_ERROR_BACKOFF_INITIAL;
 
     loop {
-        write_supervisor_heartbeat(&pool).await?;
-        if last_command_cleanup.elapsed() >= Duration::from_secs(3600) {
-            cleanup_supervisor_commands(&pool).await?;
-            last_command_cleanup = Instant::now();
-        }
-        schedule_queued_work_items(&pool, &codex_registry).await?;
-        let mut processed_command = false;
-        loop {
-            let Ok(permit) = command_semaphore.clone().try_acquire_owned() else {
-                break;
-            };
-            let Some(command) = claim_next_supervisor_command(&pool).await? else {
-                drop(permit);
-                break;
-            };
-            processed_command = true;
-            let command_id = command.id;
-            let pool = pool.clone();
-            let codex_registry = codex_registry.clone();
-            let claude_registry = claude_registry.clone();
-            tokio::spawn(async move {
-                let _permit = permit;
-                let result =
-                    process_supervisor_command(&pool, &codex_registry, &claude_registry, command)
-                        .await;
-                if let Err(err) = finish_supervisor_command(&pool, command_id, result.err()).await {
-                    eprintln!("failed to finish supervisor command {command_id}: {err}");
+        match run_supervisor_iteration(
+            &pool,
+            &codex_registry,
+            &claude_registry,
+            &command_semaphore,
+            &mut last_command_cleanup,
+        )
+        .await
+        {
+            Ok(processed_command) => {
+                error_backoff = SUPERVISOR_ERROR_BACKOFF_INITIAL;
+                if processed_command {
+                    continue;
                 }
-            });
+                sleep(SUPERVISOR_IDLE_SLEEP).await;
+            }
+            Err(err) => {
+                eprintln!(
+                    "Lantor supervisor loop failed; retrying in {:?}: {err}",
+                    error_backoff
+                );
+                sleep(error_backoff).await;
+                error_backoff = error_backoff
+                    .saturating_mul(2)
+                    .min(SUPERVISOR_ERROR_BACKOFF_MAX);
+            }
         }
-        if processed_command {
-            continue;
-        }
-        sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn run_supervisor_iteration(
+    pool: &SqlitePool,
+    codex_registry: &WarmCodexRegistry,
+    claude_registry: &WarmClaudeRegistry,
+    command_semaphore: &Arc<Semaphore>,
+    last_command_cleanup: &mut Instant,
+) -> CommandResult<bool> {
+    write_supervisor_heartbeat(pool).await?;
+    if last_command_cleanup.elapsed() >= Duration::from_secs(3600) {
+        cleanup_supervisor_commands(pool).await?;
+        *last_command_cleanup = Instant::now();
+    }
+    schedule_queued_work_items(pool, codex_registry).await?;
+    let mut processed_command = false;
+    loop {
+        let Ok(permit) = command_semaphore.clone().try_acquire_owned() else {
+            break;
+        };
+        let Some(command) = claim_next_supervisor_command(pool).await? else {
+            drop(permit);
+            break;
+        };
+        processed_command = true;
+        let command_id = command.id;
+        let pool = pool.clone();
+        let codex_registry = codex_registry.clone();
+        let claude_registry = claude_registry.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let result =
+                process_supervisor_command(&pool, &codex_registry, &claude_registry, command).await;
+            if let Err(err) = finish_supervisor_command(&pool, command_id, result.err()).await {
+                eprintln!("failed to finish supervisor command {command_id}: {err}");
+            }
+        });
+    }
+
+    Ok(processed_command)
 }
 
 async fn active_codex_turn_surface(
