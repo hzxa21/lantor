@@ -1295,6 +1295,18 @@ button,
 
 .message-list {
   padding: 10px 0 20px;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.message-list-content {
+  display: flow-root;
+  min-height: 100%;
+}
+
+.message-list-bottom-anchor {
+  height: 1px;
 }
 
 .empty-state {
@@ -3895,12 +3907,17 @@ body.resizing-column * {
 .thread-scroll {
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 
 .thread-scroll .reply-list {
   overflow: visible;
+}
+
+.thread-bottom-anchor {
+  height: 1px;
 }
 
 .thread-back-to-bottom {
