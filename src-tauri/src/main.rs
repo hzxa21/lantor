@@ -34,7 +34,7 @@ use sqlx::{
 use std::os::fd::AsRawFd;
 use std::str::FromStr;
 use tauri::{Emitter, Manager, State};
-use tokio::{process::Command, sync::Semaphore, time::sleep};
+use tokio::{sync::Semaphore, time::sleep};
 use uuid::Uuid;
 
 use attachments::{write_attachment_file, ATTACHMENT_SIZE_LIMIT};
@@ -63,8 +63,7 @@ use prompts::{AGENT_MEMORY_CONTEXT_LIMIT, WORK_ITEM_FINISH_PROMPT};
 use runtime::claude::{self, WarmClaudeRegistry};
 use runtime::codex::{self, WarmCodexRegistry};
 use runtime::process::{
-    configure_agent_context_tool_env, configure_agent_identity_env, effective_launch_command,
-    pipe_run_output, terminate_process_group, wait_for_agent_run,
+    effective_launch_command, start_process_agent, terminate_process_group, ProcessAgentLaunch,
 };
 use runtime::streaming::mark_run_work_item_silent;
 use runtime::supervisor::{
@@ -8109,189 +8108,18 @@ async fn supervisor_start_agent(
     }
     let work_item_prompt = prepend_memory_context(work_item_prompt, memory_context.as_deref());
     let command_text = effective_launch_command(launch_command, runtime, model, handle.clone());
-    let initial_log = if work_item_prompt.is_empty() {
-        format!("$ {command_text}\n")
-    } else {
-        format!("$ {command_text}\n\n[agent request]\n{work_item_prompt}\n")
-    };
-
-    let run_id: Uuid = sqlx::query_scalar(
-        r#"
-        insert into agent_runs (agent_id, work_item_id, command, working_directory, status, log)
-        values ($1, $2, $3, $4, 'starting', $5)
-        returning id
-        "#,
+    start_process_agent(
+        pool,
+        ProcessAgentLaunch {
+            agent_id,
+            work_item_id,
+            handle,
+            working_directory,
+            command_text,
+            work_item_prompt,
+        },
     )
-    .bind(agent_id)
-    .bind(work_item_id)
-    .bind(&command_text)
-    .bind(&working_directory)
-    .bind(initial_log)
-    .fetch_one(pool)
     .await
-    .map_err(to_string)?;
-    notify_ui_agent_run_changed(pool, run_id, "run_created").await;
-    if let Some(work_item_id) = work_item_id {
-        sqlx::query(
-            r#"
-            update agent_work_items
-            set status = 'running',
-                run_id = $2,
-                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-            where id = $1
-            "#,
-        )
-        .bind(work_item_id)
-        .bind(run_id)
-        .execute(pool)
-        .await
-        .map_err(to_string)?;
-        notify_ui_work_item_changed(pool, work_item_id, "work_item_running").await;
-        record_agent_activity(
-            pool,
-            Some(agent_id),
-            Some(run_id),
-            "dispatch",
-            "Request started",
-            work_item_id.to_string(),
-        )
-        .await?;
-    }
-    record_agent_activity(
-        pool,
-        Some(agent_id),
-        Some(run_id),
-        "run",
-        "Run created",
-        "Supervisor is preparing the launch command",
-    )
-    .await?;
-
-    let mut command = Command::new("/bin/zsh");
-    command.arg("-lc").arg(&command_text);
-    configure_agent_identity_env(&mut command, agent_id, &handle);
-    configure_agent_context_tool_env(&mut command);
-    let run_id_value = run_id.to_string();
-    command.env("LANTOR_RUN_ID", run_id_value);
-    let work_item_id_value = work_item_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(String::new);
-    command.env("LANTOR_WORK_ITEM_ID", work_item_id_value);
-    command.env("LANTOR_WORK_ITEM_PROMPT", &work_item_prompt);
-    #[cfg(unix)]
-    command.process_group(0);
-    if !working_directory.is_empty() {
-        command.current_dir(&working_directory);
-    }
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            let error_log = format!("failed to start process: {err}\n");
-            sqlx::query(
-                r#"
-                update agent_runs
-                set status = 'failed', log = substr(log || $2, -20000), stopped_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-                where id = $1
-                "#,
-            )
-            .bind(run_id)
-            .bind(error_log)
-            .execute(pool)
-            .await
-            .map_err(to_string)?;
-            notify_ui_agent_run_changed(pool, run_id, "run_failed").await;
-            sqlx::query("update agents set status = 'error' where id = $1")
-                .bind(agent_id)
-                .execute(pool)
-                .await
-                .map_err(to_string)?;
-            if let Some(work_item_id) = work_item_id {
-                sqlx::query(
-                    r#"
-                    update agent_work_items
-                    set status = 'failed',
-                        completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
-                        updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-                    where id = $1
-                    "#,
-                )
-                .bind(work_item_id)
-                .execute(pool)
-                .await
-                .map_err(to_string)?;
-                notify_ui_work_item_changed(pool, work_item_id, "work_item_failed").await;
-            }
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "run_error",
-                "Run failed to start",
-                err.to_string(),
-            )
-            .await?;
-            return Err(err.to_string());
-        }
-    };
-
-    let pid = child.id().map(|id| id as i32);
-    sqlx::query("update agent_runs set status = 'running', pid = $2 where id = $1")
-        .bind(run_id)
-        .bind(pid)
-        .execute(pool)
-        .await
-        .map_err(to_string)?;
-    notify_ui_agent_run_changed(pool, run_id, "run_running").await;
-    sqlx::query("update agents set status = 'running' where id = $1")
-        .bind(agent_id)
-        .execute(pool)
-        .await
-        .map_err(to_string)?;
-    record_agent_activity(
-        pool,
-        Some(agent_id),
-        Some(run_id),
-        "run",
-        "Run started",
-        pid.map(|pid| format!("pid={pid}"))
-            .unwrap_or_else(|| "pid unavailable".to_owned()),
-    )
-    .await?;
-
-    let mut pipe_tasks = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        pipe_tasks.push(tokio::spawn(pipe_run_output(
-            pool.clone(),
-            agent_id,
-            run_id,
-            stdout,
-            "stdout",
-            true,
-        )));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        pipe_tasks.push(tokio::spawn(pipe_run_output(
-            pool.clone(),
-            agent_id,
-            run_id,
-            stderr,
-            "stderr",
-            true,
-        )));
-    }
-
-    tokio::spawn(wait_for_agent_run(
-        pool.clone(),
-        agent_id,
-        run_id,
-        work_item_id,
-        pipe_tasks,
-        child,
-    ));
-
-    Ok(())
 }
 
 async fn supervisor_stop_run(
