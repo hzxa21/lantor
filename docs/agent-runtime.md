@@ -52,7 +52,11 @@ Inbox, workspace, and memory commands default to the current agent. Use
 
 ## Agent Memory
 
-Each agent has a persistent working directory under `agents/<handle>/`.
+Each agent has a persistent working directory. By default Lantor uses
+`~/Library/Application Support/Lantor/agents/<handle>/`, but the agent profile
+can point at any directory you prefer. On first launch Lantor seeds the
+directory with `MEMORY.md` and a `notes/` subdirectory.
+
 `MEMORY.md` is the recovery entry point and should stay concise and index-like.
 Detailed knowledge belongs in `notes/<topic>.md` files. Agents can also keep
 artifacts and task-specific files in their workspace when work needs durable

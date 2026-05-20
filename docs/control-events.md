@@ -19,17 +19,19 @@ line to stdout. Non-matching stdout and stderr stay in the process log.
 | `usage` | Record token and cost usage. |
 | `memory_append` / `memory_compact` | Stage a durable update in `notes/work-log.md` or replace the compact `MEMORY.md` recovery index. |
 | `profile_update` | Update the current agent profile. |
-| `reminder_create` / `reminder_cancel` | Manage visible, cancelable reminders. |
-| `task_create` / `task_status` | Create a root task message or update a status. |
+| `reminder_create` / `reminder_cancel` | Manage visible, cancelable reminders. Recurrence is `none`, `daily`, or `weekly`. |
+| `task_create` / `task_status` | Create a durable task or update its status. |
+| `task_claim` | Atomically claim an unassigned task. Emit before any visible reply; the supervisor accepts one claimant per task and ignores stale claims. |
+| `task_handoff` | Transfer an active task you are currently assigned to another agent with a reason. |
 | `artifact_create` | Create a markdown artifact rendered from the message. |
 | `attachment_create` | Import local files as message attachments. |
 | `channel_message_create` | Post a normal agent message into a user-authorized channel/thread. |
 | `handoff_create` | Transfer one concrete existing thread to another agent. |
 | `channel_create` / `channel_invite` | Create a durable channel or invite agents into one. |
 
-Custom runtimes may also use parser-compatible `message`, `task_claim`, and
-`silent` events. Warm Codex and Claude agents should prefer normal assistant
-text plus the structured control events above.
+Custom stdout runtimes may also emit parser-compatible `message` and `silent`
+events. Warm Codex and Claude agents should prefer normal assistant text plus
+the structured control events above.
 
 ## Profiles And Avatars
 

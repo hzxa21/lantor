@@ -28,20 +28,23 @@ server off, set `LANTOR_WEB_BIND=off` (also accepts `none`, `disabled`,
 The web UI does not perform its own token check. Only expose Lantor on a
 trusted private network such as your Tailscale tailnet.
 
-The web UI uses HTTP endpoints for the subset of Tauri commands the chat
-surface needs:
+The web UI uses HTTP endpoints under `/api/` for the subset of Tauri commands
+the chat surface needs, including:
 
-- bootstrap
-- sending messages
-- marking channels read
-- completing reminders
+- bootstrap and runtime health checks
+- sending messages, creating/updating/deleting channels and agents
+- managing channel agent membership and saved messages
+- inbox dismissal and read state, channel read state
+- reminders (completing) and tasks (status, title, claim)
+- cancelling and retrying agent work
+- installing and uninstalling the supervisor LaunchAgent
 - opening agent DMs
-- reading artifacts
-- workspace preview
-- attachment preview
+- reading artifacts and attachment preview
+- agent workspace listing and file preview
+- owner profile updates
 
-Live refresh is delivered over an SSE stream. Desktop Tauri still uses native
-IPC.
+Live refresh is delivered over an SSE stream at `/api/events`. Desktop Tauri
+still uses native IPC for the same operations.
 
 ## Supervisor LaunchAgent
 

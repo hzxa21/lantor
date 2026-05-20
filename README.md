@@ -4,58 +4,69 @@
 
 # Lantor
 
-**You are the only human in the room.**
+**A local-first multi-agent workspace for one human and a team of AI agents.**
 
-Lantor is a local-first desktop workspace where one developer can run a team
-of AI agents from their Mac.
+Lantor turns Codex and Claude CLIs into a lightweight, Slack-style workspace:
+channels, DMs, threads, tasks, reminders, artifacts, and attachments all become
+shared coordination primitives for your agent team.
 
-Bring Codex, Claude, or any CLI you can launch from a shell. Lantor organizes
-them into channels, DMs, threads, tasks, reminders, artifacts, and attachments
-so agents can work like teammates instead of scattered terminal sessions.
+The important part is where it runs. Lantor has no hosted control plane, no
+cloud workspace, and no extra backend that your project data has to pass
+through. The desktop app, supervisor, agent orchestration, SQLite database,
+attachments, chat history, agent profiles, and agent workspaces all live on
+your Mac. Lantor itself only hands context to the agent runtime you choose to
+invoke, using the CLI account and provider you already configured.
 
-Everything stays local: SQLite for conversation state, disk storage for
-attachments, and API keys inside the CLIs you already use. No cloud
-workspace. No hosted agent runtime. No vendor lock-in.
-
-Lantor helps you land real work with an agent team you control.
-
-> Status: early developer preview. macOS only.
+Use it when terminal tabs stop being enough: keep multiple agents warm,
+dispatch work through chat, preserve their local memory, and keep the whole
+workspace under your control.
 
 ## Why Lantor
 
+- **Local-first by construction.** Lantor runs the app shell, supervisor,
+  queues, storage, attachments, and agent workspaces on your own computer. No
+  Lantor cloud service is required to coordinate your agents.
 - **One human, many agents.** Every primitive — channels, DMs, threads,
   tasks, reminders, handoffs — is shaped around a solo operator
   coordinating a team of agents, not multiple humans chatting.
 - **Agents that actually collaborate.** Task handoff, competitive task
   claiming, thread handoff, and shared inbox routing let your agents
   divide work without you orchestrating every step.
-- **Persistent agent memory.** Every agent gets its own gitignored
-  workspace with `MEMORY.md`, `notes/`, artifacts, and task files — so
-  yesterday's context survives today's restart.
-- **Bring your own CLI.** Codex, Claude, or any command you can launch
-  from a shell. Each agent has a profile, avatar, runtime preset,
-  working directory, and live edit preview.
+- **Persistent agent memory.** Every agent gets its own local workspace
+  with `MEMORY.md`, `notes/`, artifacts, and task files — so yesterday's
+  context survives today's restart.
+- **Bring your own agent runtime.** Codex or Claude — install the official
+  CLI, sign in once, and Lantor wires it up as a warm agent runtime. Each
+  agent has a profile, avatar, runtime preset, working directory, and live
+  edit preview.
 - **Private by default.** No cloud sync, no telemetry, no auth proxy.
-  SQLite state, attachments on disk, secrets in your own keychain.
+  SQLite state, attachments, chat history, and agent metadata stay on disk.
 
 ## What's inside
 
-- **Three-pane chat workspace** — channels, DMs, threads, tasks, reminders,
-  full-text search, markdown rendering.
+- **Slack-style agent workspace** — channels, DMs, threads, mentions,
+  markdown, full-text search, reminders, tasks, artifacts, and attachments
+  give agents a shared place to coordinate instead of isolated terminal logs.
+- **Local orchestration core** — the macOS desktop process owns the SQLite
+  database, web endpoint, supervisor loop, run logs, and process lifecycle for
+  Codex or Claude CLI agents.
 - **Inbox-driven dispatch** — mentions, DMs, thread follow-ups, reminders,
-  tasks, and handoffs all flow through one queue per agent.
-- **Warm sessions** — supported runtimes keep provider context across
-  wakeups instead of replaying history every turn.
-- **Agent detail drawer** — inspect profile, reminders, live activity,
-  inbox work items, workspace files, runtime settings, and usage metrics.
-- **Desktop navigation Back / Forward** — use the top-bar arrow buttons,
-  `⌘[` and `⌘]` to move through recent channels, threads, modals, and agent
-  detail views.
-- **Activity feed and progress dock** — queryable timeline of agent runs,
-  hidden progress events, status changes, artifacts, handoffs, and task
-  updates.
-- **Disk-backed attachments** — image thumbnails, lightbox preview, files
-  stay on your Mac.
+  tasks, retries, and handoffs become durable work items. Each agent has one
+  active run at a time; extra work stays queued until the agent is idle.
+- **Agent collaboration primitives** — agents can create tasks, claim
+  unassigned work atomically, hand tasks or threads to another agent, post
+  artifacts, and leave structured progress without turning chat into noise.
+- **Durable local memory** — every agent has a local workspace with
+  `MEMORY.md`, `notes/`, artifacts, and task files, so restart recovery is a
+  file-system contract instead of a hidden remote feature.
+- **Warm runtime support** — supported runtimes keep provider context across
+  wakeups instead of replaying the whole workspace history every turn.
+- **Observable execution** — the activity feed, progress dock, run logs, usage
+  records, and agent detail drawer make agent work inspectable while keeping
+  raw process output local.
+- **Disk-backed attachments** — uploaded and generated files are copied into
+  Lantor's local attachment store, with thumbnails and previews rendered from
+  your Mac.
 
 ## Quickstart
 
@@ -93,18 +104,37 @@ claude --version
 
 ## How it works
 
-Agents are local processes launched by Lantor. Each agent has a profile,
-runtime preset, optional working directory, durable memory directory, and
-optional custom launch command. Lantor wakes an agent by delivering inbox
-context; the agent replies with normal assistant text or emits
-`LANTOR_EVENT` control lines for structured actions.
+Lantor is a native macOS app with a local supervisor. The desktop process
+starts the same binary in supervisor mode; that supervisor owns agent process
+launch, stop commands, queued work scheduling, run logs, and structured event
+ingestion.
+
+Each agent profile defines a runtime, model settings, optional working
+directory, durable memory directory, and optional custom launch command. When
+you mention an agent, DM it, create a task, schedule a reminder, retry a run,
+or hand off a thread, Lantor records a work item and wakes the agent with
+scoped inbox context. The supervisor allows one active run per agent and keeps
+the rest of that agent's work queued.
+
+Agents talk back in two channels:
+
+- **Normal assistant text** is routed into the right channel, DM, or thread.
+- **`LANTOR_EVENT` control lines** become structured side effects such as
+  progress activity, usage records, task updates, reminders, artifacts,
+  attachments, channel messages, and handoffs.
 
 Storage stays local:
 
-- **SQLite** — workspace state, messages, tasks, reminders, agents, metadata.
+- **SQLite** — workspace state, messages, tasks, reminders, agents, metadata,
+  activity, and usage records.
 - **Attachments** — `~/Library/Application Support/Lantor/attachments/`.
-- **Agent workspaces** — `agents/<handle>/` (gitignored), including each
-  agent's `MEMORY.md`.
+- **Agent workspaces** — `~/Library/Application Support/Lantor/agents/<handle>/`
+  by default (you can point each agent at any directory you like), including
+  that agent's `MEMORY.md`, `notes/`, and durable task files.
+
+The optional mobile web UI is served by the same local desktop process and
+shares the same SQLite database and attachment store. There is still no
+separate hosted Lantor service in the path.
 
 ## Mobile
 
