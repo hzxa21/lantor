@@ -123,7 +123,8 @@ const ACTIVITY_PHASE_LABELS: Record<string, string> = {
   run_retry: "Retrying",
 };
 
-const DEFAULT_THREAD_PANEL_WIDTH = 420;
+const LEGACY_DEFAULT_THREAD_PANEL_WIDTH = 420;
+const DEFAULT_THREAD_PANEL_WIDTH = 560;
 const MIN_THREAD_PANEL_WIDTH = 320;
 const LEGACY_DEFAULT_AGENT_DRAWER_WIDTH = 420;
 const DEFAULT_AGENT_DRAWER_WIDTH = 560;
@@ -620,9 +621,12 @@ function App() {
       THREAD_PANEL_WIDTH_STORAGE_KEY,
       DEFAULT_THREAD_PANEL_WIDTH,
     );
-    return Number.isFinite(value)
-      ? Math.min(maxThreadPanelWidth(DEFAULT_SIDEBAR_WIDTH), Math.max(MIN_THREAD_PANEL_WIDTH, value))
-      : DEFAULT_THREAD_PANEL_WIDTH;
+    const maxWidth = maxThreadPanelWidth(DEFAULT_SIDEBAR_WIDTH);
+    if (!Number.isFinite(value)) return Math.min(maxWidth, DEFAULT_THREAD_PANEL_WIDTH);
+    const preferredWidth = value <= LEGACY_DEFAULT_THREAD_PANEL_WIDTH
+      ? DEFAULT_THREAD_PANEL_WIDTH
+      : value;
+    return Math.min(maxWidth, Math.max(MIN_THREAD_PANEL_WIDTH, preferredWidth));
   });
   const [agentDrawerWidth, setAgentDrawerWidth] = useState(() => {
     const value = getStoredNumber(
@@ -3351,14 +3355,10 @@ function App() {
       <ChannelSettingsModal
         open={showChannelSettingsModal}
         channel={channel}
-        agents={data.agents}
-        channelMemberIds={channelMemberIds}
         nameDraft={channelNameDraft}
         descriptionDraft={channelDescriptionDraft}
         onNameChange={setChannelNameDraft}
         onDescriptionChange={setChannelDescriptionDraft}
-        onSetMember={setChannelMember}
-        onDelete={deleteChannel}
         onCancel={() => setShowChannelSettingsModal(false)}
         onSave={saveChannel}
       />

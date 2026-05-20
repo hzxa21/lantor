@@ -108,7 +108,7 @@ button,
   --surface-border: rgba(20, 23, 31, 0.12);
   --surface-shadow: 0 24px 64px rgba(15, 23, 42, 0.18);
   --sidebar-width: 292px;
-  --thread-width: 420px;
+  --thread-width: 560px;
   display: grid;
   grid-template-columns: minmax(0, var(--sidebar-width)) minmax(0, 1fr) minmax(0, var(--thread-width));
   width: 100%;
