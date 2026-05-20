@@ -1540,6 +1540,7 @@ pub(crate) async fn update_channel_in_pool(
         Some(_) => {}
         None => return Err("channel does not exist".to_owned()),
     }
+    ensure_channel_name_available(pool, &normalized, Some(channel_id)).await?;
 
     sqlx::query(
         r#"
@@ -7145,15 +7146,11 @@ pub(crate) async fn create_channel_in_pool(
     if normalized.is_empty() {
         return Err("channel name is empty".to_owned());
     }
+    ensure_channel_name_available(pool, &normalized, None).await?;
     let channel_id = sqlx::query_scalar(
         r#"
         insert into channels (name, description, kind)
         values ($1, $2, 'channel')
-        on conflict (name) do update
-            set description = case
-                when excluded.description <> '' then excluded.description
-                else channels.description
-            end
         returning id
         "#,
     )
@@ -7165,6 +7162,44 @@ pub(crate) async fn create_channel_in_pool(
 
     let _ = notify_ui_refresh(pool, "channel_created").await;
     Ok(channel_id)
+}
+
+async fn ensure_channel_name_available(
+    pool: &SqlitePool,
+    normalized: &str,
+    excluding_channel_id: Option<Uuid>,
+) -> CommandResult<()> {
+    let existing_id: Option<Uuid> = match excluding_channel_id {
+        Some(channel_id) => sqlx::query_scalar(
+            r#"
+            select id
+            from channels
+            where name = $1 and id <> $2
+            limit 1
+            "#,
+        )
+        .bind(normalized)
+        .bind(channel_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?,
+        None => sqlx::query_scalar(
+            r#"
+            select id
+            from channels
+            where name = $1
+            limit 1
+            "#,
+        )
+        .bind(normalized)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?,
+    };
+    if existing_id.is_some() {
+        return Err(format!("channel #{normalized} already exists"));
+    }
+    Ok(())
 }
 
 pub(crate) async fn add_agent_to_channel(
@@ -14531,20 +14566,20 @@ mod tests {
             agent_context_message_search, agent_context_workspace_info,
             agent_context_workspace_list, short_id,
         },
-        create_agent_inbox_item, db_connect_with_url, delete_agent_in_pool, delete_channel_in_pool,
-        dismiss_inbox_items_in_pool, ensure_agent_workspace, ensure_streaming_agent_message,
-        extract_agent_event_json, extract_agent_mentions, finish_streaming_agent_message,
-        format_memory_index_entry, handle_agent_event, inbox_wake_context, insert_agent_message,
-        insert_memory_index_entry, load_agent_activities, load_agent_memory_context,
-        load_channel_agent_roster, load_channels, load_messages, load_reminders,
-        load_runtime_thread_id, mark_all_owner_inbox_read_in_pool, mark_inbox_items_read_in_pool,
-        maybe_hide_silent_streaming_reply, migrate, normalize_open_link_target,
-        notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
-        process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
-        record_agent_activity, recover_supervisor_commands_at_startup, send_owner_message_in_pool,
-        silent_reply_reason, split_complete_streaming_agent_event_lines,
-        split_streaming_agent_event_lines, streaming_message_body_is_empty,
-        try_claim_unassigned_task, upsert_agent_thread_subscription, upsert_runtime_thread_id,
+        create_agent_inbox_item, create_channel_in_pool, db_connect_with_url, delete_agent_in_pool,
+        delete_channel_in_pool, dismiss_inbox_items_in_pool, ensure_agent_workspace,
+        ensure_streaming_agent_message, extract_agent_event_json, extract_agent_mentions,
+        finish_streaming_agent_message, format_memory_index_entry, handle_agent_event,
+        inbox_wake_context, insert_agent_message, insert_memory_index_entry, load_agent_activities,
+        load_agent_memory_context, load_channel_agent_roster, load_channels, load_messages,
+        load_reminders, load_runtime_thread_id, mark_all_owner_inbox_read_in_pool,
+        mark_inbox_items_read_in_pool, maybe_hide_silent_streaming_reply, migrate,
+        normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
+        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
+        queue_mentions_as_work_items, record_agent_activity, recover_supervisor_commands_at_startup,
+        send_owner_message_in_pool, silent_reply_reason, split_complete_streaming_agent_event_lines,
+        split_streaming_agent_event_lines, streaming_message_body_is_empty, try_claim_unassigned_task,
+        update_channel_in_pool, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, AgentInboxItemInput, ClaudeSurface,
         CodexActiveTurnScheduleState, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
@@ -17235,6 +17270,65 @@ mod tests {
                     .await
                     .map_err(|err| err.to_string())?;
             assert_eq!(inbox_state, "archived");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn create_channel_rejects_duplicate_name() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = create_channel_in_pool(&pool, "Project Room", "original").await?;
+            let duplicate = create_channel_in_pool(&pool, "#project room", "updated").await;
+            let err = match duplicate {
+                Ok(_) => return Err("duplicate channel create succeeded".to_owned()),
+                Err(err) => err,
+            };
+            assert_eq!(err, "channel #project-room already exists");
+
+            let description: String =
+                sqlx::query_scalar("select description from channels where id = $1")
+                    .bind(channel_id)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            assert_eq!(description, "original");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn rename_channel_rejects_duplicate_name() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let alpha_id = create_channel_in_pool(&pool, "alpha", "").await?;
+            let beta_id = create_channel_in_pool(&pool, "beta", "").await?;
+            update_channel_in_pool(
+                &pool,
+                alpha_id,
+                "#Alpha".to_owned(),
+                "self rename".to_owned(),
+            )
+            .await?;
+
+            let duplicate =
+                update_channel_in_pool(&pool, beta_id, "alpha".to_owned(), "duplicate".to_owned())
+                    .await;
+            let err = match duplicate {
+                Ok(_) => return Err("duplicate channel rename succeeded".to_owned()),
+                Err(err) => err,
+            };
+            assert_eq!(err, "channel #alpha already exists");
             Ok(())
         }
         .await;

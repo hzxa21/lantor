@@ -6,6 +6,7 @@ import { Modal } from "./Modal";
 type CreateChannelModalProps = {
   open: boolean;
   channelName: string;
+  nameError?: string | null;
   agents: Agent[];
   selectedAgentIds: Set<string>;
   onChange: (value: string) => void;
@@ -17,6 +18,7 @@ type CreateChannelModalProps = {
 export function CreateChannelModal({
   open,
   channelName,
+  nameError,
   agents,
   selectedAgentIds,
   onChange,
@@ -46,12 +48,19 @@ export function CreateChannelModal({
             name="lantor-channel-name"
             spellCheck={false}
             value={channelName}
+            aria-invalid={nameError ? true : undefined}
+            aria-describedby={nameError ? "create-channel-name-error" : undefined}
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") onSubmit();
             }}
             placeholder="lantor"
           />
+          {nameError && (
+            <p id="create-channel-name-error" className="modal-field-error">
+              {nameError}
+            </p>
+          )}
         </label>
         <label>
           <span>Add agents</span>
@@ -95,7 +104,7 @@ export function CreateChannelModal({
         </label>
         <div className="modal-actions">
           <button onClick={onCancel}>Cancel</button>
-          <button className="primary" disabled={!channelName.trim()} onClick={onSubmit}>Create</button>
+          <button className="primary" disabled={!channelName.trim() || Boolean(nameError)} onClick={onSubmit}>Create</button>
         </div>
       </div>
     </Modal>
