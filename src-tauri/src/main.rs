@@ -7765,6 +7765,26 @@ fn extract_agent_event_json_with_remainder(line: &str) -> Option<(&str, &str)> {
     }
 }
 
+fn split_agent_event_jsons_from_text(text: &str) -> (String, Vec<String>) {
+    let mut visible = String::new();
+    let mut events = Vec::new();
+    let mut rest = text;
+
+    while let Some(marker_index) = rest.find(AGENT_EVENT_PREFIX) {
+        visible.push_str(&rest[..marker_index]);
+        let payload = rest[marker_index + AGENT_EVENT_PREFIX.len()..].trim_start();
+        let Some(end) = complete_json_object_end(payload) else {
+            visible.push_str(&rest[marker_index..]);
+            return (visible.trim().to_owned(), events);
+        };
+        events.push(payload[..end].to_owned());
+        rest = &payload[end..];
+    }
+
+    visible.push_str(rest);
+    (visible.trim().to_owned(), events)
+}
+
 fn complete_json_object_end(value: &str) -> Option<usize> {
     if !value.starts_with('{') {
         return None;
@@ -9845,19 +9865,7 @@ async fn maybe_hide_silent_streaming_reply(
 }
 
 fn split_streaming_agent_event_lines(body: &str) -> (String, Vec<String>) {
-    let mut visible_lines = Vec::new();
-    let mut events = Vec::new();
-    for line in body.lines() {
-        if let Some((json, remainder)) = extract_agent_event_json_with_remainder(line) {
-            events.push(json.to_owned());
-            if !remainder.trim().is_empty() {
-                visible_lines.push(remainder);
-            }
-        } else {
-            visible_lines.push(line);
-        }
-    }
-    (visible_lines.join("\n").trim().to_owned(), events)
+    split_agent_event_jsons_from_text(body)
 }
 
 fn split_complete_streaming_agent_event_lines(body: &str) -> (String, Vec<String>) {
@@ -9869,15 +9877,14 @@ fn split_complete_streaming_agent_event_lines(body: &str) -> (String, Vec<String
             continue;
         }
         let line = segment.trim_end_matches(['\r', '\n']);
-        if let Some((json, remainder)) = extract_agent_event_json_with_remainder(line) {
-            events.push(json.to_owned());
-            if !remainder.trim().is_empty() {
-                visible.push_str(remainder);
-                visible.push('\n');
-            }
-        } else {
+        let (line_visible, line_events) = split_agent_event_jsons_from_text(line);
+        if line_events.is_empty() {
             visible.push_str(segment);
+        } else if !line_visible.is_empty() {
+            visible.push_str(&line_visible);
+            visible.push('\n');
         }
+        events.extend(line_events);
     }
     (visible.trim().to_owned(), events)
 }
@@ -14498,7 +14505,8 @@ mod tests {
         notify_ui_work_item_changed, open_dm_with_agent_in_pool, parse_activity_metadata,
         process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
         record_agent_activity, recover_supervisor_commands_at_startup, send_owner_message_in_pool,
-        silent_reply_reason, split_streaming_agent_event_lines, streaming_message_body_is_empty,
+        silent_reply_reason, split_complete_streaming_agent_event_lines,
+        split_streaming_agent_event_lines, streaming_message_body_is_empty,
         try_claim_unassigned_task, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, AgentInboxItemInput, ClaudeSurface,
@@ -15851,6 +15859,46 @@ mod tests {
             vec![r#"{"type":"activity","title":"Done","detail":"ok"}"#]
         );
         assert_eq!(visible, "## Review");
+    }
+
+    #[test]
+    fn consumes_inline_streaming_control_events_without_newlines() {
+        let (visible, events) = split_streaming_agent_event_lines(
+            r#"Working patch.LANTOR_EVENT {"type":"activity","title":"Step","detail":"one"}LANTOR_EVENT {"type":"memory_append","body":"saved"}  Final result"#,
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                r#"{"type":"activity","title":"Step","detail":"one"}"#,
+                r#"{"type":"memory_append","body":"saved"}"#,
+            ]
+        );
+        assert_eq!(visible, "Working patch.  Final result");
+    }
+
+    #[test]
+    fn complete_split_consumes_inline_control_events_only_after_newline() {
+        let (visible, events) = split_complete_streaming_agent_event_lines(
+            "Working patch.LANTOR_EVENT {\"type\":\"activity\",\"title\":\"Step\",\"detail\":\"one\"}\npartial LANTOR_EVENT {\"type\":\"activity\",\"title\":\"Later\",\"detail\":\"two\"}",
+        );
+
+        assert_eq!(
+            events,
+            vec![r#"{"type":"activity","title":"Step","detail":"one"}"#]
+        );
+        assert_eq!(
+            visible,
+            "Working patch.\npartial LANTOR_EVENT {\"type\":\"activity\",\"title\":\"Later\",\"detail\":\"two\"}"
+        );
+    }
+
+    #[test]
+    fn complete_split_preserves_visible_blank_lines() {
+        let (visible, events) = split_complete_streaming_agent_event_lines("First\n\nSecond\n");
+
+        assert!(events.is_empty());
+        assert_eq!(visible, "First\n\nSecond");
     }
 
     #[test]
