@@ -47,11 +47,10 @@ use context_tool::{run_agent_context_tool, short_id};
 #[cfg(test)]
 use events::activity::activity_status;
 use events::activity::{record_agent_activity, record_agent_activity_throttled, work_status_title};
+use events::control::AgentAttachmentFile;
 #[cfg(test)]
-use events::control::{claim_agent_event, handle_agent_event, AgentEvent};
 use events::control::{
-    extract_agent_event_json, ingest_agent_event_line, replay_agent_events_from_run_log_if_needed,
-    silent_reply_reason, AgentAttachmentFile,
+    claim_agent_event, extract_agent_event_json, handle_agent_event, AgentEvent,
 };
 use models::{
     Agent, AgentActivity, AgentRun, AgentRunPatch, AgentSchedule, AgentWorkItem,
@@ -67,6 +66,11 @@ use prompts::{
 };
 #[cfg(test)]
 use prompts::{AGENT_MEMORY_CONTEXT_LIMIT, WORK_ITEM_FINISH_PROMPT};
+use runtime::process::{
+    classify_agent_output_activity, configure_agent_context_tool_env, configure_agent_identity_env,
+    effective_launch_command, load_runtime_thread_id, pipe_run_output, terminate_process_group,
+    truncate_activity_detail, upsert_runtime_thread_id, wait_for_agent_run,
+};
 #[cfg(test)]
 use runtime::streaming::maybe_hide_silent_streaming_reply;
 use runtime::streaming::{
@@ -74,6 +78,10 @@ use runtime::streaming::{
     consume_streaming_agent_control_lines, ensure_streaming_agent_message,
     finish_streaming_agent_message, mark_run_work_item_silent, streaming_message_body_is_empty,
     streaming_message_exists,
+};
+use runtime::surface::{
+    append_claude_thread_context, claude_surface_boundary_marker, codex_active_turn_schedule_state,
+    same_codex_surface, ClaudeSurface, CodexActiveTurnScheduleState,
 };
 use text::compact_chars_middle;
 use usage::{
@@ -85,11 +93,9 @@ const DEFAULT_DATABASE_URL: &str = "sqlite://~/Library/Application Support/Lanto
 pub(crate) const UI_REFRESH_CHANNEL: &str = "lantor_ui_refresh";
 const SUPERVISOR_WAKE_CHANNEL: &str = "lantor_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "lantor://refresh";
-const LANTOR_CONTEXT_TOOL_ENV: &str = "LANTOR_CONTEXT_TOOL";
 const CLAUDE_MAX_RETRIES_ENV: &str = "ANTHROPIC_MAX_RETRIES";
 const DEFAULT_CLAUDE_MAX_RETRIES: &str = "5";
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
-const CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT: i64 = 16;
 const INBOX_WAKE_BATCH_LIMIT: i64 = 8;
 const INBOX_WAKE_OTHER_SUMMARY_LIMIT: i64 = 6;
 const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
@@ -178,13 +184,6 @@ struct CodexSteerRequest {
     run_id: Uuid,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CodexActiveTurnScheduleState {
-    ReadyForSteer,
-    WaitingForTurnId,
-    StuckBeforeTurnId,
-}
-
 struct WarmClaudeRuntime {
     stdin: AsyncMutex<tokio::process::ChildStdin>,
     state: AsyncMutex<WarmClaudeState>,
@@ -197,12 +196,6 @@ struct WarmClaudeState {
     session_id: Option<String>,
     last_surface: Option<ClaudeSurface>,
     last_activity: Instant,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ClaudeSurface {
-    channel_id: Option<Uuid>,
-    thread_root_id: Option<Uuid>,
 }
 
 struct ClaudeActiveTurn {
@@ -7117,324 +7110,6 @@ async fn append_run_log(pool: &SqlitePool, run_id: Uuid, line: String) -> Comman
     Ok(())
 }
 
-fn truncate_activity_detail(value: &str) -> String {
-    let trimmed = value.trim();
-    let mut chars = trimmed.chars();
-    let mut out: String = chars.by_ref().take(600).collect();
-    if chars.next().is_some() {
-        out.push_str("...");
-    }
-    out
-}
-
-fn structured_log_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
-    value.get(key).and_then(Value::as_str)
-}
-
-fn structured_log_message(value: &Value) -> Option<&str> {
-    value
-        .pointer("/fields/message")
-        .and_then(Value::as_str)
-        .or_else(|| structured_log_string(value, "message"))
-}
-
-fn structured_log_field_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
-    value
-        .get("fields")
-        .and_then(|fields| fields.get(key))
-        .and_then(Value::as_str)
-        .or_else(|| structured_log_string(value, key))
-}
-
-fn structured_log_detail(
-    value: &Value,
-    level: &str,
-    target: Option<&str>,
-    message: Option<&str>,
-) -> String {
-    let mut detail = serde_json::Map::new();
-    detail.insert("level".to_owned(), json!(level));
-    if let Some(target) = target.map(str::trim).filter(|target| !target.is_empty()) {
-        detail.insert("target".to_owned(), json!(target));
-    }
-    if let Some(message) = message.map(str::trim).filter(|message| !message.is_empty()) {
-        detail.insert("message".to_owned(), json!(message));
-    }
-    if detail.len() > 1 {
-        return Value::Object(detail).to_string();
-    }
-    truncate_activity_detail(&value.to_string())
-}
-
-fn is_ignored_codex_manifest_warning(
-    level: &str,
-    target: Option<&str>,
-    message: Option<&str>,
-) -> bool {
-    matches!(level.to_ascii_uppercase().as_str(), "WARN" | "WARNING")
-        && target == Some("codex_core_plugins::manifest")
-        && message
-            .map(str::trim)
-            .is_some_and(|message| message.starts_with("ignoring interface.defaultPrompt:"))
-}
-
-fn is_ignored_codex_skill_loader_warning(
-    level: &str,
-    target: Option<&str>,
-    message: Option<&str>,
-) -> bool {
-    matches!(level.to_ascii_uppercase().as_str(), "WARN" | "WARNING")
-        && target == Some("codex_core_skills::loader")
-        && message.map(str::trim).is_some_and(|message| {
-            matches!(
-                message,
-                "ignoring interface.icon_small: icon path must not contain '..'"
-                    | "ignoring interface.icon_large: icon path must not contain '..'"
-            )
-        })
-}
-
-fn is_ignored_codex_legacy_notify_warning(
-    value: &Value,
-    level: &str,
-    target: Option<&str>,
-    message: Option<&str>,
-) -> bool {
-    matches!(level.to_ascii_uppercase().as_str(), "WARN" | "WARNING")
-        && target == Some("codex_core::session::turn")
-        && message.map(str::trim) == Some("after_agent hook failed; continuing")
-        && structured_log_field_string(value, "hook_name") == Some("legacy_notify")
-        && structured_log_field_string(value, "error")
-            .map(str::trim)
-            .is_some_and(|error| error.contains("No such file or directory"))
-}
-
-fn strip_ansi_escape_sequences(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut chars = value.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            output.push(ch);
-            continue;
-        }
-        if chars.peek() != Some(&'[') {
-            continue;
-        }
-        chars.next();
-        for next in chars.by_ref() {
-            if next.is_ascii_alphabetic() {
-                break;
-            }
-        }
-    }
-    output
-}
-
-fn is_retryable_codex_stderr_error(line: &str) -> bool {
-    let cleaned = strip_ansi_escape_sequences(line).to_lowercase();
-    (cleaned.contains("codex_api::endpoint::responses_websocket")
-        && cleaned.contains("failed to connect to websocket"))
-        || (cleaned.contains("codex_models_manager::manager")
-            && cleaned.contains("failed to refresh available models"))
-        || (cleaned.contains("rmcp::transport::worker")
-            && cleaned.contains("https://chatgpt.com/backend-api/wham/apps"))
-}
-
-fn classify_structured_stderr_log(
-    line: &str,
-) -> Option<Option<(&'static str, &'static str, String)>> {
-    let Ok(value) = serde_json::from_str::<Value>(line) else {
-        return None;
-    };
-    if !value.is_object() {
-        return None;
-    }
-    let Some(level) = structured_log_string(&value, "level") else {
-        return None;
-    };
-
-    let level = level.trim();
-    let target = structured_log_string(&value, "target");
-    let message = structured_log_message(&value);
-    if is_ignored_codex_manifest_warning(level, target, message) {
-        return Some(None);
-    }
-    if is_ignored_codex_skill_loader_warning(level, target, message) {
-        return Some(None);
-    }
-    if is_ignored_codex_legacy_notify_warning(&value, level, target, message) {
-        return Some(None);
-    }
-
-    let detail = structured_log_detail(&value, level, target, message);
-    match level.to_ascii_uppercase().as_str() {
-        "ERROR" => Some(Some(("error", "Runtime error", detail))),
-        "WARN" | "WARNING" => Some(Some(("run", "Runtime warning", detail))),
-        "DEBUG" | "TRACE" | "INFO" => Some(None),
-        _ => Some(Some(("run", "Runtime log", detail))),
-    }
-}
-
-fn classify_agent_output_activity(
-    label: &str,
-    line: &str,
-) -> Option<(&'static str, &'static str, String)> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || extract_agent_event_json(trimmed).is_some() {
-        return None;
-    }
-
-    let lower = trimmed.to_lowercase();
-    if let Some(activity) = classify_structured_stderr_log(trimmed) {
-        return activity;
-    }
-
-    if label == "stderr" && is_retryable_codex_stderr_error(trimmed) {
-        return Some(("run", "Runtime warning", truncate_activity_detail(trimmed)));
-    }
-
-    let is_error = label == "stderr"
-        && [
-            "error",
-            "failed",
-            "panic",
-            "exception",
-            "traceback",
-            "permission denied",
-            "not found",
-        ]
-        .iter()
-        .any(|needle| lower.contains(needle));
-    if is_error {
-        return Some(("error", "Error output", truncate_activity_detail(trimmed)));
-    }
-
-    let is_warning = label == "stderr"
-        && (lower.contains("warning")
-            || lower.contains("warn:")
-            || lower.contains("level=warn")
-            || lower.contains("\"level\":\"warn\""));
-    if is_warning {
-        return Some(("run", "Runtime warning", truncate_activity_detail(trimmed)));
-    }
-
-    let is_tool = [
-        "tool",
-        "exec_command",
-        "apply_patch",
-        "running command",
-        "cargo ",
-        "npm ",
-        "git ",
-        "psql ",
-        "rg ",
-        "sed ",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-        || trimmed.starts_with("$ ");
-    if is_tool {
-        return Some(("tools", "Using tools", truncate_activity_detail(trimmed)));
-    }
-
-    let is_action = [
-        "message sent",
-        "created",
-        "updated",
-        "deleted",
-        "fixed",
-        "committed",
-        "commit ",
-        "done",
-        "completed",
-        "finished",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle));
-    if is_action {
-        return Some(("acting", "Acting", truncate_activity_detail(trimmed)));
-    }
-
-    if label == "stderr" {
-        return Some(("run", "Runtime output", truncate_activity_detail(trimmed)));
-    }
-
-    Some(("thinking", "Thinking", truncate_activity_detail(trimmed)))
-}
-
-async fn pipe_run_output<R>(
-    pool: SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    stream: R,
-    label: &'static str,
-    parse_agent_events: bool,
-) where
-    R: AsyncRead + Unpin,
-{
-    let mut lines = BufReader::new(stream).lines();
-    loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                let _ = append_run_log(&pool, run_id, format!("[{label}] {line}\n")).await;
-                if let Some((kind, title, detail)) = classify_agent_output_activity(label, &line) {
-                    let _ = record_agent_activity_throttled(
-                        &pool,
-                        Some(agent_id),
-                        Some(run_id),
-                        kind,
-                        title,
-                        detail,
-                    )
-                    .await;
-                }
-                if parse_agent_events {
-                    if let Some(reason) = silent_reply_reason(&line) {
-                        let _ = mark_run_work_item_silent(&pool, agent_id, run_id, &reason).await;
-                        continue;
-                    }
-                    match ingest_agent_event_line(&pool, agent_id, run_id, &line).await {
-                        Ok(Some(note)) => {
-                            let _ =
-                                append_run_log(&pool, run_id, format!("[event] {note}\n")).await;
-                            let _ = record_agent_activity(
-                                &pool,
-                                Some(agent_id),
-                                Some(run_id),
-                                "event",
-                                "Stdout event accepted",
-                                note,
-                            )
-                            .await;
-                        }
-                        Ok(None) => {}
-                        Err(err) => {
-                            let _ =
-                                append_run_log(&pool, run_id, format!("[event] rejected: {err}\n"))
-                                    .await;
-                            let _ = record_agent_activity(
-                                &pool,
-                                Some(agent_id),
-                                Some(run_id),
-                                "event_error",
-                                "Stdout event rejected",
-                                err.to_string(),
-                            )
-                            .await;
-                        }
-                    }
-                }
-            }
-            Ok(None) => break,
-            Err(err) => {
-                let _ =
-                    append_run_log(&pool, run_id, format!("[{label}] read error: {err}\n")).await;
-                break;
-            }
-        }
-    }
-}
-
 async fn resolve_run_reminder_anchor(
     pool: &SqlitePool,
     agent_id: Uuid,
@@ -8112,195 +7787,6 @@ async fn create_agent_task_thread(
     Ok((task_number, root_message_id, thread_reply_id))
 }
 
-async fn load_runtime_thread_id(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    runtime: &str,
-) -> CommandResult<Option<String>> {
-    let thread_id: Option<String> = sqlx::query_scalar(
-        r#"
-        select provider_thread_id
-        from runtime_sessions
-        where agent_id = $1
-          and runtime = $2
-        "#,
-    )
-    .bind(agent_id)
-    .bind(runtime)
-    .fetch_optional(pool)
-    .await
-    .map_err(to_string)?;
-    Ok(thread_id.filter(|thread_id| !thread_id.trim().is_empty()))
-}
-
-async fn upsert_runtime_thread_id(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    runtime: &str,
-    provider_thread_id: &str,
-    status: &str,
-) -> CommandResult<()> {
-    sqlx::query(
-        r#"
-        insert into runtime_sessions (agent_id, runtime, provider_thread_id, status)
-        values ($1, $2, $3, $4)
-        on conflict (agent_id, runtime) do update set
-            provider_thread_id = excluded.provider_thread_id,
-            status = excluded.status,
-            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-        "#,
-    )
-    .bind(agent_id)
-    .bind(runtime)
-    .bind(provider_thread_id)
-    .bind(status)
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-    Ok(())
-}
-
-async fn wait_for_agent_run(
-    pool: SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    work_item_id: Option<Uuid>,
-    pipe_tasks: Vec<tokio::task::JoinHandle<()>>,
-    mut child: tokio::process::Child,
-) {
-    let result = child.wait().await;
-    for task in pipe_tasks {
-        let _ = task.await;
-    }
-    let _ = replay_agent_events_from_run_log_if_needed(&pool, agent_id, run_id).await;
-    let current_run_status: Option<String> =
-        sqlx::query_scalar("select status from agent_runs where id = $1")
-            .bind(run_id)
-            .fetch_optional(&pool)
-            .await
-            .ok()
-            .flatten();
-    let (run_status, agent_status, exit_code, log_line) = match result {
-        _ if current_run_status.as_deref() == Some("failed") => (
-            "failed",
-            "error",
-            None,
-            "process exited after runtime error\n".to_owned(),
-        ),
-        Ok(status) if status.success() => (
-            "exited",
-            "idle",
-            status.code(),
-            format!("process exited successfully: {status}\n"),
-        ),
-        Ok(status) => (
-            "stopped",
-            "idle",
-            status.code(),
-            format!("process stopped: {status}\n"),
-        ),
-        Err(err) => (
-            "failed",
-            "error",
-            None,
-            format!("failed while waiting for process: {err}\n"),
-        ),
-    };
-
-    let _ = sqlx::query(
-        r#"
-        update agent_runs
-        set status = $2,
-            exit_code = $3,
-            log = substr(log || $4, -20000),
-            stopped_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-        where id = $1
-        "#,
-    )
-    .bind(run_id)
-    .bind(run_status)
-    .bind(exit_code)
-    .bind(&log_line)
-    .execute(&pool)
-    .await;
-    notify_ui_agent_run_changed(&pool, run_id, "run_finished").await;
-
-    let _ = sqlx::query("update agents set status = $2 where id = $1")
-        .bind(agent_id)
-        .bind(agent_status)
-        .execute(&pool)
-        .await;
-
-    if let Some(work_item_id) = work_item_id {
-        let current_status: Option<String> =
-            sqlx::query_scalar("select status from agent_work_items where id = $1")
-                .bind(work_item_id)
-                .fetch_optional(&pool)
-                .await
-                .ok()
-                .flatten();
-        let work_status = if current_status.as_deref() == Some("cancelling") {
-            "cancelled"
-        } else if current_status.as_deref() == Some("silent") && run_status == "exited" {
-            "silent"
-        } else if run_status == "exited" {
-            "done"
-        } else {
-            "failed"
-        };
-        let _ = sqlx::query(
-            r#"
-            update agent_work_items
-            set status = $2,
-                completed_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
-                updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-            where id = $1
-            "#,
-        )
-        .bind(work_item_id)
-        .bind(work_status)
-        .execute(&pool)
-        .await;
-        let _ =
-            mark_task_after_work_item_finished(&pool, work_item_id, agent_id, run_id, work_status)
-                .await;
-        notify_ui_work_item_changed(&pool, work_item_id, "work_item_finished").await;
-        let _ = record_agent_activity(
-            &pool,
-            Some(agent_id),
-            Some(run_id),
-            "dispatch",
-            work_status_title(work_status),
-            work_item_id.to_string(),
-        )
-        .await;
-    }
-
-    let _ = record_agent_activity(
-        &pool,
-        Some(agent_id),
-        Some(run_id),
-        "run",
-        format!("Run {run_status}"),
-        log_line.trim(),
-    )
-    .await;
-}
-
-fn effective_launch_command(
-    launch_command: String,
-    _runtime: String,
-    _model: String,
-    _handle: String,
-) -> String {
-    if !launch_command.trim().is_empty() {
-        return launch_command.trim().to_owned();
-    }
-
-    "printf 'Lantor placeholder runtime. Configure launch_command to run a real agent.\\n'; sleep 3600"
-        .to_owned()
-}
-
 async fn load_channel_agent_roster(
     pool: &SqlitePool,
     channel_id: Option<Uuid>,
@@ -8338,18 +7824,6 @@ async fn load_channel_agent_roster(
             format!("@{handle} - {display_name} - {runtime}/{model} - {status}")
         })
         .collect())
-}
-
-fn configure_agent_context_tool_env(command: &mut Command) {
-    if let Ok(exe_path) = env::current_exe() {
-        command.env(LANTOR_CONTEXT_TOOL_ENV, exe_path);
-    }
-    command.env("LANTOR_DATABASE_URL", db_url());
-}
-
-fn configure_agent_identity_env(command: &mut Command, agent_id: Uuid, handle: &str) {
-    command.env("LANTOR_AGENT_ID", agent_id.to_string());
-    command.env("LANTOR_AGENT_HANDLE", handle);
 }
 
 fn codex_stream_key(run_id: Uuid, item_id: &str) -> String {
@@ -9398,35 +8872,9 @@ async fn active_codex_turn_surface(
             active.turn_id.as_deref(),
             active.steer_disabled,
             active.started_at.elapsed(),
+            CODEX_TURN_START_TIMEOUT,
         ),
     ))
-}
-
-fn codex_active_turn_schedule_state(
-    turn_id: Option<&str>,
-    steer_disabled: bool,
-    elapsed: Duration,
-) -> CodexActiveTurnScheduleState {
-    if turn_id.is_some() && !steer_disabled {
-        return CodexActiveTurnScheduleState::ReadyForSteer;
-    }
-    if turn_id.is_none() && elapsed >= CODEX_TURN_START_TIMEOUT {
-        return CodexActiveTurnScheduleState::StuckBeforeTurnId;
-    }
-    CodexActiveTurnScheduleState::WaitingForTurnId
-}
-
-async fn same_codex_surface(
-    _pool: &SqlitePool,
-    channel_id: Option<Uuid>,
-    thread_root_id: Option<Uuid>,
-    active_channel_id: Option<Uuid>,
-    active_thread_root_id: Option<Uuid>,
-) -> CommandResult<bool> {
-    if channel_id.is_none() || channel_id != active_channel_id {
-        return Ok(false);
-    }
-    Ok(thread_root_id == active_thread_root_id)
 }
 
 async fn should_schedule_queued_work_item(
@@ -10404,124 +9852,6 @@ async fn supervisor_start_claude_streaming_agent(
     }
 
     Ok(())
-}
-
-fn claude_surface_boundary_marker(
-    previous: Option<ClaudeSurface>,
-    current: ClaudeSurface,
-) -> Option<String> {
-    let previous = previous?;
-    if previous == current {
-        return None;
-    }
-    Some(format!(
-        "\n\n--- Lantor thread boundary ---\nPrevious surface: channel_id={}, thread_root_id={}\nCurrent surface: channel_id={}, thread_root_id={}\nThe warm Claude conversation may contain older turns from the previous surface. Treat this current surface and the injected current-thread context as authoritative. Do not use details from the previous surface unless the current prompt explicitly includes them.\n--- end boundary ---\n\n",
-        display_optional_uuid(previous.channel_id),
-        display_optional_uuid(previous.thread_root_id),
-        display_optional_uuid(current.channel_id),
-        display_optional_uuid(current.thread_root_id),
-    ))
-}
-
-fn display_optional_uuid(id: Option<Uuid>) -> String {
-    id.map(|id| id.to_string())
-        .unwrap_or_else(|| "none".to_owned())
-}
-
-async fn append_claude_thread_context(
-    pool: &SqlitePool,
-    context: &str,
-    channel_id: Option<Uuid>,
-    channel_name: Option<&str>,
-    thread_root_id: Option<Uuid>,
-) -> CommandResult<String> {
-    let Some(channel_id) = channel_id else {
-        return Ok(context.to_owned());
-    };
-    let rows = if let Some(thread_root_id) = thread_root_id {
-        sqlx::query(
-            r#"
-            select id, sender_name, sender_role, body, thread_root_id
-            from messages
-            where channel_id = $1
-              and (id = $2 or thread_root_id = $2)
-              and length(trim(body)) > 0
-            order by created_at desc
-            limit $3
-            "#,
-        )
-        .bind(channel_id)
-        .bind(thread_root_id)
-        .bind(CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT)
-        .fetch_all(pool)
-        .await
-        .map_err(to_string)?
-    } else {
-        sqlx::query(
-            r#"
-            select id, sender_name, sender_role, body, thread_root_id
-            from messages
-            where channel_id = $1
-              and thread_root_id is null
-              and length(trim(body)) > 0
-            order by created_at desc
-            limit $2
-            "#,
-        )
-        .bind(channel_id)
-        .bind(CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT)
-        .fetch_all(pool)
-        .await
-        .map_err(to_string)?
-    };
-    if rows.is_empty() {
-        return Ok(context.to_owned());
-    }
-
-    let mut lines = vec![
-        String::new(),
-        "Same-thread recent context (auto-injected by Lantor):".to_owned(),
-        "Use these messages as current-surface evidence. Resolve contextual follow-ups from this block when possible; if it is insufficient, use the Lantor history/search context tools before answering. Do not mix in older warm-runtime turns from other channels or threads unless they are explicitly quoted here.".to_owned(),
-    ];
-    for row in rows.iter().rev() {
-        let message_id: Uuid = row.get("id");
-        let row_thread_root_id: Option<Uuid> = row.get("thread_root_id");
-        let sender_name: String = row.get("sender_name");
-        let sender_role: String = row.get("sender_role");
-        let body: String = row.get("body");
-        let body = compact_chars_middle(body.trim(), 1_200).replace('\n', " ");
-        lines.push(format!(
-            "[target={} msg={} type={}] {}: {}",
-            claude_context_target(channel_name, channel_id, thread_root_id, row_thread_root_id),
-            short_id(message_id),
-            sender_role,
-            sender_name,
-            body,
-        ));
-    }
-
-    let mut enriched = context.trim().to_owned();
-    if !enriched.is_empty() {
-        enriched.push('\n');
-    }
-    enriched.push_str(&lines.join("\n"));
-    Ok(enriched)
-}
-
-fn claude_context_target(
-    channel_name: Option<&str>,
-    channel_id: Uuid,
-    prompt_thread_root_id: Option<Uuid>,
-    row_thread_root_id: Option<Uuid>,
-) -> String {
-    let channel_label = channel_name
-        .filter(|name| !name.trim().is_empty())
-        .map(|name| format!("#{name}"))
-        .unwrap_or_else(|| channel_id.to_string());
-    prompt_thread_root_id
-        .or(row_thread_root_id)
-        .map(|thread_root_id| format!("{channel_label}:{}", short_id(thread_root_id)))
-        .unwrap_or(channel_label)
 }
 
 async fn supervisor_start_agent(
@@ -11614,21 +10944,6 @@ async fn remove_warm_codex_runtime_if_same(
     {
         runtimes.remove(&agent_id);
     }
-}
-
-async fn terminate_process_group(pid: i32) -> CommandResult<()> {
-    let status = Command::new("kill")
-        .arg("-TERM")
-        .arg(format!("-{pid}"))
-        .status()
-        .await
-        .map_err(to_string)?;
-
-    if !status.success() {
-        return Err(format!("failed to terminate process group {pid}: {status}"));
-    }
-
-    Ok(())
 }
 
 async fn reap_stuck_codex_runtime(
@@ -18468,19 +17783,26 @@ mod tests {
             codex_active_turn_schedule_state(
                 Some("turn-1"),
                 false,
-                CODEX_TURN_START_TIMEOUT + Duration::from_secs(1)
+                CODEX_TURN_START_TIMEOUT + Duration::from_secs(1),
+                CODEX_TURN_START_TIMEOUT,
             ),
             CodexActiveTurnScheduleState::ReadyForSteer
         );
         assert_eq!(
-            codex_active_turn_schedule_state(None, false, Duration::from_secs(5)),
+            codex_active_turn_schedule_state(
+                None,
+                false,
+                Duration::from_secs(5),
+                CODEX_TURN_START_TIMEOUT,
+            ),
             CodexActiveTurnScheduleState::WaitingForTurnId
         );
         assert_eq!(
             codex_active_turn_schedule_state(
                 None,
                 false,
-                CODEX_TURN_START_TIMEOUT + Duration::from_secs(1)
+                CODEX_TURN_START_TIMEOUT + Duration::from_secs(1),
+                CODEX_TURN_START_TIMEOUT,
             ),
             CodexActiveTurnScheduleState::StuckBeforeTurnId
         );
