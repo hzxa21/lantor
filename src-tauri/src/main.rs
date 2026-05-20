@@ -1,11 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod agent_event;
 mod attachments;
 mod context_tool;
+mod events;
 mod launch_agent;
 mod models;
 mod prompts;
+mod runtime;
 mod text;
 mod usage;
 mod web;
@@ -23,7 +24,6 @@ use std::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use sqlx::{
     sqlite::{
         SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
@@ -42,9 +42,17 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use agent_event::{AgentAttachmentFile, AgentEvent};
 use attachments::{write_attachment_file, ATTACHMENT_SIZE_LIMIT};
 use context_tool::{run_agent_context_tool, short_id};
+#[cfg(test)]
+use events::activity::activity_status;
+use events::activity::{record_agent_activity, record_agent_activity_throttled, work_status_title};
+#[cfg(test)]
+use events::control::{claim_agent_event, handle_agent_event, AgentEvent};
+use events::control::{
+    extract_agent_event_json, ingest_agent_event_line, replay_agent_events_from_run_log_if_needed,
+    silent_reply_reason, AgentAttachmentFile,
+};
 use models::{
     Agent, AgentActivity, AgentRun, AgentRunPatch, AgentSchedule, AgentWorkItem,
     AgentWorkItemPatch, AgentWorkspaceEntry, AgentWorkspaceFile, AgentWorkspaceListing, Artifact,
@@ -59,6 +67,14 @@ use prompts::{
 };
 #[cfg(test)]
 use prompts::{AGENT_MEMORY_CONTEXT_LIMIT, WORK_ITEM_FINISH_PROMPT};
+#[cfg(test)]
+use runtime::streaming::maybe_hide_silent_streaming_reply;
+use runtime::streaming::{
+    adopt_streaming_agent_message_key, append_streaming_agent_message,
+    consume_streaming_agent_control_lines, ensure_streaming_agent_message,
+    finish_streaming_agent_message, mark_run_work_item_silent, streaming_message_body_is_empty,
+    streaming_message_exists,
+};
 use text::compact_chars_middle;
 use usage::{
     agent_budget_exhausted, backfill_agent_run_usage_from_logs, record_run_usage,
@@ -66,16 +82,12 @@ use usage::{
 };
 
 const DEFAULT_DATABASE_URL: &str = "sqlite://~/Library/Application Support/Lantor/lantor.sqlite";
-const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";
-const SILENT_REPLY_PREFIX: &str = "LANTOR_SILENT_REPLY";
 pub(crate) const UI_REFRESH_CHANNEL: &str = "lantor_ui_refresh";
 const SUPERVISOR_WAKE_CHANNEL: &str = "lantor_supervisor_wake";
 const UI_REFRESH_EVENT: &str = "lantor://refresh";
 const LANTOR_CONTEXT_TOOL_ENV: &str = "LANTOR_CONTEXT_TOOL";
-const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 const CLAUDE_MAX_RETRIES_ENV: &str = "ANTHROPIC_MAX_RETRIES";
 const DEFAULT_CLAUDE_MAX_RETRIES: &str = "5";
-const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by Lantor]";
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
 const CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT: i64 = 16;
 const INBOX_WAKE_BATCH_LIMIT: i64 = 8;
@@ -6850,143 +6862,6 @@ fn parse_json_value(raw: String) -> Value {
     serde_json::from_str(&raw).unwrap_or_else(|_| json!({}))
 }
 
-fn activity_phase(kind: &str) -> &'static str {
-    match kind {
-        "thinking" => "thinking",
-        "command" => "command",
-        "file_edit" => "file_edit",
-        "tools" => "tools",
-        "error" | "event_error" | "run_error" => "error",
-        "run" | "run_retry" | "usage" => "runtime",
-        "dispatch" | "mention" | "dm" | "task" | "schedule" | "channel" | "membership" => "work",
-        "profile" | "memory" => "profile",
-        _ => "acting",
-    }
-}
-
-fn normalize_agent_activity_kind(kind: Option<&str>) -> &'static str {
-    match kind.map(str::trim).filter(|kind| !kind.is_empty()) {
-        Some("thinking") => "thinking",
-        Some("command") | Some("running_command") => "command",
-        Some("file_edit") | Some("editing_file") => "file_edit",
-        Some("tools") | Some("tool") => "tools",
-        Some("error") => "error",
-        Some("run_retry") => "run_retry",
-        Some("task") => "task",
-        Some("message") => "message",
-        Some("dispatch") => "dispatch",
-        Some("reminder") => "schedule",
-        Some("schedule") => "schedule",
-        Some("usage") => "usage",
-        Some("memory") => "memory",
-        Some("channel") => "channel",
-        Some("membership") => "membership",
-        _ => "acting",
-    }
-}
-
-fn activity_status(kind: &str, title: &str) -> &'static str {
-    let lowered = title.to_lowercase();
-    let is_terminal_error_kind = matches!(kind, "error" | "event_error" | "run_error");
-    let can_infer_error_from_title =
-        matches!(kind, "command" | "run" | "dispatch" | "task" | "schedule");
-    if is_terminal_error_kind
-        || (can_infer_error_from_title
-            && (lowered.contains("failed")
-                || lowered.contains("error")
-                || lowered.contains("rejected")))
-    {
-        "error"
-    } else if kind == "run_retry" || lowered.contains("warning") {
-        "warning"
-    } else if lowered.contains("cancel") || lowered.contains("stop") || lowered.contains("stopping")
-    {
-        "warning"
-    } else if lowered.contains("completed")
-        || lowered.contains("complete")
-        || lowered.contains("done")
-        || lowered.contains("exited")
-        || lowered.contains("finished")
-        || lowered.contains("ready")
-        || lowered.contains("accepted")
-    {
-        "success"
-    } else if matches!(
-        kind,
-        "thinking" | "command" | "file_edit" | "tools" | "acting"
-    ) {
-        "active"
-    } else if lowered.contains("running")
-        || lowered.contains("started")
-        || lowered.contains("queued")
-        || lowered.contains("dispatched")
-        || lowered.contains("responding")
-        || lowered.contains("thinking")
-        || lowered.contains("editing")
-        || lowered.contains("using")
-    {
-        "active"
-    } else {
-        "info"
-    }
-}
-
-fn work_status_title(status: &str) -> &'static str {
-    match status {
-        "running" => "Request started",
-        "done" => "Request completed",
-        "silent" => "No visible reply needed",
-        "cancelled" => "Request cancelled",
-        "failed" => "Request failed",
-        "queued" => "Request queued",
-        _ => "Request updated",
-    }
-}
-
-fn parse_activity_metadata(detail: &str) -> Value {
-    let detail = detail.trim();
-    if detail.is_empty() {
-        return json!({});
-    }
-    if let Ok(value) = serde_json::from_str::<Value>(detail) {
-        if value.is_object() {
-            return value;
-        }
-    }
-
-    let mut metadata = serde_json::Map::new();
-    for segment in detail.split([',', '\n']) {
-        let Some((key, value)) = segment.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim();
-        if key.is_empty() || value.is_empty() {
-            continue;
-        }
-        metadata.insert(key.to_owned(), json!(value));
-        if key.ends_with("duration") || key == "duration" {
-            if let Some(ms) = value
-                .split_whitespace()
-                .next()
-                .and_then(|value| value.parse::<u64>().ok())
-            {
-                metadata.insert("duration_ms".to_owned(), json!(ms));
-            }
-        }
-    }
-
-    if metadata.is_empty() {
-        if Uuid::parse_str(detail).is_ok() {
-            metadata.insert("reference_id".to_owned(), json!(detail));
-        } else {
-            metadata.insert("detail".to_owned(), json!(detail));
-        }
-    }
-
-    Value::Object(metadata)
-}
-
 fn memory_path_for_workspace(working_directory: &str) -> CommandResult<PathBuf> {
     let working_directory = working_directory.trim();
     if working_directory.is_empty() {
@@ -7229,110 +7104,6 @@ pub(crate) async fn add_agent_to_channel(
     .map_err(to_string)?;
     let _ = notify_ui_refresh(pool, "channel_membership_updated").await;
     Ok(())
-}
-
-async fn record_agent_activity(
-    pool: &SqlitePool,
-    agent_id: Option<Uuid>,
-    run_id: Option<Uuid>,
-    kind: &str,
-    title: impl AsRef<str>,
-    detail: impl AsRef<str>,
-) -> CommandResult<()> {
-    let agent_handle = match agent_id {
-        Some(agent_id) => sqlx::query_scalar("select handle from agents where id = $1")
-            .bind(agent_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(to_string)?
-            .unwrap_or_else(|| "unknown".to_owned()),
-        None => String::new(),
-    };
-    let title = title.as_ref();
-    let detail = detail.as_ref();
-    let phase = activity_phase(kind);
-    let status = activity_status(kind, title);
-    let summary = title;
-    let metadata = parse_activity_metadata(detail);
-
-    let activity_id: Uuid = sqlx::query_scalar(
-        r#"
-        insert into agent_activities (
-            agent_id,
-            agent_handle,
-            run_id,
-            kind,
-            phase,
-            status,
-            title,
-            summary,
-            detail,
-            metadata
-        )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        returning id
-        "#,
-    )
-    .bind(agent_id)
-    .bind(agent_handle)
-    .bind(run_id)
-    .bind(kind)
-    .bind(phase)
-    .bind(status)
-    .bind(title)
-    .bind(summary)
-    .bind(detail)
-    .bind(metadata.to_string())
-    .fetch_one(pool)
-    .await
-    .map_err(to_string)?;
-    if let Ok(activity) = load_agent_activity(pool, activity_id).await {
-        let _ = notify_ui_activity_upsert(pool, &activity, "activity").await;
-    } else {
-        let _ = notify_ui_refresh(pool, "activity").await;
-    }
-
-    Ok(())
-}
-
-async fn record_agent_activity_throttled(
-    pool: &SqlitePool,
-    agent_id: Option<Uuid>,
-    run_id: Option<Uuid>,
-    kind: &str,
-    title: impl AsRef<str>,
-    detail: impl AsRef<str>,
-) -> CommandResult<()> {
-    let title = title.as_ref();
-    let detail = detail.as_ref();
-    let recently_recorded: bool = sqlx::query_scalar(
-        r#"
-        select exists (
-            select 1
-            from agent_activities
-            where agent_id is not distinct from $1
-              and run_id is not distinct from $2
-              and kind = $3
-              and title = $4
-              and detail = $5
-              and julianday(created_at) > julianday(strftime('%Y-%m-%dT%H:%M:%f+00:00','now','-1 second'))
-        )
-        "#,
-    )
-    .bind(agent_id)
-    .bind(run_id)
-    .bind(kind)
-    .bind(title)
-    .bind(detail)
-    .fetch_one(pool)
-    .await
-    .map_err(to_string)?;
-
-    if recently_recorded {
-        return Ok(());
-    }
-
-    record_agent_activity(pool, agent_id, run_id, kind, title, detail).await
 }
 
 async fn append_run_log(pool: &SqlitePool, run_id: Uuid, line: String) -> CommandResult<()> {
@@ -7660,940 +7431,6 @@ async fn pipe_run_output<R>(
                     append_run_log(&pool, run_id, format!("[{label}] read error: {err}\n")).await;
                 break;
             }
-        }
-    }
-}
-
-async fn ingest_agent_event_line(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    line: &str,
-) -> CommandResult<Option<String>> {
-    let Some(json) = extract_agent_event_json(line) else {
-        return Ok(None);
-    };
-    if !claim_agent_event(pool, run_id, json).await? {
-        return Ok(None);
-    }
-    let event: AgentEvent = serde_json::from_str(json).map_err(to_string)?;
-    handle_agent_event(pool, agent_id, run_id, event)
-        .await
-        .map(Some)
-}
-
-async fn claim_agent_event(pool: &SqlitePool, run_id: Uuid, json: &str) -> CommandResult<bool> {
-    let event_hash = format!("{:x}", Sha256::digest(json.as_bytes()));
-    let inserted: Option<bool> = sqlx::query_scalar(
-        r#"
-        insert into agent_event_receipts (run_id, event_json, event_hash)
-        values ($1, $2, $3)
-        on conflict (run_id, event_hash) do nothing
-        returning true
-        "#,
-    )
-    .bind(run_id)
-    .bind(json)
-    .bind(event_hash)
-    .fetch_optional(pool)
-    .await
-    .map_err(to_string)?;
-
-    Ok(inserted.unwrap_or(false))
-}
-
-async fn replay_agent_events_from_run_log_if_needed(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-) -> CommandResult<usize> {
-    let accepted_events: i64 = sqlx::query_scalar(
-        r#"
-        select count(*)
-        from agent_activities
-        where run_id = $1
-          and kind = 'event'
-          and title = 'Stdout event accepted'
-        "#,
-    )
-    .bind(run_id)
-    .fetch_one(pool)
-    .await
-    .map_err(to_string)?;
-    if accepted_events > 0 {
-        return Ok(0);
-    }
-
-    let Some(log): Option<String> = sqlx::query_scalar("select log from agent_runs where id = $1")
-        .bind(run_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?
-    else {
-        return Ok(0);
-    };
-
-    let mut replayed = 0;
-    let mut seen = HashSet::new();
-    for line in log.lines() {
-        let Some(json) = extract_agent_event_json(line) else {
-            continue;
-        };
-        if !seen.insert(json.to_owned()) {
-            continue;
-        }
-        let result = match serde_json::from_str::<AgentEvent>(json).map_err(to_string) {
-            Ok(event) => {
-                if claim_agent_event(pool, run_id, json).await? {
-                    handle_agent_event(pool, agent_id, run_id, event).await
-                } else {
-                    continue;
-                }
-            }
-            Err(err) => Err(err),
-        };
-        match result {
-            Ok(note) => {
-                replayed += 1;
-                append_run_log(pool, run_id, format!("[event-replay] {note}\n")).await?;
-                record_agent_activity(
-                    pool,
-                    Some(agent_id),
-                    Some(run_id),
-                    "event",
-                    "Run log event replayed",
-                    note,
-                )
-                .await?;
-            }
-            Err(err) => {
-                append_run_log(pool, run_id, format!("[event-replay] rejected: {err}\n")).await?;
-                record_agent_activity(
-                    pool,
-                    Some(agent_id),
-                    Some(run_id),
-                    "event_error",
-                    "Run log event rejected",
-                    err,
-                )
-                .await?;
-            }
-        }
-    }
-
-    Ok(replayed)
-}
-
-fn extract_agent_event_json(line: &str) -> Option<&str> {
-    extract_agent_event_json_with_remainder(line).map(|(json, _)| json)
-}
-
-fn extract_agent_event_json_with_remainder(line: &str) -> Option<(&str, &str)> {
-    let mut trimmed = line.trim();
-    for prefix in ["[stdout] ", "[stderr] "] {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            trimmed = rest.trim_start();
-            break;
-        }
-    }
-    let payload = trimmed.strip_prefix(AGENT_EVENT_PREFIX)?.trim_start();
-    match complete_json_object_end(payload) {
-        Some(end) => Some((&payload[..end], &payload[end..])),
-        None => Some((payload.trim(), "")),
-    }
-}
-
-fn split_agent_event_jsons_from_text(text: &str) -> (String, Vec<String>) {
-    let mut visible = String::new();
-    let mut events = Vec::new();
-    let mut rest = text;
-
-    while let Some(marker_index) = rest.find(AGENT_EVENT_PREFIX) {
-        visible.push_str(&rest[..marker_index]);
-        let payload = rest[marker_index + AGENT_EVENT_PREFIX.len()..].trim_start();
-        let Some(end) = complete_json_object_end(payload) else {
-            visible.push_str(&rest[marker_index..]);
-            return (visible.trim().to_owned(), events);
-        };
-        events.push(payload[..end].to_owned());
-        rest = &payload[end..];
-    }
-
-    visible.push_str(rest);
-    (visible.trim().to_owned(), events)
-}
-
-fn complete_json_object_end(value: &str) -> Option<usize> {
-    if !value.starts_with('{') {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (index, ch) in value.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' => in_string = true,
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index + ch.len_utf8());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-async fn handle_agent_event(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    event: AgentEvent,
-) -> CommandResult<String> {
-    match event {
-        AgentEvent::Message {
-            channel,
-            channel_id,
-            thread_root_id,
-            body,
-            as_task,
-        } => {
-            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
-            let msg_id = insert_agent_message(
-                pool,
-                agent_id,
-                channel_id,
-                thread_root_id,
-                body.trim(),
-                as_task.unwrap_or(false),
-            )
-            .await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                None,
-                if as_task.unwrap_or(false) {
-                    "task"
-                } else {
-                    "message"
-                },
-                if as_task.unwrap_or(false) {
-                    "Task created from stdout event"
-                } else {
-                    "Message posted from stdout event"
-                },
-                format!("message_id={msg_id}"),
-            )
-            .await?;
-            Ok(format!("message accepted {msg_id}"))
-        }
-        AgentEvent::ChannelMessageCreate {
-            channel,
-            channel_id,
-            thread_root_id,
-            body,
-        } => {
-            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
-            ensure_agent_channel_member(pool, agent_id, channel_id, "channel_message_create")
-                .await?;
-            let body = body.trim();
-            if body.is_empty() {
-                return Err("channel_message_create body is required".to_owned());
-            }
-            let msg_id = insert_agent_message_with_options(
-                pool,
-                agent_id,
-                channel_id,
-                thread_root_id,
-                body,
-                false,
-                false,
-            )
-            .await?;
-            queue_mentions_as_work_items(
-                pool,
-                channel_id,
-                thread_root_id,
-                msg_id,
-                None,
-                body,
-                MentionDispatchOrigin::Agent {
-                    sender_agent_id: agent_id,
-                    allow_channel_member_invite: true,
-                },
-            )
-            .await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                None,
-                "message",
-                "Channel message posted from control event",
-                json!({
-                    "message_id": msg_id,
-                    "channel_id": channel_id,
-                    "thread_root_id": thread_root_id
-                })
-                .to_string(),
-            )
-            .await?;
-            Ok(format!("channel message accepted {msg_id}"))
-        }
-        AgentEvent::Activity {
-            kind,
-            title,
-            detail,
-        } => {
-            let title = title.trim();
-            if title.is_empty() {
-                return Err("activity title is required".to_owned());
-            }
-            let kind = normalize_agent_activity_kind(kind.as_deref());
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                kind,
-                title,
-                detail.unwrap_or_default(),
-            )
-            .await?;
-            Ok("activity accepted".to_owned())
-        }
-        AgentEvent::TaskCreate {
-            channel,
-            channel_id,
-            title,
-            body,
-            thread_body,
-            assign_self,
-            status,
-        } => {
-            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
-            let (task_number, root_message_id, thread_reply_id) = create_agent_task_thread(
-                pool,
-                agent_id,
-                channel_id,
-                &title,
-                body.as_deref(),
-                thread_body.as_deref(),
-                assign_self.unwrap_or(true),
-                status.as_deref(),
-            )
-            .await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "task",
-                format!("Task #{task_number} created"),
-                json!({
-                    "task_number": task_number,
-                    "message_id": root_message_id,
-                    "thread_reply_id": thread_reply_id,
-                })
-                .to_string(),
-            )
-            .await?;
-            Ok(format!("task #{task_number} created {root_message_id}"))
-        }
-        AgentEvent::TaskStatus {
-            task_number,
-            status,
-        } => {
-            let status = status.trim();
-            if !matches!(status, "todo" | "in_progress" | "in_review" | "done") {
-                return Err(format!("unsupported task status: {status}"));
-            }
-            let affected = sqlx::query(
-                r#"
-                update tasks
-                set status = $2, version = version + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-                where number = $1
-                "#,
-            )
-            .bind(task_number)
-            .bind(status)
-            .execute(pool)
-            .await
-            .map_err(to_string)?
-            .rows_affected();
-            if affected == 0 {
-                return Err(format!("task #{task_number} does not exist"));
-            }
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                None,
-                "task",
-                format!("Task #{task_number} status changed"),
-                format!("status={status}"),
-            )
-            .await?;
-            Ok(format!("task #{task_number} status set to {status}"))
-        }
-        AgentEvent::TaskClaim {
-            task_number,
-            assignee_handle,
-        } => {
-            let assignee = match assignee_handle.as_deref().map(str::trim) {
-                Some("") | Some("null") | Some("unassigned") => None,
-                Some(handle) => Some(resolve_agent_by_handle(pool, handle).await?),
-                None => Some(agent_id),
-            };
-            let task_id: Option<Uuid> =
-                sqlx::query_scalar("select id from tasks where number = $1")
-                    .bind(task_number)
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(to_string)?;
-            let Some(task_id) = task_id else {
-                return Err(format!("task #{task_number} does not exist"));
-            };
-            if assignee.is_none() {
-                let affected = sqlx::query(
-                    r#"
-                    update tasks
-                    set assignee_agent_id = null,
-                        version = version + 1,
-                        updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-                    where id = $1
-                      and assignee_agent_id = $2
-                      and status <> 'done'
-                    "#,
-                )
-                .bind(task_id)
-                .bind(agent_id)
-                .execute(pool)
-                .await
-                .map_err(to_string)?
-                .rows_affected();
-                if affected == 0 {
-                    return Ok(format!("task #{task_number} unclaim ignored"));
-                }
-                record_agent_activity(
-                    pool,
-                    Some(agent_id),
-                    None,
-                    "task",
-                    format!("Task #{task_number} unclaimed"),
-                    "agent_claim",
-                )
-                .await?;
-            } else if assignee != Some(agent_id) {
-                return Err("task_claim can only claim for the current agent".to_owned());
-            } else if try_claim_unassigned_task(pool, task_id, agent_id, None, "agent_claim")
-                .await?
-                .is_none()
-            {
-                return Ok(format!("task #{task_number} claim ignored"));
-            }
-            Ok(format!("task #{task_number} assignee updated"))
-        }
-        AgentEvent::TaskHandoff {
-            target_agent,
-            task_number,
-            reason,
-            body,
-        } => {
-            let (task_id, resolved_task_number, title, channel_id, thread_root_id) =
-                resolve_task_for_handoff(pool, agent_id, run_id, task_number).await?;
-            let target_agent_id = resolve_agent_by_handle(pool, &target_agent).await?;
-            if target_agent_id == agent_id {
-                return Err("task_handoff target_agent must be a different agent".to_owned());
-            }
-            let target_handle = resolve_agent_handle(pool, target_agent_id).await?;
-            let source_handle = resolve_agent_handle(pool, agent_id).await?;
-            let reason = reason.trim();
-            if reason.is_empty() {
-                return Err("task_handoff reason is required".to_owned());
-            }
-            let handoff_body = body
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    format!("@{target_handle} taking over task #{resolved_task_number}: {reason}")
-                });
-
-            let affected = sqlx::query(
-                r#"
-                update tasks
-                set assignee_agent_id = $2,
-                    status = 'in_progress',
-                    version = version + 1,
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-                where id = $1
-                  and assignee_agent_id = $3
-                  and status <> 'done'
-                "#,
-            )
-            .bind(task_id)
-            .bind(target_agent_id)
-            .bind(agent_id)
-            .execute(pool)
-            .await
-            .map_err(to_string)?
-            .rows_affected();
-            if affected == 0 {
-                return Err(format!(
-                    "task #{resolved_task_number} can only be handed off by its current assignee"
-                ));
-            }
-
-            let handoff_message_id = insert_agent_handoff_message(
-                pool,
-                agent_id,
-                channel_id,
-                thread_root_id,
-                &handoff_body,
-            )
-            .await?;
-            dispatch_task_assignment_to_agent(pool, task_id, target_agent_id, reason).await?;
-            let _ = notify_ui_refresh(pool, "task_handoff").await;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "task",
-                format!("Task #{resolved_task_number} handed off"),
-                json!({
-                    "task_id": task_id,
-                    "task_number": resolved_task_number,
-                    "title": title,
-                    "from": format!("@{source_handle}"),
-                    "target_agent": format!("@{target_handle}"),
-                    "reason": reason,
-                    "message_id": handoff_message_id,
-                })
-                .to_string(),
-            )
-            .await?;
-            Ok(format!(
-                "task #{resolved_task_number} handed off to @{target_handle}"
-            ))
-        }
-        AgentEvent::Silent { reason } => {
-            let reason =
-                reason.unwrap_or_else(|| "Agent judged no visible reply was needed.".to_owned());
-            mark_run_work_item_silent(pool, agent_id, run_id, &reason).await?;
-            Ok("silent reply accepted".to_owned())
-        }
-        AgentEvent::ReminderCreate {
-            channel,
-            channel_id,
-            thread_root_id,
-            message_id,
-            title,
-            note,
-            due_at,
-            recurrence,
-        } => {
-            let due_at = due_at.ok_or_else(|| {
-                "reminder_create requires a when or due_at ISO8601 timestamp".to_owned()
-            })?;
-            let due_at = parse_due_at(&due_at)?;
-            let (default_channel_id, default_thread_root_id, default_message_id) =
-                resolve_run_reminder_anchor(pool, agent_id, run_id).await?;
-            let resolved_channel_id = if channel_id.is_some() || channel.is_some() {
-                Some(resolve_event_channel(pool, channel_id, channel.as_deref()).await?)
-            } else {
-                default_channel_id
-            };
-            let reminder_id = create_reminder_in_pool(
-                pool,
-                Some(agent_id),
-                resolved_channel_id,
-                thread_root_id.or(default_thread_root_id),
-                message_id.or(default_message_id),
-                &title,
-                note.as_deref().unwrap_or(""),
-                due_at,
-                recurrence.as_deref().unwrap_or("none"),
-            )
-            .await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "reminder",
-                "Reminder scheduled",
-                json!({
-                    "reminder_id": reminder_id,
-                    "title": title.trim(),
-                    "due_at": due_at.to_rfc3339(),
-                    "recurrence": recurrence.unwrap_or_else(|| "none".to_owned())
-                })
-                .to_string(),
-            )
-            .await?;
-            Ok(format!("reminder created {reminder_id}"))
-        }
-        AgentEvent::ReminderCancel { reminder_id } => {
-            cancel_reminder_in_pool(pool, reminder_id).await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "reminder",
-                "Reminder cancelled",
-                json!({ "reminder_id": reminder_id }).to_string(),
-            )
-            .await?;
-            Ok(format!("reminder cancelled {reminder_id}"))
-        }
-        AgentEvent::Usage {
-            input_tokens,
-            output_tokens,
-            total_tokens,
-            cost_micros,
-            cost_usd,
-        } => {
-            let input_tokens = input_tokens.unwrap_or_default().max(0);
-            let mut output_tokens = output_tokens.unwrap_or_default().max(0);
-            if output_tokens == 0 {
-                if let Some(total_tokens) = total_tokens {
-                    output_tokens = (total_tokens - input_tokens).max(0);
-                }
-            }
-            let event_cost_micros = cost_micros
-                .or_else(|| cost_usd.map(|value| (value.max(0.0) * 1_000_000.0).round() as i64));
-            record_run_usage(
-                pool,
-                agent_id,
-                run_id,
-                input_tokens,
-                output_tokens,
-                event_cost_micros,
-            )
-            .await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "usage",
-                "Usage recorded",
-                json!({
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "cost_micros": event_cost_micros
-                })
-                .to_string(),
-            )
-            .await?;
-            Ok("usage accepted".to_owned())
-        }
-        AgentEvent::MemoryAppend { body } => {
-            append_agent_memory(pool, agent_id, &body).await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "memory",
-                "Memory updated",
-                json!({ "operation": "append" }).to_string(),
-            )
-            .await?;
-            Ok("memory appended".to_owned())
-        }
-        AgentEvent::MemoryCompact { body } => {
-            compact_agent_memory(pool, agent_id, &body).await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "memory",
-                "Memory compacted",
-                json!({ "operation": "compact" }).to_string(),
-            )
-            .await?;
-            Ok("memory compacted".to_owned())
-        }
-        AgentEvent::ChannelCreate {
-            name,
-            description,
-            agent_handles,
-        } => {
-            let channel_id =
-                create_channel_in_pool(pool, &name, description.as_deref().unwrap_or("")).await?;
-            add_agent_to_channel(pool, channel_id, agent_id).await?;
-            let mut invited = Vec::new();
-            for handle in agent_handles.unwrap_or_default() {
-                let invited_agent_id = resolve_agent_by_handle(pool, &handle).await?;
-                add_agent_to_channel(pool, channel_id, invited_agent_id).await?;
-                invited.push(handle.trim().trim_start_matches('@').to_owned());
-            }
-            insert_system_message(
-                pool,
-                channel_id,
-                None,
-                format!(
-                    "@{} created #{}{}",
-                    sqlx::query_scalar::<_, String>("select handle from agents where id = $1")
-                        .bind(agent_id)
-                        .fetch_one(pool)
-                        .await
-                        .map_err(to_string)?,
-                    normalize_channel_name(&name),
-                    if invited.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            " and invited {}",
-                            invited
-                                .iter()
-                                .map(|h| format!("@{h}"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    }
-                ),
-            )
-            .await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "channel",
-                "Channel created",
-                json!({
-                    "channel_id": channel_id,
-                    "name": normalize_channel_name(&name),
-                    "invited": invited
-                })
-                .to_string(),
-            )
-            .await?;
-            Ok(format!("channel created {channel_id}"))
-        }
-        AgentEvent::ChannelInvite {
-            channel,
-            channel_id,
-            agent_handles,
-        } => {
-            if agent_handles.is_empty() {
-                return Err("channel_invite requires agent_handles".to_owned());
-            }
-            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
-            let mut invited = Vec::new();
-            for handle in agent_handles {
-                let invited_agent_id = resolve_agent_by_handle(pool, &handle).await?;
-                add_agent_to_channel(pool, channel_id, invited_agent_id).await?;
-                invited.push(handle.trim().trim_start_matches('@').to_owned());
-            }
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "membership",
-                "Agents invited",
-                json!({
-                    "channel_id": channel_id,
-                    "invited": invited
-                })
-                .to_string(),
-            )
-            .await?;
-            let _ = notify_ui_refresh(pool, "channel_invite").await;
-            Ok("agents invited".to_owned())
-        }
-        AgentEvent::ProfileUpdate {
-            display_name,
-            role,
-            avatar,
-            description,
-        } => {
-            let display_name = display_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            let role = role
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            let avatar = avatar
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            let description = description
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            if display_name.is_none() && role.is_none() && avatar.is_none() && description.is_none()
-            {
-                return Err("profile_update requires at least one non-empty field".to_owned());
-            }
-            sqlx::query(
-                r#"
-                update agents
-                set display_name = coalesce($2, display_name),
-                    role = coalesce($3, role),
-                    avatar = coalesce($4, avatar),
-                    description = coalesce($5, description)
-                where id = $1
-                "#,
-            )
-            .bind(agent_id)
-            .bind(display_name)
-            .bind(role)
-            .bind(avatar)
-            .bind(description)
-            .execute(pool)
-            .await
-            .map_err(to_string)?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "profile",
-                "Profile updated",
-                json!({
-                    "display_name": display_name,
-                    "role": role,
-                    "avatar": avatar,
-                    "description": description
-                })
-                .to_string(),
-            )
-            .await?;
-            let _ = notify_ui_refresh(pool, "profile_update").await;
-            Ok("profile updated".to_owned())
-        }
-        AgentEvent::ArtifactCreate {
-            channel,
-            channel_id,
-            thread_root_id,
-            kind,
-            title,
-            summary,
-            content,
-            metadata,
-        } => {
-            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
-            let (artifact_id, message_id) = create_agent_artifact(
-                pool,
-                agent_id,
-                channel_id,
-                thread_root_id,
-                &kind,
-                &title,
-                summary.as_deref(),
-                &content,
-                metadata,
-            )
-            .await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "artifact",
-                "Artifact created",
-                json!({
-                    "artifact_id": artifact_id,
-                    "message_id": message_id,
-                    "kind": kind,
-                    "title": title
-                })
-                .to_string(),
-            )
-            .await?;
-            Ok(format!("artifact created: {artifact_id}"))
-        }
-        AgentEvent::AttachmentCreate {
-            channel,
-            channel_id,
-            thread_root_id,
-            body,
-            files,
-        } => {
-            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
-            let uploads = load_agent_attachment_uploads(files)?;
-            let upload_count = uploads.len();
-            let body = body
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| default_attachment_message_body(&uploads));
-            let message_id = insert_agent_attachment_message(
-                pool,
-                agent_id,
-                channel_id,
-                thread_root_id,
-                &body,
-                uploads,
-            )
-            .await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "attachment",
-                "Attachment message created",
-                json!({
-                    "message_id": message_id,
-                    "file_count": upload_count
-                })
-                .to_string(),
-            )
-            .await?;
-            Ok(format!("attachment message created: {message_id}"))
-        }
-        AgentEvent::HandoffCreate {
-            target_agent,
-            channel,
-            channel_id,
-            thread_root_id,
-            reason,
-            body,
-        } => {
-            let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
-            let (target_agent_id, target_handle, work_item_id, handoff_message_id) =
-                create_agent_handoff(
-                    pool,
-                    agent_id,
-                    channel_id,
-                    thread_root_id,
-                    &target_agent,
-                    reason.as_deref(),
-                    &body,
-                )
-                .await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "handoff",
-                "Handoff created",
-                json!({
-                    "target_agent_id": target_agent_id,
-                    "target_handle": target_handle,
-                    "work_item_id": work_item_id,
-                    "message_id": handoff_message_id,
-                    "thread_root_id": thread_root_id
-                })
-                .to_string(),
-            )
-            .await?;
-            Ok(format!(
-                "handoff created for @{target_handle}: {work_item_id}"
-            ))
         }
     }
 }
@@ -9275,854 +8112,6 @@ async fn create_agent_task_thread(
     Ok((task_number, root_message_id, thread_reply_id))
 }
 
-fn normalize_artifact_kind(kind: &str) -> CommandResult<String> {
-    let normalized = kind.trim().to_lowercase().replace('_', "-");
-    let normalized = match normalized.as_str() {
-        "md" | "markdown" => "markdown",
-        other => {
-            return Err(format!(
-                "unsupported artifact kind: {other}; supported: markdown"
-            ))
-        }
-    };
-    Ok(normalized.to_owned())
-}
-
-async fn create_agent_artifact(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    kind: &str,
-    title: &str,
-    summary: Option<&str>,
-    content: &str,
-    metadata: Option<Value>,
-) -> CommandResult<(Uuid, Uuid)> {
-    let kind = normalize_artifact_kind(kind)?;
-    let title = title.trim();
-    if title.is_empty() {
-        return Err("artifact_create title is required".to_owned());
-    }
-    let content = content.trim();
-    if content.is_empty() {
-        return Err("artifact_create content is required".to_owned());
-    }
-    let summary = summary
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| content.lines().next().unwrap_or(""))
-        .to_owned();
-    let summary = compact_chars_middle(&summary, 320).replace('\n', " ");
-    let body = if summary.is_empty() {
-        format!("Created artifact: {title}")
-    } else {
-        format!("Created artifact: {title}\n\n{summary}")
-    };
-    let message_id =
-        insert_agent_message(pool, agent_id, channel_id, thread_root_id, &body, false).await?;
-    let artifact_id: Uuid = sqlx::query_scalar(
-        r#"
-        insert into artifacts (
-            message_id, channel_id, thread_root_id, creator_agent_id,
-            kind, title, summary, content, metadata
-        )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        returning id
-        "#,
-    )
-    .bind(message_id)
-    .bind(channel_id)
-    .bind(thread_root_id)
-    .bind(agent_id)
-    .bind(&kind)
-    .bind(title)
-    .bind(&summary)
-    .bind(content)
-    .bind(metadata.unwrap_or_else(|| json!({})))
-    .fetch_one(pool)
-    .await
-    .map_err(to_string)?;
-    if let Ok(artifact) = load_artifact(pool, artifact_id).await {
-        let _ = notify_ui_artifact_upsert(pool, &artifact, "artifact_created").await;
-    }
-    if let Ok(message) = load_message(pool, message_id).await {
-        let _ = notify_ui_message_upsert(pool, &message, "artifact_created").await;
-    } else {
-        let _ = notify_ui_refresh(pool, "artifact_created").await;
-    }
-    Ok((artifact_id, message_id))
-}
-
-fn capped_stream_delta(delta: &str, current_len: usize) -> (String, bool) {
-    if current_len >= STREAMING_MESSAGE_BODY_LIMIT {
-        return (String::new(), true);
-    }
-    let remaining = STREAMING_MESSAGE_BODY_LIMIT - current_len;
-    let delta_len = delta.chars().count();
-    if delta_len <= remaining {
-        return (delta.to_owned(), false);
-    }
-
-    let marker_len = STREAMING_TRUNCATION_MARKER.chars().count();
-    let keep = remaining.saturating_sub(marker_len);
-    let mut capped: String = delta.chars().take(keep).collect();
-    if remaining >= marker_len {
-        capped.push_str(STREAMING_TRUNCATION_MARKER);
-    }
-    (capped, true)
-}
-
-async fn append_streaming_agent_message(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    stream_key: &str,
-    delta: &str,
-) -> CommandResult<Uuid> {
-    if stream_key.trim().is_empty() {
-        return Err("stream_key is empty".to_owned());
-    }
-    if delta.is_empty() {
-        return ensure_streaming_agent_message(
-            pool,
-            agent_id,
-            channel_id,
-            thread_root_id,
-            stream_key,
-        )
-        .await;
-    }
-
-    if let Some(row) = sqlx::query(
-        "select id, delivery_state, length(body) as body_len from messages where stream_key = $1",
-    )
-    .bind(stream_key)
-    .fetch_optional(pool)
-    .await
-    .map_err(to_string)?
-    {
-        let message_id: Uuid = row.get("id");
-        let delivery_state: String = row.get("delivery_state");
-        if delivery_state != "streaming" {
-            return Ok(message_id);
-        }
-        let body_len: i32 = row.get("body_len");
-        let (append_delta, truncated) = capped_stream_delta(delta, body_len.max(0) as usize);
-        if append_delta.is_empty() && truncated {
-            finish_streaming_agent_message(pool, stream_key, "complete").await?;
-            return Ok(message_id);
-        }
-        sqlx::query("update messages set body = body || $2, delivery_state = $3 where id = $1")
-            .bind(message_id)
-            .bind(&append_delta)
-            .bind(if truncated { "complete" } else { "streaming" })
-            .execute(pool)
-            .await
-            .map_err(to_string)?;
-        let delivery_state = if truncated { "complete" } else { "streaming" };
-        let _ = notify_ui_message_delta(
-            pool,
-            message_id,
-            &append_delta,
-            delivery_state,
-            "stream_delta",
-        )
-        .await;
-        if let Some((control_agent_id, run_id, _)) =
-            load_streaming_control_context(pool, stream_key).await?
-        {
-            let _ = consume_complete_streaming_agent_control_lines(
-                pool,
-                control_agent_id,
-                run_id,
-                stream_key,
-            )
-            .await;
-        }
-        if truncated {
-            queue_agent_message_mentions(pool, message_id).await?;
-        }
-        return Ok(message_id);
-    }
-
-    delete_superseded_empty_run_progress_messages(
-        pool,
-        agent_id,
-        channel_id,
-        thread_root_id,
-        stream_key,
-    )
-    .await?;
-
-    let sender = sqlx::query("select display_name, role from agents where id = $1")
-        .bind(agent_id)
-        .fetch_one(pool)
-        .await
-        .map_err(to_string)?;
-    let sender_name: String = sender.get("display_name");
-    let sender_role: String = sender.get("role");
-    let (initial_body, truncated) = capped_stream_delta(delta, 0);
-
-    let message_id: Uuid = sqlx::query_scalar(
-        r#"
-        insert into messages (
-            channel_id,
-            thread_root_id,
-            sender_agent_id,
-            sender_name,
-            sender_role,
-            body,
-            is_task,
-            delivery_state,
-            stream_key
-        )
-        values ($1, $2, $3, $4, $5, $6, false, $7, $8)
-        returning id
-        "#,
-    )
-    .bind(channel_id)
-    .bind(thread_root_id)
-    .bind(agent_id)
-    .bind(sender_name)
-    .bind(sender_role)
-    .bind(initial_body)
-    .bind(if truncated { "complete" } else { "streaming" })
-    .bind(stream_key)
-    .fetch_one(pool)
-    .await
-    .map_err(to_string)?;
-
-    if let Ok(message) = load_message(pool, message_id).await {
-        let _ = notify_ui_message_upsert(pool, &message, "stream_start").await;
-    } else {
-        let _ = notify_ui_refresh(pool, "stream_start").await;
-    }
-    if let Some((control_agent_id, run_id, _)) =
-        load_streaming_control_context(pool, stream_key).await?
-    {
-        let _ = consume_complete_streaming_agent_control_lines(
-            pool,
-            control_agent_id,
-            run_id,
-            stream_key,
-        )
-        .await;
-    }
-    if truncated {
-        queue_agent_message_mentions(pool, message_id).await?;
-    }
-    Ok(message_id)
-}
-
-async fn ensure_streaming_agent_message(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    stream_key: &str,
-) -> CommandResult<Uuid> {
-    if stream_key.trim().is_empty() {
-        return Err("stream_key is empty".to_owned());
-    }
-
-    if let Some(existing) = sqlx::query_scalar("select id from messages where stream_key = $1")
-        .bind(stream_key)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?
-    {
-        return Ok(existing);
-    }
-
-    let sender = sqlx::query("select display_name, role from agents where id = $1")
-        .bind(agent_id)
-        .fetch_one(pool)
-        .await
-        .map_err(to_string)?;
-    let sender_name: String = sender.get("display_name");
-    let sender_role: String = sender.get("role");
-    let message_id: Uuid = sqlx::query_scalar(
-        r#"
-        insert into messages (
-            channel_id,
-            thread_root_id,
-            sender_agent_id,
-            sender_name,
-            sender_role,
-            body,
-            is_task,
-            delivery_state,
-            stream_key
-        )
-        values ($1, $2, $3, $4, $5, '', false, 'streaming', $6)
-        returning id
-        "#,
-    )
-    .bind(channel_id)
-    .bind(thread_root_id)
-    .bind(agent_id)
-    .bind(sender_name)
-    .bind(sender_role)
-    .bind(stream_key)
-    .fetch_one(pool)
-    .await
-    .map_err(to_string)?;
-
-    if let Ok(message) = load_message(pool, message_id).await {
-        let _ = notify_ui_message_upsert(pool, &message, "stream_placeholder").await;
-    } else {
-        let _ = notify_ui_refresh(pool, "stream_placeholder").await;
-    }
-    Ok(message_id)
-}
-
-async fn adopt_streaming_agent_message_key(
-    pool: &SqlitePool,
-    pending_stream_key: &str,
-    stream_key: &str,
-) -> CommandResult<Option<Uuid>> {
-    if pending_stream_key == stream_key {
-        return Ok(None);
-    }
-    if streaming_message_exists(pool, stream_key).await? {
-        return Ok(None);
-    }
-
-    let message_id: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        update messages
-        set stream_key = $2,
-            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-        where stream_key = $1
-          and delivery_state = 'streaming'
-          and body = ''
-        returning id
-        "#,
-    )
-    .bind(pending_stream_key)
-    .bind(stream_key)
-    .fetch_optional(pool)
-    .await
-    .map_err(to_string)?;
-
-    if let Some(message_id) = message_id {
-        if let Ok(message) = load_message(pool, message_id).await {
-            let _ = notify_ui_message_upsert(pool, &message, "stream_key_adopted").await;
-        } else {
-            let _ = notify_ui_refresh(pool, "stream_key_adopted").await;
-        }
-    }
-    Ok(message_id)
-}
-
-async fn streaming_message_body_is_empty(
-    pool: &SqlitePool,
-    stream_key: &str,
-) -> CommandResult<bool> {
-    let body: Option<String> =
-        sqlx::query_scalar("select body from messages where stream_key = $1")
-            .bind(stream_key)
-            .fetch_optional(pool)
-            .await
-            .map_err(to_string)?;
-    Ok(body.map(|body| body.is_empty()).unwrap_or(true))
-}
-
-async fn delete_streaming_agent_message(
-    pool: &SqlitePool,
-    message_id: Uuid,
-    reason: &str,
-) -> CommandResult<()> {
-    sqlx::query("delete from messages where id = $1")
-        .bind(message_id)
-        .execute(pool)
-        .await
-        .map_err(to_string)?;
-    let _ = notify_ui_message_delete(pool, message_id, reason).await;
-    Ok(())
-}
-
-async fn delete_superseded_empty_run_progress_messages(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    stream_key: &str,
-) -> CommandResult<()> {
-    let Some(run_prefix) = stream_key
-        .split(':')
-        .next()
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(());
-    };
-    if Uuid::parse_str(run_prefix).is_err() {
-        return Ok(());
-    }
-
-    let superseded_ids: Vec<Uuid> = sqlx::query_scalar(
-        r#"
-        select id
-        from messages
-        where sender_agent_id = $1
-          and channel_id = $2
-          and thread_root_id is not distinct from $3
-          and stream_key <> $4
-          and stream_key like $5
-          and body = ''
-          and delivery_state in ('streaming', 'complete')
-        "#,
-    )
-    .bind(agent_id)
-    .bind(channel_id)
-    .bind(thread_root_id)
-    .bind(stream_key)
-    .bind(format!("{run_prefix}:%"))
-    .fetch_all(pool)
-    .await
-    .map_err(to_string)?;
-
-    for message_id in superseded_ids {
-        delete_streaming_agent_message(pool, message_id, "superseded_progress_status").await?;
-    }
-    Ok(())
-}
-
-async fn finish_streaming_agent_message(
-    pool: &SqlitePool,
-    stream_key: &str,
-    delivery_state: &str,
-) -> CommandResult<()> {
-    if delivery_state == "complete" {
-        if let Some((agent_id, run_id, work_item_id)) =
-            load_streaming_control_context(pool, stream_key).await?
-        {
-            if consume_streaming_agent_control_lines(
-                pool,
-                agent_id,
-                run_id,
-                work_item_id,
-                stream_key,
-            )
-            .await?
-            {
-                return Ok(());
-            }
-        }
-    }
-
-    let affected = sqlx::query(
-        r#"
-        update messages
-        set delivery_state = $2
-        where stream_key = $1
-          and delivery_state = 'streaming'
-        "#,
-    )
-    .bind(stream_key)
-    .bind(delivery_state)
-    .execute(pool)
-    .await
-    .map_err(to_string)?
-    .rows_affected();
-    if affected > 0 {
-        let message_id: Option<Uuid> =
-            sqlx::query_scalar("select id from messages where stream_key = $1")
-                .bind(stream_key)
-                .fetch_optional(pool)
-                .await
-                .map_err(to_string)?;
-        if let Some(message_id) = message_id {
-            if let Ok(message) = load_message(pool, message_id).await {
-                let _ = notify_ui_message_upsert(pool, &message, "stream_finish").await;
-            } else {
-                let _ = notify_ui_refresh(pool, "stream_finish").await;
-            }
-            if delivery_state == "complete" {
-                queue_agent_message_mentions(pool, message_id).await?;
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn load_streaming_control_context(
-    pool: &SqlitePool,
-    stream_key: &str,
-) -> CommandResult<Option<(Uuid, Uuid, Option<Uuid>)>> {
-    let Some(run_prefix) = stream_key
-        .split(':')
-        .next()
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-    let Ok(run_id) = Uuid::parse_str(run_prefix) else {
-        return Ok(None);
-    };
-    let Some(row) = sqlx::query("select agent_id, work_item_id from agent_runs where id = $1")
-        .bind(run_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?
-    else {
-        return Ok(None);
-    };
-    let agent_id: Uuid = row.get("agent_id");
-    let work_item_id: Option<Uuid> = row.get("work_item_id");
-    Ok(Some((agent_id, run_id, work_item_id)))
-}
-
-fn silent_reply_reason(body: &str) -> Option<String> {
-    let first_line = body.trim().lines().next()?.trim().trim_matches('`').trim();
-    let rest = first_line.strip_prefix(SILENT_REPLY_PREFIX)?;
-    if !rest.is_empty()
-        && !rest.starts_with(':')
-        && !rest
-            .chars()
-            .next()
-            .map(char::is_whitespace)
-            .unwrap_or(false)
-    {
-        return None;
-    }
-    let reason = rest.trim_start_matches(':').trim();
-    Some(reason.to_owned())
-}
-
-async fn mark_work_item_silent(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    work_item_id: Uuid,
-    reason: &str,
-) -> CommandResult<()> {
-    sqlx::query(
-        r#"
-        update agent_work_items
-        set status = 'silent',
-            completed_at = coalesce(completed_at, strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
-            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
-        where id = $1
-          and status not in ('cancelled', 'failed')
-        "#,
-    )
-    .bind(work_item_id)
-    .execute(pool)
-    .await
-    .map_err(to_string)?;
-    notify_ui_work_item_changed(pool, work_item_id, "work_item_silent").await;
-    record_agent_activity(
-        pool,
-        Some(agent_id),
-        Some(run_id),
-        "decision",
-        "No visible reply needed",
-        json!({
-            "work_item_id": work_item_id,
-            "reason": if reason.trim().is_empty() {
-                "Agent judged the message as non-actionable."
-            } else {
-                reason.trim()
-            }
-        })
-        .to_string(),
-    )
-    .await?;
-    Ok(())
-}
-
-async fn mark_run_work_item_silent(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    reason: &str,
-) -> CommandResult<()> {
-    let work_item_id: Option<Uuid> =
-        sqlx::query_scalar("select work_item_id from agent_runs where id = $1 and agent_id = $2")
-            .bind(run_id)
-            .bind(agent_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(to_string)?
-            .flatten();
-    if let Some(work_item_id) = work_item_id {
-        mark_work_item_silent(pool, agent_id, run_id, work_item_id, reason).await?;
-    } else {
-        record_agent_activity(
-            pool,
-            Some(agent_id),
-            Some(run_id),
-            "decision",
-            "No visible reply needed",
-            reason.trim(),
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn maybe_hide_silent_streaming_reply(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    work_item_id: Option<Uuid>,
-    stream_key: &str,
-) -> CommandResult<bool> {
-    let Some(row) = sqlx::query("select id, body from messages where stream_key = $1")
-        .bind(stream_key)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?
-    else {
-        return Ok(false);
-    };
-    let message_id: Uuid = row.get("id");
-    let body: String = row.get("body");
-    let Some(reason) = silent_reply_reason(&body) else {
-        return Ok(false);
-    };
-
-    delete_streaming_agent_message(pool, message_id, "silent_reply").await?;
-    if let Some(work_item_id) = work_item_id {
-        mark_work_item_silent(pool, agent_id, run_id, work_item_id, &reason).await?;
-    } else {
-        record_agent_activity(
-            pool,
-            Some(agent_id),
-            Some(run_id),
-            "decision",
-            "No visible reply needed",
-            reason.trim(),
-        )
-        .await?;
-    }
-    Ok(true)
-}
-
-fn split_streaming_agent_event_lines(body: &str) -> (String, Vec<String>) {
-    split_agent_event_jsons_from_text(body)
-}
-
-fn split_complete_streaming_agent_event_lines(body: &str) -> (String, Vec<String>) {
-    let mut visible = String::new();
-    let mut events = Vec::new();
-    for segment in body.split_inclusive('\n') {
-        if !segment.ends_with('\n') {
-            visible.push_str(segment);
-            continue;
-        }
-        let line = segment.trim_end_matches(['\r', '\n']);
-        let (line_visible, line_events) = split_agent_event_jsons_from_text(line);
-        if line_events.is_empty() {
-            visible.push_str(segment);
-        } else if !line_visible.is_empty() {
-            visible.push_str(&line_visible);
-            visible.push('\n');
-        }
-        events.extend(line_events);
-    }
-    (visible.trim().to_owned(), events)
-}
-
-fn control_event_creates_visible_chat_message(json: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<Value>(json) else {
-        return false;
-    };
-    match value.get("type").and_then(Value::as_str) {
-        Some(
-            "message"
-            | "channel_message_create"
-            | "task_create"
-            | "task_handoff"
-            | "attachment_create"
-            | "handoff_create",
-        ) => true,
-        Some("artifact_create") => {
-            let kind_supported = value
-                .get("kind")
-                .and_then(Value::as_str)
-                .is_some_and(|kind| normalize_artifact_kind(kind).is_ok());
-            let has_title = value
-                .get("title")
-                .and_then(Value::as_str)
-                .is_some_and(|title| !title.trim().is_empty());
-            let has_content = value
-                .get("content")
-                .and_then(Value::as_str)
-                .is_some_and(|content| !content.trim().is_empty());
-            kind_supported && has_title && has_content
-        }
-        _ => false,
-    }
-}
-
-fn control_event_hides_empty_streaming_reply(json: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<Value>(json) else {
-        return false;
-    };
-    value.get("type").and_then(Value::as_str) == Some("silent")
-        || control_event_creates_visible_chat_message(json)
-}
-
-async fn handle_streaming_agent_event_json(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    json: &str,
-) -> CommandResult<()> {
-    match serde_json::from_str::<AgentEvent>(json).map_err(to_string) {
-        Ok(event) => {
-            if !claim_agent_event(pool, run_id, json).await? {
-                return Ok(());
-            }
-            match handle_agent_event(pool, agent_id, run_id, event).await {
-                Ok(note) => {
-                    append_run_log(pool, run_id, format!("[stream-event] {note}\n")).await?;
-                    record_agent_activity(
-                        pool,
-                        Some(agent_id),
-                        Some(run_id),
-                        "event",
-                        "Stream event accepted",
-                        note,
-                    )
-                    .await?;
-                }
-                Err(err) => {
-                    append_run_log(pool, run_id, format!("[stream-event] rejected: {err}\n"))
-                        .await?;
-                    record_agent_activity(
-                        pool,
-                        Some(agent_id),
-                        Some(run_id),
-                        "event_error",
-                        "Stream event rejected",
-                        err,
-                    )
-                    .await?;
-                }
-            }
-        }
-        Err(err) => {
-            append_run_log(pool, run_id, format!("[stream-event] rejected: {err}\n")).await?;
-            record_agent_activity(
-                pool,
-                Some(agent_id),
-                Some(run_id),
-                "event_error",
-                "Stream event rejected",
-                err,
-            )
-            .await?;
-        }
-    }
-    Ok(())
-}
-
-async fn consume_complete_streaming_agent_control_lines(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    stream_key: &str,
-) -> CommandResult<bool> {
-    let Some(row) = sqlx::query("select id, body from messages where stream_key = $1")
-        .bind(stream_key)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?
-    else {
-        return Ok(false);
-    };
-    let message_id: Uuid = row.get("id");
-    let body: String = row.get("body");
-    let (visible_body, event_jsons) = split_complete_streaming_agent_event_lines(&body);
-    if event_jsons.is_empty() {
-        return Ok(false);
-    }
-
-    for json in &event_jsons {
-        handle_streaming_agent_event_json(pool, agent_id, run_id, json).await?;
-    }
-
-    if visible_body.is_empty()
-        && event_jsons
-            .iter()
-            .any(|json| control_event_hides_empty_streaming_reply(json))
-    {
-        delete_streaming_agent_message(pool, message_id, "stream_event_consumed").await?;
-        return Ok(true);
-    }
-
-    sqlx::query("update messages set body = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where id = $1")
-        .bind(message_id)
-        .bind(&visible_body)
-        .execute(pool)
-        .await
-        .map_err(to_string)?;
-    if let Ok(message) = load_message(pool, message_id).await {
-        let _ = notify_ui_message_upsert(pool, &message, "stream_event_consumed").await;
-    } else {
-        let _ = notify_ui_refresh(pool, "stream_event_consumed").await;
-    }
-    Ok(true)
-}
-
-async fn consume_streaming_agent_control_lines(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    run_id: Uuid,
-    work_item_id: Option<Uuid>,
-    stream_key: &str,
-) -> CommandResult<bool> {
-    if maybe_hide_silent_streaming_reply(pool, agent_id, run_id, work_item_id, stream_key).await? {
-        return Ok(true);
-    }
-
-    let Some(row) = sqlx::query("select id, body from messages where stream_key = $1")
-        .bind(stream_key)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?
-    else {
-        return Ok(false);
-    };
-    let message_id: Uuid = row.get("id");
-    let body: String = row.get("body");
-    let (visible_body, event_jsons) = split_streaming_agent_event_lines(&body);
-    if event_jsons.is_empty() {
-        return Ok(false);
-    }
-
-    for json in &event_jsons {
-        handle_streaming_agent_event_json(pool, agent_id, run_id, json).await?;
-    }
-
-    if visible_body.is_empty()
-        && event_jsons
-            .iter()
-            .any(|json| control_event_hides_empty_streaming_reply(json))
-    {
-        delete_streaming_agent_message(pool, message_id, "stream_event_consumed").await?;
-        return Ok(true);
-    }
-
-    sqlx::query("update messages set body = $2 where id = $1")
-        .bind(message_id)
-        .bind(&visible_body)
-        .execute(pool)
-        .await
-        .map_err(to_string)?;
-    if let Ok(message) = load_message(pool, message_id).await {
-        let _ = notify_ui_message_upsert(pool, &message, "stream_event_consumed").await;
-    } else {
-        let _ = notify_ui_refresh(pool, "stream_event_consumed").await;
-    }
-    Ok(false)
-}
-
 async fn load_runtime_thread_id(
     pool: &SqlitePool,
     agent_id: Uuid,
@@ -10787,16 +8776,6 @@ fn claude_stream_event_activity(value: &Value) -> Option<(&'static str, &'static
     }
 }
 
-async fn streaming_message_exists(pool: &SqlitePool, stream_key: &str) -> CommandResult<bool> {
-    let exists: bool =
-        sqlx::query_scalar("select exists(select 1 from messages where stream_key = $1)")
-            .bind(stream_key)
-            .fetch_one(pool)
-            .await
-            .map_err(to_string)?;
-    Ok(exists)
-}
-
 async fn get_or_spawn_warm_claude_runtime(
     pool: &SqlitePool,
     registry: &WarmClaudeRegistry,
@@ -11438,7 +9417,7 @@ fn codex_active_turn_schedule_state(
 }
 
 async fn same_codex_surface(
-    pool: &SqlitePool,
+    _pool: &SqlitePool,
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
     active_channel_id: Option<Uuid>,
@@ -11446,17 +9425,6 @@ async fn same_codex_surface(
 ) -> CommandResult<bool> {
     if channel_id.is_none() || channel_id != active_channel_id {
         return Ok(false);
-    }
-    let Some(channel_id) = channel_id else {
-        return Ok(false);
-    };
-    let kind: Option<String> = sqlx::query_scalar("select kind from channels where id = $1")
-        .bind(channel_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?;
-    if kind.as_deref() == Some("dm") {
-        return Ok(true);
     }
     Ok(thread_root_id == active_thread_root_id)
 }
@@ -14552,13 +12520,13 @@ mod tests {
     use super::{
         activity_status, adopt_streaming_agent_message_key, append_claude_thread_context,
         append_streaming_agent_message, build_codex_streaming_prompt, build_steer_followup_prompt,
-        build_streaming_work_item_prompt, build_work_item_prompt, capped_stream_delta,
-        claim_agent_event, claim_next_supervisor_command, classify_agent_output_activity,
-        claude_message_text, claude_result_error, claude_stream_event_activity,
-        claude_surface_boundary_marker, claude_system_prompt, claude_text_delta,
-        codex_active_turn_schedule_state, codex_context_rotate_input_tokens_from_env,
-        codex_error_notification_detail, codex_item_started_activity, codex_pending_stream_key,
-        codex_turn_id_from_value, consume_streaming_agent_control_lines,
+        build_streaming_work_item_prompt, build_work_item_prompt, claim_agent_event,
+        claim_next_supervisor_command, classify_agent_output_activity, claude_message_text,
+        claude_result_error, claude_stream_event_activity, claude_surface_boundary_marker,
+        claude_system_prompt, claude_text_delta, codex_active_turn_schedule_state,
+        codex_context_rotate_input_tokens_from_env, codex_error_notification_detail,
+        codex_item_started_activity, codex_pending_stream_key, codex_turn_id_from_value,
+        consume_streaming_agent_control_lines,
         context_tool::{
             agent_context_agent_inspect, agent_context_artifact_read_in_pool,
             agent_context_attachment_info, agent_context_history_read, agent_context_inbox_archive,
@@ -14575,17 +12543,15 @@ mod tests {
         load_reminders, load_runtime_thread_id, mark_all_owner_inbox_read_in_pool,
         mark_inbox_items_read_in_pool, maybe_hide_silent_streaming_reply, migrate,
         normalize_open_link_target, notify_ui_work_item_changed, open_dm_with_agent_in_pool,
-        parse_activity_metadata, process_due_agent_schedules, process_due_reminders,
-        queue_mentions_as_work_items, record_agent_activity, recover_supervisor_commands_at_startup,
-        send_owner_message_in_pool, silent_reply_reason, split_complete_streaming_agent_event_lines,
-        split_streaming_agent_event_lines, streaming_message_body_is_empty, try_claim_unassigned_task,
+        process_due_agent_schedules, process_due_reminders, queue_mentions_as_work_items,
+        record_agent_activity, recover_supervisor_commands_at_startup, same_codex_surface,
+        send_owner_message_in_pool, streaming_message_body_is_empty, try_claim_unassigned_task,
         update_channel_in_pool, upsert_agent_thread_subscription, upsert_runtime_thread_id,
         usage::{usage_from_run_log, usage_from_runtime_event},
         AgentAttachmentFile, AgentEvent, AgentInboxItemInput, ClaudeSurface,
         CodexActiveTurnScheduleState, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
         AGENT_MEMORY_CONTEXT_LIMIT, CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
-        CODEX_TURN_START_TIMEOUT, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER,
-        WORK_ITEM_FINISH_PROMPT,
+        CODEX_TURN_START_TIMEOUT, WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use serde_json::{json, Value};
@@ -14601,7 +12567,8 @@ mod tests {
 
     #[test]
     fn extracts_mentions_after_non_ascii_text_and_punctuation() {
-        let mentions = extract_agent_mentions("请@agent看一下，或者（@reviewer）再看 end.@observer");
+        let mentions =
+            extract_agent_mentions("请@agent看一下，或者（@reviewer）再看 end.@observer");
         assert_eq!(mentions, vec!["agent", "reviewer", "observer"]);
     }
 
@@ -15921,95 +13888,11 @@ mod tests {
     }
 
     #[test]
-    fn keeps_trailing_stream_text_after_control_event() {
-        let (visible, events) = split_streaming_agent_event_lines(
-            r#"LANTOR_EVENT {"type":"activity","title":"Done","detail":"ok"} ## Review"#,
-        );
-
-        assert_eq!(
-            events,
-            vec![r#"{"type":"activity","title":"Done","detail":"ok"}"#]
-        );
-        assert_eq!(visible, "## Review");
-    }
-
-    #[test]
-    fn consumes_inline_streaming_control_events_without_newlines() {
-        let (visible, events) = split_streaming_agent_event_lines(
-            r#"Working patch.LANTOR_EVENT {"type":"activity","title":"Step","detail":"one"}LANTOR_EVENT {"type":"memory_append","body":"saved"}  Final result"#,
-        );
-
-        assert_eq!(
-            events,
-            vec![
-                r#"{"type":"activity","title":"Step","detail":"one"}"#,
-                r#"{"type":"memory_append","body":"saved"}"#,
-            ]
-        );
-        assert_eq!(visible, "Working patch.  Final result");
-    }
-
-    #[test]
-    fn complete_split_consumes_inline_control_events_only_after_newline() {
-        let (visible, events) = split_complete_streaming_agent_event_lines(
-            "Working patch.LANTOR_EVENT {\"type\":\"activity\",\"title\":\"Step\",\"detail\":\"one\"}\npartial LANTOR_EVENT {\"type\":\"activity\",\"title\":\"Later\",\"detail\":\"two\"}",
-        );
-
-        assert_eq!(
-            events,
-            vec![r#"{"type":"activity","title":"Step","detail":"one"}"#]
-        );
-        assert_eq!(
-            visible,
-            "Working patch.\npartial LANTOR_EVENT {\"type\":\"activity\",\"title\":\"Later\",\"detail\":\"two\"}"
-        );
-    }
-
-    #[test]
-    fn complete_split_preserves_visible_blank_lines() {
-        let (visible, events) = split_complete_streaming_agent_event_lines("First\n\nSecond\n");
-
-        assert!(events.is_empty());
-        assert_eq!(visible, "First\n\nSecond");
-    }
-
-    #[test]
     fn ignores_event_examples_embedded_in_instructions() {
         assert!(extract_agent_event_json(
             r#"[stderr] Reply with: LANTOR_EVENT {"type":"message","body":"..."}"#
         )
         .is_none());
-    }
-
-    #[test]
-    fn caps_streaming_deltas_with_marker() {
-        let remaining = STREAMING_MESSAGE_BODY_LIMIT - 4;
-        let delta = "x".repeat(remaining + 16);
-        let (capped, truncated) = capped_stream_delta(&delta, 4);
-        assert!(truncated);
-        assert!(capped.ends_with(STREAMING_TRUNCATION_MARKER));
-        assert_eq!(capped.chars().count() + 4, STREAMING_MESSAGE_BODY_LIMIT);
-    }
-
-    #[test]
-    fn detects_silent_reply_marker() {
-        assert_eq!(
-            silent_reply_reason("LANTOR_SILENT_REPLY: greeting only"),
-            Some("greeting only".to_owned())
-        );
-        assert_eq!(
-            silent_reply_reason("LANTOR_SILENT_REPLY"),
-            Some(String::new())
-        );
-        assert_eq!(silent_reply_reason("LANTOR_SILENT_REPLYING"), None);
-    }
-
-    #[test]
-    fn structures_activity_metadata_from_detail() {
-        let metadata = parse_activity_metadata("pid=123, thread_id=abc, duration=42 ms");
-        assert_eq!(metadata["pid"], "123");
-        assert_eq!(metadata["thread_id"], "abc");
-        assert_eq!(metadata["duration_ms"], 42);
     }
 
     #[test]
@@ -16112,26 +13995,6 @@ mod tests {
         assert_eq!(activity.0, "run");
         assert_eq!(activity.1, "Runtime warning");
         assert_eq!(activity_status(activity.0, activity.1), "warning");
-    }
-
-    #[test]
-    fn marks_runtime_warning_activity_as_warning_status() {
-        assert_eq!(activity_status("run", "Runtime warning"), "warning");
-        assert_eq!(activity_status("run_retry", "Claude provider retrying"), "warning");
-        assert_eq!(activity_status("error", "Error output"), "error");
-        assert_eq!(
-            activity_status("thinking", "Investigating Activity ERROR"),
-            "active"
-        );
-        assert_eq!(
-            activity_status("tools", "Checking current changes"),
-            "active"
-        );
-        assert_eq!(
-            activity_status("file_edit", "Adjusting progress display"),
-            "active"
-        );
-        assert_eq!(activity_status("command", "Command finished"), "success");
     }
 
     #[test]
@@ -17987,6 +15850,69 @@ mod tests {
             assert_eq!(
                 inbox.get::<Option<Uuid>, _>("linked_inbox_item_id"),
                 Some(inbox.get::<Uuid, _>("inbox_item_id"))
+            );
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn dm_codex_surface_requires_same_thread_root() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "dm-surface").await?;
+            let dm_channel_id =
+                Uuid::parse_str(&open_dm_with_agent_in_pool(&pool, agent_id).await?)
+                    .map_err(|err| err.to_string())?;
+            let root_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'thread root', false)
+                returning id
+                "#,
+            )
+            .bind(dm_channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            assert!(
+                same_codex_surface(&pool, Some(dm_channel_id), None, Some(dm_channel_id), None)
+                    .await?
+            );
+            assert!(
+                same_codex_surface(
+                    &pool,
+                    Some(dm_channel_id),
+                    Some(root_id),
+                    Some(dm_channel_id),
+                    Some(root_id),
+                )
+                .await?
+            );
+            assert!(
+                !same_codex_surface(
+                    &pool,
+                    Some(dm_channel_id),
+                    Some(root_id),
+                    Some(dm_channel_id),
+                    None,
+                )
+                .await?
+            );
+            assert!(
+                !same_codex_surface(
+                    &pool,
+                    Some(dm_channel_id),
+                    None,
+                    Some(dm_channel_id),
+                    Some(root_id),
+                )
+                .await?
             );
             Ok(())
         }
