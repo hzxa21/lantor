@@ -6,18 +6,20 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use crate::channels::{add_agent_to_channel, create_channel_in_pool, normalize_channel_name};
+use crate::domain::parse_due_at;
+use crate::domain::reminders::{cancel_reminder_in_pool, create_reminder_in_pool};
 use crate::events::activity::{normalize_agent_activity_kind, record_agent_activity};
 use crate::text::compact_chars_middle;
 use crate::usage::record_run_usage;
 use crate::{
-    add_agent_to_channel, append_agent_memory, append_run_log, cancel_reminder_in_pool,
-    compact_agent_memory, create_agent_handoff, create_agent_task_thread, create_channel_in_pool,
-    create_reminder_in_pool, default_attachment_message_body, dispatch_task_assignment_to_agent,
+    append_agent_memory, append_run_log, compact_agent_memory, create_agent_handoff,
+    create_agent_task_thread, default_attachment_message_body, dispatch_task_assignment_to_agent,
     ensure_agent_channel_member, insert_agent_attachment_message, insert_agent_handoff_message,
     insert_agent_message, insert_agent_message_with_options, insert_system_message,
     load_agent_attachment_uploads, load_artifact, load_message, mark_run_work_item_silent,
-    normalize_channel_name, notify_ui_artifact_upsert, notify_ui_message_upsert, notify_ui_refresh,
-    parse_due_at, queue_mentions_as_work_items, resolve_agent_by_handle, resolve_agent_handle,
+    notify_ui_artifact_upsert, notify_ui_message_upsert, notify_ui_refresh,
+    queue_mentions_as_work_items, resolve_agent_by_handle, resolve_agent_handle,
     resolve_event_channel, resolve_run_reminder_anchor, resolve_task_for_handoff, to_string,
     try_claim_unassigned_task, CommandResult, MentionDispatchOrigin,
 };
@@ -1243,7 +1245,7 @@ fn normalize_artifact_kind(kind: &str) -> CommandResult<String> {
         other => {
             return Err(format!(
                 "unsupported artifact kind: {other}; supported: markdown"
-            ))
+            ));
         }
     };
     Ok(normalized.to_owned())
