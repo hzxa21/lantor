@@ -62,15 +62,15 @@ export function CreateChannelModal({
             </p>
           )}
         </label>
-        <label>
-          <span>Add agents</span>
+        <div className="modal-field">
+          <span className="modal-field-label">Add agents</span>
           <div className="channel-agent-modal-intro">
             <span className="channel-agent-modal-icon" aria-hidden="true">
               <UserPlus size={18} />
             </span>
             <div>
               <strong>{selectedCount > 0 ? `${selectedCount} selected` : "Bring agents into this channel"}</strong>
-              <p>{agents.length > 0 ? "Pick agents now so the new channel is ready for work." : "Create an agent first, then add it to this channel."}</p>
+              <p>{agents.length > 0 ? "Click Add next to an agent below to include them when this channel is created." : "Create an agent first, then add it to this channel."}</p>
             </div>
           </div>
           <div className="member-editor modal-member-editor channel-agent-picker">
@@ -101,7 +101,7 @@ export function CreateChannelModal({
               );
             })}
           </div>
-        </label>
+        </div>
         <div className="modal-actions">
           <button onClick={onCancel}>Cancel</button>
           <button className="primary" disabled={!channelName.trim() || Boolean(nameError)} onClick={onSubmit}>Create</button>

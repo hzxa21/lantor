@@ -4251,12 +4251,14 @@ body.resizing-row * {
   gap: 14px;
 }
 
-.modal-form label {
+.modal-form label,
+.modal-field {
   display: grid;
   gap: 7px;
 }
 
-.modal-form label > span {
+.modal-form label > span,
+.modal-field-label {
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
