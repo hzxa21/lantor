@@ -131,6 +131,9 @@ const DEFAULT_SIDEBAR_WIDTH = 292;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 460;
 const MIN_CONVERSATION_WIDTH = 480;
+const COMPACT_LAYOUT_BREAKPOINT = 1100;
+const MIN_COMPACT_CONTENT_WIDTH = 320;
+const MIN_COMPACT_SIDEBAR_VISIBLE_WIDTH = 220;
 const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -232,6 +235,10 @@ function isMobileViewport() {
   return window.innerWidth <= MOBILE_BREAKPOINT;
 }
 
+function isCompactDesktopViewport() {
+  return window.innerWidth > MOBILE_BREAKPOINT && window.innerWidth <= COMPACT_LAYOUT_BREAKPOINT;
+}
+
 function isAppHistoryState(value: unknown): value is AppHistoryState {
   if (!value || typeof value !== "object") return false;
   const state = value as Record<string, unknown>;
@@ -308,14 +315,20 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
 }
 
 function maxRightPanelWidth(sidebarWidth: number, minPanelWidth: number, capToViewport = true) {
+  if (isMobileViewport()) return minPanelWidth;
+  if (isCompactDesktopViewport()) {
+    const availableWidth = Math.max(minPanelWidth, window.innerWidth - MIN_COMPACT_SIDEBAR_VISIBLE_WIDTH);
+    return capToViewport
+      ? Math.max(minPanelWidth, Math.min(Math.floor(window.innerWidth * (2 / 3)), availableWidth))
+      : availableWidth;
+  }
   const contentWidth = Math.max(0, window.innerWidth - sidebarWidth);
   const preserveConversationMax = contentWidth - MIN_CONVERSATION_WIDTH;
   const viewportMax = Math.floor(window.innerWidth * (2 / 3));
   const maxWidth = capToViewport
     ? Math.min(viewportMax, preserveConversationMax)
     : preserveConversationMax;
-  const fallbackWidth = Math.min(minPanelWidth, Math.max(0, preserveConversationMax));
-  return Math.max(fallbackWidth, maxWidth);
+  return Math.max(minPanelWidth, maxWidth);
 }
 
 function maxThreadPanelWidth(sidebarWidth = DEFAULT_SIDEBAR_WIDTH) {
@@ -2874,7 +2887,18 @@ function App() {
 
     function onPointerMove(moveEvent: PointerEvent) {
       const delta = moveEvent.clientX - startX;
-      const maxWidth = Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - MIN_CONVERSATION_WIDTH - MIN_THREAD_PANEL_WIDTH);
+      const rightPanelMinWidth = selectedAgent
+        ? MIN_AGENT_DRAWER_WIDTH
+        : showThread
+          ? MIN_THREAD_PANEL_WIDTH
+          : 0;
+      const reservedWidth = isCompactDesktopViewport()
+        ? MIN_COMPACT_CONTENT_WIDTH
+        : MIN_CONVERSATION_WIDTH + rightPanelMinWidth;
+      const maxWidth = Math.min(
+        MAX_SIDEBAR_WIDTH,
+        Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - reservedWidth),
+      );
       const next = Math.min(maxWidth, Math.max(MIN_SIDEBAR_WIDTH, startWidth + delta));
       setSidebarWidth(next);
     }
@@ -2980,7 +3004,7 @@ function App() {
 
   return (
     <main
-      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"} ${showMobileSidebar ? "mobile-sidebar-open" : ""} ${mobileSidebarDragPx > 0 ? "mobile-sidebar-dragging" : ""} ${mobileComposerFocused ? "mobile-composer-focused" : ""}`}
+      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"} ${selectedAgent || activeThreadId ? "right-panel-active" : ""} ${showMobileSidebar ? "mobile-sidebar-open" : ""} ${mobileSidebarDragPx > 0 ? "mobile-sidebar-dragging" : ""} ${mobileComposerFocused ? "mobile-composer-focused" : ""}`}
       style={{
         "--sidebar-width": `${sidebarWidth}px`,
         "--thread-width": `${selectedAgent ? agentDrawerWidth : threadPanelWidth}px`,
