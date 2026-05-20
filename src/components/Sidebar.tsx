@@ -228,7 +228,13 @@ export function Sidebar({
               );
             })}
             {!collapsedSections.channels && normalChannels.length === 0 && (
-              <div className="empty-mini">Create a channel to start chatting.</div>
+              <div className="sidebar-empty-cta">
+                <p>No channels yet.</p>
+                <button type="button" onClick={openCreateChannelModal}>
+                  <Plus size={16} />
+                  <span>Create first channel</span>
+                </button>
+              </div>
             )}
           </div>
         </section>
@@ -317,7 +323,17 @@ export function Sidebar({
               );
             })}
             {!collapsedSections.dms && dmRows.length === 0 && (
-              <div className="empty-mini">{showDmConversations ? "No direct messages yet." : "Add an agent to start chatting."}</div>
+              showDmConversations ? (
+                <div className="empty-mini">No direct messages yet.</div>
+              ) : (
+                <div className="sidebar-empty-cta">
+                  <p>No agents yet.</p>
+                  <button type="button" onClick={openCreateAgentModal}>
+                    <UserRound size={16} />
+                    <span>Create first agent</span>
+                  </button>
+                </div>
+              )
             )}
           </div>
         </section>

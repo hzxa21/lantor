@@ -603,6 +603,7 @@ function App() {
   const [showChannelSettingsModal, setShowChannelSettingsModal] = useState(false);
   const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
+  const [returnToCreateChannelAfterAgent, setReturnToCreateChannelAfterAgent] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showActivityFeedModal, setShowActivityFeedModal] = useState(false);
   const [showSavedModal, setShowSavedModal] = useState(false);
@@ -2520,6 +2521,7 @@ function App() {
   async function createAgent() {
     const preferredHandle = agentDraft.handle.trim() || agentDraft.displayName.trim();
     if (!preferredHandle) return;
+    const shouldReturnToCreateChannel = returnToCreateChannelAfterAgent;
     const handle = availableAgentHandle(preferredHandle, data?.agents ?? []);
     const displayName = agentDraft.displayName.trim() || handle;
     const nextForm = {
@@ -2529,7 +2531,7 @@ function App() {
       launchCommand: buildPresetCommand({ ...agentDraft, handle, displayName }),
       workingDirectory: agentDraft.workingDirectory.trim() || defaultAgentWorkspace(handle),
     };
-    const agentId = await apiInvoke<string>("create_agent", {
+    await apiInvoke<string>("create_agent", {
       handle,
       displayName: nextForm.displayName,
       role: nextForm.role,
@@ -2543,18 +2545,13 @@ function App() {
       workingDirectory: nextForm.workingDirectory,
       dailyBudgetMicros: budgetMicrosFromForm(nextForm.dailyBudgetUsd),
     });
-    if (channel) {
-      if (channel.kind !== "dm") {
-        await apiInvoke("set_channel_agent_membership", {
-          channelId: channel.id,
-          agentId,
-          member: true,
-        });
-      }
-    }
     await refresh();
     setAgentDraft(newAgentDraft());
     setShowCreateAgentModal(false);
+    setReturnToCreateChannelAfterAgent(false);
+    if (shouldReturnToCreateChannel) {
+      setShowCreateChannelModal(true);
+    }
   }
 
   function updateDraftRuntime(runtime: string) {
@@ -3089,6 +3086,7 @@ function App() {
         mobileFocus={mobileSidebarFocus}
         openCreateChannelModal={() => {
           setShowMobileSidebar(false);
+          setReturnToCreateChannelAfterAgent(false);
           setShowCreateChannelModal(true);
         }}
         selectChannel={(channelId) => {
@@ -3099,6 +3097,7 @@ function App() {
         }}
         openCreateAgentModal={() => {
           setAgentDraft(newAgentDraft());
+          setReturnToCreateChannelAfterAgent(false);
           setShowMobileSidebar(false);
           setShowCreateAgentModal(true);
         }}
@@ -3344,8 +3343,16 @@ function App() {
             return next;
           });
         }}
+        onCreateAgent={() => {
+          setAgentDraft(newAgentDraft());
+          setReturnToCreateChannelAfterAgent(true);
+          setNewChannelNameSubmitError(null);
+          setShowCreateChannelModal(false);
+          setShowCreateAgentModal(true);
+        }}
         onCancel={() => {
           setShowCreateChannelModal(false);
+          setReturnToCreateChannelAfterAgent(false);
           setNewChannelNameSubmitError(null);
           setNewChannelAgentIds(new Set());
         }}
@@ -3380,6 +3387,7 @@ function App() {
         onSetMember={setChannelMember}
         onCreateAgent={() => {
           setAgentDraft(newAgentDraft());
+          setReturnToCreateChannelAfterAgent(false);
           setShowChannelAgentsModal(false);
           setShowCreateAgentModal(true);
         }}
@@ -3396,8 +3404,13 @@ function App() {
         onChange={setAgentDraft}
         onRuntimeChange={updateDraftRuntime}
         onCancel={() => {
+          const shouldReturnToCreateChannel = returnToCreateChannelAfterAgent;
           setAgentDraft(newAgentDraft());
           setShowCreateAgentModal(false);
+          setReturnToCreateChannelAfterAgent(false);
+          if (shouldReturnToCreateChannel) {
+            setShowCreateChannelModal(true);
+          }
         }}
         onSubmit={createAgent}
       />

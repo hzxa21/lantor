@@ -11,6 +11,7 @@ type CreateChannelModalProps = {
   selectedAgentIds: Set<string>;
   onChange: (value: string) => void;
   onToggleAgent: (agentId: string, member: boolean) => void;
+  onCreateAgent: () => void;
   onCancel: () => void;
   onSubmit: () => void;
 };
@@ -23,6 +24,7 @@ export function CreateChannelModal({
   selectedAgentIds,
   onChange,
   onToggleAgent,
+  onCreateAgent,
   onCancel,
   onSubmit,
 }: CreateChannelModalProps) {
@@ -43,9 +45,9 @@ export function CreateChannelModal({
           <input
             autoFocus
             autoCapitalize="none"
-            autoComplete="off"
+            autoComplete="new-password"
             autoCorrect="off"
-            name="lantor-channel-name"
+            name="lantor-create-channel-slug"
             spellCheck={false}
             value={channelName}
             aria-invalid={nameError ? true : undefined}
@@ -73,34 +75,43 @@ export function CreateChannelModal({
               <p>{agents.length > 0 ? "Click Add next to an agent below to include them when this channel is created." : "Create an agent first, then add it to this channel."}</p>
             </div>
           </div>
-          <div className="member-editor modal-member-editor channel-agent-picker">
-            {agents.length === 0 && <span>No agents yet.</span>}
-            {agents.map((agent) => {
-              const isMember = selectedAgentIds.has(agent.id);
-              return (
-                <label key={agent.id} className={`channel-agent-option ${isMember ? "selected" : ""}`}>
-                  <input
-                    className="channel-agent-checkbox"
-                    type="checkbox"
-                    checked={isMember}
-                    onChange={(event) => onToggleAgent(agent.id, event.target.checked)}
-                    aria-label={`${isMember ? "Remove" : "Add"} @${agent.handle}`}
-                  />
-                  <div className="channel-agent-profile">
-                    <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
-                    <div className="agent-pick-row">
-                      <strong>{agent.display_name}</strong>
-                      <small>@{agent.handle}</small>
+          {agents.length === 0 ? (
+            <div className="channel-agent-empty-cta">
+              <p>No agents yet.</p>
+              <button type="button" onClick={onCreateAgent}>
+                <UserPlus size={16} />
+                <span>Create first agent</span>
+              </button>
+            </div>
+          ) : (
+            <div className="member-editor modal-member-editor channel-agent-picker">
+              {agents.map((agent) => {
+                const isMember = selectedAgentIds.has(agent.id);
+                return (
+                  <label key={agent.id} className={`channel-agent-option ${isMember ? "selected" : ""}`}>
+                    <input
+                      className="channel-agent-checkbox"
+                      type="checkbox"
+                      checked={isMember}
+                      onChange={(event) => onToggleAgent(agent.id, event.target.checked)}
+                      aria-label={`${isMember ? "Remove" : "Add"} @${agent.handle}`}
+                    />
+                    <div className="channel-agent-profile">
+                      <AgentAvatar agent={agent} size="sm" title={`@${agent.handle}`} />
+                      <div className="agent-pick-row">
+                        <strong>{agent.display_name}</strong>
+                        <small>@{agent.handle}</small>
+                      </div>
                     </div>
-                  </div>
-                  <span className={`channel-agent-option-state ${isMember ? "selected" : ""}`}>
-                    {isMember ? <Check size={14} /> : <UserPlus size={14} />}
-                    {isMember ? "Added" : "Add"}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
+                    <span className={`channel-agent-option-state ${isMember ? "selected" : ""}`}>
+                      {isMember ? <Check size={14} /> : <UserPlus size={14} />}
+                      {isMember ? "Added" : "Add"}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div className="modal-actions">
           <button onClick={onCancel}>Cancel</button>
