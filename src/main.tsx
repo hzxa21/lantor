@@ -158,14 +158,6 @@ const MOBILE_EDGE_SWIPE_MAX_VERTICAL_PX = 48;
 const MOBILE_SIDEBAR_PEEK_PX = 18;
 const MOBILE_SIDEBAR_FLING_VELOCITY = 0.45;
 const SAVED_MESSAGES_READ_DISMISS_ID = "saved-messages";
-const ACTIVITY_FEED_KIND_PRIORITY: Record<ActivityFeedItem["kind"], number> = {
-  reminder: 0,
-  mention: 1,
-  dm: 2,
-  thread: 3,
-  task: 4,
-  channel: 5,
-};
 const CHAT_TEXT_SIZE_OPTIONS: ChatTextSize[] = ["compact", "default", "large", "xlarge"];
 const UI_TYPE_SCALE: Record<ChatTextSize, Record<string, string>> = {
   compact: {
@@ -253,10 +245,15 @@ function activityOwnerKey(activity: AgentActivity) {
   return activity.agent_id ?? `handle:${activity.agent_handle || "unknown"}`;
 }
 
+function timestampSortValue(value: string) {
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function limitActivitiesPerAgent(activities: AgentActivity[]) {
   const counts = new Map<string, number>();
   return [...activities]
-    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+    .sort((left, right) => timestampSortValue(right.created_at) - timestampSortValue(left.created_at))
     .filter((activity) => {
       const key = activityOwnerKey(activity);
       const count = counts.get(key) ?? 0;
@@ -1907,10 +1904,7 @@ function App() {
         return { ...item, unread: false };
       })
       .sort((left, right) => {
-        if (left.unread !== right.unread) return left.unread ? -1 : 1;
-        const priority = ACTIVITY_FEED_KIND_PRIORITY[left.kind] - ACTIVITY_FEED_KIND_PRIORITY[right.kind];
-        if (priority !== 0) return priority;
-        return new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime();
+        return timestampSortValue(right.timestamp) - timestampSortValue(left.timestamp);
       })
       .slice(0, 120);
   }, [allActivityFeedItems, dismissedActivityFeedItems, readActivityFeedItems]);
