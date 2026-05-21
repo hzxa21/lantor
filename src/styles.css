@@ -3038,13 +3038,65 @@ mark {
 }
 
 .activity-progress-history .activity-run-step {
-  grid-template-columns: clamp(58px, 16%, 76px) 14px minmax(0, 1fr);
-  padding-right: 0;
+  grid-template-columns: clamp(50px, 14%, 66px) 12px minmax(0, 1fr);
+  gap: 6px;
+  padding: 4px 0;
   scroll-snap-align: start;
+}
+
+.activity-progress-history .activity-run-step time {
+  padding-top: 2px;
+  font-size: var(--type-size-caption);
+  line-height: 15px;
+}
+
+.activity-progress-history .activity-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+}
+
+.activity-progress-history .activity-dot::after {
+  top: 8px;
+  height: calc(100% + 46px);
 }
 
 .activity-progress-history .activity-run-step:last-child .activity-dot::after {
   display: none;
+}
+
+.activity-progress-history .activity-timeline-body {
+  gap: 2px;
+}
+
+.activity-progress-history .activity-timeline-title {
+  gap: 5px;
+}
+
+.activity-progress-history .activity-timeline-title strong {
+  font-size: var(--type-size-meta);
+  line-height: 16px;
+}
+
+.activity-progress-history .activity-status {
+  padding: 1px 6px;
+  font-size: var(--type-size-caption);
+  line-height: 14px;
+}
+
+.activity-progress-history .activity-structure-line {
+  gap: 4px;
+  line-height: 16px;
+}
+
+.activity-progress-history .activity-structure-line span {
+  max-width: 110px;
+  padding: 1px 6px;
+  line-height: 14px;
+}
+
+.activity-progress-history .activity-timeline-body p {
+  line-height: 1.25;
 }
 
 @keyframes progress-spin {
