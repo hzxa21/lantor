@@ -7,6 +7,10 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::agent_memory::{append_agent_memory, append_run_log, compact_agent_memory};
+use crate::agent_routing::{
+    create_agent_handoff, ensure_agent_channel_member, queue_mentions_as_work_items,
+    resolve_agent_by_handle, resolve_agent_handle, resolve_task_for_handoff, MentionDispatchOrigin,
+};
 use crate::artifact_store::{create_agent_artifact, normalize_artifact_kind};
 use crate::attachments::{
     default_attachment_message_body, load_agent_attachment_uploads, AgentAttachmentFile,
@@ -23,11 +27,8 @@ use crate::task_messages::create_agent_task_thread;
 use crate::ui_notifications::{insert_system_message, notify_ui_refresh};
 use crate::usage::record_run_usage;
 use crate::{
-    create_agent_handoff, dispatch_task_assignment_to_agent, ensure_agent_channel_member,
-    mark_run_work_item_silent, queue_mentions_as_work_items, resolve_agent_by_handle,
-    resolve_agent_handle, resolve_event_channel, resolve_run_reminder_anchor,
-    resolve_task_for_handoff, to_string, try_claim_unassigned_task, CommandResult,
-    MentionDispatchOrigin,
+    dispatch_task_assignment_to_agent, mark_run_work_item_silent, resolve_event_channel,
+    resolve_run_reminder_anchor, to_string, try_claim_unassigned_task, CommandResult,
 };
 
 const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";

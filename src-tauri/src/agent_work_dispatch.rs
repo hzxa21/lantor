@@ -7,13 +7,12 @@ use crate::agent_inbox_wake::{
     attach_work_item_to_inbox, create_agent_inbox_item, enqueue_agent_work_if_available,
     ensure_agent_inbox_wake_work_item, prepend_inbox_context, AgentInboxItemInput,
 };
+use crate::agent_routing::{resolve_agent_handle, upsert_agent_thread_subscription};
 use crate::events::activity::record_agent_activity;
 use crate::ui_notifications::{
     notify_supervisor_wake, notify_ui_refresh, notify_ui_work_item_changed,
 };
-use crate::{
-    resolve_agent_handle, to_string, upsert_agent_thread_subscription, AppState, CommandResult,
-};
+use crate::{to_string, AppState, CommandResult};
 
 #[tauri::command]
 pub(crate) async fn dispatch_agent_work(

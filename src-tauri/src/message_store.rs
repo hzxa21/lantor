@@ -4,13 +4,16 @@ use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::agent_profile::DEFAULT_OWNER_DISPLAY_NAME;
+use crate::agent_routing::{
+    queue_agent_message_mentions, queue_mentions_as_work_items, upsert_agent_thread_subscription,
+    MentionDispatchOrigin,
+};
 use crate::agent_work_dispatch::dispatch_unassigned_task_availability;
 use crate::attachments::{write_attachment_file, ATTACHMENT_SIZE_LIMIT};
 use crate::ui_notifications::{notify_ui_message_upsert, notify_ui_refresh};
 use crate::{
     models::{Artifact, AttachmentUpload, Message, MessageAttachment, SavedMessage},
-    queue_agent_message_mentions, queue_mentions_as_work_items, to_string,
-    upsert_agent_thread_subscription, CommandResult, MentionDispatchOrigin,
+    to_string, CommandResult,
 };
 
 pub(crate) async fn load_messages(pool: &SqlitePool) -> CommandResult<Vec<Message>> {
