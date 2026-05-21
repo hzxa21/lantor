@@ -9,6 +9,7 @@ mod agent_work_dispatch;
 mod agent_workspace;
 mod artifact_store;
 mod attachments;
+mod bootstrap;
 mod channels;
 mod context_tool;
 mod db;
@@ -29,7 +30,6 @@ mod web;
 
 use std::{
     env,
-    net::{IpAddr, SocketAddr},
     path::Path,
     process::{Command as StdCommand, Stdio},
     sync::Arc,
@@ -43,7 +43,6 @@ use tauri::{Manager, State};
 use tokio::{sync::Semaphore, time::sleep};
 use uuid::Uuid;
 
-use activity_store::{load_agent_activities, load_agent_runs, load_agent_work_items};
 use agent_inbox_wake::{
     agent_has_active_or_pending_start, agent_runtime, build_steer_followup_prompt,
     create_agent_inbox_item, enqueue_agent_work_if_available, ensure_agent_inbox_wake_work_item,
@@ -53,8 +52,7 @@ use agent_inbox_wake::{
 use agent_inbox_wake::{inbox_wake_context, InboxWakeItem, InboxWakeSummary};
 use agent_memory::append_run_log;
 use agent_profile::{
-    create_agent_in_pool, delete_agent_in_pool, load_agents, load_owner_profile,
-    update_agent_in_pool, update_owner_profile_in_pool,
+    create_agent_in_pool, delete_agent_in_pool, update_agent_in_pool, update_owner_profile_in_pool,
 };
 #[cfg(test)]
 use agent_routing::{
@@ -69,18 +67,16 @@ use agent_work_dispatch::{
 use agent_workspace::{agent_workspace_list, agent_workspace_read_file};
 #[cfg(test)]
 use attachments::AgentAttachmentFile;
+use bootstrap::load_bootstrap;
 use channels::{
-    create_channel_with_members, delete_channel_in_pool, load_channel_members, load_channels,
-    normalize_channel_name, open_dm_with_agent_in_pool, set_channel_agent_membership_in_pool,
-    update_channel_in_pool,
+    create_channel_with_members, delete_channel_in_pool, normalize_channel_name,
+    open_dm_with_agent_in_pool, set_channel_agent_membership_in_pool, update_channel_in_pool,
 };
 use context_tool::run_agent_context_tool;
 use db::{acquire_supervisor_lock, db_connect_with_url, db_url, expand_home_path, migrate};
 use domain::{
-    reminders::{
-        cancel_reminder, complete_reminder, create_reminder, load_reminders, snooze_reminder,
-    },
-    schedules::{create_agent_schedule, load_agent_schedules, update_agent_schedule_status},
+    reminders::{cancel_reminder, complete_reminder, create_reminder, snooze_reminder},
+    schedules::{create_agent_schedule, update_agent_schedule_status},
     spawn_reminder_worker,
 };
 #[cfg(test)]
@@ -91,17 +87,16 @@ use events::control::{
     claim_agent_event, extract_agent_event_json, handle_agent_event, AgentEvent,
 };
 use message_store::{
-    delete_message_in_pool, load_artifact, load_artifacts, load_messages, load_saved_messages,
-    send_owner_message_in_pool, set_message_saved_in_pool, update_message_in_pool,
+    delete_message_in_pool, load_artifact, send_owner_message_in_pool, set_message_saved_in_pool,
+    update_message_in_pool,
 };
 use models::{
     Artifact, AttachmentUpload, Bootstrap, LaunchAgentStatus, RuntimeCheck, SupervisorCommand,
     SupervisorStatus,
 };
 use owner_inbox::{
-    dismiss_inbox_items_in_pool, load_dismissed_inbox_items, load_read_inbox_items,
-    mark_all_owner_inbox_read_in_pool, mark_channel_read_in_pool, mark_inbox_items_read_in_pool,
-    update_thread_followed_in_pool,
+    dismiss_inbox_items_in_pool, mark_all_owner_inbox_read_in_pool, mark_channel_read_in_pool,
+    mark_inbox_items_read_in_pool, update_thread_followed_in_pool,
 };
 use prompts::{
     build_streaming_work_item_prompt, build_work_item_prompt, load_agent_memory_context,
@@ -122,7 +117,7 @@ use runtime::supervisor::{
 use runtime::surface::{
     append_claude_thread_context, same_codex_surface, CodexActiveTurnScheduleState,
 };
-use task_store::{load_tasks, update_task_status_in_pool, update_task_title_in_pool};
+use task_store::{update_task_status_in_pool, update_task_title_in_pool};
 use ui_notifications::{
     notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_refresh,
     notify_ui_work_item_changed, spawn_ui_refresh_listener,
@@ -158,24 +153,6 @@ struct CreateChannelResult {
 #[tauri::command]
 async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     load_bootstrap(&state.pool, state.db_url.clone()).await
-}
-
-fn configured_web_base_url() -> Option<String> {
-    if let Ok(value) = env::var("LANTOR_WEB_PUBLIC_URL") {
-        let trimmed = value.trim().trim_end_matches('/').to_owned();
-        if !trimmed.is_empty() {
-            return Some(trimmed);
-        }
-    }
-    let bind = crate::web::resolve_web_bind()?;
-    let addr = bind.parse::<SocketAddr>().ok()?;
-    let host = match addr.ip() {
-        IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_owned(),
-        IpAddr::V4(ip) => ip.to_string(),
-        IpAddr::V6(ip) if ip.is_unspecified() => "[::1]".to_owned(),
-        IpAddr::V6(ip) => format!("[{ip}]"),
-    };
-    Some(format!("http://{host}:{}", addr.port()))
 }
 
 fn normalize_external_url(url: &str) -> Option<String> {
@@ -264,48 +241,6 @@ async fn open_external_url(url: String) -> CommandResult<()> {
     tauri::async_runtime::spawn_blocking(move || open_link_target_with_system(&target))
         .await
         .map_err(to_string)?
-}
-
-pub(crate) async fn load_bootstrap(pool: &SqlitePool, db_url: String) -> CommandResult<Bootstrap> {
-    let owner_profile = load_owner_profile(pool).await?;
-    let channels = load_channels(pool).await?;
-    let channel_members = load_channel_members(pool).await?;
-    let agents = load_agents(pool).await?;
-    let messages = load_messages(pool).await?;
-    let saved_messages = load_saved_messages(pool).await?;
-    let dismissed_inbox_items = load_dismissed_inbox_items(pool).await?;
-    let read_inbox_items = load_read_inbox_items(pool).await?;
-    let artifacts = load_artifacts(pool).await?;
-    let tasks = load_tasks(pool).await?;
-    let reminders = load_reminders(pool).await?;
-    let agent_schedules = load_agent_schedules(pool).await?;
-    let agent_runs = load_agent_runs(pool).await?;
-    let agent_work_items = load_agent_work_items(pool).await?;
-    let agent_activities = load_agent_activities(pool).await?;
-    let supervisor = load_supervisor_status(pool).await?;
-    let launch_agent = launch_agent::load_launch_agent_status()?;
-
-    Ok(Bootstrap {
-        db_url,
-        web_base_url: configured_web_base_url(),
-        owner_profile,
-        channels,
-        channel_members,
-        agents,
-        messages,
-        saved_messages,
-        dismissed_inbox_items,
-        read_inbox_items,
-        artifacts,
-        tasks,
-        reminders,
-        agent_schedules,
-        agent_runs,
-        agent_work_items,
-        agent_activities,
-        supervisor,
-        launch_agent,
-    })
 }
 
 #[tauri::command]
@@ -751,7 +686,7 @@ async fn update_thread_followed(
     update_thread_followed_in_pool(&state.pool, thread_root_id, followed).await
 }
 
-async fn load_supervisor_status(pool: &SqlitePool) -> CommandResult<SupervisorStatus> {
+pub(crate) async fn load_supervisor_status(pool: &SqlitePool) -> CommandResult<SupervisorStatus> {
     let row = sqlx::query(
         r#"
         select pid, status, updated_at
