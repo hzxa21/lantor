@@ -11,6 +11,7 @@ use crate::channels::{add_agent_to_channel, create_channel_in_pool, normalize_ch
 use crate::domain::parse_due_at;
 use crate::domain::reminders::{cancel_reminder_in_pool, create_reminder_in_pool};
 use crate::events::activity::{normalize_agent_activity_kind, record_agent_activity};
+use crate::message_store::{load_artifact, load_message};
 use crate::text::compact_chars_middle;
 use crate::ui_notifications::{
     insert_system_message, notify_ui_artifact_upsert, notify_ui_message_upsert, notify_ui_refresh,
@@ -20,11 +21,10 @@ use crate::{
     create_agent_handoff, create_agent_task_thread, default_attachment_message_body,
     dispatch_task_assignment_to_agent, ensure_agent_channel_member,
     insert_agent_attachment_message, insert_agent_handoff_message, insert_agent_message,
-    insert_agent_message_with_options, load_agent_attachment_uploads, load_artifact, load_message,
-    mark_run_work_item_silent, queue_mentions_as_work_items, resolve_agent_by_handle,
-    resolve_agent_handle, resolve_event_channel, resolve_run_reminder_anchor,
-    resolve_task_for_handoff, to_string, try_claim_unassigned_task, CommandResult,
-    MentionDispatchOrigin,
+    insert_agent_message_with_options, load_agent_attachment_uploads, mark_run_work_item_silent,
+    queue_mentions_as_work_items, resolve_agent_by_handle, resolve_agent_handle,
+    resolve_event_channel, resolve_run_reminder_anchor, resolve_task_for_handoff, to_string,
+    try_claim_unassigned_task, CommandResult, MentionDispatchOrigin,
 };
 
 const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";

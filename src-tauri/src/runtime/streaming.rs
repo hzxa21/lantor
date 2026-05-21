@@ -10,11 +10,12 @@ use crate::events::{
         split_streaming_agent_event_lines,
     },
 };
+use crate::message_store::load_message;
 use crate::ui_notifications::{
     notify_ui_message_delete, notify_ui_message_delta, notify_ui_message_upsert, notify_ui_refresh,
     notify_ui_work_item_changed,
 };
-use crate::{load_message, queue_agent_message_mentions, to_string, CommandResult};
+use crate::{queue_agent_message_mentions, to_string, CommandResult};
 
 pub(crate) const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 pub(crate) const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by Lantor]";
