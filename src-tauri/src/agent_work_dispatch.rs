@@ -825,3 +825,7 @@ pub(crate) async fn retry_agent_work_in_pool(
 
     Ok(new_work_item_id)
 }
+
+#[cfg(test)]
+#[path = "tests/agent_work_dispatch.rs"]
+mod relocated_tests;

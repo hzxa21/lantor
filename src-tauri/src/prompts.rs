@@ -356,3 +356,7 @@ pub(crate) fn claude_system_prompt(handle: &str, memory_context: Option<&str>) -
         memory_context,
     )
 }
+
+#[cfg(test)]
+#[path = "tests/prompts.rs"]
+mod relocated_tests;

@@ -816,3 +816,7 @@ pub(crate) async fn create_agent_handoff(
         handoff_message_id,
     ))
 }
+
+#[cfg(test)]
+#[path = "tests/agent_routing.rs"]
+mod relocated_tests;

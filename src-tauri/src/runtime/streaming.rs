@@ -669,6 +669,10 @@ pub(crate) async fn streaming_message_exists(
 }
 
 #[cfg(test)]
+#[path = "../tests/runtime_streaming.rs"]
+mod relocated_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{capped_stream_delta, STREAMING_MESSAGE_BODY_LIMIT, STREAMING_TRUNCATION_MARKER};
 

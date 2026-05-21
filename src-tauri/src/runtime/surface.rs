@@ -139,3 +139,7 @@ fn claude_context_target(
         .map(|thread_root_id| format!("{channel_label}:{}", short_id(thread_root_id)))
         .unwrap_or(channel_label)
 }
+
+#[cfg(test)]
+#[path = "../tests/runtime_surface.rs"]
+mod relocated_tests;

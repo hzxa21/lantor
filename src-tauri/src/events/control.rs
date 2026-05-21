@@ -1266,6 +1266,10 @@ pub(crate) async fn handle_agent_event(
 }
 
 #[cfg(test)]
+#[path = "../tests/events_control.rs"]
+mod relocated_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         silent_reply_reason, split_complete_streaming_agent_event_lines,

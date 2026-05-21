@@ -181,3 +181,7 @@ pub(crate) async fn append_run_log(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/agent_memory.rs"]
+mod relocated_tests;

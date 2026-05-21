@@ -919,3 +919,7 @@ pub(crate) async fn enqueue_agent_work_if_available(
 
     Ok(true)
 }
+
+#[cfg(test)]
+#[path = "tests/agent_inbox_wake.rs"]
+mod relocated_tests;

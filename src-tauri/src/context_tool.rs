@@ -1358,3 +1358,7 @@ pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<Str
         other => Err(format!("unknown agent context tool command: {other}")),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/context_tool.rs"]
+mod relocated_tests;

@@ -401,6 +401,10 @@ pub(crate) async fn upsert_runtime_thread_id(
     Ok(())
 }
 
+#[cfg(test)]
+#[path = "../tests/runtime_process.rs"]
+mod relocated_tests;
+
 pub(crate) async fn wait_for_agent_run(
     pool: SqlitePool,
     agent_id: Uuid,
