@@ -47,6 +47,31 @@ function isNoisyTaskActivity(activity: AgentActivity) {
   return false;
 }
 
+const THREAD_MESSAGE_PREVIEW_LINES = 12;
+const THREAD_MESSAGE_PREVIEW_CHARS = 1800;
+
+function shouldCollapseThreadMessage(body: string) {
+  const text = body.trim();
+  if (!text) return false;
+  return text.split("\n").length > THREAD_MESSAGE_PREVIEW_LINES || text.length > THREAD_MESSAGE_PREVIEW_CHARS;
+}
+
+function closeUnbalancedCodeFence(body: string) {
+  const fenceMatches = body.match(/(^|\n)```/g);
+  if (!fenceMatches || fenceMatches.length % 2 === 0) return body;
+  return `${body.replace(/\s+$/, "")}\n\`\`\``;
+}
+
+function threadMessagePreview(body: string) {
+  const text = body.trim();
+  const lines = text.split("\n");
+  const linePreview = lines.slice(0, THREAD_MESSAGE_PREVIEW_LINES).join("\n");
+  const preview = linePreview.length > THREAD_MESSAGE_PREVIEW_CHARS
+    ? linePreview.slice(0, THREAD_MESSAGE_PREVIEW_CHARS).replace(/\s+\S*$/, "")
+    : linePreview;
+  return closeUnbalancedCodeFence(preview);
+}
+
 type ThreadPanelProps = {
   channel: Channel | null;
   channels: Channel[];
@@ -122,6 +147,7 @@ export function ThreadPanel({
   const [showBackToBottom, setShowBackToBottom] = useState(false);
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
   const [tapFocusedMessageId, setTapFocusedMessageId] = useState<string | null>(null);
+  const [expandedThreadMessageIds, setExpandedThreadMessageIds] = useState<Set<string>>(() => new Set());
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const threadBottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const threadScrollFrameRef = useRef<number | null>(null);
@@ -274,6 +300,7 @@ export function ThreadPanel({
   useEffect(() => {
     setMessageMenu(null);
     setTapFocusedMessageId(null);
+    setExpandedThreadMessageIds(new Set());
   }, [activeRoot?.id]);
 
   useEffect(() => () => {
@@ -347,6 +374,15 @@ export function ThreadPanel({
     setMessageMenu(null);
   }
 
+  function toggleThreadMessageExpanded(messageId: string) {
+    setExpandedThreadMessageIds((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  }
+
   const activeTaskAssignee = activeTask
     ? agents.find((agent) => agent.id === activeTask.assignee_id) ?? null
     : null;
@@ -397,46 +433,47 @@ export function ThreadPanel({
       </header>
 
       <section className="thread-focus">
-        <div
-          ref={threadScrollRef}
-          className="thread-scroll"
-          onScroll={handleThreadScroll}
-          onWheelCapture={handleThreadWheel}
-          onPointerDownCapture={handleThreadPointerDown}
-          onTouchMoveCapture={handleThreadTouchMove}
-          onLoadCapture={handleThreadContentLoad}
-        >
-          <ActivityProgressDock
-            messages={replies}
-            activities={agentActivities}
-            runs={agentRuns}
-            workItems={agentWorkItems}
-            agents={agents}
-            channelId={activeRoot ? channel?.id ?? null : null}
-            threadRootId={activeRoot?.id ?? null}
-          />
-          {activeRoot && (
-            <Fragment>
-              <div className="message-date-divider" role="separator">
-                <span />
-                <time dateTime={activeRoot.created_at}>{formatDateDivider(activeRoot.created_at)}</time>
-                <span />
-              </div>
-              <article
-                data-message-id={activeRoot.id}
-                className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${tapFocusedMessageId === activeRoot.id ? "tap-focused" : ""} ${rootSaved ? "saved" : ""}`}
-                data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
-                onClick={() => {
-                  if (hasSelectedText()) return;
-                  if (activeRoot.sender_role !== "system") setTapFocusedMessageId(activeRoot.id);
-                }}
-                onContextMenu={(event) => {
-                  if (activeRoot.sender_role === "system") return;
-                  if (shouldUseNativeMessageSelection()) return;
-                  event.preventDefault();
-                  setMessageMenu({ x: event.clientX, y: event.clientY, message: activeRoot });
-                }}
-              >
+        <div className="thread-scroll-shell">
+          <div
+            ref={threadScrollRef}
+            className="thread-scroll"
+            onScroll={handleThreadScroll}
+            onWheelCapture={handleThreadWheel}
+            onPointerDownCapture={handleThreadPointerDown}
+            onTouchMoveCapture={handleThreadTouchMove}
+            onLoadCapture={handleThreadContentLoad}
+          >
+            <ActivityProgressDock
+              messages={replies}
+              activities={agentActivities}
+              runs={agentRuns}
+              workItems={agentWorkItems}
+              agents={agents}
+              channelId={activeRoot ? channel?.id ?? null : null}
+              threadRootId={activeRoot?.id ?? null}
+            />
+            {activeRoot && (
+              <Fragment>
+                <div className="message-date-divider" role="separator">
+                  <span />
+                  <time dateTime={activeRoot.created_at}>{formatDateDivider(activeRoot.created_at)}</time>
+                  <span />
+                </div>
+                <article
+                  data-message-id={activeRoot.id}
+                  className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${tapFocusedMessageId === activeRoot.id ? "tap-focused" : ""} ${rootSaved ? "saved" : ""}`}
+                  data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
+                  onClick={() => {
+                    if (hasSelectedText()) return;
+                    if (activeRoot.sender_role !== "system") setTapFocusedMessageId(activeRoot.id);
+                  }}
+                  onContextMenu={(event) => {
+                    if (activeRoot.sender_role === "system") return;
+                    if (shouldUseNativeMessageSelection()) return;
+                    event.preventDefault();
+                    setMessageMenu({ x: event.clientX, y: event.clientY, message: activeRoot });
+                  }}
+                >
                 {activeRoot.sender_role === "system" ? (
                   <div className="system-message-line">
                     <MessageMarkdown body={activeRoot.body} onLocalAgentLink={openLinkedAgentDetail} />
@@ -504,9 +541,34 @@ export function ThreadPanel({
                           <Bookmark size={14} />
                         </button>
                       </div>
-                      {activeRoot.delivery_state !== "streaming" && (
-                        <MessageMarkdown body={activeRoot.body} onLocalAgentLink={openLinkedAgentDetail} />
-                      )}
+                      {activeRoot.delivery_state !== "streaming" && (() => {
+                        const isLongThreadMessage = shouldCollapseThreadMessage(activeRoot.body);
+                        const isThreadMessageExpanded = expandedThreadMessageIds.has(activeRoot.id);
+                        const visibleBody = isLongThreadMessage && !isThreadMessageExpanded
+                          ? threadMessagePreview(activeRoot.body)
+                          : activeRoot.body;
+                        return (
+                          <>
+                            <div className={isLongThreadMessage && !isThreadMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
+                              <MessageMarkdown body={visibleBody} onLocalAgentLink={openLinkedAgentDetail} />
+                            </div>
+                            {isLongThreadMessage && (
+                              <button
+                                type="button"
+                                className="message-expand-button"
+                                aria-expanded={isThreadMessageExpanded}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleThreadMessageExpanded(activeRoot.id);
+                                }}
+                              >
+                                {isThreadMessageExpanded ? "Show less" : "Show more"}
+                              </button>
+                            )}
+                          </>
+                        );
+                      })()}
                       <MessageAttachments attachments={activeRoot.attachments} />
                       <MessageArtifacts artifacts={activeRoot.artifacts} onOpenArtifact={openArtifact} />
                       {activeRoot.delivery_state === "sending" && (
@@ -743,9 +805,34 @@ export function ThreadPanel({
                           <Bookmark size={14} />
                         </button>
                       </div>
-                      {reply.delivery_state !== "streaming" && (
-                        <MessageMarkdown body={reply.body} onLocalAgentLink={openLinkedAgentDetail} />
-                      )}
+                      {reply.delivery_state !== "streaming" && (() => {
+                        const isLongThreadMessage = shouldCollapseThreadMessage(reply.body);
+                        const isThreadMessageExpanded = expandedThreadMessageIds.has(reply.id);
+                        const visibleBody = isLongThreadMessage && !isThreadMessageExpanded
+                          ? threadMessagePreview(reply.body)
+                          : reply.body;
+                        return (
+                          <>
+                            <div className={isLongThreadMessage && !isThreadMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
+                              <MessageMarkdown body={visibleBody} onLocalAgentLink={openLinkedAgentDetail} />
+                            </div>
+                            {isLongThreadMessage && (
+                              <button
+                                type="button"
+                                className="message-expand-button"
+                                aria-expanded={isThreadMessageExpanded}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleThreadMessageExpanded(reply.id);
+                                }}
+                              >
+                                {isThreadMessageExpanded ? "Show less" : "Show more"}
+                              </button>
+                            )}
+                          </>
+                        );
+                      })()}
                       <MessageAttachments attachments={reply.attachments} />
                       <MessageArtifacts artifacts={reply.artifacts} onOpenArtifact={openArtifact} />
                       {reply.delivery_state === "sending" && (
@@ -781,6 +868,7 @@ export function ThreadPanel({
               Back to bottom
             </button>
           )}
+        </div>
         </div>
 
         <ThreadReplyComposer

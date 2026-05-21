@@ -6,6 +6,7 @@ import {
   Bookmark,
   Plus,
   Search,
+  Settings,
   UserRound,
 } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
@@ -39,6 +40,7 @@ type SidebarProps = {
   openDmWithAgent: (agent: Agent) => void;
   openAgentDetail: (agent: Agent) => void;
   openOwnerProfileModal: () => void;
+  openSettingsModal: () => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
@@ -74,6 +76,7 @@ export function Sidebar({
   openDmWithAgent,
   openAgentDetail,
   openOwnerProfileModal,
+  openSettingsModal,
   onResizeStart,
 }: SidebarProps) {
   const [collapsedSections, setCollapsedSections] = useState({ channels: false, dms: false });
@@ -339,13 +342,24 @@ export function Sidebar({
         </section>
       </div>
 
-      <button type="button" className="profile" onClick={openOwnerProfileModal}>
-        <AgentAvatar agent={ownerAsAvatarAgent(data.owner_profile)} size="md" showStatus={false} />
-        <div>
-          <strong>{data.owner_profile.display_name}</strong>
-          <span>{data.owner_profile.description || "local owner"}</span>
-        </div>
-      </button>
+      <div className="profile">
+        <button type="button" className="profile-main" onClick={openOwnerProfileModal}>
+          <AgentAvatar agent={ownerAsAvatarAgent(data.owner_profile)} size="md" showStatus={false} />
+          <div>
+            <strong>{data.owner_profile.display_name}</strong>
+            <span>{data.owner_profile.description || "local owner"}</span>
+          </div>
+        </button>
+        <button
+          type="button"
+          className="profile-settings"
+          aria-label="Open settings"
+          title="Settings"
+          onClick={openSettingsModal}
+        >
+          <Settings size={17} />
+        </button>
+      </div>
     </aside>
   );
 }
