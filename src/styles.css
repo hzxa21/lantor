@@ -953,8 +953,9 @@ button,
 }
 
 .channel:focus-visible {
-  outline: 1px solid var(--accent-soft-hover-border);
-  outline-offset: -3px;
+  border-color: var(--control-border);
+  background: var(--bg-hover);
+  outline: none;
 }
 
 .channel.selected {
@@ -972,7 +973,6 @@ button,
 .channel.has-unread:not(.selected) {
   border-color: var(--unread-border);
   background: var(--unread-bg);
-  box-shadow: inset 3px 0 var(--accent);
   color: var(--unread-ink);
 }
 
@@ -1011,7 +1011,6 @@ button,
 
 .dm-row.has-unread:not(.selected) {
   background: var(--unread-bg);
-  box-shadow: inset 3px 0 var(--accent);
 }
 
 .dm-row.selected {
