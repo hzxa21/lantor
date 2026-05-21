@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use uuid::Uuid;
 
-use crate::{text::compact_chars_middle, CommandResult};
+use crate::{app::CommandResult, text::compact_chars_middle};
 
 pub(crate) const AGENT_MEMORY_CONTEXT_LIMIT: usize = 8 * 1024;
 

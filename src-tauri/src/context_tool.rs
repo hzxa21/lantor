@@ -12,10 +12,12 @@ use crate::agent_routing::resolve_agent_by_handle;
 use crate::db::db_connect;
 use crate::message_store::load_artifact;
 use crate::{
+    app::{to_string, CommandResult},
     attachments::{attachment_summary_sql, format_attachment_size},
     text::compact_chars_middle,
-    to_string, CommandResult, AGENT_CONTEXT_TOOL_MESSAGE_LIMIT,
 };
+
+const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
 
 struct AgentContextTarget {
     channel_id: Uuid,

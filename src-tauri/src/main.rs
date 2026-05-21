@@ -7,6 +7,7 @@ mod agent_profile;
 mod agent_routing;
 mod agent_work_dispatch;
 mod agent_workspace;
+mod app;
 mod artifact_store;
 mod attachments;
 mod bootstrap;
@@ -57,6 +58,7 @@ use agent_work_dispatch::{
     retry_agent_work, retry_agent_work_in_pool, try_claim_unassigned_task,
 };
 use agent_workspace::{agent_workspace_list, agent_workspace_read_file};
+use app::{to_string, AppState, CommandResult};
 #[cfg(test)]
 use attachments::AgentAttachmentFile;
 use bootstrap::load_bootstrap;
@@ -97,21 +99,12 @@ use ui_notifications::{
     spawn_ui_refresh_listener,
 };
 
-const AGENT_CONTEXT_TOOL_MESSAGE_LIMIT: usize = 2_000;
-#[derive(Clone)]
-pub(crate) struct AppState {
-    pub(crate) pool: SqlitePool,
-    db_url: String,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DismissInboxItemInput {
     item_id: String,
     dismissed_until: DateTime<Utc>,
 }
-
-pub(crate) type CommandResult<T> = Result<T, String>;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,7 +114,7 @@ struct CreateChannelResult {
 
 #[tauri::command]
 async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
-    load_bootstrap(&state.pool, state.db_url.clone()).await
+    load_bootstrap(&state.pool, state.db_url().to_owned()).await
 }
 
 #[tauri::command]
@@ -388,7 +381,7 @@ async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<(
 async fn install_supervisor_service(
     state: State<'_, AppState>,
 ) -> CommandResult<LaunchAgentStatus> {
-    let status = launch_agent::install_supervisor_service(&state.db_url)?;
+    let status = launch_agent::install_supervisor_service(state.db_url())?;
     let _ = notify_ui_refresh(&state.pool, "supervisor_service_installed").await;
     Ok(status)
 }
@@ -616,10 +609,6 @@ async fn resolve_event_channel(
         .ok_or_else(|| format!("channel #{normalized} does not exist"))
 }
 
-pub(crate) fn to_string(error: impl std::fmt::Display) -> String {
-    error.to_string()
-}
-
 pub fn run() {
     let database_url = db_url();
     let pool = tauri::async_runtime::block_on(db_connect_with_url(&database_url, 5))
@@ -631,10 +620,7 @@ pub fn run() {
     let reminder_pool = pool.clone();
 
     tauri::Builder::default()
-        .manage(AppState {
-            pool,
-            db_url: state_db_url,
-        })
+        .manage(AppState::new(pool, state_db_url))
         .setup(move |app| {
             spawn_ui_refresh_listener(app.handle().clone(), reminder_pool.clone());
             web::spawn_web_server_if_configured(reminder_pool.clone(), database_url.clone());

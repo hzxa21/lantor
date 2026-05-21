@@ -3,6 +3,7 @@ use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::agent_routing::queue_agent_message_mentions;
+use crate::app::{to_string, CommandResult};
 use crate::events::{
     activity::record_agent_activity,
     control::{
@@ -16,7 +17,6 @@ use crate::ui_notifications::{
     notify_ui_message_delete, notify_ui_message_delta, notify_ui_message_upsert, notify_ui_refresh,
     notify_ui_work_item_changed,
 };
-use crate::{to_string, CommandResult};
 
 pub(crate) const STREAMING_MESSAGE_BODY_LIMIT: usize = 200_000;
 pub(crate) const STREAMING_TRUNCATION_MARKER: &str = "\n\n[stream truncated by Lantor]";

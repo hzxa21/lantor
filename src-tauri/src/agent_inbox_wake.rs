@@ -7,8 +7,10 @@ use crate::ui_notifications::{
     notify_supervisor_wake, notify_ui_refresh, notify_ui_work_item_changed,
 };
 use crate::{
-    context_tool::short_id, events::activity::record_agent_activity, text::compact_chars_middle,
-    to_string, CommandResult,
+    app::{to_string, CommandResult},
+    context_tool::short_id,
+    events::activity::record_agent_activity,
+    text::compact_chars_middle,
 };
 
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;

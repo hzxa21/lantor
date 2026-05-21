@@ -7,10 +7,10 @@ use crate::agent_inbox_wake::{
     agent_accepts_new_work, create_agent_inbox_item, ensure_agent_inbox_wake_work_item,
     AgentInboxItemInput,
 };
+use crate::app::{to_string, CommandResult};
 use crate::events::activity::record_agent_activity;
 use crate::message_store::insert_agent_handoff_message;
 use crate::ui_notifications::insert_system_message;
-use crate::{to_string, CommandResult};
 
 pub(crate) fn extract_agent_mentions(body: &str) -> Vec<String> {
     let mut handles = Vec::new();

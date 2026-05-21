@@ -3,9 +3,9 @@ use std::time::Duration;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
+use crate::app::{to_string, CommandResult};
 use crate::context_tool::short_id;
 use crate::text::compact_chars_middle;
-use crate::{to_string, CommandResult};
 
 const CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT: i64 = 16;
 

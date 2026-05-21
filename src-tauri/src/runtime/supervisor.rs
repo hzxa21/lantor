@@ -20,6 +20,7 @@ use crate::{
         agent_has_active_or_pending_start, agent_runtime, enqueue_agent_work_if_available,
     },
     agent_memory::append_run_log,
+    app::{to_string, CommandResult},
     db::{acquire_supervisor_lock, db_connect_with_url, db_url, migrate},
     events::activity::record_agent_activity,
     models::SupervisorCommand,
@@ -27,10 +28,8 @@ use crate::{
         build_streaming_work_item_prompt, build_work_item_prompt, load_agent_memory_context,
         prepend_memory_context,
     },
-    to_string,
     ui_notifications::{notify_ui_agent_run_changed, notify_ui_work_item_changed},
     usage::agent_budget_exhausted,
-    CommandResult,
 };
 
 const SUPERVISOR_COMMAND_CONCURRENCY: usize = 4;

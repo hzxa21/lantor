@@ -29,8 +29,9 @@ use crate::task_messages::create_agent_task_thread;
 use crate::ui_notifications::{insert_system_message, notify_ui_refresh};
 use crate::usage::record_run_usage;
 use crate::{
+    app::{to_string, CommandResult},
     dispatch_task_assignment_to_agent, resolve_event_channel, resolve_run_reminder_anchor,
-    to_string, try_claim_unassigned_task, CommandResult,
+    try_claim_unassigned_task,
 };
 
 const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";
