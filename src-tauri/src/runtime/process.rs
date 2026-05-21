@@ -17,10 +17,8 @@ use crate::events::control::{
     silent_reply_reason,
 };
 use crate::runtime::streaming::mark_run_work_item_silent;
-use crate::{
-    db_url, mark_task_after_work_item_finished, notify_ui_agent_run_changed,
-    notify_ui_work_item_changed, to_string, CommandResult,
-};
+use crate::ui_notifications::{notify_ui_agent_run_changed, notify_ui_work_item_changed};
+use crate::{db_url, mark_task_after_work_item_finished, to_string, CommandResult};
 
 const LANTOR_CONTEXT_TOOL_ENV: &str = "LANTOR_CONTEXT_TOOL";
 

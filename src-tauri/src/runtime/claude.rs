@@ -21,11 +21,11 @@ use crate::runtime::{
         append_streaming_agent_message, ensure_streaming_agent_message, streaming_message_exists,
     },
 };
-use crate::usage::{record_run_usage, usage_from_runtime_event};
-use crate::{
-    notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_work_item_changed, to_string,
-    CommandResult,
+use crate::ui_notifications::{
+    notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_work_item_changed,
 };
+use crate::usage::{record_run_usage, usage_from_runtime_event};
+use crate::{to_string, CommandResult};
 
 mod protocol;
 mod reaper;

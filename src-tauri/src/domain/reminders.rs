@@ -6,9 +6,10 @@ use uuid::Uuid;
 
 use crate::events::activity::record_agent_activity;
 use crate::models::Reminder;
+use crate::ui_notifications::{insert_system_message, notify_ui_refresh};
 use crate::{
-    create_agent_inbox_item, ensure_agent_inbox_wake_work_item, insert_system_message,
-    notify_ui_refresh, to_string, AgentInboxItemInput, AppState, CommandResult,
+    create_agent_inbox_item, ensure_agent_inbox_wake_work_item, to_string, AgentInboxItemInput,
+    AppState, CommandResult,
 };
 
 use super::parse_due_at;

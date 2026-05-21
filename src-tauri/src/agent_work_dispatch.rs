@@ -8,9 +8,11 @@ use crate::agent_inbox_wake::{
     ensure_agent_inbox_wake_work_item, prepend_inbox_context, AgentInboxItemInput,
 };
 use crate::events::activity::record_agent_activity;
+use crate::ui_notifications::{
+    notify_supervisor_wake, notify_ui_refresh, notify_ui_work_item_changed,
+};
 use crate::{
-    notify_supervisor_wake, notify_ui_refresh, notify_ui_work_item_changed, resolve_agent_handle,
-    to_string, upsert_agent_thread_subscription, AppState, CommandResult,
+    resolve_agent_handle, to_string, upsert_agent_thread_subscription, AppState, CommandResult,
 };
 
 #[tauri::command]

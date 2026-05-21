@@ -10,7 +10,8 @@ use super::{
 };
 use crate::events::activity::record_agent_activity;
 use crate::runtime::process::terminate_process_group;
-use crate::{notify_supervisor_wake, CommandResult};
+use crate::ui_notifications::notify_supervisor_wake;
+use crate::CommandResult;
 
 const CODEX_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CODEX_IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);

@@ -3,10 +3,12 @@ use serde_json::Value;
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use uuid::Uuid;
 
+use crate::ui_notifications::{
+    notify_supervisor_wake, notify_ui_refresh, notify_ui_work_item_changed,
+};
 use crate::{
-    context_tool::short_id, events::activity::record_agent_activity, notify_supervisor_wake,
-    notify_ui_refresh, notify_ui_work_item_changed, text::compact_chars_middle, to_string,
-    CommandResult,
+    context_tool::short_id, events::activity::record_agent_activity, text::compact_chars_middle,
+    to_string, CommandResult,
 };
 
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;

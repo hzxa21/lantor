@@ -9,10 +9,10 @@ use crate::runtime::{
     process::upsert_runtime_thread_id,
     streaming::{consume_streaming_agent_control_lines, finish_streaming_agent_message},
 };
-use crate::{
-    mark_task_after_work_item_finished, notify_supervisor_wake, notify_ui_agent_run_changed,
-    notify_ui_work_item_changed, to_string, CommandResult,
+use crate::ui_notifications::{
+    notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_work_item_changed,
 };
+use crate::{mark_task_after_work_item_finished, to_string, CommandResult};
 
 pub(super) async fn finish_warm_claude_active_turn(
     pool: &SqlitePool,

@@ -1,12 +1,12 @@
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
+use crate::ui_notifications::notify_ui_refresh;
 use crate::{
     agent_workspace::load_agent_workspace_summary,
     events::activity::record_agent_activity,
     expand_home_path,
     models::{Agent, OwnerProfile},
-    notify_ui_refresh,
     prompts::ensure_agent_workspace,
     to_string, CommandResult,
 };

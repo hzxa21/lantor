@@ -2,9 +2,8 @@ use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::{
-    load_agent_activity, notify_ui_activity_upsert, notify_ui_refresh, to_string, CommandResult,
-};
+use crate::ui_notifications::{notify_ui_activity_upsert, notify_ui_refresh};
+use crate::{load_agent_activity, to_string, CommandResult};
 
 fn activity_phase(kind: &str) -> &'static str {
     match kind {
