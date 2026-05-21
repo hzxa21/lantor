@@ -244,6 +244,7 @@ button,
   --surface-profile-tab-hover: rgba(255, 255, 255, 0.78);
   --surface-profile-tab-active: #fff;
   --surface-profile-tab-shadow: 0 8px 20px rgba(32, 36, 44, 0.08);
+  --surface-menu-overlay: var(--panel);
   --activity-feed-panel-bg: rgba(255, 255, 255, 0.97);
   --activity-feed-panel-border: rgba(20, 23, 31, 0.14);
   --activity-feed-panel-shadow: 0 32px 86px rgba(15, 23, 42, 0.24);
@@ -281,6 +282,40 @@ button,
   --activity-feed-mobile-bg: #fff;
   --activity-feed-swipe-bg: #ff3b30;
   --activity-feed-swipe-ink: #fff;
+  --task-board-bg: #f7f8fa;
+  --task-card-bg: #fff;
+  --task-input-bg: rgba(255, 255, 255, 0.78);
+  --task-count-bg: rgba(20, 23, 31, 0.07);
+  --task-unassigned-bg: rgba(255, 250, 242, 0.78);
+  --task-unassigned-border: rgba(255, 149, 0, 0.3);
+  --task-unassigned-strong-bg: rgba(255, 149, 0, 0.14);
+  --task-unassigned-strong-ink: #a35b00;
+  --task-label-bg: rgba(10, 132, 255, 0.09);
+  --task-control-hover-border: rgba(20, 23, 31, 0.1);
+  --task-empty-avatar-bg:
+    linear-gradient(135deg, rgba(20, 23, 31, 0.07), rgba(20, 23, 31, 0.02));
+  --task-empty-avatar-border: rgba(20, 23, 31, 0.2);
+  --task-floating-bg: var(--surface-menu-overlay);
+  --task-muted-separator: rgba(20, 23, 31, 0.28);
+  --task-thread-bg: rgba(228, 241, 255, 0.62);
+  --task-thread-border: rgba(10, 132, 255, 0.2);
+  --task-review-success-ink: #167a36;
+  --task-execution-border: rgba(10, 132, 255, 0.12);
+  --task-execution-ink: #172033;
+  --task-execution-muted: #7b7b81;
+  --task-execution-time: #8e8e93;
+  --task-toggle-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 1px 2px rgba(20, 23, 31, 0.04);
+  --task-toggle-active-bg: #d6f3e0;
+  --task-toggle-active-border: rgba(21, 128, 61, 0.55);
+  --task-toggle-active-ink: #0f5f2c;
+  --task-toggle-active-shadow:
+    inset 0 0 0 1px rgba(21, 128, 61, 0.22),
+    0 1px 2px rgba(21, 128, 61, 0.14);
+  --task-toggle-active-hover-bg: #c6ecd3;
+  --task-toggle-active-hover-border: rgba(21, 128, 61, 0.7);
+  --task-toggle-active-hover-ink: #0c5026;
   --sidebar-width: 292px;
   --thread-width: 560px;
   display: grid;
@@ -433,6 +468,7 @@ button,
   --surface-profile-tab-hover: var(--bg-control-hover);
   --surface-profile-tab-active: var(--bg-control-selected);
   --surface-profile-tab-shadow: 0 8px 20px rgba(0, 0, 0, 0.24);
+  --surface-menu-overlay: rgba(8, 11, 16, 0.72);
   --activity-feed-panel-bg: var(--bg-panel);
   --activity-feed-panel-border: var(--border-strong);
   --activity-feed-panel-shadow: var(--surface-shadow);
@@ -468,6 +504,35 @@ button,
   --activity-feed-mobile-bg: var(--bg-panel);
   --activity-feed-swipe-bg: #ff3b30;
   --activity-feed-swipe-ink: #fff;
+  --task-board-bg: var(--bg-app);
+  --task-card-bg: var(--bg-panel);
+  --task-input-bg: var(--bg-input);
+  --task-count-bg: var(--bg-control-flat);
+  --task-unassigned-bg: var(--status-warning-soft);
+  --task-unassigned-border: var(--status-warning-border);
+  --task-unassigned-strong-bg: var(--status-warning-soft);
+  --task-unassigned-strong-ink: var(--status-warning);
+  --task-label-bg: var(--badge-bg);
+  --task-control-hover-border: var(--border-strong);
+  --task-empty-avatar-bg: var(--bg-control-flat);
+  --task-empty-avatar-border: var(--border-strong);
+  --task-floating-bg: var(--surface-menu-overlay);
+  --task-muted-separator: var(--ink-disabled);
+  --task-thread-bg: var(--bg-panel);
+  --task-thread-border: var(--border-subtle);
+  --task-review-success-ink: var(--status-success);
+  --task-execution-border: var(--border-subtle);
+  --task-execution-ink: var(--ink-primary);
+  --task-execution-muted: var(--ink-muted);
+  --task-execution-time: var(--ink-muted);
+  --task-toggle-shadow: none;
+  --task-toggle-active-bg: var(--status-success-soft);
+  --task-toggle-active-border: var(--status-success-border);
+  --task-toggle-active-ink: var(--status-success);
+  --task-toggle-active-shadow: none;
+  --task-toggle-active-hover-bg: var(--status-success-soft);
+  --task-toggle-active-hover-border: var(--status-success-border);
+  --task-toggle-active-hover-ink: var(--status-success);
   background:
     linear-gradient(135deg, #0e1117 0%, #151922 52%, #101722 100%);
   color: var(--ink-primary);
@@ -3317,16 +3382,13 @@ mark {
 :root[data-theme="dark"] .message-action-menu button,
 :root[data-theme="dark"] .channel-actions-menu,
 :root[data-theme="dark"] .channel-actions-menu button,
-:root[data-theme="dark"] .task-assignee-menu,
-:root[data-theme="dark"] .task-assignee-option:hover,
-:root[data-theme="dark"] .task-assignee-option[aria-selected="true"],
 :root[data-theme="dark"] .search-panel,
 :root[data-theme="dark"] .search-input-icon,
 :root[data-theme="dark"] .search-clear,
 :root[data-theme="dark"] .search-filter-group button,
 :root[data-theme="dark"] .search-time-filter,
 :root[data-theme="dark"] .search-backdrop {
-  background: rgba(8, 11, 16, 0.72);
+  background: var(--surface-menu-overlay);
 }
 
 :root[data-theme="dark"] .search-filters {
@@ -3394,7 +3456,11 @@ mark {
 }
 
 :root[data-theme="dark"] .task-queue-section.unassigned,
-:root[data-theme="dark"] .task-card.unassigned,
+:root[data-theme="dark"] .task-card.unassigned {
+  border-color: var(--task-unassigned-border);
+  background: var(--status-warning-soft);
+}
+
 :root[data-theme="dark"] .reminder-row.fired {
   border-color: var(--status-warning-border);
   background: var(--status-warning-soft);
@@ -3420,7 +3486,7 @@ mark {
 
 :root[data-theme="dark"] .task-unassigned-avatar {
   border-color: var(--border-strong);
-  background: rgba(226, 232, 240, 0.08);
+  background: var(--task-empty-avatar-bg);
 }
 
 :root[data-theme="dark"] .agent-inbox-row-meta strong,
@@ -3516,7 +3582,7 @@ mark {
   align-content: start;
   gap: 14px;
   padding: 18px;
-  background: #f7f8fa;
+  background: var(--task-board-bg);
 }
 
 .task-board-summary {
@@ -3532,7 +3598,7 @@ mark {
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: #fff;
+  background: var(--task-card-bg);
 }
 
 .task-board-summary strong {
@@ -3601,7 +3667,7 @@ mark {
   height: 28px;
   padding: 0 9px;
   border-radius: 999px;
-  background: rgba(20, 23, 31, 0.07);
+  background: var(--task-count-bg);
   color: var(--ink);
   font-size: var(--type-size-meta);
   font-weight: var(--type-weight-semibold);
@@ -3609,14 +3675,14 @@ mark {
 
 .task-queue-section.unassigned {
   padding: 12px;
-  border: 1px solid rgba(255, 149, 0, 0.3);
+  border: 1px solid var(--task-unassigned-border);
   border-radius: var(--radius-md);
-  background: rgba(255, 250, 242, 0.78);
+  background: var(--task-unassigned-bg);
 }
 
 .task-queue-section.unassigned .task-queue-heading mark {
-  background: rgba(255, 149, 0, 0.14);
-  color: #a35b00;
+  background: var(--task-unassigned-strong-bg);
+  color: var(--task-unassigned-strong-ink);
 }
 
 .task-card input,
@@ -3627,7 +3693,7 @@ mark {
   padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.78);
+  background: var(--task-input-bg);
   color: var(--ink);
   outline: none;
 }
@@ -3649,11 +3715,11 @@ mark {
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: #fff;
+  background: var(--task-card-bg);
 }
 
 .task-card.unassigned {
-  border-color: rgba(255, 149, 0, 0.32);
+  border-color: var(--task-unassigned-border);
 }
 
 .task-card-main {
@@ -3687,7 +3753,7 @@ mark {
   justify-content: center;
   padding: 5px 8px;
   border-radius: 999px;
-  background: rgba(10, 132, 255, 0.09);
+  background: var(--task-label-bg);
   color: var(--accent);
   font-size: var(--type-size-meta);
   font-weight: var(--type-weight-semibold);
@@ -3740,17 +3806,15 @@ mark {
 
 .task-assignee-trigger:hover,
 .task-assignee-trigger[aria-expanded="true"] {
-  border-color: rgba(20, 23, 31, 0.1);
-  background: linear-gradient(180deg, #ffffff 0%, #f6f7f9 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    0 1px 2px rgba(20, 23, 31, 0.05);
+  border-color: var(--control-border);
+  background: var(--bg-control-selected);
+  box-shadow: var(--state-selected-shadow);
 }
 
 .task-assignee-trigger:focus-visible {
-  border-color: rgba(10, 132, 255, 0.34);
+  border-color: var(--accent-soft-hover-border);
   outline: none;
-  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.1);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .task-assignee-trigger:disabled {
@@ -3799,10 +3863,9 @@ mark {
 .task-unassigned-avatar {
   width: 32px;
   height: 32px;
-  border: 1px dashed rgba(20, 23, 31, 0.2);
+  border: 1px dashed var(--task-empty-avatar-border);
   border-radius: 50%;
-  background:
-    linear-gradient(135deg, rgba(20, 23, 31, 0.07), rgba(20, 23, 31, 0.02));
+  background: var(--task-empty-avatar-bg);
 }
 
 .task-assignee-menu {
@@ -3818,8 +3881,8 @@ mark {
   padding: 6px;
   border: 1px solid var(--line);
   border-radius: 13px;
-  background: var(--panel);
-  box-shadow: 0 18px 45px rgba(20, 23, 31, 0.18);
+  background: var(--task-floating-bg);
+  box-shadow: var(--surface-shadow);
 }
 
 .task-assignee-option {
@@ -3846,15 +3909,13 @@ mark {
 
 .task-assignee-option:hover,
 .task-assignee-option[aria-selected="true"] {
-  border-color: rgba(20, 23, 31, 0.1);
-  background: linear-gradient(180deg, #ffffff 0%, #f6f7f9 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    0 1px 2px rgba(20, 23, 31, 0.05);
+  border-color: var(--control-border);
+  background: var(--bg-control-selected);
+  box-shadow: var(--state-selected-shadow);
 }
 
 .task-assignee-option[aria-selected="true"] {
-  color: #20242b;
+  color: var(--ink-control);
 }
 
 .task-assignee-check {
@@ -3893,7 +3954,7 @@ mark {
 
 .task-assignee-option-copy span b {
   padding: 0 6px;
-  color: rgba(20, 23, 31, 0.28);
+  color: var(--task-muted-separator);
   font-weight: var(--type-weight-bold);
 }
 
@@ -3906,7 +3967,7 @@ mark {
   height: 30px;
   padding: 0;
   border-radius: 50%;
-  background: rgba(10, 132, 255, 0.08);
+  background: var(--bg-selected-soft);
   color: var(--accent);
 }
 
@@ -4139,9 +4200,7 @@ mark {
   color: var(--muted);
   font-size: var(--type-size-meta);
   font-weight: var(--type-weight-semibold);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.78),
-    0 1px 2px rgba(20, 23, 31, 0.04);
+  box-shadow: var(--task-toggle-shadow);
 }
 
 .task-toggle:hover:not(:disabled) {
@@ -4152,18 +4211,16 @@ mark {
 }
 
 .task-toggle.active {
-  border-color: rgba(21, 128, 61, 0.55);
-  background: #d6f3e0;
-  color: #0f5f2c;
-  box-shadow:
-    inset 0 0 0 1px rgba(21, 128, 61, 0.22),
-    0 1px 2px rgba(21, 128, 61, 0.14);
+  border-color: var(--task-toggle-active-border);
+  background: var(--task-toggle-active-bg);
+  color: var(--task-toggle-active-ink);
+  box-shadow: var(--task-toggle-active-shadow);
 }
 
 .task-toggle.active:hover:not(:disabled) {
-  border-color: rgba(21, 128, 61, 0.7);
-  background: #c6ecd3;
-  color: #0c5026;
+  border-color: var(--task-toggle-active-hover-border);
+  background: var(--task-toggle-active-hover-bg);
+  color: var(--task-toggle-active-hover-ink);
 }
 
 .send {
@@ -4428,9 +4485,9 @@ body.resizing-row * {
   gap: 10px;
   margin: 0 22px 8px;
   padding: 14px;
-  border: 1px solid rgba(10, 132, 255, 0.2);
+  border: 1px solid var(--task-thread-border);
   border-radius: 19px;
-  background: rgba(228, 241, 255, 0.62);
+  background: var(--task-thread-bg);
 }
 
 .thread-task-card .task-card-head strong {
@@ -4452,7 +4509,7 @@ body.resizing-row * {
   gap: 6px;
   min-height: 34px;
   padding: 0 10px;
-  border: 1px solid rgba(10, 132, 255, 0.2);
+  border: 1px solid var(--task-thread-border);
   border-radius: 8px;
   background: var(--bg-control-flat);
   color: var(--ink-control);
@@ -4461,8 +4518,8 @@ body.resizing-row * {
 }
 
 .task-review-actions button:first-child {
-  border-color: rgba(52, 199, 89, 0.24);
-  color: #167a36;
+  border-color: var(--status-success-border);
+  color: var(--task-review-success-ink);
 }
 
 .task-review-actions button:hover {
@@ -4475,7 +4532,7 @@ body.resizing-row * {
   gap: 9px;
   min-width: 0;
   padding-top: 4px;
-  border-top: 1px solid rgba(10, 132, 255, 0.12);
+  border-top: 1px solid var(--task-execution-border);
 }
 
 .task-execution-head {
@@ -4487,7 +4544,7 @@ body.resizing-row * {
 }
 
 .task-execution-head strong {
-  color: #172033;
+  color: var(--task-execution-ink);
   font-size: var(--type-size-meta);
   font-weight: var(--type-weight-semibold);
 }
@@ -4516,7 +4573,7 @@ body.resizing-row * {
 
 .task-execution-row time {
   padding-top: 2px;
-  color: #8e8e93;
+  color: var(--task-execution-time);
   font-family: var(--font-mono);
   font-size: var(--type-size-caption);
   text-align: right;
@@ -4542,13 +4599,13 @@ body.resizing-row * {
 }
 
 .task-execution-row strong {
-  color: #172033;
+  color: var(--task-execution-ink);
   font-size: var(--type-size-meta);
   font-weight: var(--type-weight-semibold);
 }
 
 .task-execution-row small {
-  color: #7b7b81;
+  color: var(--task-execution-muted);
   font-size: var(--type-size-caption);
   font-weight: var(--type-weight-semibold);
 }
@@ -4556,7 +4613,7 @@ body.resizing-row * {
 .task-execution-row p,
 .task-execution-empty {
   margin: 0;
-  color: #7b7b81;
+  color: var(--task-execution-muted);
   font-size: var(--type-size-caption);
   line-height: 1.35;
 }
