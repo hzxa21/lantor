@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use uuid::Uuid;
 
+use crate::ui_notifications::notify_ui_refresh;
 use crate::{
     models::{Artifact, Message, MessageAttachment, SavedMessage},
-    to_string, CommandResult,
+    queue_agent_message_mentions, to_string, upsert_agent_thread_subscription, CommandResult,
 };
 
 pub(crate) async fn load_messages(pool: &SqlitePool) -> CommandResult<Vec<Message>> {
@@ -155,6 +156,154 @@ pub(crate) async fn load_message(pool: &SqlitePool, message_id: Uuid) -> Command
     attach_message_attachments(pool, std::slice::from_mut(&mut message)).await?;
     attach_message_artifacts(pool, std::slice::from_mut(&mut message)).await?;
     Ok(message)
+}
+
+pub(crate) async fn insert_agent_message(
+    pool: &SqlitePool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    body: &str,
+    as_task: bool,
+) -> CommandResult<Uuid> {
+    insert_agent_message_with_options(
+        pool,
+        agent_id,
+        channel_id,
+        thread_root_id,
+        body,
+        as_task,
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn insert_agent_handoff_message(
+    pool: &SqlitePool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Uuid,
+    body: &str,
+) -> CommandResult<Uuid> {
+    insert_agent_message_with_options(
+        pool,
+        agent_id,
+        channel_id,
+        Some(thread_root_id),
+        body,
+        false,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn insert_agent_message_with_options(
+    pool: &SqlitePool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    body: &str,
+    as_task: bool,
+    dispatch_mentions: bool,
+) -> CommandResult<Uuid> {
+    if body.is_empty() {
+        return Err("message event body is empty".to_owned());
+    }
+    if as_task && thread_root_id.is_some() {
+        return Err("task message events must be root messages".to_owned());
+    }
+    if as_task {
+        let channel_kind: Option<String> =
+            sqlx::query_scalar("select kind from channels where id = $1")
+                .bind(channel_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?;
+        if channel_kind.as_deref() == Some("dm") {
+            return Err("direct messages do not support tasks".to_owned());
+        }
+    }
+    if let Some(thread_root_id) = thread_root_id {
+        let root_channel: Option<Uuid> = sqlx::query_scalar(
+            "select channel_id from messages where id = $1 and thread_root_id is null",
+        )
+        .bind(thread_root_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+        if root_channel != Some(channel_id) {
+            return Err("thread_root_id does not belong to target channel".to_owned());
+        }
+    }
+
+    let sender = sqlx::query("select display_name, role from agents where id = $1")
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    let sender_name: String = sender.get("display_name");
+    let sender_role: String = sender.get("role");
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(to_string)?;
+    let msg_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into messages (
+            channel_id, thread_root_id, sender_agent_id, sender_name, sender_role, body, is_task
+        )
+        values ($1, $2, $3, $4, $5, $6, $7)
+        returning id
+        "#,
+    )
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(agent_id)
+    .bind(sender_name)
+    .bind(sender_role)
+    .bind(body)
+    .bind(as_task)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(to_string)?;
+
+    if as_task {
+        sqlx::query(
+            r#"
+            insert into tasks (message_id, channel_id, title, status, assignee_agent_id)
+            values ($1, $2, $3, 'todo', $4)
+            "#,
+        )
+        .bind(msg_id)
+        .bind(channel_id)
+        .bind(body.lines().next().unwrap_or("Untitled task"))
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_string)?;
+    }
+
+    tx.commit().await.map_err(to_string)?;
+    let conversation_thread_root_id = thread_root_id.unwrap_or(msg_id);
+    upsert_agent_thread_subscription(
+        pool,
+        agent_id,
+        channel_id,
+        conversation_thread_root_id,
+        if as_task {
+            "task_message"
+        } else {
+            "agent_message"
+        },
+        Some(msg_id),
+    )
+    .await?;
+    if !as_task && dispatch_mentions {
+        queue_agent_message_mentions(pool, msg_id).await?;
+    }
+    let _ = notify_ui_refresh(pool, "message").await;
+    Ok(msg_id)
 }
 
 async fn attach_message_attachments(

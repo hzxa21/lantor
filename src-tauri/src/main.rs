@@ -86,7 +86,8 @@ use events::control::{
     claim_agent_event, extract_agent_event_json, handle_agent_event, AgentEvent,
 };
 use message_store::{
-    load_artifact, load_artifacts, load_message, load_messages, load_saved_messages,
+    insert_agent_handoff_message, insert_agent_message, load_artifact, load_artifacts,
+    load_message, load_messages, load_saved_messages,
 };
 use models::{
     AgentActivity, AgentRun, AgentWorkItem, Artifact, AttachmentUpload, Bootstrap,
@@ -2958,154 +2959,6 @@ fn default_attachment_message_body(uploads: &[AttachmentUpload]) -> String {
     }
 }
 
-async fn insert_agent_message(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    body: &str,
-    as_task: bool,
-) -> CommandResult<Uuid> {
-    insert_agent_message_with_options(
-        pool,
-        agent_id,
-        channel_id,
-        thread_root_id,
-        body,
-        as_task,
-        true,
-    )
-    .await
-}
-
-async fn insert_agent_handoff_message(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Uuid,
-    body: &str,
-) -> CommandResult<Uuid> {
-    insert_agent_message_with_options(
-        pool,
-        agent_id,
-        channel_id,
-        Some(thread_root_id),
-        body,
-        false,
-        false,
-    )
-    .await
-}
-
-async fn insert_agent_message_with_options(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    body: &str,
-    as_task: bool,
-    dispatch_mentions: bool,
-) -> CommandResult<Uuid> {
-    if body.is_empty() {
-        return Err("message event body is empty".to_owned());
-    }
-    if as_task && thread_root_id.is_some() {
-        return Err("task message events must be root messages".to_owned());
-    }
-    if as_task {
-        let channel_kind: Option<String> =
-            sqlx::query_scalar("select kind from channels where id = $1")
-                .bind(channel_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(to_string)?;
-        if channel_kind.as_deref() == Some("dm") {
-            return Err("direct messages do not support tasks".to_owned());
-        }
-    }
-    if let Some(thread_root_id) = thread_root_id {
-        let root_channel: Option<Uuid> = sqlx::query_scalar(
-            "select channel_id from messages where id = $1 and thread_root_id is null",
-        )
-        .bind(thread_root_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?;
-        if root_channel != Some(channel_id) {
-            return Err("thread_root_id does not belong to target channel".to_owned());
-        }
-    }
-
-    let sender = sqlx::query("select display_name, role from agents where id = $1")
-        .bind(agent_id)
-        .fetch_one(pool)
-        .await
-        .map_err(to_string)?;
-    let sender_name: String = sender.get("display_name");
-    let sender_role: String = sender.get("role");
-
-    let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(to_string)?;
-    let msg_id: Uuid = sqlx::query_scalar(
-        r#"
-        insert into messages (
-            channel_id, thread_root_id, sender_agent_id, sender_name, sender_role, body, is_task
-        )
-        values ($1, $2, $3, $4, $5, $6, $7)
-        returning id
-        "#,
-    )
-    .bind(channel_id)
-    .bind(thread_root_id)
-    .bind(agent_id)
-    .bind(sender_name)
-    .bind(sender_role)
-    .bind(body)
-    .bind(as_task)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(to_string)?;
-
-    if as_task {
-        sqlx::query(
-            r#"
-            insert into tasks (message_id, channel_id, title, status, assignee_agent_id)
-            values ($1, $2, $3, 'todo', $4)
-            "#,
-        )
-        .bind(msg_id)
-        .bind(channel_id)
-        .bind(body.lines().next().unwrap_or("Untitled task"))
-        .bind(agent_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(to_string)?;
-    }
-
-    tx.commit().await.map_err(to_string)?;
-    let conversation_thread_root_id = thread_root_id.unwrap_or(msg_id);
-    upsert_agent_thread_subscription(
-        pool,
-        agent_id,
-        channel_id,
-        conversation_thread_root_id,
-        if as_task {
-            "task_message"
-        } else {
-            "agent_message"
-        },
-        Some(msg_id),
-    )
-    .await?;
-    if !as_task && dispatch_mentions {
-        queue_agent_message_mentions(pool, msg_id).await?;
-    }
-    let _ = notify_ui_refresh(pool, "message").await;
-    Ok(msg_id)
-}
-
 async fn insert_agent_attachment_message(
     pool: &SqlitePool,
     agent_id: Uuid,
@@ -3911,7 +3764,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use crate::agent_memory::{format_memory_index_entry, insert_memory_index_entry};
-    use crate::message_store::load_messages;
+    use crate::message_store::{insert_agent_message, load_messages};
     use crate::prompts::{build_codex_streaming_prompt, claude_system_prompt};
     use crate::runtime::{
         process::{
@@ -3939,8 +3792,8 @@ mod tests {
         create_agent_inbox_item, db_connect_with_url, dismiss_inbox_items_in_pool,
         domain::reminders::load_reminders,
         ensure_agent_workspace, extract_agent_event_json, extract_agent_mentions,
-        handle_agent_event, inbox_wake_context, insert_agent_message, load_agent_activities,
-        load_agent_memory_context, load_channel_agent_roster, mark_all_owner_inbox_read_in_pool,
+        handle_agent_event, inbox_wake_context, load_agent_activities, load_agent_memory_context,
+        load_channel_agent_roster, mark_all_owner_inbox_read_in_pool,
         mark_inbox_items_read_in_pool, migrate, normalize_open_link_target,
         open_dm_with_agent_in_pool, queue_mentions_as_work_items, record_agent_activity,
         same_codex_surface, send_owner_message_in_pool, try_claim_unassigned_task,
