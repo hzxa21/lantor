@@ -1935,24 +1935,6 @@
       "n": 0
     },
     {
-      "selector": ".workspace-preview",
-      "prop": "background",
-      "literal": "rgba(255, 255, 255, 0.82)",
-      "n": 0
-    },
-    {
-      "selector": ".workspace-preview",
-      "prop": "border",
-      "literal": "rgba(10, 132, 255, 0.14)",
-      "n": 0
-    },
-    {
-      "selector": ".workspace-preview-head button",
-      "prop": "background",
-      "literal": "rgba(142, 142, 147, 0.12)",
-      "n": 0
-    },
-    {
       "selector": ".workspace-preview-raw",
       "prop": "background",
       "literal": "#111827",

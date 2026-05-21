@@ -959,10 +959,10 @@ button,
 }
 
 .channel.selected {
-  border-color: var(--control-border);
+  border-color: transparent;
   background: var(--bg-control-selected);
   color: var(--ink-control);
-  box-shadow: var(--state-selected-shadow);
+  box-shadow: none;
 }
 
 .channel.selected strong {
@@ -1014,10 +1014,10 @@ button,
 }
 
 .dm-row.selected {
-  border-color: var(--control-border);
+  border-color: transparent;
   background: var(--bg-control-selected);
   color: var(--ink-control);
-  box-shadow: var(--state-selected-shadow);
+  box-shadow: none;
 }
 
 .dm {
@@ -1124,12 +1124,12 @@ button,
 .dm-row:focus-within .dm-detail-trigger,
 .dm-detail-trigger:hover,
 .dm-detail-trigger:focus-visible {
-  border-color: var(--state-focus-ring);
+  border-color: transparent;
   background: var(--bg-control-selected);
   color: var(--accent);
   opacity: 1;
   transform: translateY(-1px);
-  box-shadow: var(--state-selected-shadow);
+  box-shadow: none;
 }
 
 .member-editor {
