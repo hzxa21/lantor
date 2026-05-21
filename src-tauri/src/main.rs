@@ -12,6 +12,7 @@ mod artifact_store;
 mod attachments;
 mod bootstrap;
 mod channels;
+mod commands;
 mod context_tool;
 mod db;
 mod domain;
@@ -33,10 +34,8 @@ mod web;
 
 use std::env;
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
-use tauri::{Manager, State};
+use tauri::Manager;
 use uuid::Uuid;
 
 use agent_inbox_wake::{
@@ -45,9 +44,6 @@ use agent_inbox_wake::{
 };
 #[cfg(test)]
 use agent_inbox_wake::{inbox_wake_context, InboxWakeItem, InboxWakeSummary};
-use agent_profile::{
-    create_agent_in_pool, delete_agent_in_pool, update_agent_in_pool, update_owner_profile_in_pool,
-};
 #[cfg(test)]
 use agent_routing::{
     extract_agent_mentions, queue_mentions_as_work_items, upsert_agent_thread_subscription,
@@ -62,10 +58,23 @@ use agent_workspace::{agent_workspace_list, agent_workspace_read_file};
 use app::{to_string, AppState, CommandResult};
 #[cfg(test)]
 use attachments::AgentAttachmentFile;
-use bootstrap::load_bootstrap;
-use channels::{
-    create_channel_with_members, delete_channel_in_pool, normalize_channel_name,
-    open_dm_with_agent_in_pool, set_channel_agent_membership_in_pool, update_channel_in_pool,
+use channels::normalize_channel_name;
+#[cfg(test)]
+use channels::open_dm_with_agent_in_pool;
+use commands::{
+    agents::{create_agent, delete_agent, update_agent, update_owner_profile},
+    artifacts::artifact_read,
+    bootstrap::bootstrap,
+    channels::{
+        create_channel, delete_channel, open_dm_with_agent, set_channel_agent_membership,
+        update_channel,
+    },
+    inbox::{
+        dismiss_inbox_items, mark_all_inbox_read, mark_channel_read, mark_inbox_items_read,
+        update_thread_followed,
+    },
+    messages::{delete_message, send_message, set_message_saved, update_message},
+    tasks::{update_task_status, update_task_title},
 };
 use context_tool::run_agent_context_tool;
 use db::{db_connect_with_url, db_url, migrate};
@@ -83,285 +92,11 @@ use events::control::{
 use lifecycle_commands::{
     install_supervisor_service, start_agent, stop_agent, uninstall_supervisor_service,
 };
-use message_store::{
-    delete_message_in_pool, load_artifact, send_owner_message_in_pool, set_message_saved_in_pool,
-    update_message_in_pool,
-};
-use models::{Artifact, AttachmentUpload, Bootstrap};
-use owner_inbox::{
-    dismiss_inbox_items_in_pool, mark_all_owner_inbox_read_in_pool, mark_channel_read_in_pool,
-    mark_inbox_items_read_in_pool, update_thread_followed_in_pool,
-};
 #[cfg(test)]
 use prompts::{ensure_agent_workspace, AGENT_MEMORY_CONTEXT_LIMIT, WORK_ITEM_FINISH_PROMPT};
 use runtime::supervisor::run_supervisor;
 use system_commands::{check_runtime, open_external_url};
-use task_store::{update_task_status_in_pool, update_task_title_in_pool};
 use ui_notifications::spawn_ui_refresh_listener;
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DismissInboxItemInput {
-    item_id: String,
-    dismissed_until: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateChannelResult {
-    channel_id: Uuid,
-}
-
-#[tauri::command]
-async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
-    load_bootstrap(&state.pool, state.db_url().to_owned()).await
-}
-
-#[tauri::command]
-async fn create_channel(
-    name: String,
-    description: Option<String>,
-    agent_ids: Option<Vec<Uuid>>,
-    state: State<'_, AppState>,
-) -> CommandResult<CreateChannelResult> {
-    let channel_id = create_channel_with_members(
-        &state.pool,
-        &name,
-        description.as_deref().unwrap_or(""),
-        agent_ids,
-    )
-    .await?;
-    Ok(CreateChannelResult { channel_id })
-}
-
-#[tauri::command]
-async fn update_channel(
-    channel_id: Uuid,
-    name: String,
-    description: String,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    update_channel_in_pool(&state.pool, channel_id, name, description).await
-}
-
-#[tauri::command]
-async fn set_channel_agent_membership(
-    channel_id: Uuid,
-    agent_id: Uuid,
-    member: bool,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    set_channel_agent_membership_in_pool(&state.pool, channel_id, agent_id, member).await
-}
-
-#[tauri::command]
-async fn update_owner_profile(
-    display_name: String,
-    avatar: String,
-    description: String,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    update_owner_profile_in_pool(&state.pool, display_name, avatar, description).await
-}
-
-#[tauri::command]
-async fn delete_channel(channel_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
-    delete_channel_in_pool(&state.pool, channel_id).await
-}
-
-#[tauri::command]
-async fn open_dm_with_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<String> {
-    open_dm_with_agent_in_pool(&state.pool, agent_id).await
-}
-
-#[tauri::command]
-async fn artifact_read(artifact_id: Uuid, state: State<'_, AppState>) -> CommandResult<Artifact> {
-    load_artifact(&state.pool, artifact_id).await
-}
-
-#[tauri::command]
-async fn create_agent(
-    handle: String,
-    display_name: String,
-    role: Option<String>,
-    runtime: String,
-    model: String,
-    reasoning_effort: Option<String>,
-    service_tier: Option<String>,
-    avatar: Option<String>,
-    description: Option<String>,
-    launch_command: String,
-    working_directory: String,
-    daily_budget_micros: Option<i64>,
-    state: State<'_, AppState>,
-) -> CommandResult<String> {
-    create_agent_in_pool(
-        &state.pool,
-        handle,
-        display_name,
-        role,
-        runtime,
-        model,
-        reasoning_effort,
-        service_tier,
-        avatar,
-        description,
-        launch_command,
-        working_directory,
-        daily_budget_micros,
-    )
-    .await
-    .map(|agent_id| agent_id.to_string())
-}
-
-#[tauri::command]
-async fn update_agent(
-    agent_id: Uuid,
-    handle: String,
-    display_name: String,
-    role: Option<String>,
-    runtime: String,
-    model: String,
-    reasoning_effort: Option<String>,
-    service_tier: Option<String>,
-    avatar: Option<String>,
-    description: String,
-    launch_command: String,
-    working_directory: String,
-    daily_budget_micros: Option<i64>,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    update_agent_in_pool(
-        &state.pool,
-        agent_id,
-        handle,
-        display_name,
-        role,
-        runtime,
-        model,
-        reasoning_effort,
-        service_tier,
-        avatar,
-        description,
-        launch_command,
-        working_directory,
-        daily_budget_micros,
-    )
-    .await
-}
-
-#[tauri::command]
-async fn delete_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
-    delete_agent_in_pool(&state.pool, agent_id).await
-}
-
-#[tauri::command]
-async fn send_message(
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    body: String,
-    as_task: bool,
-    attachments: Option<Vec<AttachmentUpload>>,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    send_owner_message_in_pool(
-        &state.pool,
-        channel_id,
-        thread_root_id,
-        &body,
-        as_task,
-        attachments.unwrap_or_default(),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn update_message(
-    message_id: Uuid,
-    body: String,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    update_message_in_pool(&state.pool, message_id, &body).await
-}
-
-#[tauri::command]
-async fn delete_message(message_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
-    delete_message_in_pool(&state.pool, message_id).await
-}
-
-#[tauri::command]
-async fn set_message_saved(
-    message_id: Uuid,
-    saved: bool,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    set_message_saved_in_pool(&state.pool, message_id, saved).await
-}
-
-#[tauri::command]
-async fn update_task_status(
-    task_id: Uuid,
-    status: String,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    update_task_status_in_pool(&state.pool, task_id, status).await
-}
-
-#[tauri::command]
-async fn update_task_title(
-    task_id: Uuid,
-    title: String,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    update_task_title_in_pool(&state.pool, task_id, title).await
-}
-
-#[tauri::command]
-async fn mark_channel_read(channel_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
-    mark_channel_read_in_pool(&state.pool, channel_id).await
-}
-
-#[tauri::command]
-async fn dismiss_inbox_items(
-    items: Vec<DismissInboxItemInput>,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    dismiss_inbox_items_in_pool(
-        &state.pool,
-        items
-            .into_iter()
-            .map(|item| (item.item_id, item.dismissed_until)),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn mark_inbox_items_read(
-    items: Vec<DismissInboxItemInput>,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    mark_inbox_items_read_in_pool(
-        &state.pool,
-        items
-            .into_iter()
-            .map(|item| (item.item_id, item.dismissed_until)),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn mark_all_inbox_read(state: State<'_, AppState>) -> CommandResult<()> {
-    mark_all_owner_inbox_read_in_pool(&state.pool).await
-}
-
-#[tauri::command]
-async fn update_thread_followed(
-    thread_root_id: Uuid,
-    followed: bool,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    update_thread_followed_in_pool(&state.pool, thread_root_id, followed).await
-}
 
 async fn resolve_run_reminder_anchor(
     pool: &SqlitePool,
