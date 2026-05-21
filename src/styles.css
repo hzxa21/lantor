@@ -8832,8 +8832,38 @@ body.resizing-row * {
 
   .composer,
   .reply-composer {
+    align-items: end;
+    gap: 6px 8px;
     margin-bottom: calc(88px + env(safe-area-inset-bottom));
     padding: 8px 12px 8px;
+  }
+
+  .composer {
+    grid-template-columns: 34px 34px minmax(0, 1fr) 34px;
+    grid-template-areas:
+      "picker picker picker picker"
+      "attachments attachments attachments attachments"
+      "attach task input send";
+  }
+
+  .composer:not(:has(.task-toggle)),
+  .reply-composer {
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    grid-template-areas:
+      "picker picker picker"
+      "attachments attachments attachments"
+      "attach input send";
+  }
+
+  .composer .mention-picker,
+  .reply-composer .mention-picker {
+    grid-area: picker;
+    margin-bottom: 0;
+  }
+
+  .composer .draft-attachments,
+  .reply-composer .draft-attachments {
+    grid-area: attachments;
   }
 
   .composer:focus-within,
@@ -8846,18 +8876,34 @@ body.resizing-row * {
 
   .composer textarea,
   .reply-composer textarea {
+    grid-area: input;
     min-height: 46px;
     max-height: 112px;
     padding: 12px 13px;
     border-radius: 16px;
     font-size: var(--type-size-control);
     line-height: 20px;
+    overflow-y: auto;
   }
 
   .composer-actions,
   .reply-composer-actions {
-    justify-content: flex-end;
-    gap: 6px;
+    display: contents;
+  }
+
+  .composer .attach-button,
+  .reply-composer .attach-button {
+    grid-area: attach;
+  }
+
+  .composer .task-toggle {
+    grid-area: task;
+  }
+
+  .send,
+  .reply-composer .reply-send {
+    grid-area: send;
+    margin-left: 0;
   }
 
   .send,
@@ -8874,21 +8920,12 @@ body.resizing-row * {
   }
 
   .task-toggle {
-    margin-left: auto;
-  }
-
-  .reply-composer .reply-send {
-    margin-left: auto;
+    margin-left: 0;
   }
 
   .task-toggle span,
   .send span {
     display: none;
-  }
-
-  .send {
-    margin-left: 0;
-    justify-content: center;
   }
 
   .app.mobile-composer-focused .mobile-bottom-nav,

@@ -1279,6 +1279,7 @@ function ConversationComposer({
       <DraftAttachmentsPreview attachments={draftAttachments} onRemove={removeDraftAttachment} />
       <textarea
         ref={textareaRef}
+        rows={1}
         value={text}
         autoCapitalize="none"
         autoComplete="off"
@@ -1297,7 +1298,7 @@ function ConversationComposer({
           channel
             ? isDm
               ? `Message @${dmAgent?.handle || "agent"}`
-              : `Message #${channel.name} - type @ or # to mention`
+              : `Message #${channel.name}`
             : "Create a channel before messaging"
         }
       />
