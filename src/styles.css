@@ -952,6 +952,11 @@ button,
   white-space: nowrap;
 }
 
+.channel:focus-visible {
+  outline: 1px solid var(--accent-soft-hover-border);
+  outline-offset: -3px;
+}
+
 .channel.selected {
   border-color: var(--control-border);
   background: var(--bg-control-selected);
