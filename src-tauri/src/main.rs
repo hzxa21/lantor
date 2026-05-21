@@ -63,7 +63,8 @@ use agent_work_dispatch::{
     try_claim_unassigned_task,
 };
 use agent_workspace::{agent_workspace_list, agent_workspace_read_file};
-use attachments::{write_attachment_file, ATTACHMENT_SIZE_LIMIT};
+#[cfg(test)]
+use attachments::AgentAttachmentFile;
 use channels::{
     create_channel_with_members, delete_channel_in_pool, load_channel_members, load_channels,
     normalize_channel_name, open_dm_with_agent_in_pool, set_channel_agent_membership_in_pool,
@@ -80,14 +81,13 @@ use domain::{
 #[cfg(test)]
 use events::activity::activity_status;
 use events::activity::record_agent_activity;
-use events::control::AgentAttachmentFile;
 #[cfg(test)]
 use events::control::{
     claim_agent_event, extract_agent_event_json, handle_agent_event, AgentEvent,
 };
 use message_store::{
-    insert_agent_handoff_message, insert_agent_message, load_artifact, load_artifacts,
-    load_message, load_messages, load_saved_messages,
+    insert_agent_handoff_message, insert_agent_message, insert_message_attachments_tx,
+    load_artifact, load_artifacts, load_messages, load_saved_messages,
 };
 use models::{
     AgentActivity, AgentRun, AgentWorkItem, Artifact, AttachmentUpload, Bootstrap,
@@ -113,9 +113,8 @@ use runtime::surface::{
     append_claude_thread_context, same_codex_surface, CodexActiveTurnScheduleState,
 };
 use ui_notifications::{
-    insert_system_message, notify_supervisor_wake, notify_ui_agent_run_changed,
-    notify_ui_message_upsert, notify_ui_refresh, notify_ui_work_item_changed,
-    spawn_ui_refresh_listener,
+    insert_system_message, notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_refresh,
+    notify_ui_work_item_changed, spawn_ui_refresh_listener,
 };
 use usage::{agent_budget_exhausted, backfill_agent_run_usage_from_logs};
 
@@ -1769,64 +1768,6 @@ pub(crate) async fn send_owner_message_in_pool(
     Ok(())
 }
 
-async fn insert_message_attachments_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    message_id: Uuid,
-    attachments: Vec<AttachmentUpload>,
-) -> CommandResult<usize> {
-    let mut inserted = 0;
-    for attachment in attachments {
-        if attachment.bytes.is_empty() {
-            continue;
-        }
-        if attachment.bytes.len() > ATTACHMENT_SIZE_LIMIT {
-            return Err(format!(
-                "attachment {} is larger than 25MB",
-                attachment.original_name
-            ));
-        }
-        let attachment_id = Uuid::new_v4();
-        let original_name = attachment.original_name.trim();
-        let original_name = if original_name.is_empty() {
-            "attachment"
-        } else {
-            original_name
-        };
-        let mime_type = attachment.mime_type.trim();
-        let mime_type = if mime_type.is_empty() {
-            "application/octet-stream"
-        } else {
-            mime_type
-        };
-        let storage_path =
-            write_attachment_file(message_id, attachment_id, original_name, &attachment.bytes)?;
-        sqlx::query(
-            r#"
-            insert into message_attachments (
-                id,
-                message_id,
-                original_name,
-                mime_type,
-                size_bytes,
-                storage_path
-            )
-            values ($1, $2, $3, $4, $5, $6)
-            "#,
-        )
-        .bind(attachment_id)
-        .bind(message_id)
-        .bind(original_name)
-        .bind(mime_type)
-        .bind(attachment.bytes.len() as i64)
-        .bind(storage_path)
-        .execute(&mut **tx)
-        .await
-        .map_err(to_string)?;
-        inserted += 1;
-    }
-    Ok(inserted)
-}
-
 #[tauri::command]
 async fn update_message(
     message_id: Uuid,
@@ -2868,179 +2809,6 @@ async fn create_agent_handoff(
         work_item_id,
         handoff_message_id,
     ))
-}
-
-fn infer_attachment_mime_type(path: &Path, original_name: &str) -> String {
-    let extension = Path::new(original_name)
-        .extension()
-        .or_else(|| path.extension())
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match extension.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "txt" => "text/plain",
-        "md" | "markdown" => "text/markdown",
-        "json" => "application/json",
-        "csv" => "text/csv",
-        "html" | "htm" => "text/html",
-        "pdf" => "application/pdf",
-        _ => "application/octet-stream",
-    }
-    .to_owned()
-}
-
-fn load_agent_attachment_uploads(
-    files: Vec<AgentAttachmentFile>,
-) -> CommandResult<Vec<AttachmentUpload>> {
-    if files.is_empty() {
-        return Err("attachment_create requires at least one file".to_owned());
-    }
-    let mut uploads = Vec::with_capacity(files.len());
-    for file in files {
-        let raw_path = file.path.trim();
-        if raw_path.is_empty() {
-            return Err("attachment_create file path is empty".to_owned());
-        }
-        let path = PathBuf::from(raw_path);
-        let metadata = fs::metadata(&path)
-            .map_err(|err| format!("cannot read attachment file {}: {err}", path.display()))?;
-        if !metadata.is_file() {
-            return Err(format!("attachment path is not a file: {}", path.display()));
-        }
-        if metadata.len() > ATTACHMENT_SIZE_LIMIT as u64 {
-            return Err(format!(
-                "attachment file {} is larger than 25MB",
-                path.display()
-            ));
-        }
-        let bytes = fs::read(&path)
-            .map_err(|err| format!("cannot read attachment file {}: {err}", path.display()))?;
-        if bytes.is_empty() {
-            return Err(format!("attachment file is empty: {}", path.display()));
-        }
-        let original_name = file
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .or_else(|| {
-                path.file_name()
-                    .and_then(|value| value.to_str())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_else(|| "attachment".to_owned());
-        let mime_type = file
-            .mime_type
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| infer_attachment_mime_type(&path, &original_name));
-        uploads.push(AttachmentUpload {
-            original_name,
-            mime_type,
-            bytes,
-        });
-    }
-    Ok(uploads)
-}
-
-fn default_attachment_message_body(uploads: &[AttachmentUpload]) -> String {
-    if uploads.len() == 1 {
-        format!("Attached file: {}", uploads[0].original_name.trim())
-    } else {
-        format!("Attached {} files.", uploads.len())
-    }
-}
-
-async fn insert_agent_attachment_message(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    body: &str,
-    attachments: Vec<AttachmentUpload>,
-) -> CommandResult<Uuid> {
-    if attachments.is_empty() {
-        return Err("attachment_create requires at least one file".to_owned());
-    }
-    let body = body.trim();
-    if body.is_empty() {
-        return Err("attachment_create body is empty".to_owned());
-    }
-    if let Some(thread_root_id) = thread_root_id {
-        let root_channel: Option<Uuid> = sqlx::query_scalar(
-            "select channel_id from messages where id = $1 and thread_root_id is null",
-        )
-        .bind(thread_root_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(to_string)?;
-        if root_channel != Some(channel_id) {
-            return Err("thread_root_id does not belong to target channel".to_owned());
-        }
-    }
-
-    let sender = sqlx::query("select display_name, role from agents where id = $1")
-        .bind(agent_id)
-        .fetch_one(pool)
-        .await
-        .map_err(to_string)?;
-    let sender_name: String = sender.get("display_name");
-    let sender_role: String = sender.get("role");
-
-    let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(to_string)?;
-    let msg_id: Uuid = sqlx::query_scalar(
-        r#"
-        insert into messages (
-            channel_id, thread_root_id, sender_agent_id, sender_name, sender_role, body, is_task
-        )
-        values ($1, $2, $3, $4, $5, $6, false)
-        returning id
-        "#,
-    )
-    .bind(channel_id)
-    .bind(thread_root_id)
-    .bind(agent_id)
-    .bind(sender_name)
-    .bind(sender_role)
-    .bind(body)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(to_string)?;
-
-    let inserted = insert_message_attachments_tx(&mut tx, msg_id, attachments).await?;
-    if inserted == 0 {
-        return Err("attachment_create produced no attachments".to_owned());
-    }
-    tx.commit().await.map_err(to_string)?;
-
-    let conversation_thread_root_id = thread_root_id.unwrap_or(msg_id);
-    upsert_agent_thread_subscription(
-        pool,
-        agent_id,
-        channel_id,
-        conversation_thread_root_id,
-        "agent_attachment_message",
-        Some(msg_id),
-    )
-    .await?;
-    queue_agent_message_mentions(pool, msg_id).await?;
-    if let Ok(message) = load_message(pool, msg_id).await {
-        let _ = notify_ui_message_upsert(pool, &message, "attachment_created").await;
-    } else {
-        let _ = notify_ui_refresh(pool, "attachment_created").await;
-    }
-    Ok(msg_id)
 }
 
 async fn create_agent_task_thread(

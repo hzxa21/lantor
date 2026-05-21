@@ -7,13 +7,16 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::agent_memory::{append_agent_memory, append_run_log, compact_agent_memory};
+use crate::attachments::{
+    default_attachment_message_body, load_agent_attachment_uploads, AgentAttachmentFile,
+};
 use crate::channels::{add_agent_to_channel, create_channel_in_pool, normalize_channel_name};
 use crate::domain::parse_due_at;
 use crate::domain::reminders::{cancel_reminder_in_pool, create_reminder_in_pool};
 use crate::events::activity::{normalize_agent_activity_kind, record_agent_activity};
 use crate::message_store::{
-    insert_agent_handoff_message, insert_agent_message, insert_agent_message_with_options,
-    load_artifact, load_message,
+    insert_agent_attachment_message, insert_agent_handoff_message, insert_agent_message,
+    insert_agent_message_with_options, load_artifact, load_message,
 };
 use crate::text::compact_chars_middle;
 use crate::ui_notifications::{
@@ -21,25 +24,15 @@ use crate::ui_notifications::{
 };
 use crate::usage::record_run_usage;
 use crate::{
-    create_agent_handoff, create_agent_task_thread, default_attachment_message_body,
-    dispatch_task_assignment_to_agent, ensure_agent_channel_member,
-    insert_agent_attachment_message, load_agent_attachment_uploads, mark_run_work_item_silent,
-    queue_mentions_as_work_items, resolve_agent_by_handle, resolve_agent_handle,
-    resolve_event_channel, resolve_run_reminder_anchor, resolve_task_for_handoff, to_string,
-    try_claim_unassigned_task, CommandResult, MentionDispatchOrigin,
+    create_agent_handoff, create_agent_task_thread, dispatch_task_assignment_to_agent,
+    ensure_agent_channel_member, mark_run_work_item_silent, queue_mentions_as_work_items,
+    resolve_agent_by_handle, resolve_agent_handle, resolve_event_channel,
+    resolve_run_reminder_anchor, resolve_task_for_handoff, to_string, try_claim_unassigned_task,
+    CommandResult, MentionDispatchOrigin,
 };
 
 const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";
 const SILENT_REPLY_PREFIX: &str = "LANTOR_SILENT_REPLY";
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct AgentAttachmentFile {
-    #[serde(alias = "local_path")]
-    pub(crate) path: String,
-    pub(crate) name: Option<String>,
-    #[serde(alias = "mime")]
-    pub(crate) mime_type: Option<String>,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use uuid::Uuid;
 
-use crate::ui_notifications::notify_ui_refresh;
+use crate::attachments::{write_attachment_file, ATTACHMENT_SIZE_LIMIT};
+use crate::ui_notifications::{notify_ui_message_upsert, notify_ui_refresh};
 use crate::{
-    models::{Artifact, Message, MessageAttachment, SavedMessage},
+    models::{Artifact, AttachmentUpload, Message, MessageAttachment, SavedMessage},
     queue_agent_message_mentions, to_string, upsert_agent_thread_subscription, CommandResult,
 };
 
@@ -303,6 +304,148 @@ pub(crate) async fn insert_agent_message_with_options(
         queue_agent_message_mentions(pool, msg_id).await?;
     }
     let _ = notify_ui_refresh(pool, "message").await;
+    Ok(msg_id)
+}
+
+pub(crate) async fn insert_message_attachments_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    message_id: Uuid,
+    attachments: Vec<AttachmentUpload>,
+) -> CommandResult<usize> {
+    let mut inserted = 0;
+    for attachment in attachments {
+        if attachment.bytes.is_empty() {
+            continue;
+        }
+        if attachment.bytes.len() > ATTACHMENT_SIZE_LIMIT {
+            return Err(format!(
+                "attachment {} is larger than 25MB",
+                attachment.original_name
+            ));
+        }
+        let attachment_id = Uuid::new_v4();
+        let original_name = attachment.original_name.trim();
+        let original_name = if original_name.is_empty() {
+            "attachment"
+        } else {
+            original_name
+        };
+        let mime_type = attachment.mime_type.trim();
+        let mime_type = if mime_type.is_empty() {
+            "application/octet-stream"
+        } else {
+            mime_type
+        };
+        let storage_path =
+            write_attachment_file(message_id, attachment_id, original_name, &attachment.bytes)?;
+        sqlx::query(
+            r#"
+            insert into message_attachments (
+                id,
+                message_id,
+                original_name,
+                mime_type,
+                size_bytes,
+                storage_path
+            )
+            values ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(attachment_id)
+        .bind(message_id)
+        .bind(original_name)
+        .bind(mime_type)
+        .bind(attachment.bytes.len() as i64)
+        .bind(storage_path)
+        .execute(&mut **tx)
+        .await
+        .map_err(to_string)?;
+        inserted += 1;
+    }
+    Ok(inserted)
+}
+
+pub(crate) async fn insert_agent_attachment_message(
+    pool: &SqlitePool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    body: &str,
+    attachments: Vec<AttachmentUpload>,
+) -> CommandResult<Uuid> {
+    if attachments.is_empty() {
+        return Err("attachment_create requires at least one file".to_owned());
+    }
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("attachment_create body is empty".to_owned());
+    }
+    if let Some(thread_root_id) = thread_root_id {
+        let root_channel: Option<Uuid> = sqlx::query_scalar(
+            "select channel_id from messages where id = $1 and thread_root_id is null",
+        )
+        .bind(thread_root_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+        if root_channel != Some(channel_id) {
+            return Err("thread_root_id does not belong to target channel".to_owned());
+        }
+    }
+
+    let sender = sqlx::query("select display_name, role from agents where id = $1")
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    let sender_name: String = sender.get("display_name");
+    let sender_role: String = sender.get("role");
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(to_string)?;
+    let msg_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into messages (
+            channel_id, thread_root_id, sender_agent_id, sender_name, sender_role, body, is_task
+        )
+        values ($1, $2, $3, $4, $5, $6, false)
+        returning id
+        "#,
+    )
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(agent_id)
+    .bind(sender_name)
+    .bind(sender_role)
+    .bind(body)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(to_string)?;
+
+    let inserted = insert_message_attachments_tx(&mut tx, msg_id, attachments).await?;
+    if inserted == 0 {
+        return Err("attachment_create produced no attachments".to_owned());
+    }
+    tx.commit().await.map_err(to_string)?;
+
+    let conversation_thread_root_id = thread_root_id.unwrap_or(msg_id);
+    upsert_agent_thread_subscription(
+        pool,
+        agent_id,
+        channel_id,
+        conversation_thread_root_id,
+        "agent_attachment_message",
+        Some(msg_id),
+    )
+    .await?;
+    queue_agent_message_mentions(pool, msg_id).await?;
+    if let Ok(message) = load_message(pool, msg_id).await {
+        let _ = notify_ui_message_upsert(pool, &message, "attachment_created").await;
+    } else {
+        let _ = notify_ui_refresh(pool, "attachment_created").await;
+    }
     Ok(msg_id)
 }
 
