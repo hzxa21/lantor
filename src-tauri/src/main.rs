@@ -615,12 +615,20 @@ async fn resolve_event_channel(
     channel_name: Option<&str>,
 ) -> CommandResult<Uuid> {
     if let Some(channel_id) = channel_id {
-        let exists: Option<Uuid> = sqlx::query_scalar("select id from channels where id = $1")
-            .bind(channel_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(to_string)?;
-        return exists.ok_or_else(|| format!("channel {channel_id} does not exist"));
+        let resolved: Option<Uuid> = sqlx::query_scalar(
+            r#"
+            select id
+            from channels
+            where id = $1 or (kind = 'dm' and dm_agent_id = $1)
+            order by case when id = $1 then 0 else 1 end
+            limit 1
+            "#,
+        )
+        .bind(channel_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)?;
+        return resolved.ok_or_else(|| format!("channel {channel_id} does not exist"));
     }
 
     let Some(name) = channel_name else {
@@ -1952,6 +1960,93 @@ mod tests {
             );
 
             let stored_path = std::path::PathBuf::from(&attachment.storage_path);
+            let _ = std::fs::remove_file(&stored_path);
+            if let Some(parent) = stored_path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn attachment_create_event_accepts_dm_agent_id_as_channel_id() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let agent_id = insert_test_agent(&pool, "dm-attachment-agent").await?;
+            let dm_channel_id =
+                Uuid::parse_str(&open_dm_with_agent_in_pool(&pool, agent_id).await?)
+                    .map_err(|err| err.to_string())?;
+            let run_id: Uuid = sqlx::query_scalar(
+                r#"
+                insert into agent_runs (agent_id, command, status)
+                values ($1, 'codex app-server', 'running')
+                returning id
+                "#,
+            )
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let dir =
+                std::env::temp_dir().join(format!("lantor-dm-attachment-test-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+            let source_path = dir.join("parked.patch");
+            let source_bytes = b"diff --git a/file b/file\n";
+            std::fs::write(&source_path, source_bytes).map_err(|err| err.to_string())?;
+
+            handle_agent_event(
+                &pool,
+                agent_id,
+                run_id,
+                AgentEvent::AttachmentCreate {
+                    channel: None,
+                    channel_id: Some(agent_id),
+                    thread_root_id: None,
+                    body: Some("Parked supervisor patch".to_owned()),
+                    files: vec![AgentAttachmentFile {
+                        path: source_path.to_string_lossy().to_string(),
+                        name: Some("parked.patch".to_owned()),
+                        mime_type: Some("text/plain".to_owned()),
+                    }],
+                },
+            )
+            .await?;
+
+            let row = sqlx::query(
+                r#"
+                select channel_id, thread_root_id
+                from messages
+                where body = 'Parked supervisor patch'
+                "#,
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(row.get::<Uuid, _>("channel_id"), dm_channel_id);
+            assert_eq!(row.get::<Option<Uuid>, _>("thread_root_id"), None);
+
+            let stored_path: String = sqlx::query_scalar(
+                r#"
+                select ma.storage_path
+                from message_attachments ma
+                join messages m on m.id = ma.message_id
+                where m.body = 'Parked supervisor patch'
+                  and ma.original_name = 'parked.patch'
+                "#,
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert!(!stored_path.is_empty());
+
+            let stored_path = std::path::PathBuf::from(stored_path);
             let _ = std::fs::remove_file(&stored_path);
             if let Some(parent) = stored_path.parent() {
                 let _ = std::fs::remove_dir(parent);
