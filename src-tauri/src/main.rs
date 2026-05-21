@@ -21,6 +21,7 @@ mod models;
 mod owner_inbox;
 mod prompts;
 mod runtime;
+mod system_commands;
 mod task_messages;
 mod task_store;
 mod text;
@@ -30,8 +31,6 @@ mod web;
 
 use std::{
     env,
-    path::Path,
-    process::{Command as StdCommand, Stdio},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -73,7 +72,7 @@ use channels::{
     open_dm_with_agent_in_pool, set_channel_agent_membership_in_pool, update_channel_in_pool,
 };
 use context_tool::run_agent_context_tool;
-use db::{acquire_supervisor_lock, db_connect_with_url, db_url, expand_home_path, migrate};
+use db::{acquire_supervisor_lock, db_connect_with_url, db_url, migrate};
 use domain::{
     reminders::{cancel_reminder, complete_reminder, create_reminder, snooze_reminder},
     schedules::{create_agent_schedule, update_agent_schedule_status},
@@ -91,8 +90,7 @@ use message_store::{
     update_message_in_pool,
 };
 use models::{
-    Artifact, AttachmentUpload, Bootstrap, LaunchAgentStatus, RuntimeCheck, SupervisorCommand,
-    SupervisorStatus,
+    Artifact, AttachmentUpload, Bootstrap, LaunchAgentStatus, SupervisorCommand, SupervisorStatus,
 };
 use owner_inbox::{
     dismiss_inbox_items_in_pool, mark_all_owner_inbox_read_in_pool, mark_channel_read_in_pool,
@@ -117,6 +115,7 @@ use runtime::supervisor::{
 use runtime::surface::{
     append_claude_thread_context, same_codex_surface, CodexActiveTurnScheduleState,
 };
+use system_commands::{check_runtime, open_external_url};
 use task_store::{update_task_status_in_pool, update_task_title_in_pool};
 use ui_notifications::{
     notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_refresh,
@@ -153,145 +152,6 @@ struct CreateChannelResult {
 #[tauri::command]
 async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
     load_bootstrap(&state.pool, state.db_url.clone()).await
-}
-
-fn normalize_external_url(url: &str) -> Option<String> {
-    let (scheme, rest) = url.split_once(':')?;
-    let scheme = scheme.to_ascii_lowercase();
-    match scheme.as_str() {
-        "http" | "https" if rest.starts_with("//") => Some(url.to_owned()),
-        "mailto" if !rest.is_empty() => Some(url.to_owned()),
-        "file" if rest.starts_with("//") => Some(url.to_owned()),
-        _ => None,
-    }
-}
-
-fn strip_local_path_line_suffix(value: &str) -> &str {
-    if Path::new(value).exists() {
-        return value;
-    }
-
-    if let Some((path, line)) = value.rsplit_once(':') {
-        if !line.is_empty() && line.chars().all(|c| c.is_ascii_digit()) && Path::new(path).exists()
-        {
-            return path;
-        }
-    }
-
-    if let Some((path, line)) = value.rsplit_once("#L") {
-        if !line.is_empty() && line.chars().all(|c| c.is_ascii_digit()) && Path::new(path).exists()
-        {
-            return path;
-        }
-    }
-
-    value
-}
-
-fn normalize_local_path_link(url: &str) -> Option<String> {
-    let expanded = expand_home_path(url);
-    let without_line_suffix = strip_local_path_line_suffix(&expanded);
-    let path = Path::new(without_line_suffix);
-    if path.is_absolute() && path.exists() {
-        return Some(path.to_string_lossy().to_string());
-    }
-    None
-}
-
-fn normalize_open_link_target(url: &str) -> Option<String> {
-    let trimmed = url.trim();
-    if trimmed.is_empty() || trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
-        return None;
-    }
-
-    normalize_external_url(trimmed).or_else(|| normalize_local_path_link(trimmed))
-}
-
-fn open_link_target_with_system(target: &str) -> CommandResult<()> {
-    #[cfg(target_os = "macos")]
-    let status = StdCommand::new("open")
-        .arg(target)
-        .status()
-        .map_err(to_string)?;
-
-    #[cfg(target_os = "windows")]
-    let status = StdCommand::new("cmd")
-        .args(["/C", "start", "", target])
-        .status()
-        .map_err(to_string)?;
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let status = StdCommand::new("xdg-open")
-        .arg(target)
-        .status()
-        .map_err(to_string)?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("failed to open link target: {status}"))
-    }
-}
-
-#[tauri::command]
-async fn open_external_url(url: String) -> CommandResult<()> {
-    let target = normalize_open_link_target(&url).ok_or_else(|| {
-        "only http, https, mailto, file, and existing local file links can be opened".to_owned()
-    })?;
-    tauri::async_runtime::spawn_blocking(move || open_link_target_with_system(&target))
-        .await
-        .map_err(to_string)?
-}
-
-#[tauri::command]
-async fn check_runtime(runtime: String) -> CommandResult<RuntimeCheck> {
-    check_runtime_in_env(runtime).await
-}
-
-pub(crate) async fn check_runtime_in_env(runtime: String) -> CommandResult<RuntimeCheck> {
-    let runtime = runtime.trim().to_owned();
-    let command = match runtime.as_str() {
-        "codex" => "codex",
-        "claude" => "claude",
-        _ => {
-            return Ok(RuntimeCheck {
-                runtime,
-                command: String::new(),
-                available: false,
-                detail: "Unknown runtime".to_owned(),
-            });
-        }
-    };
-
-    let script = format!(
-        "if command -v {command} >/dev/null 2>&1; then {command} --version 2>&1 | head -n 1; else echo '{command} not found in PATH' >&2; exit 127; fi"
-    );
-    let output = StdCommand::new("/bin/zsh")
-        .arg("-lc")
-        .arg(script)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(to_string)?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    let detail = if !stdout.is_empty() {
-        stdout
-    } else if !stderr.is_empty() {
-        stderr
-    } else if output.status.success() {
-        format!("{command} found")
-    } else {
-        format!("{command} unavailable")
-    };
-
-    Ok(RuntimeCheck {
-        runtime,
-        command: command.to_owned(),
-        available: output.status.success(),
-        detail,
-    })
 }
 
 #[tauri::command]
@@ -1463,11 +1323,11 @@ mod tests {
         domain::reminders::load_reminders,
         ensure_agent_workspace, extract_agent_event_json, extract_agent_mentions,
         handle_agent_event, inbox_wake_context, load_agent_memory_context,
-        load_channel_agent_roster, normalize_open_link_target, open_dm_with_agent_in_pool,
-        queue_mentions_as_work_items, record_agent_activity, same_codex_surface,
-        try_claim_unassigned_task, upsert_agent_thread_subscription, AgentAttachmentFile,
-        AgentEvent, AgentInboxItemInput, InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin,
-        AGENT_MEMORY_CONTEXT_LIMIT, WORK_ITEM_FINISH_PROMPT,
+        load_channel_agent_roster, open_dm_with_agent_in_pool, queue_mentions_as_work_items,
+        record_agent_activity, same_codex_surface, try_claim_unassigned_task,
+        upsert_agent_thread_subscription, AgentAttachmentFile, AgentEvent, AgentInboxItemInput,
+        InboxWakeItem, InboxWakeSummary, MentionDispatchOrigin, AGENT_MEMORY_CONTEXT_LIMIT,
+        WORK_ITEM_FINISH_PROMPT,
     };
     use chrono::{Duration as ChronoDuration, Utc};
     use serde_json::{json, Value};
@@ -1492,46 +1352,6 @@ mod tests {
     fn ignores_empty_or_email_like_at_signs() {
         let mentions = extract_agent_mentions("email a@b.com and a lone @ sign");
         assert!(mentions.is_empty());
-    }
-
-    #[test]
-    fn open_link_target_normalization_allows_safe_schemes() {
-        assert_eq!(
-            normalize_open_link_target(" https://example.com/path?q=1 "),
-            Some("https://example.com/path?q=1".to_owned())
-        );
-        assert_eq!(
-            normalize_open_link_target("mailto:hello@example.com"),
-            Some("mailto:hello@example.com".to_owned())
-        );
-        assert_eq!(
-            normalize_open_link_target("file:///tmp/report.txt"),
-            Some("file:///tmp/report.txt".to_owned())
-        );
-        assert!(normalize_open_link_target("javascript:alert(1)").is_none());
-        assert!(normalize_open_link_target("https://example.com/\nopen").is_none());
-    }
-
-    #[test]
-    fn open_link_target_normalization_allows_existing_local_paths_with_line_suffixes() {
-        let dir = std::env::temp_dir().join(format!("lantor-link-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("main.rs");
-        std::fs::write(&file, "fn main() {}\n").unwrap();
-        let file = file.to_string_lossy().to_string();
-
-        assert_eq!(normalize_open_link_target(&file), Some(file.clone()));
-        assert_eq!(
-            normalize_open_link_target(&format!("{file}:42")),
-            Some(file.clone())
-        );
-        assert_eq!(
-            normalize_open_link_target(&format!("{file}#L42")),
-            Some(file.clone())
-        );
-        assert!(normalize_open_link_target("/definitely/not/a/lantor/file.rs:1").is_none());
-
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
