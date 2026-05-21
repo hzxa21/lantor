@@ -9038,7 +9038,8 @@ body.resizing-row * {
   }
 
   .agent-drawer-body {
-    padding: 12px;
+    --mobile-bottom-clearance: calc(92px + env(safe-area-inset-bottom));
+    padding: 12px 12px calc(var(--mobile-bottom-clearance) + 16px);
   }
 
   .agent-detail-hero {
@@ -9068,6 +9069,101 @@ body.resizing-row * {
   .agent-detail-tab {
     min-height: 52px;
     scroll-snap-align: start;
+  }
+
+  .agent-detail-panel.panel-activity {
+    overflow: hidden;
+  }
+
+  .agent-drawer .live-activity-section {
+    min-height: 0;
+  }
+
+  .agent-drawer .activity-run-list {
+    gap: 12px;
+    padding: 2px 0 10px;
+  }
+
+  .agent-drawer .activity-run-card {
+    gap: 10px;
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .agent-drawer .activity-run-head {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .agent-drawer .activity-run-head h5,
+  .agent-drawer .activity-run-head p {
+    white-space: normal;
+  }
+
+  .agent-drawer .activity-run-head button {
+    justify-self: end;
+  }
+
+  .agent-drawer .activity-run-step {
+    grid-template-columns: 14px minmax(0, 1fr);
+    gap: 4px 10px;
+    padding: 10px 0;
+  }
+
+  .agent-drawer .activity-run-step time {
+    grid-column: 2;
+    grid-row: 1;
+    padding-top: 0;
+    text-align: left;
+  }
+
+  .agent-drawer .activity-run-step .activity-dot {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    margin-top: 4px;
+  }
+
+  .agent-drawer .activity-run-step .activity-dot::after {
+    height: calc(100% + 60px);
+  }
+
+  .agent-drawer .activity-run-step:last-child .activity-dot::after {
+    display: none;
+  }
+
+  .agent-drawer .activity-run-step .activity-timeline-body {
+    grid-column: 2;
+    grid-row: 2;
+    overflow: visible;
+  }
+
+  .agent-drawer .activity-timeline-title {
+    flex-wrap: wrap;
+    gap: 5px 7px;
+  }
+
+  .agent-drawer .activity-timeline-title strong {
+    flex: 1 1 100%;
+    white-space: normal;
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .agent-drawer .activity-structure-line,
+  .agent-drawer .activity-metadata {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .agent-drawer .activity-structure-line span,
+  .agent-drawer .activity-metadata span {
+    max-width: min(100%, 180px);
+  }
+
+  .agent-drawer .activity-timeline-body p {
+    -webkit-line-clamp: 2;
   }
 
   .detail-grid,
