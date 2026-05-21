@@ -3185,7 +3185,6 @@ function App() {
       <Sidebar
         data={data}
         channel={channel}
-        channelAlertIds={channelAlertIds}
         activityFeedUnreadCount={activityFeedUnreadCount}
         savedUnreadCount={savedUnreadCount}
         openSearch={openSearchModal}
