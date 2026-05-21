@@ -1929,18 +1929,6 @@
       "n": 0
     },
     {
-      "selector": ".channel.selected",
-      "prop": "box-shadow",
-      "literal": "rgba(20, 23, 31, 0.05)",
-      "n": 0
-    },
-    {
-      "selector": ".channel.selected",
-      "prop": "box-shadow",
-      "literal": "rgba(255, 255, 255, 0.82)",
-      "n": 0
-    },
-    {
       "selector": ".code-block-shell button",
       "prop": "background",
       "literal": "rgba(255, 255, 255, 0.1)",
@@ -2046,54 +2034,6 @@
       "selector": ".detail-work-actions button.danger",
       "prop": "color",
       "literal": "#c91810",
-      "n": 0
-    },
-    {
-      "selector": ".dm-row:hover",
-      "prop": "background",
-      "literal": "rgba(10, 132, 255, 0.055)",
-      "n": 0
-    },
-    {
-      "selector": ".dm-row:hover .dm-detail-trigger, .dm-row:focus-within .dm-detail-trigger, .dm-detail-trigger:hover, .dm-detail-trigger:focus-visible",
-      "prop": "background",
-      "literal": "rgba(246, 247, 249, 0.9)",
-      "n": 0
-    },
-    {
-      "selector": ".dm-row:hover .dm-detail-trigger, .dm-row:focus-within .dm-detail-trigger, .dm-detail-trigger:hover, .dm-detail-trigger:focus-visible",
-      "prop": "background",
-      "literal": "rgba(255, 255, 255, 0.94)",
-      "n": 0
-    },
-    {
-      "selector": ".dm-row:hover .dm-detail-trigger, .dm-row:focus-within .dm-detail-trigger, .dm-detail-trigger:hover, .dm-detail-trigger:focus-visible",
-      "prop": "border-color",
-      "literal": "rgba(10, 132, 255, 0.22)",
-      "n": 0
-    },
-    {
-      "selector": ".dm-row:hover .dm-detail-trigger, .dm-row:focus-within .dm-detail-trigger, .dm-detail-trigger:hover, .dm-detail-trigger:focus-visible",
-      "prop": "box-shadow",
-      "literal": "rgba(20, 23, 31, 0.08)",
-      "n": 0
-    },
-    {
-      "selector": ".dm-row:hover .dm-detail-trigger, .dm-row:focus-within .dm-detail-trigger, .dm-detail-trigger:hover, .dm-detail-trigger:focus-visible",
-      "prop": "box-shadow",
-      "literal": "rgba(255, 255, 255, 0.76)",
-      "n": 0
-    },
-    {
-      "selector": ".dm.selected .dm-badge, .dm-row.selected .dm .dm-badge",
-      "prop": "background",
-      "literal": "rgba(10, 132, 255, 0.1)",
-      "n": 0
-    },
-    {
-      "selector": ".dm.selected .dm-badge, .dm-row.selected .dm .dm-badge",
-      "prop": "color",
-      "literal": "#0a84ff",
       "n": 0
     },
     {
