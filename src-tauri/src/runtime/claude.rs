@@ -9,6 +9,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::agent_memory::append_run_log;
 use crate::events::activity::{record_agent_activity, record_agent_activity_throttled};
 use crate::prompts::{build_claude_streaming_prompt, claude_system_prompt};
 use crate::runtime::{
@@ -22,8 +23,8 @@ use crate::runtime::{
 };
 use crate::usage::{record_run_usage, usage_from_runtime_event};
 use crate::{
-    append_run_log, notify_supervisor_wake, notify_ui_agent_run_changed,
-    notify_ui_work_item_changed, to_string, CommandResult,
+    notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_work_item_changed, to_string,
+    CommandResult,
 };
 
 mod protocol;

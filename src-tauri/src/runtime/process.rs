@@ -8,6 +8,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::agent_memory::append_run_log;
 use crate::events::activity::{
     record_agent_activity, record_agent_activity_throttled, work_status_title,
 };
@@ -17,7 +18,7 @@ use crate::events::control::{
 };
 use crate::runtime::streaming::mark_run_work_item_silent;
 use crate::{
-    append_run_log, db_url, mark_task_after_work_item_finished, notify_ui_agent_run_changed,
+    db_url, mark_task_after_work_item_finished, notify_ui_agent_run_changed,
     notify_ui_work_item_changed, to_string, CommandResult,
 };
 

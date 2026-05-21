@@ -14,6 +14,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::agent_memory::append_run_log;
 use crate::events::activity::{record_agent_activity, record_agent_activity_throttled};
 use crate::prompts::{build_codex_streaming_prompt, codex_developer_instructions};
 use crate::runtime::{
@@ -31,9 +32,8 @@ use crate::runtime::{
 };
 use crate::usage::{record_run_usage, usage_from_runtime_event};
 use crate::{
-    append_run_log, build_steer_followup_prompt, load_inbox_wake_items_for_work_item,
-    notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_work_item_changed, to_string,
-    CommandResult,
+    build_steer_followup_prompt, load_inbox_wake_items_for_work_item, notify_supervisor_wake,
+    notify_ui_agent_run_changed, notify_ui_work_item_changed, to_string, CommandResult,
 };
 
 mod protocol;
