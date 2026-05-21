@@ -23,12 +23,13 @@ use crate::message_store::{
     insert_agent_attachment_message, insert_agent_handoff_message, insert_agent_message,
     insert_agent_message_with_options,
 };
+use crate::runtime::streaming::mark_run_work_item_silent;
 use crate::task_messages::create_agent_task_thread;
 use crate::ui_notifications::{insert_system_message, notify_ui_refresh};
 use crate::usage::record_run_usage;
 use crate::{
-    dispatch_task_assignment_to_agent, mark_run_work_item_silent, resolve_event_channel,
-    resolve_run_reminder_anchor, to_string, try_claim_unassigned_task, CommandResult,
+    dispatch_task_assignment_to_agent, resolve_event_channel, resolve_run_reminder_anchor,
+    to_string, try_claim_unassigned_task, CommandResult,
 };
 
 const AGENT_EVENT_PREFIX: &str = "LANTOR_EVENT ";
