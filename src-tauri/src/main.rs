@@ -17,6 +17,7 @@ mod db;
 mod domain;
 mod events;
 mod launch_agent;
+mod lifecycle_commands;
 mod message_store;
 mod models;
 mod owner_inbox;
@@ -74,17 +75,19 @@ use domain::{
     spawn_reminder_worker,
 };
 #[cfg(test)]
-use events::activity::activity_status;
-use events::activity::record_agent_activity;
+use events::activity::{activity_status, record_agent_activity};
 #[cfg(test)]
 use events::control::{
     claim_agent_event, extract_agent_event_json, handle_agent_event, AgentEvent,
+};
+use lifecycle_commands::{
+    install_supervisor_service, start_agent, stop_agent, uninstall_supervisor_service,
 };
 use message_store::{
     delete_message_in_pool, load_artifact, send_owner_message_in_pool, set_message_saved_in_pool,
     update_message_in_pool,
 };
-use models::{Artifact, AttachmentUpload, Bootstrap, LaunchAgentStatus, SupervisorStatus};
+use models::{Artifact, AttachmentUpload, Bootstrap};
 use owner_inbox::{
     dismiss_inbox_items_in_pool, mark_all_owner_inbox_read_in_pool, mark_channel_read_in_pool,
     mark_inbox_items_read_in_pool, update_thread_followed_in_pool,
@@ -94,10 +97,7 @@ use prompts::{ensure_agent_workspace, AGENT_MEMORY_CONTEXT_LIMIT, WORK_ITEM_FINI
 use runtime::supervisor::run_supervisor;
 use system_commands::{check_runtime, open_external_url};
 use task_store::{update_task_status_in_pool, update_task_title_in_pool};
-use ui_notifications::{
-    notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_refresh,
-    spawn_ui_refresh_listener,
-};
+use ui_notifications::spawn_ui_refresh_listener;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,152 +256,6 @@ async fn delete_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResu
 }
 
 #[tauri::command]
-async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
-    let active_run: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        select id
-        from agent_runs
-        where agent_id = $1
-          and stopped_at is null
-          and status in ('starting', 'running', 'stopping')
-        limit 1
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(to_string)?;
-
-    if active_run.is_some() {
-        return Err("agent already has an active run".to_owned());
-    }
-
-    let pending_start: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        select id
-        from supervisor_commands
-        where command_type = 'start_agent'
-          and agent_id = $1
-          and status in ('pending', 'running')
-        limit 1
-        "#,
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(to_string)?;
-
-    if pending_start.is_some() {
-        return Err("agent already has a pending start command".to_owned());
-    }
-
-    sqlx::query(
-        r#"
-        insert into supervisor_commands (command_type, agent_id)
-        values ('start_agent', $1)
-        "#,
-    )
-    .bind(agent_id)
-    .execute(&state.pool)
-    .await
-    .map_err(to_string)?;
-    let _ = notify_supervisor_wake(&state.pool).await;
-    let _ = notify_ui_refresh(&state.pool, "supervisor_command").await;
-    sqlx::query("update agents set status = 'queued' where id = $1")
-        .bind(agent_id)
-        .execute(&state.pool)
-        .await
-        .map_err(to_string)?;
-    record_agent_activity(
-        &state.pool,
-        Some(agent_id),
-        None,
-        "run",
-        "Start queued",
-        "Waiting for supervisor to launch the agent",
-    )
-    .await?;
-
-    Ok(())
-}
-
-#[tauri::command]
-async fn stop_agent(run_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
-    let row = sqlx::query(
-        r#"
-        select agent_id, pid, work_item_id
-        from agent_runs
-        where id = $1 and stopped_at is null
-        "#,
-    )
-    .bind(run_id)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(to_string)?;
-
-    let agent_id: Uuid = row.get("agent_id");
-    sqlx::query(
-        r#"
-        insert into supervisor_commands (command_type, agent_id, run_id)
-        values ('stop_run', $1, $2)
-        "#,
-    )
-    .bind(agent_id)
-    .bind(run_id)
-    .execute(&state.pool)
-    .await
-    .map_err(to_string)?;
-    let _ = notify_supervisor_wake(&state.pool).await;
-    let _ = notify_ui_refresh(&state.pool, "supervisor_command").await;
-    sqlx::query("update agent_runs set status = 'stopping' where id = $1")
-        .bind(run_id)
-        .execute(&state.pool)
-        .await
-        .map_err(to_string)?;
-    notify_ui_agent_run_changed(&state.pool, run_id, "run_stopping").await;
-    sqlx::query("update agents set status = 'stopping' where id = $1")
-        .bind(agent_id)
-        .execute(&state.pool)
-        .await
-        .map_err(to_string)?;
-    record_agent_activity(
-        &state.pool,
-        Some(agent_id),
-        Some(run_id),
-        "run",
-        "Stop requested",
-        "Stop command queued for supervisor",
-    )
-    .await?;
-
-    Ok(())
-}
-
-#[tauri::command]
-async fn install_supervisor_service(
-    state: State<'_, AppState>,
-) -> CommandResult<LaunchAgentStatus> {
-    let status = launch_agent::install_supervisor_service(state.db_url())?;
-    let _ = notify_ui_refresh(&state.pool, "supervisor_service_installed").await;
-    Ok(status)
-}
-
-#[tauri::command]
-async fn uninstall_supervisor_service(
-    state: State<'_, AppState>,
-) -> CommandResult<LaunchAgentStatus> {
-    let status = launch_agent::uninstall_supervisor_service()?;
-
-    sqlx::query("update supervisor_state set status = 'offline', updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now') where id = 1")
-        .execute(&state.pool)
-        .await
-        .map_err(to_string)?;
-
-    let _ = notify_ui_refresh(&state.pool, "supervisor_service_uninstalled").await;
-    Ok(status)
-}
-
-#[tauri::command]
 async fn send_message(
     channel_id: Uuid,
     thread_root_id: Option<Uuid>,
@@ -507,40 +361,6 @@ async fn update_thread_followed(
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     update_thread_followed_in_pool(&state.pool, thread_root_id, followed).await
-}
-
-pub(crate) async fn load_supervisor_status(pool: &SqlitePool) -> CommandResult<SupervisorStatus> {
-    let row = sqlx::query(
-        r#"
-        select pid, status, updated_at
-        from supervisor_state
-        where id = 1
-        "#,
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(to_string)?;
-
-    let Some(row) = row else {
-        return Ok(SupervisorStatus {
-            pid: None,
-            status: "offline".to_owned(),
-            updated_at: None,
-        });
-    };
-
-    let updated_at: DateTime<Utc> = row.get("updated_at");
-    let status = if Utc::now().signed_duration_since(updated_at).num_seconds() > 10 {
-        "stale".to_owned()
-    } else {
-        row.get("status")
-    };
-
-    Ok(SupervisorStatus {
-        pid: row.get("pid"),
-        status,
-        updated_at: Some(updated_at),
-    })
 }
 
 async fn resolve_run_reminder_anchor(
