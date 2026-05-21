@@ -208,86 +208,8 @@
     },
     {
       "selector": ".activity-progress-history",
-      "prop": "background",
-      "literal": "rgba(255, 255, 255, 0.96)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-history",
-      "prop": "border",
-      "literal": "rgba(17, 24, 39, 0.08)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-history",
       "prop": "box-shadow",
       "literal": "rgba(15, 23, 42, 0.12)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-history b",
-      "prop": "color",
-      "literal": "#39475a",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-history li[data-status=\"error\"] b",
-      "prop": "color",
-      "literal": "#a34828",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-history small",
-      "prop": "color",
-      "literal": "rgba(79, 95, 114, 0.74)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-history strong",
-      "prop": "color",
-      "literal": "#253143",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-history time",
-      "prop": "color",
-      "literal": "rgba(79, 95, 114, 0.62)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-source-chip",
-      "prop": "background",
-      "literal": "rgba(118, 118, 128, 0.08)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-source-chip",
-      "prop": "border",
-      "literal": "rgba(118, 118, 128, 0.14)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-source-chip",
-      "prop": "color",
-      "literal": "rgba(79, 95, 114, 0.78)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-source-chip[data-kind=\"run_retry\"]",
-      "prop": "background",
-      "literal": "rgba(255, 159, 10, 0.12)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-source-chip[data-kind=\"run_retry\"]",
-      "prop": "border-color",
-      "literal": "rgba(255, 159, 10, 0.22)",
-      "n": 0
-    },
-    {
-      "selector": ".activity-progress-source-chip[data-kind=\"run_retry\"]",
-      "prop": "color",
-      "literal": "#8a5b00",
       "n": 0
     },
     {

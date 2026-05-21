@@ -3019,31 +3019,19 @@ mark {
 }
 
 .activity-progress-history {
-  /* 3 stacked lines (strong/b/small) × 18px + 1px gap × 2 + 4px row padding */
-  --activity-row-line-height: 18px;
-  --activity-row-gap: 1px;
-  --activity-row-padding-y: 4px;
-  --activity-row-height: calc(
-    3 * var(--activity-row-line-height) + 2 * var(--activity-row-gap) + 2 * var(--activity-row-padding-y)
-  );
-  --activity-list-gap: 6px;
-  --activity-list-padding-y: 8px;
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
   left: 0;
   display: grid;
-  gap: var(--activity-list-gap);
-  max-height: calc(
-    5 * var(--activity-row-height)
-    + 4 * var(--activity-list-gap)
-    + 2 * var(--activity-list-padding-y)
-  );
+  align-content: start;
+  gap: 0;
+  max-height: min(360px, calc(100vh - 160px));
   margin: 0;
-  padding: var(--activity-list-padding-y) 8px;
-  border: 1px solid rgba(17, 24, 39, 0.08);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.96);
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-floating);
   box-shadow: 0 14px 34px rgba(15, 23, 42, 0.12);
   list-style: none;
   overflow-y: auto;
@@ -3051,84 +3039,17 @@ mark {
   scrollbar-width: thin;
   backdrop-filter: blur(14px);
   scroll-snap-type: y proximity;
-  scroll-padding-top: var(--activity-list-padding-y);
+  scroll-padding-top: 8px;
 }
 
-.activity-progress-history li {
-  display: grid;
-  grid-template-columns: clamp(48px, 14%, 64px) auto minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  min-height: var(--activity-row-height);
-  padding: var(--activity-row-padding-y) 0;
+.activity-progress-history .activity-run-step {
+  grid-template-columns: clamp(58px, 16%, 76px) 14px minmax(0, 1fr);
+  padding-right: 0;
   scroll-snap-align: start;
 }
 
-.activity-progress-source-chip {
-  align-self: start;
-  max-width: 112px;
-  overflow: hidden;
-  padding: 2px 7px;
-  border: 1px solid rgba(118, 118, 128, 0.14);
-  border-radius: 999px;
-  background: rgba(118, 118, 128, 0.08);
-  color: rgba(79, 95, 114, 0.78);
-  font-size: var(--type-size-caption);
-  font-weight: var(--type-weight-semibold);
-  line-height: 14px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.activity-progress-source-chip[data-kind="run_retry"] {
-  border-color: rgba(255, 159, 10, 0.22);
-  background: rgba(255, 159, 10, 0.12);
-  color: #8a5b00;
-}
-
-.activity-progress-history time {
-  color: rgba(79, 95, 114, 0.62);
-  font-size: var(--type-size-caption);
-  line-height: var(--activity-row-line-height);
-  font-variant-numeric: tabular-nums;
-}
-
-.activity-progress-history span {
-  display: grid;
-  min-width: 0;
-  gap: var(--activity-row-gap);
-}
-
-.activity-progress-history strong,
-.activity-progress-history b,
-.activity-progress-history small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.activity-progress-history strong {
-  color: #253143;
-  font-size: var(--type-size-meta);
-  font-weight: var(--type-weight-semibold);
-  line-height: var(--activity-row-line-height);
-}
-
-.activity-progress-history b {
-  color: #39475a;
-  font-size: var(--type-size-meta);
-  font-weight: var(--type-weight-semibold);
-  line-height: var(--activity-row-line-height);
-}
-
-.activity-progress-history small {
-  color: rgba(79, 95, 114, 0.74);
-  font-size: var(--type-size-caption);
-  line-height: var(--activity-row-line-height);
-}
-
-.activity-progress-history li[data-status="error"] b {
-  color: #a34828;
+.activity-progress-history .activity-run-step:last-child .activity-dot::after {
+  display: none;
 }
 
 @keyframes progress-spin {
