@@ -2840,7 +2840,7 @@ mark {
 }
 
 .message-expand-button {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   width: fit-content;
   min-height: 26px;
