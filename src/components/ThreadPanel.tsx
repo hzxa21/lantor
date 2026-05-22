@@ -2,6 +2,7 @@ import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, Hash, MessageSquare, Pape
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
 import { useMentionPicker } from "../hooks/useMentionPicker";
+import { useMobileViewport } from "../hooks/useMobileViewport";
 import { APP_DISPLAY_NAME } from "../branding";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
@@ -971,6 +972,7 @@ function ThreadReplyComposer({
   const replyDragDepthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const shouldUseShortPlaceholder = useMobileViewport();
   const { text, updateText, commitText, markCommitted } = useBufferedComposerText(replyDraft, activeRoot?.id, setReplyDraft);
   const {
     mentionState,
@@ -1053,6 +1055,13 @@ function ThreadReplyComposer({
     focusComposer();
   }
 
+  const fullReplyPlaceholder = activeRoot
+    ? isDm ? `Reply to @${dmAgent?.handle || "agent"}` : "Reply in thread"
+    : "Select a thread to reply";
+  const replyPlaceholder = shouldUseShortPlaceholder
+    ? activeRoot ? "Reply" : "No thread"
+    : fullReplyPlaceholder;
+
   return (
     <section
       className={`reply-composer ${isReplyDragOver ? "drag-over" : ""}`}
@@ -1125,7 +1134,8 @@ function ThreadReplyComposer({
         onKeyDown={handleReplyKeyDown}
         onPaste={handleReplyPaste}
         disabled={!activeRoot}
-        placeholder={activeRoot ? isDm ? `Reply to @${dmAgent?.handle || "agent"}` : "Reply in thread" : "Select a thread to reply"}
+        placeholder={replyPlaceholder}
+        aria-label={fullReplyPlaceholder}
       />
       <div className="reply-composer-actions">
         <button

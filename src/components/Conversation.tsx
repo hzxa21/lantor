@@ -17,6 +17,7 @@ import {
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
 import { useMentionPicker } from "../hooks/useMentionPicker";
+import { useMobileViewport } from "../hooks/useMobileViewport";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -1259,6 +1260,7 @@ function ConversationComposer({
   const taskToggleHandledAtRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const shouldUseShortPlaceholder = useMobileViewport();
   const { text, updateText, commitText, markCommitted } = useBufferedComposerText(draft, channel?.id, setDraft);
   const {
     mentionState,
@@ -1376,6 +1378,15 @@ function ConversationComposer({
     focusComposer();
   }
 
+  const fullPlaceholder = channel
+    ? isDm
+      ? `Message @${dmAgent?.handle || "agent"}`
+      : `Message #${channel.name}`
+    : "Create a channel before messaging";
+  const placeholder = shouldUseShortPlaceholder
+    ? channel ? "Message" : "No channel"
+    : fullPlaceholder;
+
   return (
     <footer
       className={`composer ${isComposerDragOver ? "drag-over" : ""}`}
@@ -1448,13 +1459,8 @@ function ConversationComposer({
         onKeyDown={handleComposerKeyDown}
         onPaste={handleComposerPaste}
         disabled={!channel}
-        placeholder={
-          channel
-            ? isDm
-              ? `Message @${dmAgent?.handle || "agent"}`
-              : `Message #${channel.name}`
-            : "Create a channel before messaging"
-        }
+        placeholder={placeholder}
+        aria-label={fullPlaceholder}
       />
       <div className="composer-actions">
         <button

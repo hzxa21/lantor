@@ -4301,8 +4301,10 @@ mark {
 .composer textarea,
 .reply-composer textarea {
   width: 100%;
+  min-width: 0;
   min-height: 74px;
   overflow-y: hidden;
+  overflow-wrap: anywhere;
   resize: none;
   padding: 14px 15px;
   border: 1px solid var(--control-border);
@@ -9019,7 +9021,7 @@ body.resizing-row * {
   .reply-composer:focus-within,
   .app.mobile-composer-focused .composer,
   .app.mobile-composer-focused .reply-composer {
-    margin-bottom: calc(68px + env(safe-area-inset-bottom));
+    margin-bottom: 0;
     padding-bottom: calc(6px + env(safe-area-inset-bottom));
   }
 
@@ -9112,6 +9114,10 @@ body.resizing-row * {
       0 16px 40px rgba(20, 23, 31, 0.18),
       0 2px 8px rgba(20, 23, 31, 0.08);
     backdrop-filter: blur(24px) saturate(1.16);
+  }
+
+  .app.mobile-composer-focused .mobile-bottom-nav {
+    display: none;
   }
 
   .mobile-bottom-nav button {
