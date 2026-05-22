@@ -3230,6 +3230,8 @@ mark {
 
 .message-progress-layer,
 .thread-progress-layer {
+  position: relative;
+  z-index: 8;
   display: flex;
   justify-content: center;
   min-height: 0;
@@ -3239,7 +3241,8 @@ mark {
 
 .message-progress-layer .activity-progress-dock,
 .thread-progress-layer .activity-progress-dock {
-  position: static;
+  position: relative;
+  top: auto;
   margin: 0 auto;
   pointer-events: auto;
 }
