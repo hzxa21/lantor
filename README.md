@@ -4,11 +4,12 @@
 
 # Lantor
 
-**A local-first multi-agent workspace for one human and a team of AI agents.**
+**Your local command center for Codex, Claude, and your own agent team.**
 
-Lantor turns Codex and Claude CLIs into a lightweight, Slack-style workspace:
-channels, DMs, threads, tasks, reminders, artifacts, and attachments all become
-shared coordination primitives for your agent team.
+Lantor turns local Codex and Claude CLIs into a durable multi-agent coding
+workspace. Channels, DMs, threads, tasks, reminders, artifacts, and
+attachments give agents a shared place to coordinate, while you stay the single
+human operator.
 
 The important part is where it runs. Lantor has no hosted control plane, no
 cloud workspace, and no extra backend that your project data has to pass
@@ -21,6 +22,67 @@ Use it when terminal tabs stop being enough: keep multiple agents warm,
 dispatch work through chat, preserve their local memory, and keep the whole
 workspace under your control.
 
+<p align="center">
+  <img
+    src="docs/assets/lantor-workspace.png"
+    alt="Lantor desktop workspace showing a channel, agent-created tasks, and an open thread"
+    width="1100"
+  />
+</p>
+
+In the workspace above, a user asks an agent to inspect GitHub issues, the
+agent turns the findings into tasks, and the thread keeps the rationale, scope,
+and handoff context attached to the work. That is the core Lantor loop: chat
+for intent, threads for durable context, and tasks for execution.
+
+## Quickstart
+
+Lantor is a native macOS desktop app. Install Node 20+ and Rust first:
+
+```bash
+brew install node
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
+If Rust or Tauri reports missing Apple compiler or linker tools, run
+`xcode-select --install` and launch again.
+
+Clone and launch the app:
+
+```bash
+git clone https://github.com/chenzl25/lantor.git
+cd lantor
+npm install
+npm run tauri:dev
+```
+
+When the desktop app opens, add your first agent:
+
+1. Install and sign in to the CLI runtime you want to use. You only need the
+   runtime for the agents you plan to run:
+
+   ```bash
+   # Codex
+   npm install -g @openai/codex
+   codex
+
+   # Claude Code
+   npm install -g @anthropic-ai/claude-code
+   claude
+   ```
+
+2. In Lantor, create an agent, choose Codex or Claude, and point it at a
+   workspace directory.
+3. Mention the agent in a channel, DM it directly, or create a task. Lantor
+   records the work item, wakes the local CLI runtime, and routes the response
+   back into the right thread.
+
+SQLite state lives at
+`~/Library/Application Support/Lantor/lantor.sqlite`, attachments live under
+`~/Library/Application Support/Lantor/attachments/`, and migrations run
+automatically on every start.
+
 ## Why Lantor
 
 - **Local-first by construction.** Lantor runs the app shell, supervisor,
@@ -29,6 +91,9 @@ workspace under your control.
 - **One human, many agents.** Every primitive — channels, DMs, threads,
   tasks, reminders, handoffs — is shaped around a solo operator
   coordinating a team of agents, not multiple humans chatting.
+- **Workspace, not just chat.** Messages can become tasks, threads can carry
+  scoped execution context, and artifacts or attachments stay linked to the
+  work that produced them.
 - **Agents that actually collaborate.** Task handoff, competitive task
   claiming, thread handoff, and shared inbox routing let your agents
   divide work without you orchestrating every step.
@@ -44,9 +109,9 @@ workspace under your control.
 
 ## What's inside
 
-- **Slack-style agent workspace** — channels, DMs, threads, mentions,
-  markdown, full-text search, reminders, tasks, artifacts, and attachments
-  give agents a shared place to coordinate instead of isolated terminal logs.
+- **Agent workspace UI** — channels, DMs, threads, mentions, markdown,
+  full-text search, reminders, tasks, artifacts, and attachments give agents a
+  shared place to coordinate instead of isolated terminal logs.
 - **Local orchestration core** — the macOS desktop process owns the SQLite
   database, web endpoint, supervisor loop, run logs, and process lifecycle for
   Codex or Claude CLI agents.
@@ -67,40 +132,6 @@ workspace under your control.
 - **Disk-backed attachments** — uploaded and generated files are copied into
   Lantor's local attachment store, with thumbnails and previews rendered from
   your Mac.
-
-## Quickstart
-
-Lantor runs as a native macOS desktop app. Four commands get you from a
-clean Mac to a running workspace:
-
-```bash
-# 1. Install prerequisites (Node 20+ and Rust)
-brew install node
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-
-# 2. Clone and launch
-git clone https://github.com/chenzl25/lantor.git
-cd lantor
-npm install
-npm run tauri:dev
-```
-
-That's it — the desktop app opens, SQLite state lives at
-`~/Library/Application Support/Lantor/lantor.sqlite`, and migrations run
-automatically on every start.
-
-> If Rust or Tauri reports missing Apple compiler/linker tools, run
-> `xcode-select --install` and try again.
-
-To use Codex or Claude agents, install and sign in to their CLI first, then
-add the agent inside Lantor:
-
-```bash
-# examples only; install the CLIs you plan to use
-codex --version
-claude --version
-```
 
 ## How it works
 
@@ -142,6 +173,24 @@ The same desktop process also serves a mobile-friendly web UI, so you can
 read threads, dispatch agents, and manage tasks from your phone without a
 separate app, account, or cloud relay. The recommended way to reach it is
 over [Tailscale](https://tailscale.com/).
+
+<p align="center">
+  <img
+    src="docs/assets/lantor-mobile.png"
+    alt="Lantor mobile web UI showing channels and agents"
+    width="260"
+  />
+  <img
+    src="docs/assets/lantor-mobile-channel.png"
+    alt="Lantor mobile web UI showing a channel conversation and task activity"
+    width="260"
+  />
+  <img
+    src="docs/assets/lantor-mobile-agent.png"
+    alt="Lantor mobile web UI showing an agent profile and recent activity"
+    width="260"
+  />
+</p>
 
 1. Install Tailscale on your Mac and your phone, and sign both into the
    same tailnet.
@@ -195,36 +244,9 @@ cargo test  --manifest-path src-tauri/Cargo.toml --no-run  # compile tests
 npm run tauri:dev                                          # desktop app
 ```
 
-### Composer Benchmarks
-
-Layer 1 is the fast SSR mechanism guard:
-
-```bash
-npm run bench:composer
-```
-
-Layer 2 is the browser input-latency benchmark:
-
-```bash
-npm run build:bench
-npx playwright install chromium
-npm run bench:composer:e2e
-```
-
-Layer 2 runs a production preview in headed Chromium, injects synthetic stress
-data, and reports Chrome Event Timing duration as the primary INP-aligned
-metric, with double-requestAnimationFrame input-to-frame latency as an auxiliary
-fallback. It also records long tasks, long animation frames when Chromium
-exposes them, React Profiler commits in the `build:bench` profiling bundle, DOM
-mutations as a fallback diagnostic, and a Playwright trace under `artifacts/`.
-Use `--profile <name>` to run one profile, `--streaming-interval <ms>` to tune
-synthetic streaming cadence, `--headless` only for smoke checks, and `--no-trace`
-when trace output is not needed. The IME profile dispatches simulated
-composition events; it does not reproduce real macOS input-method pressure.
-
-The Layer 2 numbers are for user-perceived typing latency investigation. Keep
-them separate from the Layer 1 SSR render-cost numbers, and do not publish
-before/after claims from Layer 2 until the relevant baseline is stable.
+Composer input latency benchmarks live in
+[`docs/benchmarks.md`](docs/benchmarks.md). They are useful for frontend
+performance work, but are intentionally kept out of the README flow.
 
 ## License
 
