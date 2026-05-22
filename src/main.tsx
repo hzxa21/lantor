@@ -3125,14 +3125,6 @@ function App() {
     window.addEventListener("pointerup", onPointerUp);
   }
 
-  async function cancelWorkItem(item: AgentWorkItem) {
-    await mutate("cancel_agent_work", { workItemId: item.id });
-  }
-
-  async function retryWorkItem(item: AgentWorkItem) {
-    await mutate("retry_agent_work", { workItemId: item.id });
-  }
-
   async function setMessageSaved(message: Message, saved: boolean) {
     await mutate("set_message_saved", { messageId: message.id, saved });
   }
@@ -3349,8 +3341,6 @@ function App() {
             openWorkItem(item);
             setSelectedAgentId(null);
           }}
-          onCancelWorkItem={cancelWorkItem}
-          onRetryWorkItem={retryWorkItem}
           onResizeStart={startAgentDrawerResize}
         />
       ) : showThread && (

@@ -3291,7 +3291,6 @@ mark {
 :root[data-theme="dark"] .agent-reminders-section,
 :root[data-theme="dark"] .agent-reminder-row,
 :root[data-theme="dark"] .activity-run-card,
-:root[data-theme="dark"] .detail-work,
 :root[data-theme="dark"] .task-board-summary > div,
 :root[data-theme="dark"] .theme-choice-grid button,
 :root[data-theme="dark"] .chat-text-size-grid button {
@@ -3466,7 +3465,6 @@ mark {
 
 :root[data-theme="dark"] .task-card,
 :root[data-theme="dark"] .thread-task-card,
-:root[data-theme="dark"] .agent-inbox-row,
 :root[data-theme="dark"] .thread-browser-panel,
 :root[data-theme="dark"] .thread-browser-row,
 :root[data-theme="dark"] .reminder-create,
@@ -3506,7 +3504,6 @@ mark {
 :root[data-theme="dark"] .task-assignee-option[aria-selected="true"],
 :root[data-theme="dark"] .thread-browser-row:hover,
 :root[data-theme="dark"] .thread-browser-row.selected,
-:root[data-theme="dark"] .agent-inbox-row:hover,
 :root[data-theme="dark"] .channel-agent-picker .channel-agent-option.selected {
   border-color: var(--border-strong);
   background: var(--bg-hover);
@@ -3523,33 +3520,23 @@ mark {
   background: var(--task-empty-avatar-bg);
 }
 
-:root[data-theme="dark"] .agent-inbox-row-meta strong,
-:root[data-theme="dark"] .agent-inbox-row-title h5,
 :root[data-theme="dark"] .thread-browser-content p,
 :root[data-theme="dark"] .search-result-list strong,
 :root[data-theme="dark"] .search-result-list p {
   color: var(--ink-primary);
 }
 
-:root[data-theme="dark"] .agent-inbox-row-title span,
 :root[data-theme="dark"] .search-result-fallback-avatar,
 :root[data-theme="dark"] .reminder-row-icon {
   background: var(--badge-phase-default-bg);
   color: var(--ink-secondary);
 }
 
-:root[data-theme="dark"] .agent-inbox-row-title span[data-status="active"] {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-:root[data-theme="dark"] .agent-inbox-row-title span[data-status="done"],
 :root[data-theme="dark"] .thread-browser-follow {
   background: var(--status-success-soft);
   color: var(--status-success);
 }
 
-:root[data-theme="dark"] .agent-inbox-row-title span[data-status="attention"],
 :root[data-theme="dark"] .thread-browser-follow:hover {
   background: var(--status-danger-soft);
   color: var(--status-danger);
@@ -5821,7 +5808,8 @@ body.resizing-row * {
 
 .agent-detail-tabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   grid-auto-rows: 50px;
   align-self: start;
   gap: 4px;
@@ -6935,170 +6923,6 @@ body.resizing-row * {
 .activity-timeline-row[data-kind="error"] .activity-timeline-body p,
 .activity-timeline-row[data-kind="event_error"] .activity-timeline-body p,
 .activity-timeline-row[data-kind="run_error"] .activity-timeline-body p {
-  color: var(--status-danger);
-}
-
-.detail-work {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 11px 12px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  background: var(--bg-panel);
-  cursor: pointer;
-}
-
-.detail-work > div:first-child {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.detail-work strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.detail-work span {
-  color: var(--muted);
-  font-size: var(--type-size-meta);
-}
-
-.detail-work-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 6px;
-}
-
-.detail-work-actions button {
-  padding: 6px 9px;
-  border-radius: 9px;
-  background: var(--badge-phase-default-bg);
-  color: var(--ink);
-  font-size: var(--type-size-meta);
-  font-weight: var(--type-weight-semibold);
-}
-
-.detail-work-actions button.danger {
-  background: var(--status-danger-soft);
-  color: var(--status-danger);
-}
-
-.detail-work-actions button:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-.agent-inbox-section {
-  align-content: start;
-}
-
-.agent-inbox-row {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 10px;
-  padding: 10px 12px;
-  border-color: var(--border-subtle);
-  border-radius: 10px;
-  background: var(--bg-panel);
-  box-shadow: none;
-}
-
-.agent-inbox-row:hover {
-  border-color: var(--accent-soft-border);
-  background: var(--bg-hover);
-}
-
-.agent-inbox-row[data-status="active"] {
-  border-left: 3px solid var(--accent);
-  padding-left: 9px;
-}
-
-.agent-inbox-row-icon {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.agent-inbox-row-main {
-  display: grid;
-  min-width: 0;
-  gap: 5px;
-}
-
-.agent-inbox-row-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  align-items: center;
-  color: var(--muted);
-  font-size: var(--type-size-caption);
-  font-weight: var(--type-weight-semibold);
-  line-height: 1.3;
-}
-
-.agent-inbox-row-meta strong {
-  color: var(--ink-primary);
-  font-size: var(--type-size-meta);
-  font-weight: var(--type-weight-semibold);
-}
-
-.agent-inbox-row-meta time {
-  display: inline-flex;
-  gap: 3px;
-  align-items: center;
-}
-
-.agent-inbox-row-title {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  justify-content: space-between;
-  min-width: 0;
-}
-
-.agent-inbox-row-title h5 {
-  margin: 0;
-  overflow: hidden;
-  color: var(--ink-primary);
-  font-size: var(--type-size-body);
-  font-weight: var(--type-weight-semibold);
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-inbox-row-title span {
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--badge-phase-default-bg);
-  color: var(--muted);
-  font-size: var(--type-size-caption);
-  font-weight: var(--type-weight-semibold);
-  text-transform: capitalize;
-}
-
-.agent-inbox-row-title span[data-status="active"] {
-  background: var(--accent-soft);
-  color: var(--accent-soft-ink);
-}
-
-.agent-inbox-row-title span[data-status="done"] {
-  background: var(--status-success-soft);
-  color: var(--status-success);
-}
-
-.agent-inbox-row-title span[data-status="attention"] {
-  background: var(--status-danger-soft);
   color: var(--status-danger);
 }
 
