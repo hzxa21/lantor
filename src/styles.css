@@ -5432,12 +5432,12 @@ body.resizing-row * {
   }
 
   .reply-composer-actions {
-    flex-wrap: wrap;
-    justify-content: flex-start;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
   }
 
   .reply-composer .reply-send {
-    margin-left: 0;
+    margin-left: auto;
   }
 }
 
