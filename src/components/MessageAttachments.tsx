@@ -1,4 +1,4 @@
-import { type MouseEvent, useEffect, useState } from "react";
+import { type MouseEvent, type PointerEvent, useEffect, useState } from "react";
 import { FileText, X } from "lucide-react";
 import { attachmentAssetUrl, isTauriRuntime, openExternalUrl } from "../apiClient";
 import { MessageAttachment } from "../types";
@@ -29,8 +29,18 @@ async function openStoredAttachment(event: MouseEvent<HTMLAnchorElement>, attach
   }
 }
 
+function isolateAttachmentEvent(event: MouseEvent<HTMLElement> | PointerEvent<HTMLElement>) {
+  event.stopPropagation();
+}
+
 export function MessageAttachments({ attachments }: MessageAttachmentsProps) {
   const [imagePreview, setImagePreview] = useState<ImagePreview | null>(null);
+
+  function closeImagePreview(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    setImagePreview(null);
+  }
 
   useEffect(() => {
     if (!imagePreview) return;
@@ -63,7 +73,7 @@ export function MessageAttachments({ attachments }: MessageAttachmentsProps) {
                 type="button"
                 className={`message-attachment image ${attachment.local_url ? "pending" : ""}`}
                 aria-label={`Preview ${attachment.original_name}`}
-                onPointerDown={(event) => event.stopPropagation()}
+                onPointerDown={isolateAttachmentEvent}
                 onClick={(event) => {
                   event.stopPropagation();
                   setImagePreview({ src, alt: attachment.original_name });
@@ -81,7 +91,7 @@ export function MessageAttachments({ attachments }: MessageAttachmentsProps) {
               target="_blank"
               rel="noreferrer"
               title={attachment.original_name}
-              onPointerDown={(event) => event.stopPropagation()}
+              onPointerDown={isolateAttachmentEvent}
               onClick={(event) => {
                 event.stopPropagation();
                 void openStoredAttachment(event, attachment);
@@ -102,20 +112,22 @@ export function MessageAttachments({ attachments }: MessageAttachmentsProps) {
           role="dialog"
           aria-modal="true"
           aria-label="Image preview"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => event.stopPropagation()}
+          onPointerDown={isolateAttachmentEvent}
+          onClick={isolateAttachmentEvent}
         >
           <button
             type="button"
             className="attachment-lightbox-backdrop"
             aria-label="Close image preview"
-            onClick={() => setImagePreview(null)}
+            onPointerDown={isolateAttachmentEvent}
+            onClick={closeImagePreview}
           />
           <button
             type="button"
             className="attachment-lightbox-close"
             aria-label="Close image preview"
-            onClick={() => setImagePreview(null)}
+            onPointerDown={isolateAttachmentEvent}
+            onClick={closeImagePreview}
           >
             <X size={18} />
           </button>

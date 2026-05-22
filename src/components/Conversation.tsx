@@ -87,6 +87,19 @@ type MessageMenuState = {
 
 const CHANNEL_MESSAGE_PREVIEW_LINES = 12;
 const CHANNEL_MESSAGE_PREVIEW_CHARS = 1800;
+const MESSAGE_CARD_INTERACTIVE_TARGET_SELECTOR = [
+  "a",
+  "button",
+  "input",
+  "select",
+  "textarea",
+  "summary",
+  "[contenteditable='true']",
+  "[role='button']",
+  "[role='link']",
+  ".message-artifacts",
+  ".message-attachments",
+].join(",");
 
 function taskStatusLabel(status: string) {
   return status.replace("_", " ");
@@ -118,6 +131,16 @@ function channelMessagePreview(body: string) {
     ? `${linePreview.slice(0, CHANNEL_MESSAGE_PREVIEW_CHARS).replace(/\s+\S*$/, "")}`
     : linePreview;
   return closeUnbalancedCodeFence(preview);
+}
+
+function isInteractiveMessageClick(event: ReactMouseEvent<HTMLElement>) {
+  if (event.nativeEvent.composedPath().some((node) => (
+    node instanceof Element && node.matches(MESSAGE_CARD_INTERACTIVE_TARGET_SELECTOR)
+  ))) {
+    return true;
+  }
+  return event.target instanceof Element
+    && Boolean(event.target.closest(MESSAGE_CARD_INTERACTIVE_TARGET_SELECTOR));
 }
 
 export function Conversation({
@@ -709,7 +732,8 @@ export function Conversation({
                   data-message-id={message.id}
                   className={`message-card ${isCompact ? "compact" : ""} ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""}`}
                   data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
-                  onClick={() => {
+                  onClick={(event) => {
+                    if (isInteractiveMessageClick(event)) return;
                     if (hasSelectedText()) return;
                     if (shouldOpenThreadFromMessageClick()) setActiveThreadId(message.id);
                   }}
