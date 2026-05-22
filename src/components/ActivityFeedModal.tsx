@@ -57,6 +57,13 @@ function activityTimestampValue(item: ActivityFeedItem) {
   return Number.isFinite(value) ? value : 0;
 }
 
+function sortActivityFeedItems(items: ActivityFeedItem[]) {
+  return [...items].sort((left, right) => {
+    if (left.unread !== right.unread) return left.unread ? -1 : 1;
+    return activityTimestampValue(right) - activityTimestampValue(left);
+  });
+}
+
 export function ActivityFeedModal({
   open,
   items,
@@ -71,7 +78,7 @@ export function ActivityFeedModal({
 }: ActivityFeedModalProps) {
   const [filter, setFilter] = useState<ActivityFeedFilter>("all");
   const [visibleCount, setVisibleCount] = useState(ACTIVITY_FEED_INITIAL_VISIBLE);
-  const [displayItems, setDisplayItems] = useState<ActivityFeedItem[]>(items);
+  const [displayItems, setDisplayItems] = useState<ActivityFeedItem[]>(() => sortActivityFeedItems(items));
   const [swipeState, setSwipeState] = useState<{
     itemId: string;
     startX: number;
@@ -113,7 +120,7 @@ export function ActivityFeedModal({
 
   useEffect(() => {
     if (open) return;
-    setDisplayItems(items);
+    setDisplayItems(sortActivityFeedItems(items));
   }, [items, open]);
 
   useEffect(() => {
@@ -137,7 +144,7 @@ export function ActivityFeedModal({
         }
       }
 
-      return changed ? next : current;
+      return changed ? sortActivityFeedItems(next) : current;
     });
   }, [items, open]);
 
@@ -276,6 +283,11 @@ export function ActivityFeedModal({
             const avatarAgent = actorAvatarAgent(item, agents, ownerProfile);
             const swipeOffset = swipeState?.itemId === item.id ? swipeState.offsetX : 0;
             const excerpt = item.excerpt.trim() === item.title.trim() ? "" : item.excerpt;
+            const rowClassName = [
+              "activity-feed-row",
+              item.unread ? "unread" : "",
+              item.kind === "thread" && item.unread ? "new-thread" : "",
+            ].filter(Boolean).join(" ");
             return (
               <div
                 key={item.id}
@@ -291,7 +303,7 @@ export function ActivityFeedModal({
                   <span>Dismiss</span>
                 </div>
                 <article
-                  className={`activity-feed-row ${item.unread ? "unread" : ""}`}
+                  className={rowClassName}
                   onClick={() => openItem(item)}
                 >
                   <span className="activity-feed-row-avatar" aria-hidden="true">
@@ -313,10 +325,7 @@ export function ActivityFeedModal({
                       <span>{item.title}</span>
                     </h3>
                     {excerpt && <p>{firstLines(excerpt, 3)}</p>}
-                    <small>
-                      Open
-                      {item.newCount > 0 ? <b>{item.newCount} new</b> : null}
-                    </small>
+                    {item.newCount > 0 ? <small><b>{item.newCount} new</b></small> : null}
                   </div>
                   <div className="activity-feed-row-actions">
                     {item.unread ? <span className="activity-feed-unread-dot" aria-label="Unread" /> : null}
