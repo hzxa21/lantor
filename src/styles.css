@@ -1955,7 +1955,16 @@ button,
   overflow: auto;
 }
 
+.message-list-shell {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
 .message-list {
+  height: 100%;
   padding: 10px 0 20px;
   overflow-anchor: none;
   overscroll-behavior: contain;
@@ -2353,9 +2362,10 @@ button,
 
 .thread-reply-active-menu {
   position: absolute;
-  top: calc(100% + 6px);
+  top: auto;
+  bottom: calc(100% + 6px);
   left: 10px;
-  display: grid;
+  display: none;
   gap: 6px;
   min-width: min(320px, calc(100vw - 40px));
   max-width: min(460px, calc(100vw - 40px));
@@ -2370,9 +2380,9 @@ button,
   transition: opacity 120ms ease, transform 120ms ease;
 }
 
-.thread-reply-summary.active-reply[data-active-menu-placement="above"] .thread-reply-active-menu {
-  top: auto;
-  bottom: calc(100% + 6px);
+.thread-reply-summary.active-reply[data-active-menu-placement="below"] .thread-reply-active-menu {
+  top: calc(100% + 6px);
+  bottom: auto;
   transform: translateY(2px);
 }
 
@@ -2382,6 +2392,7 @@ button,
 
 .thread-reply-summary.active-reply:hover .thread-reply-active-menu,
 .thread-reply-summary.active-reply:focus-visible .thread-reply-active-menu {
+  display: grid;
   opacity: 1;
   transform: translateY(0);
 }
@@ -3215,6 +3226,22 @@ mark {
 
 .activity-progress-dock summary::-webkit-details-marker {
   display: none;
+}
+
+.message-progress-layer,
+.thread-progress-layer {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  padding: 8px 0 0;
+  pointer-events: none;
+}
+
+.message-progress-layer .activity-progress-dock,
+.thread-progress-layer .activity-progress-dock {
+  position: static;
+  margin: 0 auto;
+  pointer-events: auto;
 }
 
 .activity-progress-avatar-stack {
@@ -5266,6 +5293,8 @@ body.resizing-row * {
 
 .thread-scroll-shell {
   position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }

@@ -437,15 +437,7 @@ export function ThreadPanel({
 
       <section className="thread-focus">
         <div className="thread-scroll-shell">
-          <div
-            ref={threadScrollRef}
-            className="thread-scroll"
-            onScroll={handleThreadScroll}
-            onWheelCapture={handleThreadWheel}
-            onPointerDownCapture={handleThreadPointerDown}
-            onTouchMoveCapture={handleThreadTouchMove}
-            onLoadCapture={handleThreadContentLoad}
-          >
+          <div className="thread-progress-layer">
             <ActivityProgressDock
               messages={replies}
               activities={agentActivities}
@@ -455,6 +447,16 @@ export function ThreadPanel({
               channelId={activeRoot ? channel?.id ?? null : null}
               threadRootId={activeRoot?.id ?? null}
             />
+          </div>
+          <div
+            ref={threadScrollRef}
+            className="thread-scroll"
+            onScroll={handleThreadScroll}
+            onWheelCapture={handleThreadWheel}
+            onPointerDownCapture={handleThreadPointerDown}
+            onTouchMoveCapture={handleThreadTouchMove}
+            onLoadCapture={handleThreadContentLoad}
+          >
             {activeRoot && (
               <Fragment>
                 <div className="message-date-divider" role="separator">

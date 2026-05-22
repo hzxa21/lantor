@@ -295,6 +295,28 @@ export function Conversation({
         .filter(([, progress]) => progress.length > 0),
     );
   }, [agentActivities, agentRuns, agentWorkItems, agents, channel, rootMessages]);
+  const messageListProgressVersion = useMemo(() => {
+    if (!channel) return "";
+    const rootMessageIds = new Set(rootMessages.map((message) => message.id));
+    const relevantWorkItems = agentWorkItems.filter((workItem) => (
+      workItem.channel_id === channel.id
+      && ((workItem.thread_root_id ?? null) === null || rootMessageIds.has(workItem.thread_root_id ?? ""))
+    ));
+    const relevantRunIds = new Set(relevantWorkItems.map((workItem) => workItem.run_id).filter(Boolean));
+    const relevantRuns = agentRuns.filter((run) => relevantRunIds.has(run.id));
+    const relevantActivities = agentActivities.filter((activity) => (
+      activity.run_id ? relevantRunIds.has(activity.run_id) : false
+    ));
+    return [
+      ...relevantWorkItems.map((workItem) => (
+        `work:${workItem.id}:${workItem.status}:${workItem.updated_at}:${workItem.run_id ?? ""}:${workItem.thread_root_id ?? ""}`
+      )),
+      ...relevantRuns.map((run) => `run:${run.id}:${run.status}:${run.started_at ?? ""}:${run.stopped_at ?? ""}`),
+      ...relevantActivities.map((activity) => (
+        `activity:${activity.id}:${activity.status}:${activity.created_at}`
+      )),
+    ].join("|");
+  }, [agentActivities, agentRuns, agentWorkItems, channel, rootMessages]);
   const lastRootMessage = rootMessages[rootMessages.length - 1] ?? null;
   const activeTasks = visibleTasks.filter((task) => task.status !== "done");
   const reviewTasks = visibleTasks.filter((task) => task.status === "in_review");
@@ -578,7 +600,15 @@ export function Conversation({
   useLayoutEffect(() => {
     if (!shouldFollowMessagesRef.current) return;
     scrollMessagesToBottom();
-  }, [activeTab, channel?.id, rootMessages.length, lastRootMessage?.id, lastRootMessage?.updated_at, lastRootMessage?.delivery_state]);
+  }, [
+    activeTab,
+    channel?.id,
+    messageListProgressVersion,
+    rootMessages.length,
+    lastRootMessage?.id,
+    lastRootMessage?.updated_at,
+    lastRootMessage?.delivery_state,
+  ]);
 
   useEffect(() => {
     if (!focusedMessageId) return;
@@ -721,46 +751,8 @@ export function Conversation({
       </div>
 
       {activeTab === "chat" ? (
-        <div
-          ref={messageListRef}
-          className="message-list"
-          onScroll={handleMessageListScroll}
-          onWheelCapture={handleMessageListWheel}
-          onPointerDownCapture={handleMessageListPointerDown}
-          onTouchMoveCapture={handleMessageListTouchMove}
-          onLoadCapture={handleMessageListContentLoad}
-        >
-          <div ref={messageListContentRef} className="message-list-content">
-            {channel ? (
-              rootMessages.length > 0 ? (
-                <div className="beginning">
-                  {isDm ? `Beginning of your DM with @${dmAgent?.handle || "agent"}` : `Beginning of #${channel.name}`}
-                </div>
-              ) : (
-                <div className="empty-state">
-                  <MessageSquare size={34} />
-                  <h2>{isDm ? "No DM messages yet" : "No messages yet"}</h2>
-                  <p>
-                    {isDm
-                      ? "Send a message here to talk directly with this agent."
-                      : channelAgents.length === 0
-                        ? "Add agents to this channel or send the first message."
-                        : "Send a root message from the composer. Replies belong in the right thread pane."}
-                  </p>
-                  {!isDm && channelAgents.length === 0 && (
-                    <button type="button" className="empty-state-action" onClick={openChannelAgentsModal}>
-                      <UserPlus size={16} /> Add agent
-                    </button>
-                  )}
-                </div>
-              )
-            ) : (
-              <div className="empty-state">
-                <Hash size={34} />
-                <h2>No channels yet</h2>
-                <p>Create a channel in the left sidebar, then send messages or tasks.</p>
-              </div>
-            )}
+        <div className="message-list-shell">
+          <div className="message-progress-layer">
             <ActivityProgressDock
               messages={rootMessages}
               activities={agentActivities}
@@ -770,6 +762,47 @@ export function Conversation({
               channelId={channel?.id ?? null}
               threadRootId={null}
             />
+          </div>
+          <div
+            ref={messageListRef}
+            className="message-list"
+            onScroll={handleMessageListScroll}
+            onWheelCapture={handleMessageListWheel}
+            onPointerDownCapture={handleMessageListPointerDown}
+            onTouchMoveCapture={handleMessageListTouchMove}
+            onLoadCapture={handleMessageListContentLoad}
+          >
+            <div ref={messageListContentRef} className="message-list-content">
+              {channel ? (
+                rootMessages.length > 0 ? (
+                  <div className="beginning">
+                    {isDm ? `Beginning of your DM with @${dmAgent?.handle || "agent"}` : `Beginning of #${channel.name}`}
+                  </div>
+                ) : (
+                  <div className="empty-state">
+                    <MessageSquare size={34} />
+                    <h2>{isDm ? "No DM messages yet" : "No messages yet"}</h2>
+                    <p>
+                      {isDm
+                        ? "Send a message here to talk directly with this agent."
+                        : channelAgents.length === 0
+                          ? "Add agents to this channel or send the first message."
+                          : "Send a root message from the composer. Replies belong in the right thread pane."}
+                    </p>
+                    {!isDm && channelAgents.length === 0 && (
+                      <button type="button" className="empty-state-action" onClick={openChannelAgentsModal}>
+                        <UserPlus size={16} /> Add agent
+                      </button>
+                    )}
+                  </div>
+                )
+              ) : (
+                <div className="empty-state">
+                  <Hash size={34} />
+                  <h2>No channels yet</h2>
+                  <p>Create a channel in the left sidebar, then send messages or tasks.</p>
+                </div>
+              )}
             {rootMessages.map((message, index) => {
             const linkedTask = taskForMessage(message.id);
             const replyCount = threadReplyCounts[message.id] ?? 0;
@@ -780,7 +813,7 @@ export function Conversation({
             const activeReplyStatus = hasActiveReplyProgress
               ? replyProgressSummary(activeReplyProgress[0]).title
               : "";
-            const activeReplyMenuPlacement = activeReplyMenuPlacementByMessageId[message.id] ?? "below";
+            const activeReplyMenuPlacement = activeReplyMenuPlacementByMessageId[message.id] ?? "above";
             const replyingAgents = activeReplyProgress.map((progress) => progress.agent.display_name).join(", ");
             const activeReplyAgentIds = new Set(activeReplyProgress.map((progress) => progress.agent.id).filter(Boolean));
             const replySummaryClassName = [
@@ -1033,6 +1066,7 @@ export function Conversation({
             );
             })}
             <div ref={messageListBottomAnchorRef} className="message-list-bottom-anchor" aria-hidden="true" />
+          </div>
           </div>
           {messageMenu && (
             <MessageActionMenu
