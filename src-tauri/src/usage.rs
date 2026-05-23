@@ -68,7 +68,7 @@ pub(crate) fn usage_from_run_log(log: &str) -> Option<(i64, i64)> {
             let value = serde_json::from_str::<Value>(&line[json_start..]).ok()?;
             usage_from_runtime_event(&value)
         })
-        .last()
+        .next_back()
 }
 
 fn model_cost_micros(runtime: &str, model: &str, input_tokens: i64, output_tokens: i64) -> i64 {

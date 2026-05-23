@@ -53,9 +53,11 @@ pub(crate) fn activity_status(kind: &str, title: &str) -> &'static str {
                 || lowered.contains("rejected")))
     {
         "error"
-    } else if kind == "run_retry" || lowered.contains("warning") {
-        "warning"
-    } else if lowered.contains("cancel") || lowered.contains("stop") || lowered.contains("stopping")
+    } else if kind == "run_retry"
+        || lowered.contains("warning")
+        || lowered.contains("cancel")
+        || lowered.contains("stop")
+        || lowered.contains("stopping")
     {
         "warning"
     } else if lowered.contains("completed")
@@ -70,9 +72,7 @@ pub(crate) fn activity_status(kind: &str, title: &str) -> &'static str {
     } else if matches!(
         kind,
         "thinking" | "command" | "file_edit" | "tools" | "acting"
-    ) {
-        "active"
-    } else if lowered.contains("running")
+    ) || lowered.contains("running")
         || lowered.contains("started")
         || lowered.contains("queued")
         || lowered.contains("dispatched")

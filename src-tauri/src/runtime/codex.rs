@@ -216,6 +216,7 @@ pub(crate) async fn cleanup_failed_warm_codex_start(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn get_or_spawn_warm_codex_runtime(
     pool: &SqlitePool,
     registry: &WarmCodexRegistry,
@@ -272,6 +273,7 @@ async fn get_or_spawn_warm_codex_runtime(
     Ok(runtime)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn spawn_warm_codex_runtime(
     pool: &SqlitePool,
     registry: WarmCodexRegistry,
@@ -806,6 +808,7 @@ async fn steer_warm_codex_turn_if_same_surface(
     Ok(true)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn supervisor_start_codex_streaming_agent(
     pool: &SqlitePool,
     codex_registry: &WarmCodexRegistry,
@@ -990,7 +993,7 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
         }
     };
     let model_value = codex_model_value(&model);
-    let request_id = match {
+    let request_id_result = {
         let mut state = runtime.state.lock().await;
         if !state.alive {
             Err("codex warm runtime exited before turn start".to_owned())
@@ -1021,7 +1024,8 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
             });
             Ok(request_id)
         }
-    } {
+    };
+    let request_id = match request_id_result {
         Ok(request_id) => request_id,
         Err(err) => {
             cleanup_failed_warm_codex_start(

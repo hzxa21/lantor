@@ -80,6 +80,7 @@ fn normalize_service_tier(runtime: &str, value: Option<&str>) -> CommandResult<S
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_agent_in_pool(
     pool: &SqlitePool,
     handle: String,
@@ -188,6 +189,7 @@ pub(crate) async fn create_agent_in_pool(
     Ok(agent_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn update_agent_in_pool(
     pool: &SqlitePool,
     agent_id: Uuid,

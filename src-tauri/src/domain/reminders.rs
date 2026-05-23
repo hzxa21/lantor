@@ -97,6 +97,7 @@ pub(super) async fn process_due_reminders(pool: &SqlitePool) -> CommandResult<()
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_due_reminder_to_agent(
     pool: &SqlitePool,
     reminder_id: Uuid,
@@ -192,6 +193,7 @@ async fn insert_reminder_event(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_reminder_in_pool(
     pool: &SqlitePool,
     creator_agent_id: Option<Uuid>,
@@ -274,6 +276,7 @@ pub(crate) async fn cancel_reminder_in_pool(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_reminder(
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,

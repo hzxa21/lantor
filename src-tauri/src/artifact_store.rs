@@ -22,6 +22,7 @@ pub(crate) fn normalize_artifact_kind(kind: &str) -> CommandResult<String> {
     Ok(normalized.to_owned())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_agent_artifact(
     pool: &SqlitePool,
     agent_id: Uuid,

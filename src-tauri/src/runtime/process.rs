@@ -167,9 +167,7 @@ fn classify_structured_stderr_log(
     if !value.is_object() {
         return None;
     }
-    let Some(level) = structured_log_string(&value, "level") else {
-        return None;
-    };
+    let level = structured_log_string(&value, "level")?;
 
     let level = level.trim();
     let target = structured_log_string(&value, "target");

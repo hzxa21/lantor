@@ -5,6 +5,7 @@ use crate::app::{to_string, CommandResult};
 use crate::message_store::insert_agent_message;
 use crate::ui_notifications::notify_ui_refresh;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_agent_task_thread(
     pool: &SqlitePool,
     agent_id: Uuid,

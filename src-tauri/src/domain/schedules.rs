@@ -138,6 +138,7 @@ fn normalize_schedule_cadence(value: &str) -> CommandResult<String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_agent_schedule(
     agent_id: Uuid,
     channel_id: Uuid,

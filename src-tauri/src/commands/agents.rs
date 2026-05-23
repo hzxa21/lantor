@@ -20,6 +20,7 @@ pub(crate) async fn update_owner_profile(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_agent(
     handle: String,
     display_name: String,
@@ -55,6 +56,7 @@ pub(crate) async fn create_agent(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn update_agent(
     agent_id: Uuid,
     handle: String,

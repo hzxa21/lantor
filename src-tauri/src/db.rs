@@ -106,6 +106,7 @@ pub(crate) fn acquire_supervisor_lock(database_url: &str) -> CommandResult<Optio
     }
     let file = fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)

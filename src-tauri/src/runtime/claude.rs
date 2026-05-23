@@ -247,6 +247,7 @@ async fn spawn_warm_claude_runtime(
     Ok(runtime)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn supervisor_start_claude_streaming_agent(
     pool: &SqlitePool,
     claude_registry: &WarmClaudeRegistry,

@@ -114,6 +114,7 @@ fn streaming_reply_contract_prompt(runtime_name: &str) -> String {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_work_item_prompt_inner(
     work_item_id: Uuid,
     title: &str,
@@ -174,6 +175,7 @@ fn build_work_item_prompt_inner(
     lines.join("\n")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_work_item_prompt(
     work_item_id: Uuid,
     title: &str,
@@ -197,6 +199,7 @@ pub(crate) fn build_work_item_prompt(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_streaming_work_item_prompt(
     work_item_id: Uuid,
     title: &str,
