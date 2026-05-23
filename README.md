@@ -84,7 +84,7 @@ automatically on every start.
 ## Why Lantor
 
 - **Local First, privacy.** App, supervisor, SQLite state, attachments, and
-  agent workspaces all run on your Mac. No Lantor cloud is required.
+  agent workspaces all run on your Mac.
 - **You own your context.** Chat history, tasks, artifacts, attachments,
   agent profiles, and each agent's `MEMORY.md` / `notes/` stay on disk.
 - **One human, many agents.** Channels, DMs, threads, tasks, and handoffs are
