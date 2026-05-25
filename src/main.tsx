@@ -2539,6 +2539,7 @@ function App() {
 
   function selectChannel(channelId: string) {
     const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
+    setSelectedAgentId(null);
     setActiveChannelId(channelId);
     setShowMobileSidebar(false);
     if (nextChannel?.kind === "dm") {
@@ -3002,10 +3003,10 @@ function App() {
     try {
       const channelId = await apiInvoke<string>("open_dm_with_agent", { agentId: agent.id });
       await refresh();
+      setSelectedAgentId(null);
       setActiveChannelId(channelId);
       restoreRememberedThreadForChannel(channelId);
       setActiveTab("chat");
-      setSelectedAgentId(null);
     } catch (err) {
       const message = errorMessage(err, "Failed to open direct message");
       setAppError(message);
