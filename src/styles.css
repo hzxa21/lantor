@@ -9419,11 +9419,19 @@ body.resizing-row * {
     height: 100dvh;
     border-left: 0;
     box-shadow: none;
+    transform: translateX(0);
+    transition: transform 180ms ease;
   }
 
   .thread {
     grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
+  }
+
+  .app.mobile-panel-dragging.right-panel-active .thread,
+  .app.mobile-panel-dragging.right-panel-active .agent-drawer {
+    transform: translateX(var(--mobile-sidebar-drag, 0px));
+    transition: none;
   }
 
   .mobile-bottom-nav {

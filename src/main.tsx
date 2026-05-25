@@ -678,6 +678,7 @@ function App() {
   const [showMobileSidebar, setShowMobileSidebar] = useState(() => isMobileViewport());
   const [mobileSidebarFocus, setMobileSidebarFocus] = useState<"home" | "dms">("home");
   const [mobileSidebarDragPx, setMobileSidebarDragPx] = useState(0);
+  const [mobileDragSurface, setMobileDragSurface] = useState<"sidebar" | "panel" | null>(null);
   const [mobileComposerFocused, setMobileComposerFocused] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
@@ -1260,15 +1261,46 @@ function App() {
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
-    subscribeBackendEvents(handleBackendEvent)
-      .then((handler) => {
-        unlisten = handler;
-      })
-      .catch((err) => {
-        setAppError(errorMessage(err, `Failed to subscribe to ${APP_DISPLAY_NAME} updates`));
-        console.error(err);
-      });
+    let disposed = false;
+
+    function connect() {
+      if (disposed || unlisten) return;
+      subscribeBackendEvents(handleBackendEvent)
+        .then((handler) => {
+          if (disposed) {
+            handler();
+            return;
+          }
+          unlisten = handler;
+        })
+        .catch((err) => {
+          if (disposed) return;
+          setAppError(errorMessage(err, `Failed to subscribe to ${APP_DISPLAY_NAME} updates`));
+          console.error(err);
+        });
+    }
+
+    function disconnect() {
+      unlisten?.();
+      unlisten = null;
+    }
+
+    function onPageHide() {
+      disconnect();
+    }
+
+    function onPageShow() {
+      connect();
+      requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after page restore`);
+    }
+
+    connect();
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
     return () => {
+      disposed = true;
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
       }
@@ -1276,12 +1308,13 @@ function App() {
         window.clearTimeout(messageDeltaFlushTimerRef.current);
       }
       cancelEphemeralFlushTimers();
-      unlisten?.();
+      disconnect();
     };
   }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state`);
     }, 5000);
     return () => window.clearInterval(timer);
@@ -1509,6 +1542,13 @@ function App() {
   useEffect(() => {
     function onPopState(event: PopStateEvent) {
       if (!isAppHistoryState(event.state)) return;
+      if (isMobileViewport()) {
+        window.history.replaceState(null, "");
+        appHistoryReadyRef.current = false;
+        setAppHistoryPosition(0, 0);
+        lastAppHistoryKeyRef.current = null;
+        return;
+      }
       restoringAppHistoryRef.current = true;
       appHistoryReadyRef.current = true;
       setAppHistoryPosition(event.state.index);
@@ -1542,6 +1582,16 @@ function App() {
 
   useEffect(() => {
     if (!data || !activeChannelId) return;
+    if (isMobileViewport()) {
+      if (isAppHistoryState(window.history.state)) {
+        window.history.replaceState(null, "");
+      }
+      appHistoryReadyRef.current = false;
+      replaceNextAppHistoryEntryRef.current = false;
+      lastAppHistoryKeyRef.current = null;
+      setAppHistoryPosition(0, 0);
+      return;
+    }
 
     const currentState = buildAppHistoryState(appHistoryIndexRef.current);
     const currentKey = appHistoryKey(currentState);
@@ -1566,14 +1616,6 @@ function App() {
       const baseState: AppHistoryState = {
         ...currentState,
         index: 0,
-        ...(isMobileViewport()
-          ? {
-              showThread: false,
-              showMobileSidebar: true,
-              selectedAgentId: null,
-              activeModal: null,
-            }
-          : {}),
       };
       const baseKey = appHistoryKey(baseState);
       window.history.replaceState(baseState, "");
@@ -1590,26 +1632,6 @@ function App() {
     }
 
     if (lastAppHistoryKeyRef.current === currentKey) return;
-
-    const browserState = window.history.state;
-    const isLeavingSidebar =
-      isMobileViewport() &&
-      isAppHistoryState(browserState) &&
-      browserState.showMobileSidebar &&
-      !currentState.showMobileSidebar;
-    if (isLeavingSidebar) {
-      const sidebarState: AppHistoryState = {
-        ...currentState,
-        index: browserState.index,
-        showThread: false,
-        showMobileSidebar: true,
-        selectedAgentId: null,
-        activeModal: null,
-      };
-      window.history.replaceState(sidebarState, "");
-      setAppHistoryPosition(sidebarState.index);
-      lastAppHistoryKeyRef.current = appHistoryKey(sidebarState);
-    }
 
     if (replaceNextAppHistoryEntryRef.current) {
       replaceNextAppHistoryEntryRef.current = false;
@@ -1645,7 +1667,8 @@ function App() {
       showSettingsModal ||
       showSavedModal ||
       showSearchModal;
-    if (!isMobileViewport() || showMobileSidebar || showThread || selectedAgentId || hasOpenModal) return;
+    const isSidebarSwipe = !showThread && !selectedAgentId;
+    if (!isMobileViewport() || showMobileSidebar || hasOpenModal) return;
 
     let startX: number | null = null;
     let startY: number | null = null;
@@ -1664,6 +1687,7 @@ function App() {
       lastTime = 0;
       tracking = false;
       setMobileSidebarDragPx(0);
+      setMobileDragSurface(null);
     }
 
     function onTouchStart(event: TouchEvent) {
@@ -1682,6 +1706,7 @@ function App() {
       lastX = touch.clientX;
       lastTime = event.timeStamp;
       tracking = true;
+      setMobileDragSurface(isSidebarSwipe ? "sidebar" : "panel");
       setMobileSidebarDragPx(MOBILE_SIDEBAR_PEEK_PX);
     }
 
@@ -1717,7 +1742,13 @@ function App() {
       const shouldOpen = currentPx >= width * 0.28 || velocity > MOBILE_SIDEBAR_FLING_VELOCITY;
 
       if (shouldOpen) {
-        openMobileSidebarFromContent();
+        if (selectedAgentId) {
+          closeSelectedAgent();
+        } else if (showThread) {
+          closeThreadPanel();
+        } else {
+          openMobileSidebarFromContent();
+        }
       }
       resetSwipe();
     }
@@ -1733,6 +1764,7 @@ function App() {
       window.removeEventListener("touchcancel", resetSwipe, { capture: true });
     };
   }, [
+    activeThreadId,
     selectedAgentId,
     showChannelAgentsModal,
     showChannelSettingsModal,
@@ -2537,14 +2569,20 @@ function App() {
   }
 
   function canNavigateBack() {
+    if (isMobileViewport()) return false;
     return appHistoryReadyRef.current && appHistoryIndexRef.current > 0;
   }
 
   function canNavigateForward() {
+    if (isMobileViewport()) return false;
     return appHistoryReadyRef.current && appHistoryIndexRef.current < appHistoryMaxIndexRef.current;
   }
 
   function navigateBack(fallback: () => void) {
+    if (isMobileViewport()) {
+      fallback();
+      return;
+    }
     if (canNavigateBack()) {
       window.history.back();
       return;
@@ -2553,6 +2591,7 @@ function App() {
   }
 
   function navigateForward() {
+    if (isMobileViewport()) return;
     if (canNavigateForward()) {
       window.history.forward();
     }
@@ -2560,13 +2599,11 @@ function App() {
 
   function openMobileSidebarFromContent() {
     setMobileSidebarFocus("home");
-    if (isMobileViewport() && canNavigateBack()) {
-      restoringAppHistoryRef.current = true;
+    if (isMobileViewport()) {
       setShowThread(false);
       setSelectedAgentId(null);
       setShowMobileSidebar(true);
       setMobileSidebarDragPx(0);
-      window.history.back();
       return;
     }
     setShowMobileSidebar(true);
@@ -2633,6 +2670,10 @@ function App() {
   }
 
   function closeAppModal(fallback: () => void) {
+    if (isMobileViewport()) {
+      fallback();
+      return;
+    }
     if (activeMobileModal && canNavigateBack()) {
       window.history.back();
       return;
@@ -3337,7 +3378,7 @@ function App() {
 
   return (
     <main
-      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"} ${selectedAgent || activeThreadId ? "right-panel-active" : ""} ${showMobileSidebar ? "mobile-sidebar-open" : ""} ${mobileSidebarDragPx > 0 ? "mobile-sidebar-dragging" : ""} ${mobileComposerFocused ? "mobile-composer-focused" : ""}`}
+      className={`app theme-liquid ${selectedAgent || showThread ? "" : "thread-hidden"} ${selectedAgent || activeThreadId ? "right-panel-active" : ""} ${showMobileSidebar ? "mobile-sidebar-open" : ""} ${mobileDragSurface === "sidebar" ? "mobile-sidebar-dragging" : ""} ${mobileDragSurface === "panel" ? "mobile-panel-dragging" : ""} ${mobileComposerFocused ? "mobile-composer-focused" : ""}`}
       style={{
         "--sidebar-width": `${sidebarWidth}px`,
         "--thread-width": `${selectedAgent ? agentDrawerWidth : threadPanelWidth}px`,
