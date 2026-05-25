@@ -1,13 +1,25 @@
 import {
   AlertCircle,
+  ArrowRightLeft,
+  AtSign,
+  Bell,
+  CalendarClock,
   ChevronDown,
   CircleDashed,
+  Cpu,
+  Hash,
+  ListChecks,
   LoaderCircle,
+  Mail,
+  MessageSquareReply,
   Pencil,
+  RotateCw,
+  Sparkles,
   Terminal,
   Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useState } from "react";
 import type { Agent, AgentActivity, AgentRun, AgentWorkItem, Message } from "../types";
 import { messageRunId } from "../message-grouping";
 import { formatClockTime } from "../ui-utils";
@@ -21,7 +33,61 @@ type ActivityProgressDockProps = {
   agents: Agent[];
   channelId: string | null;
   threadRootId: string | null;
+  onOpenWorkItem?: (item: AgentWorkItem, focusedMessageIdOverride?: string | null) => void;
 };
+
+export type SourceKindMeta = {
+  icon: LucideIcon;
+  label: string;
+  tone: string;
+  jumpable: boolean;
+};
+
+export function sourceKindMeta(workItem: AgentWorkItem | null): SourceKindMeta {
+  if (!workItem) {
+    return { icon: Cpu, label: "Runtime event", tone: "system", jumpable: false };
+  }
+  if (workItem.task_number) {
+    return {
+      icon: ListChecks,
+      label: `Task #${workItem.task_number}`,
+      tone: "task",
+      jumpable: true,
+    };
+  }
+  switch (workItem.source_kind) {
+    case "mention":
+      return { icon: AtSign, label: "Mention", tone: "mention", jumpable: true };
+    case "dm":
+      return { icon: Mail, label: "Direct message", tone: "dm", jumpable: true };
+    case "thread_followup":
+      return { icon: MessageSquareReply, label: "Thread follow-up", tone: "thread_followup", jumpable: true };
+    case "channel_message":
+      return { icon: Hash, label: "Channel message", tone: "channel_message", jumpable: true };
+    case "task":
+      return { icon: ListChecks, label: "Task run", tone: "task", jumpable: true };
+    case "reminder":
+      return { icon: Bell, label: "Reminder", tone: "reminder", jumpable: false };
+    case "schedule":
+      return { icon: CalendarClock, label: "Routine", tone: "schedule", jumpable: false };
+    case "handoff":
+    case "collaboration":
+      return { icon: ArrowRightLeft, label: "Agent handoff", tone: "handoff", jumpable: true };
+    case "self_wake":
+      return { icon: RotateCw, label: "Self wake-up", tone: "self_wake", jumpable: false };
+    case "system":
+      return { icon: Cpu, label: "System", tone: "system", jumpable: false };
+    case "manual":
+      return { icon: Sparkles, label: "Manual request", tone: "manual", jumpable: true };
+    default:
+      return {
+        icon: CircleDashed,
+        label: "Agent request",
+        tone: "default",
+        jumpable: Boolean(workItem.channel_id),
+      };
+  }
+}
 
 export type ActiveAgentProgress = {
   key: string;
@@ -410,7 +476,9 @@ export function ActivityProgressDock({
   agents,
   channelId,
   threadRootId,
+  onOpenWorkItem,
 }: ActivityProgressDockProps) {
+  const [historyOpen, setHistoryOpen] = useState(false);
   const progress = activeProgressByAgent(messages, activities, runs, workItems, agents, channelId, threadRootId);
   if (progress.length === 0) return null;
 
@@ -421,6 +489,10 @@ export function ActivityProgressDock({
   const Icon = progressIcon(latestActivity);
   const providerRetrying = isProviderRetryActivity(latestActivity);
   const queuedCount = progress.reduce((count, item) => count + item.queuedItems.length, 0);
+  const latestSourceWorkItem = latest.workItem ?? latest.queuedItems[0] ?? null;
+  const latestKindMeta = sourceKindMeta(latestSourceWorkItem);
+  const KindIcon = latestKindMeta.icon;
+  const jumpable = Boolean(latestSourceWorkItem) && latestKindMeta.jumpable && Boolean(onOpenWorkItem);
   const title = progress.length === 1
     ? providerRetrying
       ? `${latest.agent.display_name} is waiting on provider`
@@ -433,33 +505,80 @@ export function ActivityProgressDock({
   const latestTitle = latestActivity ? userFacingActivityTitle(latestActivity) : latestWorking ? "Working" : "Queued";
   const latestDetail = latestActivity ? activityDetail(latestActivity) : "";
   const history = progress
-    .flatMap((item) => item.history.map((activity) => ({ activity, agent: item.agent })))
+    .flatMap((item) =>
+      item.history.map((activity) => ({
+        activity,
+        agent: item.agent,
+        workItem: item.workItem,
+      })),
+    )
     .sort((left, right) => timestamp(right.activity.created_at) - timestamp(left.activity.created_at))
     .slice(0, MAX_PROGRESS_HISTORY_ITEMS);
+  const state = providerRetrying ? "provider-retrying" : latestWorking ? "working" : "queued";
+
+  const handleJump = () => {
+    if (!latestSourceWorkItem || !onOpenWorkItem) return;
+    onOpenWorkItem(latestSourceWorkItem, latestSourceWorkItem.source_message_id ?? null);
+  };
 
   return (
-    <details className="activity-progress-dock">
-      <summary data-state={providerRetrying ? "provider-retrying" : latestWorking ? "working" : "queued"}>
-        <span className="activity-progress-avatar-stack" aria-hidden="true">
-          {progress.slice(0, 3).map((item) => (
-            <AgentAvatar key={item.key} agent={item.agent} size="sm" showStatus={false} />
-          ))}
-        </span>
-        <span className="activity-progress-copy">
-          <strong>{title}</strong>
-          <small>
-            <Icon size={13} />
-            <span>{latestTitle}</span>
-            {latestDetail && <em>{compact(latestDetail, 80)}</em>}
-            {queuedCount > 0 && <em>{queuedCount} queued on this surface</em>}
-          </small>
-        </span>
-        <ChevronDown className="activity-progress-chevron" size={14} />
-      </summary>
-      {history.length > 0 && (
+    <div className="activity-progress-dock" data-source-kind={latestKindMeta.tone}>
+      <div className="activity-progress-summary" data-state={state}>
+        <button
+          type="button"
+          className="activity-progress-summary-main"
+          onClick={() => {
+            if (jumpable) {
+              handleJump();
+            } else if (history.length > 0) {
+              setHistoryOpen((current) => !current);
+            }
+          }}
+          disabled={!jumpable && history.length === 0}
+          aria-expanded={!jumpable ? historyOpen : undefined}
+          aria-label={jumpable ? `Jump to ${latestKindMeta.label.toLowerCase()} source` : "Toggle activity history"}
+        >
+          <span className="activity-progress-avatar-stack" aria-hidden="true">
+            {progress.slice(0, 3).map((item) => (
+              <AgentAvatar key={item.key} agent={item.agent} size="sm" showStatus={false} />
+            ))}
+          </span>
+          <span className="activity-progress-copy">
+            <strong>{title}</strong>
+            <small>
+              <KindIcon className="activity-progress-kind-icon" size={13} aria-hidden="true" />
+              <span className="activity-progress-kind-label">{latestKindMeta.label}</span>
+              <Icon className="activity-progress-phase-icon" size={13} aria-hidden="true" />
+              <span>{latestTitle}</span>
+              {latestDetail && <em>{compact(latestDetail, 80)}</em>}
+              {queuedCount > 0 && <em>{queuedCount} queued on this surface</em>}
+            </small>
+          </span>
+          {jumpable && (
+            <span className="activity-progress-jump-arrow" aria-hidden="true">→</span>
+          )}
+        </button>
+        {history.length > 0 && (
+          <button
+            type="button"
+            className="activity-progress-toggle"
+            onClick={() => setHistoryOpen((current) => !current)}
+            aria-expanded={historyOpen}
+            aria-label={historyOpen ? "Hide activity history" : "Show activity history"}
+          >
+            <ChevronDown
+              className="activity-progress-chevron"
+              data-open={historyOpen ? "true" : "false"}
+              size={14}
+            />
+          </button>
+        )}
+      </div>
+      {historyOpen && history.length > 0 && (
         <ol className="activity-progress-history">
-          {history.map(({ activity, agent }) => {
+          {history.map(({ activity, agent, workItem }) => {
             const detail = activityDetail(activity);
+            const rowMeta = sourceKindMeta(workItem ?? null);
             return (
               <li
                 key={activity.id}
@@ -467,6 +586,7 @@ export function ActivityProgressDock({
                 data-kind={activity.kind}
                 data-phase={activity.phase}
                 data-status={activity.status}
+                data-source-kind={rowMeta.tone}
               >
                 <time>{formatClockTime(activity.created_at)}</time>
                 <span
@@ -474,6 +594,7 @@ export function ActivityProgressDock({
                   data-kind={activity.kind}
                   data-phase={activity.phase}
                   data-status={activity.status}
+                  data-source-kind={rowMeta.tone}
                   aria-hidden="true"
                 />
                 <div className="activity-timeline-body">
@@ -494,6 +615,6 @@ export function ActivityProgressDock({
           })}
         </ol>
       )}
-    </details>
+    </div>
   );
 }

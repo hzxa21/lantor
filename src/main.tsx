@@ -2016,8 +2016,7 @@ function App() {
   const selectedAgentWorkItems = useMemo(() => {
     if (!data || !selectedAgent) return [];
     return data.agent_work_items
-      .filter((item) => item.agent_id === selectedAgent.id && item.status !== "silent")
-      .slice(0, 6);
+      .filter((item) => item.agent_id === selectedAgent.id && item.status !== "silent");
   }, [data, selectedAgent]);
 
   const searchResults = useMemo(() => {
@@ -2912,7 +2911,7 @@ function App() {
     setActiveTab("chat");
   }
 
-  function openWorkItem(item: AgentWorkItem) {
+  function openWorkItem(item: AgentWorkItem, focusedMessageIdOverride?: string | null) {
     if (item.channel_id) setActiveChannelId(item.channel_id);
     if (item.thread_root_id) {
       revealThread(item.thread_root_id, item.channel_id ?? activeChannelId);
@@ -2920,6 +2919,17 @@ function App() {
     }
     const agent = data?.agents.find((candidate) => candidate.id === item.agent_id);
     if (agent) setSelectedAgentId(agent.id);
+    const focusId = focusedMessageIdOverride === undefined
+      ? item.source_message_id
+      : focusedMessageIdOverride;
+    if (focusId) {
+      const messageExists = Boolean(data?.messages.some((message) => message.id === focusId));
+      if (messageExists) {
+        setFocusedMessageId(focusId);
+      } else if (item.channel_id) {
+        setAppError("Original message no longer exists");
+      }
+    }
   }
 
   function openSearchResult(result: SearchResult) {
@@ -3379,6 +3389,7 @@ function App() {
         sendRootMessage={sendRootMessage}
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openArtifact={openArtifact}
+        openWorkItem={openWorkItem}
         shareBaseUrl={shareBaseUrl}
         savedMessageIds={savedMessageIds}
         focusedMessageId={focusedMessageId}
@@ -3400,8 +3411,10 @@ function App() {
             startEditAgent(agent);
           }}
           onRestart={restartAgent}
-          onOpenWorkItem={(item) => {
-            openWorkItem(item);
+          channels={data.channels}
+          messages={data.messages}
+          onOpenWorkItem={(item, focusedMessageIdOverride) => {
+            openWorkItem(item, focusedMessageIdOverride);
             setSelectedAgentId(null);
           }}
           onResizeStart={startAgentDrawerResize}
@@ -3437,6 +3450,7 @@ function App() {
           sendReply={sendReply}
           openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
           openArtifact={openArtifact}
+          openWorkItem={openWorkItem}
           shareBaseUrl={shareBaseUrl}
           savedMessageIds={savedMessageIds}
           focusedMessageId={focusedMessageId}

@@ -1,4 +1,4 @@
-import { ArrowLeft, Clock3, Inbox, Pencil, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Pencil, RotateCcw, Trash2, X } from "lucide-react";
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { apiInvoke } from "../apiClient";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -10,8 +10,10 @@ import {
   AgentWorkspaceEntry,
   AgentWorkspaceFile,
   AgentWorkspaceListing,
+  Channel,
   CODEX_REASONING_EFFORTS,
   CODEX_SERVICE_TIERS,
+  Message,
   Reminder,
   RUNTIME_PRESETS,
   modelLabel,
@@ -19,7 +21,8 @@ import {
 import { AgentAvatar } from "./AgentAvatar";
 import { MessageMarkdown } from "./MessageMarkdown";
 import { Modal } from "./Modal";
-import { agentRequestSourceLabel, formatTime } from "../ui-utils";
+import { sourceKindMeta } from "./ActivityProgressDock";
+import { formatTime } from "../ui-utils";
 
 type AgentPhase = {
   kind: string;
@@ -44,11 +47,13 @@ type AgentDetailDrawerProps = {
   performance: AgentPerformance;
   workItems: AgentWorkItem[];
   reminders: Reminder[];
+  channels: Channel[];
+  messages: Message[];
   onClose: () => void;
   onDelete: (agent: Agent) => void;
   onEdit: (agent: Agent) => void;
   onRestart: (agent: Agent) => void;
-  onOpenWorkItem: (item: AgentWorkItem) => void;
+  onOpenWorkItem: (item: AgentWorkItem, focusedMessageIdOverride?: string | null) => void;
   onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
@@ -291,6 +296,48 @@ function workItemLocationLabel(item: AgentWorkItem) {
   return "Agent inbox";
 }
 
+function turnDurationLabel(activities: AgentActivity[]) {
+  if (activities.length === 0) return "";
+  const stamps = activities
+    .map((activity) => activityTimestamp(activity))
+    .filter((value) => value > 0);
+  if (stamps.length < 2) return "";
+  const spread = Math.max(...stamps) - Math.min(...stamps);
+  if (spread <= 0) return "";
+  if (spread < 1000) return `${spread} ms`;
+  if (spread < 60_000) return `${(spread / 1000).toFixed(spread < 10_000 ? 1 : 0)} s`;
+  const minutes = Math.round(spread / 60_000);
+  return `${minutes} min`;
+}
+
+function compactPreview(value: string, maxLength = 80) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function firstLinePreview(value: string, maxLength = 80) {
+  const stripped = value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)[0] ?? "";
+  return compactPreview(stripped, maxLength);
+}
+
+function rootMessageTitle(message: Message | null) {
+  if (!message) return "";
+  if (message.is_task && message.task_number) {
+    return `Task #${message.task_number}: ${firstLinePreview(message.body, 60)}`;
+  }
+  return firstLinePreview(message.body, 60);
+}
+
+function channelDisplayLabel(channel: Channel | null) {
+  if (!channel) return "Agent inbox";
+  if (channel.kind === "dm") return "Direct message";
+  return `#${channel.name}`;
+}
+
 function workItemSurfaceKey(item: AgentWorkItem) {
   return `${item.channel_id ?? "agent"}:${item.thread_root_id ?? "root"}`;
 }
@@ -372,6 +419,8 @@ export function AgentDetailDrawer({
   performance,
   workItems,
   reminders,
+  channels,
+  messages,
   onClose,
   onDelete,
   onEdit,
@@ -728,6 +777,8 @@ export function AgentDetailDrawer({
   }
 
   function renderActivityPanel() {
+    const channelsById = new Map(channels.map((channel) => [channel.id, channel] as const));
+    const messagesById = new Map(messages.map((message) => [message.id, message] as const));
     const workItemsByRun = new Map(
       workItems
         .filter((item) => item.run_id)
@@ -735,13 +786,13 @@ export function AgentDetailDrawer({
     );
     const groupedActivities = new Map<string, AgentActivity[]>();
     activities.forEach((activity) => {
-      const key = activity.run_id ?? `activity:${activity.id}`;
+      const key = activity.run_id ?? "system-runtime";
       groupedActivities.set(key, [...(groupedActivities.get(key) ?? []), activity]);
     });
     const activityGroups = Array.from(groupedActivities.entries())
       .map(([runId, groupActivities]) => {
         const sorted = [...groupActivities].sort((left, right) => activityTimestamp(right) - activityTimestamp(left));
-        const workItem = runId.startsWith("activity:") ? null : workItemsByRun.get(runId) ?? null;
+        const workItem = runId === "system-runtime" ? null : workItemsByRun.get(runId) ?? null;
         const latest = sorted[0];
         const queuedBehind = workItem
           ? workItems.filter((item) =>
@@ -750,6 +801,34 @@ export function AgentDetailDrawer({
             && item.agent_id === workItem.agent_id
             && workItemSurfaceKey(item) === workItemSurfaceKey(workItem))
           : [];
+        const kindMeta = sourceKindMeta(workItem);
+        const sourceMessage = workItem?.source_message_id
+          ? messagesById.get(workItem.source_message_id) ?? null
+          : null;
+        const sourceMissing = Boolean(workItem?.source_message_id) && sourceMessage === null;
+        const channel = workItem?.channel_id ? channelsById.get(workItem.channel_id) ?? null : null;
+        const threadRoot = workItem?.thread_root_id
+          ? messagesById.get(workItem.thread_root_id) ?? null
+          : null;
+        const channelLabel = channelDisplayLabel(channel);
+        const pathSegments: string[] = [];
+        if (workItem?.task_number) {
+          pathSegments.push(`Task #${workItem.task_number}`);
+          if (channel) pathSegments.push(channelLabel);
+        } else if (workItem) {
+          pathSegments.push(channelLabel);
+          if (threadRoot) {
+            const threadLabel = rootMessageTitle(threadRoot);
+            if (threadLabel) pathSegments.push(threadLabel);
+          }
+        } else {
+          pathSegments.push("Runtime");
+        }
+        const path = pathSegments.join(" › ");
+        const previewSource = sourceMessage?.body
+          ?? (workItem && !workItem.source_message_id && workItem.context ? workItem.context : "")
+          ?? "";
+        const preview = previewSource ? firstLinePreview(previewSource, 80) : "";
         return {
           runId,
           workItem,
@@ -757,6 +836,12 @@ export function AgentDetailDrawer({
           activities: sorted,
           queuedBehind,
           providerRetrying: sorted.some(isProviderRetryActivity),
+          kindMeta,
+          path,
+          preview,
+          sourceMessage,
+          sourceMissing,
+          duration: turnDurationLabel(sorted),
         };
       })
       .sort((left, right) => activityTimestamp(right.latest) - activityTimestamp(left.latest));
@@ -771,24 +856,58 @@ export function AgentDetailDrawer({
         {activityGroups.length > 0 && (
           <div className="activity-run-list" role="log" aria-label={`${agent.handle} activity by run`}>
             {activityGroups.map((group) => {
-              const sourceLabel = group.workItem
-                ? agentRequestSourceLabel(group.workItem.source_kind, group.workItem.task_number)
-                : "Runtime event";
-              const location = group.workItem ? workItemLocationLabel(group.workItem) : "No source request";
+              const KindIcon = group.kindMeta.icon;
+              const jumpable = Boolean(group.workItem) && group.kindMeta.jumpable;
               return (
-                <article className="activity-run-card" key={group.runId} data-provider-retrying={group.providerRetrying ? "true" : "false"}>
+                <article
+                  className="activity-run-card"
+                  key={group.runId}
+                  data-provider-retrying={group.providerRetrying ? "true" : "false"}
+                  data-source-kind={group.kindMeta.tone}
+                  data-jumpable={jumpable ? "true" : "false"}
+                >
                   <header className="activity-run-head">
-                    <div>
-                      <div className="activity-run-kicker">
-                        <span>{sourceLabel}</span>
+                    <div className="activity-run-head-main">
+                      <div className="activity-run-trigger">
+                        <span className="activity-run-kind-icon" aria-hidden="true">
+                          <KindIcon size={14} />
+                        </span>
+                        <span className="activity-run-trigger-label">
+                          Triggered by <b>{group.kindMeta.label}</b>
+                        </span>
                         <time>{formatActivityTime(group.latest.created_at)}</time>
-                        {group.providerRetrying && <b>Provider retrying</b>}
+                        {group.duration && <small>· {group.duration}</small>}
+                        {group.providerRetrying && <b className="activity-run-retrying">Provider retrying</b>}
+                        {jumpable && (
+                          <ArrowRight className="activity-run-arrow" size={13} aria-hidden="true" />
+                        )}
                       </div>
-                      <h5>{group.workItem?.title || userFacingActivityTitle(group.latest)}</h5>
-                      <p>{location}{group.workItem?.status ? ` · ${workItemStatusLabel(group.workItem.status)}` : ""}</p>
+                      <p className="activity-run-context">
+                        <span className="activity-run-path" title={group.path}>{group.path}</span>
+                        {group.preview && (
+                          <>
+                            <span className="activity-run-context-divider" aria-hidden="true">·</span>
+                            <span className="activity-run-preview" title={group.preview}>
+                              {group.sourceMissing ? "Original message no longer exists" : `“${group.preview}”`}
+                            </span>
+                          </>
+                        )}
+                        {!group.preview && group.workItem?.status && (
+                          <>
+                            <span className="activity-run-context-divider" aria-hidden="true">·</span>
+                            <span>{workItemStatusLabel(group.workItem.status)}</span>
+                          </>
+                        )}
+                      </p>
                     </div>
-                    {group.workItem && (
-                      <button type="button" onClick={() => onOpenWorkItem(group.workItem as AgentWorkItem)}>
+                    {jumpable && group.workItem && (
+                      <button
+                        type="button"
+                        className="activity-run-open"
+                        onClick={() =>
+                          onOpenWorkItem(group.workItem as AgentWorkItem, group.sourceMessage?.id ?? null)
+                        }
+                      >
                         Open
                       </button>
                     )}
@@ -821,6 +940,7 @@ export function AgentDetailDrawer({
                           data-kind={activity.kind}
                           data-phase={activity.phase}
                           data-status={activity.status}
+                          data-source-kind={group.kindMeta.tone}
                           onClick={() => setExpandedActivityId((current) => current === activity.id ? null : activity.id)}
                         >
                           <time>{formatActivityTime(activity.created_at)}</time>
@@ -829,6 +949,7 @@ export function AgentDetailDrawer({
                             data-kind={activity.kind}
                             data-phase={activity.phase}
                             data-status={activity.status}
+                            data-source-kind={group.kindMeta.tone}
                             aria-hidden="true"
                           />
                           <div className="activity-timeline-body">

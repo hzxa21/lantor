@@ -100,6 +100,7 @@ type ThreadPanelProps = {
   sendReply: (bodyOverride?: string, attachmentsOverride?: DraftAttachment[]) => void;
   openAgentDetail: (agent: Agent) => void;
   openArtifact: (artifact: Artifact) => void;
+  openWorkItem?: (item: AgentWorkItem, focusedMessageIdOverride?: string | null) => void;
   shareBaseUrl: string | null;
   savedMessageIds: Set<string>;
   focusedMessageId: string | null;
@@ -139,6 +140,7 @@ export function ThreadPanel({
   sendReply,
   openAgentDetail,
   openArtifact,
+  openWorkItem,
   shareBaseUrl,
   savedMessageIds,
   focusedMessageId,
@@ -446,6 +448,7 @@ export function ThreadPanel({
               agents={agents}
               channelId={activeRoot ? channel?.id ?? null : null}
               threadRootId={activeRoot?.id ?? null}
+              onOpenWorkItem={openWorkItem}
             />
           </div>
           <div

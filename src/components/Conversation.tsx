@@ -75,6 +75,7 @@ type ConversationProps = {
   sendRootMessage: (asTask?: boolean, bodyOverride?: string, attachmentsOverride?: DraftAttachment[]) => void;
   openAgentDetail: (agent: Agent) => void;
   openArtifact: (artifact: Artifact) => void;
+  openWorkItem?: (item: AgentWorkItem, focusedMessageIdOverride?: string | null) => void;
   shareBaseUrl: string | null;
   savedMessageIds: Set<string>;
   focusedMessageId: string | null;
@@ -252,6 +253,7 @@ export function Conversation({
   sendRootMessage,
   openAgentDetail,
   openArtifact,
+  openWorkItem,
   shareBaseUrl,
   savedMessageIds,
   focusedMessageId,
@@ -761,6 +763,7 @@ export function Conversation({
               agents={agents}
               channelId={channel?.id ?? null}
               threadRootId={null}
+              onOpenWorkItem={openWorkItem}
             />
           </div>
           <div

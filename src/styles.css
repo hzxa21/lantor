@@ -3228,6 +3228,94 @@ mark {
   display: none;
 }
 
+.activity-progress-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  min-height: 42px;
+  padding: 0;
+  border: 1px solid var(--activity-progress-border);
+  border-radius: var(--radius-md);
+  background: var(--activity-progress-bg);
+  box-shadow: var(--activity-progress-shadow);
+}
+
+.activity-progress-summary[data-state="provider-retrying"] {
+  border-color: var(--status-warning-border);
+}
+
+.activity-progress-summary[data-state="queued"] {
+  border-style: dashed;
+}
+
+.activity-progress-summary-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 7px 7px 7px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.activity-progress-summary-main:disabled {
+  cursor: default;
+}
+
+.activity-progress-summary-main:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.activity-progress-jump-arrow {
+  font-size: 14px;
+  font-weight: var(--type-weight-semibold);
+  color: var(--source-kind-strong, var(--accent));
+}
+
+.activity-progress-kind-icon {
+  color: var(--source-kind-strong, var(--accent));
+}
+
+.activity-progress-kind-label {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--source-kind-soft, var(--badge-phase-default-bg));
+  color: var(--source-kind-strong, var(--ink-secondary));
+  font-weight: var(--type-weight-semibold);
+  white-space: nowrap;
+}
+
+.activity-progress-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: 0 5px 0 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--activity-progress-muted-ink);
+  cursor: pointer;
+}
+
+.activity-progress-toggle:hover,
+.activity-progress-toggle:focus-visible {
+  background: var(--surface-control-hover);
+  color: var(--activity-progress-title-ink);
+}
+
+.activity-progress-chevron[data-open="true"] {
+  transform: rotate(180deg);
+}
+
 .message-progress-layer,
 .thread-progress-layer {
   position: relative;
@@ -6799,11 +6887,189 @@ body.resizing-row * {
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
   background: var(--bg-control-flat);
+  border-left: 3px solid var(--source-kind-strong, var(--border-subtle));
 }
 
 .activity-run-card[data-provider-retrying="true"] {
   border-color: var(--status-warning-border);
   background: var(--status-warning-soft);
+}
+
+[data-source-kind="mention"] {
+  --source-kind-strong: #1d6bff;
+  --source-kind-soft: rgba(29, 107, 255, 0.12);
+}
+
+[data-source-kind="dm"] {
+  --source-kind-strong: #5a3fdb;
+  --source-kind-soft: rgba(90, 63, 219, 0.14);
+}
+
+[data-source-kind="thread_followup"] {
+  --source-kind-strong: #1aa3a3;
+  --source-kind-soft: rgba(26, 163, 163, 0.14);
+}
+
+[data-source-kind="channel_message"] {
+  --source-kind-strong: #1a9b6e;
+  --source-kind-soft: rgba(26, 155, 110, 0.14);
+}
+
+[data-source-kind="task"] {
+  --source-kind-strong: #7b2cbf;
+  --source-kind-soft: rgba(123, 44, 191, 0.14);
+}
+
+[data-source-kind="reminder"] {
+  --source-kind-strong: #c97b14;
+  --source-kind-soft: rgba(201, 123, 20, 0.16);
+}
+
+[data-source-kind="schedule"] {
+  --source-kind-strong: #cf5c1e;
+  --source-kind-soft: rgba(207, 92, 30, 0.16);
+}
+
+[data-source-kind="handoff"] {
+  --source-kind-strong: #c52b88;
+  --source-kind-soft: rgba(197, 43, 136, 0.14);
+}
+
+[data-source-kind="self_wake"],
+[data-source-kind="system"] {
+  --source-kind-strong: #6a7484;
+  --source-kind-soft: rgba(106, 116, 132, 0.16);
+}
+
+[data-source-kind="manual"] {
+  --source-kind-strong: #2f9e44;
+  --source-kind-soft: rgba(47, 158, 68, 0.14);
+}
+
+[data-source-kind="default"] {
+  --source-kind-strong: var(--accent);
+  --source-kind-soft: var(--badge-phase-default-bg);
+}
+
+.activity-run-card[data-jumpable="false"] {
+  opacity: 0.92;
+}
+
+.activity-run-head-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.activity-run-trigger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-semibold);
+  line-height: 1.3;
+}
+
+.activity-run-kind-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--source-kind-soft, var(--badge-phase-default-bg));
+  color: var(--source-kind-strong, var(--ink-secondary));
+}
+
+.activity-run-trigger-label {
+  color: var(--ink-secondary);
+  font-weight: var(--type-weight-semibold);
+}
+
+.activity-run-trigger-label b {
+  color: var(--source-kind-strong, var(--ink-primary));
+}
+
+.activity-run-trigger time {
+  color: var(--muted);
+  font-weight: var(--type-weight-regular);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-run-trigger small {
+  color: var(--muted);
+  font-weight: var(--type-weight-regular);
+}
+
+.activity-run-retrying {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--status-warning-soft);
+  color: var(--status-warning);
+  font-weight: var(--type-weight-semibold);
+}
+
+.activity-run-arrow {
+  color: var(--source-kind-strong, var(--accent));
+  margin-left: auto;
+}
+
+.activity-run-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--type-size-caption);
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.activity-run-path {
+  flex: 0 1 auto;
+  color: var(--ink-secondary);
+  font-weight: var(--type-weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.activity-run-context-divider {
+  color: var(--muted);
+}
+
+.activity-run-preview {
+  flex: 1 1 14ch;
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-run-open {
+  padding: 5px 9px;
+  border: 1px solid var(--source-kind-strong, var(--border-control));
+  border-radius: 8px;
+  background: var(--source-kind-soft, var(--surface-control));
+  color: var(--source-kind-strong, var(--ink-on-control));
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-semibold);
+}
+
+.activity-run-open:hover,
+.activity-run-open:focus-visible {
+  background: var(--source-kind-soft, var(--surface-control-hover));
+  filter: brightness(0.98);
+}
+
+.activity-progress-dock .activity-run-step[data-source-kind] .activity-dot,
+.activity-run-step[data-source-kind] .activity-dot {
+  background: var(--source-kind-strong, var(--border-strong));
 }
 
 .activity-run-head {
