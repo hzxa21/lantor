@@ -48,8 +48,8 @@ function isNoisyTaskActivity(activity: AgentActivity) {
   return false;
 }
 
-const THREAD_MESSAGE_PREVIEW_LINES = 12;
-const THREAD_MESSAGE_PREVIEW_CHARS = 1800;
+const THREAD_MESSAGE_PREVIEW_LINES = 24;
+const THREAD_MESSAGE_PREVIEW_CHARS = 4000;
 
 function shouldCollapseThreadMessage(body: string) {
   const text = body.trim();

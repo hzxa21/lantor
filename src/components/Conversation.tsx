@@ -88,8 +88,8 @@ type MessageMenuState = {
   message: Message;
 } | null;
 
-const CHANNEL_MESSAGE_PREVIEW_LINES = 12;
-const CHANNEL_MESSAGE_PREVIEW_CHARS = 1800;
+const CHANNEL_MESSAGE_PREVIEW_LINES = 24;
+const CHANNEL_MESSAGE_PREVIEW_CHARS = 4000;
 const MESSAGE_CARD_INTERACTIVE_TARGET_SELECTOR = [
   "a",
   "button",
