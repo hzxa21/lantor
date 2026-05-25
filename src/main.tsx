@@ -141,8 +141,13 @@ const MIN_COMPACT_CONTENT_WIDTH = 320;
 const MIN_COMPACT_SIDEBAR_VISIBLE_WIDTH = 220;
 const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
+const EPHEMERAL_FLUSH_FALLBACK_MS = 80;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const ACTIVITY_HISTORY_LIMIT_PER_AGENT = 80;
+// Issue #82: run states that must bypass the ephemeral coalescing buffer
+// so terminal transitions land immediately. "stopped" is included to
+// match runtime supervisor terminology even if it is rare in practice.
+const RUN_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "stopped"]);
 const DEFAULT_OWNER_DISPLAY_NAME = "Me";
 const DEFAULT_OWNER_AVATAR = "dicebear:dylan:owner";
 const DEFAULT_OWNER_DESCRIPTION = "local owner";
@@ -749,6 +754,16 @@ function App() {
   const optimisticMessagesRef = useRef<Map<string, Message>>(new Map());
   const optimisticAttachmentUrlsRef = useRef<Map<string, string[]>>(new Map());
   const messageDeltaFlushTimerRef = useRef<number | null>(null);
+  // Ephemeral event buffer (issue #82): coalesces high-frequency progress
+  // upserts keyed by (kind, id) — latest-wins — and flushes in a single
+  // setData on the next animation frame, with an 80 ms fallback for
+  // background tabs where rAF is throttled. Semantic events bypass the
+  // buffer and apply immediately (see handleBackendEvent).
+  const ephemeralActivityBufferRef = useRef<Map<string, AgentActivity>>(new Map());
+  const ephemeralRunBufferRef = useRef<Map<string, Omit<AgentRun, "log"> & { log?: string }>>(new Map());
+  const ephemeralFlushScheduledRef = useRef(false);
+  const ephemeralFlushRafRef = useRef<number | null>(null);
+  const ephemeralFlushTimerRef = useRef<number | null>(null);
   const appHistoryReadyRef = useRef(false);
   const appHistoryIndexRef = useRef(0);
   const appHistoryMaxIndexRef = useRef(0);
@@ -986,6 +1001,88 @@ function App() {
     });
   }
 
+  function cancelEphemeralFlushTimers() {
+    if (ephemeralFlushRafRef.current !== null) {
+      cancelAnimationFrame(ephemeralFlushRafRef.current);
+      ephemeralFlushRafRef.current = null;
+    }
+    if (ephemeralFlushTimerRef.current !== null) {
+      window.clearTimeout(ephemeralFlushTimerRef.current);
+      ephemeralFlushTimerRef.current = null;
+    }
+    ephemeralFlushScheduledRef.current = false;
+  }
+
+  function flushEphemeralBuffer() {
+    cancelEphemeralFlushTimers();
+    const activityBuffer = ephemeralActivityBufferRef.current;
+    const runBuffer = ephemeralRunBufferRef.current;
+    if (activityBuffer.size === 0 && runBuffer.size === 0) return;
+    const activities = Array.from(activityBuffer.values());
+    const runs = Array.from(runBuffer.values());
+    ephemeralActivityBufferRef.current = new Map();
+    ephemeralRunBufferRef.current = new Map();
+    setData((current) => {
+      if (!current) {
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after buffered updates`);
+        return current;
+      }
+      let nextActivities = current.agent_activities;
+      if (activities.length > 0) {
+        const byId = new Map(nextActivities.map((item) => [item.id, item] as const));
+        for (const activity of activities) byId.set(activity.id, activity);
+        nextActivities = limitActivitiesPerAgent(Array.from(byId.values()));
+      }
+      let nextRuns = current.agent_runs;
+      if (runs.length > 0) {
+        const byId = new Map(nextRuns.map((item) => [item.id, item] as const));
+        for (const patch of runs) {
+          const existing = byId.get(patch.id);
+          const run: AgentRun = {
+            ...patch,
+            log: patch.log ?? existing?.log ?? "",
+          };
+          byId.set(patch.id, existing ? { ...existing, ...run } : run);
+        }
+        nextRuns = Array.from(byId.values())
+          .sort((left, right) => new Date(right.started_at).getTime() - new Date(left.started_at).getTime())
+          .slice(0, 30);
+      }
+      if (nextActivities === current.agent_activities && nextRuns === current.agent_runs) {
+        return current;
+      }
+      return { ...current, agent_activities: nextActivities, agent_runs: nextRuns };
+    });
+  }
+
+  function scheduleEphemeralFlush() {
+    if (ephemeralFlushScheduledRef.current) return;
+    ephemeralFlushScheduledRef.current = true;
+    ephemeralFlushRafRef.current = window.requestAnimationFrame(() => {
+      ephemeralFlushRafRef.current = null;
+      flushEphemeralBuffer();
+    });
+    // EPHEMERAL_FLUSH_FALLBACK_MS is the upper bound from issue #82 — also
+    // covers background tabs where rAF is throttled / paused.
+    ephemeralFlushTimerRef.current = window.setTimeout(() => {
+      flushEphemeralBuffer();
+    }, EPHEMERAL_FLUSH_FALLBACK_MS);
+  }
+
+  function bufferActivityEphemeral(activity: AgentActivity) {
+    ephemeralActivityBufferRef.current.set(activity.id, activity);
+    scheduleEphemeralFlush();
+  }
+
+  function bufferRunEphemeral(patch: Omit<AgentRun, "log"> & { log?: string }) {
+    ephemeralRunBufferRef.current.set(patch.id, patch);
+    scheduleEphemeralFlush();
+  }
+
+  function dropPendingRunEphemeral(runId: string) {
+    ephemeralRunBufferRef.current.delete(runId);
+  }
+
   function applyWorkItemUpsert(patch: Omit<AgentWorkItem, "context"> & { context?: string }) {
     setData((current) => {
       if (!current) {
@@ -1060,10 +1157,16 @@ function App() {
         return;
       }
       if (parsed.type === "message_upsert") {
+        // Semantic message events (final body, owner/system messages, errors)
+        // bypass the ephemeral buffer; they are decisive and inexpensive.
+        // Streaming placeholder rewrites are batched on the backend through
+        // the existing message_delta path, not here, so re-batching them
+        // would race with deltas on the same message id.
         applyMessageUpsert(parsed.message);
         return;
       }
       if (parsed.type === "message_delta") {
+        // Already coalesced by the dedicated message-delta buffer (50 ms).
         queueMessageDelta(parsed.message_id, parsed.append, parsed.delivery_state);
         return;
       }
@@ -1072,18 +1175,31 @@ function App() {
         return;
       }
       if (parsed.type === "activity_upsert") {
-        applyActivityUpsert(parsed.activity);
+        // Activities are inherently transient progress signals. Coalesce
+        // by activity.id (latest wins) and flush once per animation frame.
+        bufferActivityEphemeral(parsed.activity);
         return;
       }
       if (parsed.type === "agent_run_upsert") {
-        applyAgentRunUpsert(parsed.run);
+        // Run terminal transitions MUST land immediately so the UI shows
+        // completion / failure without waiting for the buffer. Drop any
+        // stale pending ephemeral for the same run id first to avoid the
+        // buffered partial overwriting the terminal state.
+        if (RUN_TERMINAL_STATUSES.has(parsed.run.status)) {
+          dropPendingRunEphemeral(parsed.run.id);
+          applyAgentRunUpsert(parsed.run);
+        } else {
+          bufferRunEphemeral(parsed.run);
+        }
         return;
       }
       if (parsed.type === "work_item_upsert") {
+        // Work-item / task state transitions are semantic; bypass buffer.
         applyWorkItemUpsert(parsed.work_item);
         return;
       }
       if (parsed.type === "artifact_upsert") {
+        // Artifact upserts are semantic; bypass buffer.
         applyArtifactUpsert(parsed.artifact);
         return;
       }
@@ -1159,6 +1275,7 @@ function App() {
       if (messageDeltaFlushTimerRef.current !== null) {
         window.clearTimeout(messageDeltaFlushTimerRef.current);
       }
+      cancelEphemeralFlushTimers();
       unlisten?.();
     };
   }, []);
