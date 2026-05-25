@@ -662,6 +662,7 @@ function App() {
   const [createChannelSubmitting, setCreateChannelSubmitting] = useState(false);
   const createChannelSubmittingRef = useRef(false);
   const createChannelOpenedFromMobileHomeRef = useRef(false);
+  const createAgentOpenedFromMobileHomeRef = useRef(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showActivityFeedModal, setShowActivityFeedModal] = useState(false);
   const [showSavedModal, setShowSavedModal] = useState(false);
@@ -2258,11 +2259,7 @@ function App() {
     setShowCreateChannelModal(false);
     createChannelOpenedFromMobileHomeRef.current = false;
     if (shouldReturnToMobileHome) {
-      setShowMobileSidebar(true);
-      setMobileSidebarFocus("home");
-      setMobileSidebarDragPx(0);
-      setSelectedAgentId(null);
-      setShowThread(false);
+      returnToMobileHome();
       return;
     }
     if (result.channelId) {
@@ -2319,11 +2316,7 @@ function App() {
           setActiveChannelId(fallbackChannelId);
           openThread(rememberedThreadForChannel(fallbackChannelId), fallbackChannelId);
           if (isMobileViewport()) {
-            setShowMobileSidebar(true);
-            setMobileSidebarFocus("home");
-            setMobileSidebarDragPx(0);
-            setSelectedAgentId(null);
-            setShowThread(false);
+            returnToMobileHome();
           }
         }
       },
@@ -2464,6 +2457,14 @@ function App() {
   }
 
   function openMobileHome() {
+    returnToMobileHome();
+  }
+
+  function isMobileHomeOpen() {
+    return isMobileViewport() && showMobileSidebar && mobileSidebarFocus === "home";
+  }
+
+  function returnToMobileHome() {
     setShowSearchModal(false);
     setShowActivityFeedModal(false);
     setShowSavedModal(false);
@@ -2662,6 +2663,7 @@ function App() {
     const preferredHandle = agentDraft.handle.trim() || agentDraft.displayName.trim();
     if (!preferredHandle) return;
     const shouldReturnToCreateChannel = returnToCreateChannelAfterAgent;
+    const shouldReturnToMobileHome = createAgentOpenedFromMobileHomeRef.current && !shouldReturnToCreateChannel;
     const handle = availableAgentHandle(preferredHandle, data?.agents ?? []);
     const displayName = agentDraft.displayName.trim() || handle;
     const nextForm = {
@@ -2689,8 +2691,13 @@ function App() {
     setAgentDraft(newAgentDraft());
     setShowCreateAgentModal(false);
     setReturnToCreateChannelAfterAgent(false);
+    createAgentOpenedFromMobileHomeRef.current = false;
     if (shouldReturnToCreateChannel) {
       setShowCreateChannelModal(true);
+      return;
+    }
+    if (shouldReturnToMobileHome) {
+      returnToMobileHome();
     }
   }
 
@@ -3221,7 +3228,7 @@ function App() {
         openSaved={openSavedModal}
         mobileFocus={mobileSidebarFocus}
         openCreateChannelModal={() => {
-          const openedFromMobileHome = isMobileViewport() && showMobileSidebar && mobileSidebarFocus === "home";
+          const openedFromMobileHome = isMobileHomeOpen();
           createChannelOpenedFromMobileHomeRef.current = openedFromMobileHome;
           if (!openedFromMobileHome) {
             setShowMobileSidebar(false);
@@ -3236,9 +3243,13 @@ function App() {
           selectChannel(channelId);
         }}
         openCreateAgentModal={() => {
+          const openedFromMobileHome = isMobileHomeOpen();
           setAgentDraft(newAgentDraft());
           setReturnToCreateChannelAfterAgent(false);
-          setShowMobileSidebar(false);
+          createAgentOpenedFromMobileHomeRef.current = openedFromMobileHome;
+          if (!openedFromMobileHome) {
+            setShowMobileSidebar(false);
+          }
           setShowCreateAgentModal(true);
         }}
         openDmWithAgent={(agent) => {
@@ -3252,11 +3263,15 @@ function App() {
         }}
         openOwnerProfileModal={() => {
           setOwnerProfileDraft(ownerProfileToForm(data.owner_profile));
-          setShowMobileSidebar(false);
+          if (!isMobileHomeOpen()) {
+            setShowMobileSidebar(false);
+          }
           setShowOwnerProfileModal(true);
         }}
         openSettingsModal={() => {
-          setShowMobileSidebar(false);
+          if (!isMobileHomeOpen()) {
+            setShowMobileSidebar(false);
+          }
           setShowSettingsModal(true);
         }}
         onResizeStart={startSidebarResize}
@@ -3500,6 +3515,7 @@ function App() {
         onCreateAgent={() => {
           setAgentDraft(newAgentDraft());
           setReturnToCreateChannelAfterAgent(true);
+          createAgentOpenedFromMobileHomeRef.current = false;
           setNewChannelNameSubmitError(null);
           setShowCreateChannelModal(false);
           setShowCreateAgentModal(true);
@@ -3543,6 +3559,7 @@ function App() {
         onCreateAgent={() => {
           setAgentDraft(newAgentDraft());
           setReturnToCreateChannelAfterAgent(false);
+          createAgentOpenedFromMobileHomeRef.current = false;
           setShowChannelAgentsModal(false);
           setShowCreateAgentModal(true);
         }}
@@ -3563,6 +3580,7 @@ function App() {
           setAgentDraft(newAgentDraft());
           setShowCreateAgentModal(false);
           setReturnToCreateChannelAfterAgent(false);
+          createAgentOpenedFromMobileHomeRef.current = false;
           if (shouldReturnToCreateChannel) {
             setShowCreateChannelModal(true);
           }
