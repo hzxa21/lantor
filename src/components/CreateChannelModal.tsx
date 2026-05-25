@@ -9,6 +9,7 @@ type CreateChannelModalProps = {
   nameError?: string | null;
   agents: Agent[];
   selectedAgentIds: Set<string>;
+  submitting?: boolean;
   onChange: (value: string) => void;
   onToggleAgent: (agentId: string, member: boolean) => void;
   onCreateAgent: () => void;
@@ -16,12 +17,24 @@ type CreateChannelModalProps = {
   onSubmit: () => void;
 };
 
+function shouldAutoFocusTextInput() {
+  return window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+}
+
+function blurActiveTextInput() {
+  const activeElement = document.activeElement;
+  if (!(activeElement instanceof HTMLElement)) return;
+  if (!activeElement.matches("input, textarea, select")) return;
+  activeElement.blur();
+}
+
 export function CreateChannelModal({
   open,
   channelName,
   nameError,
   agents,
   selectedAgentIds,
+  submitting = false,
   onChange,
   onToggleAgent,
   onCreateAgent,
@@ -30,11 +43,17 @@ export function CreateChannelModal({
 }: CreateChannelModalProps) {
   const selectedCount = agents.filter((agent) => selectedAgentIds.has(agent.id)).length;
 
+  function submit() {
+    if (submitting) return;
+    blurActiveTextInput();
+    onSubmit();
+  }
+
   return (
     <Modal
       open={open}
       title="Create Channel"
-      onClose={onCancel}
+      onClose={submitting ? () => undefined : onCancel}
       width={560}
       closeOnBackdrop={false}
       closeOnEscape={false}
@@ -43,7 +62,7 @@ export function CreateChannelModal({
         <label>
           <span>Channel name</span>
           <input
-            autoFocus
+            autoFocus={shouldAutoFocusTextInput()}
             autoCapitalize="none"
             autoComplete="new-password"
             autoCorrect="off"
@@ -52,9 +71,10 @@ export function CreateChannelModal({
             value={channelName}
             aria-invalid={nameError ? true : undefined}
             aria-describedby={nameError ? "create-channel-name-error" : undefined}
+            disabled={submitting}
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") onSubmit();
+              if (event.key === "Enter") submit();
             }}
             placeholder="lantor"
           />
@@ -78,7 +98,7 @@ export function CreateChannelModal({
           {agents.length === 0 ? (
             <div className="channel-agent-empty-cta">
               <p>No agents yet.</p>
-              <button type="button" onClick={onCreateAgent}>
+              <button type="button" onClick={onCreateAgent} disabled={submitting}>
                 <UserPlus size={16} />
                 <span>Create first agent</span>
               </button>
@@ -93,6 +113,7 @@ export function CreateChannelModal({
                       className="channel-agent-checkbox"
                       type="checkbox"
                       checked={isMember}
+                      disabled={submitting}
                       onChange={(event) => onToggleAgent(agent.id, event.target.checked)}
                       aria-label={`${isMember ? "Remove" : "Add"} @${agent.handle}`}
                     />
@@ -114,8 +135,15 @@ export function CreateChannelModal({
           )}
         </div>
         <div className="modal-actions">
-          <button onClick={onCancel}>Cancel</button>
-          <button className="primary" disabled={!channelName.trim() || Boolean(nameError)} onClick={onSubmit}>Create</button>
+          <button onClick={onCancel} disabled={submitting}>Cancel</button>
+          <button
+            className="primary"
+            disabled={submitting || !channelName.trim() || Boolean(nameError)}
+            onPointerDown={blurActiveTextInput}
+            onClick={submit}
+          >
+            {submitting ? "Creating..." : "Create"}
+          </button>
         </div>
       </div>
     </Modal>

@@ -4613,6 +4613,16 @@ mark {
     font-size: var(--type-size-meta);
   }
 
+  .channel-agent-count-trigger.empty {
+    width: 34px;
+    min-width: 34px;
+    padding: 0;
+  }
+
+  .channel-agent-count-trigger.empty > span {
+    display: none;
+  }
+
   .tabs button {
     justify-content: center;
     min-width: 0;
@@ -8653,6 +8663,12 @@ body.resizing-row * {
     min-height: 100dvh;
   }
 
+  .app input:not([type="checkbox"]):not([type="radio"]),
+  .app textarea,
+  .app select {
+    font-size: 16px;
+  }
+
   .app,
   .app.thread-hidden {
     grid-template-columns: 100vw 100vw;
@@ -8864,6 +8880,16 @@ body.resizing-row * {
     min-width: 30px;
     height: 30px;
     padding: 0 5px;
+  }
+
+  .channel-agent-count-trigger.empty {
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
+  }
+
+  .channel-agent-count-trigger.empty > span {
+    display: none;
   }
 
   .channel-action-trigger {

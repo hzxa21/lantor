@@ -659,6 +659,9 @@ function App() {
   const [showChannelAgentsModal, setShowChannelAgentsModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [returnToCreateChannelAfterAgent, setReturnToCreateChannelAfterAgent] = useState(false);
+  const [createChannelSubmitting, setCreateChannelSubmitting] = useState(false);
+  const createChannelSubmittingRef = useRef(false);
+  const createChannelOpenedFromMobileHomeRef = useRef(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showActivityFeedModal, setShowActivityFeedModal] = useState(false);
   const [showSavedModal, setShowSavedModal] = useState(false);
@@ -822,10 +825,13 @@ function App() {
     };
   }
 
-  async function refresh(includeOptimistic = true) {
+  async function refresh(includeOptimistic = true, preferredActiveChannelId?: string) {
     const next = normalizeBootstrap(await apiInvoke<Bootstrap>("bootstrap"));
     setData(includeOptimistic ? withOptimisticMessages(next) : next);
     setActiveChannelId((prev) => {
+      if (preferredActiveChannelId && next.channels.some((item) => item.id === preferredActiveChannelId)) {
+        return preferredActiveChannelId;
+      }
       if (next.channels.some((item) => item.id === prev)) return prev;
       return next.channels[0]?.id || "";
     });
@@ -2214,6 +2220,7 @@ function App() {
   }, [activeChannelId, activeChannelMessageCount]);
 
   async function createChannel() {
+    if (createChannelSubmittingRef.current) return;
     const name = normalizedChannelNameInput(newChannel);
     if (!name) return;
     if (channelNameExists(name)) {
@@ -2222,25 +2229,46 @@ function App() {
     }
     const agentIds = Array.from(newChannelAgentIds);
     let result: { channelId?: string };
+    const shouldReturnToMobileHome = createChannelOpenedFromMobileHomeRef.current;
+    createChannelSubmittingRef.current = true;
+    setCreateChannelSubmitting(true);
     try {
-      result = await mutate<{ channelId?: string }>("create_channel", {
+      result = await apiInvoke<{ channelId?: string }>("create_channel", {
         name,
         agentIds: agentIds.length > 0 ? agentIds : undefined,
       });
+      await refresh(true, shouldReturnToMobileHome ? undefined : result.channelId);
     } catch (err) {
       const message = errorMessage(err, "create_channel failed");
       if (isDuplicateChannelNameError(message)) {
         setNewChannelNameSubmitError(duplicateChannelNameMessage(name));
         setAppError(null);
+      } else {
+        setAppError(message);
+        console.error(err);
       }
       return;
+    } finally {
+      createChannelSubmittingRef.current = false;
+      setCreateChannelSubmitting(false);
     }
     setNewChannel("");
     setNewChannelNameSubmitError(null);
     setNewChannelAgentIds(new Set());
     setShowCreateChannelModal(false);
+    createChannelOpenedFromMobileHomeRef.current = false;
+    if (shouldReturnToMobileHome) {
+      setShowMobileSidebar(true);
+      setMobileSidebarFocus("home");
+      setMobileSidebarDragPx(0);
+      setSelectedAgentId(null);
+      setShowThread(false);
+      return;
+    }
     if (result.channelId) {
-      selectChannel(result.channelId);
+      setActiveChannelId(result.channelId);
+      setShowMobileSidebar(false);
+      openThread(null, result.channelId);
     }
   }
 
@@ -2290,6 +2318,13 @@ function App() {
         if (activeChannelId === channelToDelete.id) {
           setActiveChannelId(fallbackChannelId);
           openThread(rememberedThreadForChannel(fallbackChannelId), fallbackChannelId);
+          if (isMobileViewport()) {
+            setShowMobileSidebar(true);
+            setMobileSidebarFocus("home");
+            setMobileSidebarDragPx(0);
+            setSelectedAgentId(null);
+            setShowThread(false);
+          }
         }
       },
     });
@@ -3186,7 +3221,11 @@ function App() {
         openSaved={openSavedModal}
         mobileFocus={mobileSidebarFocus}
         openCreateChannelModal={() => {
-          setShowMobileSidebar(false);
+          const openedFromMobileHome = isMobileViewport() && showMobileSidebar && mobileSidebarFocus === "home";
+          createChannelOpenedFromMobileHomeRef.current = openedFromMobileHome;
+          if (!openedFromMobileHome) {
+            setShowMobileSidebar(false);
+          }
           setReturnToCreateChannelAfterAgent(false);
           setShowCreateChannelModal(true);
         }}
@@ -3445,6 +3484,7 @@ function App() {
         nameError={newChannelNameError}
         agents={data.agents}
         selectedAgentIds={newChannelAgentIds}
+        submitting={createChannelSubmitting}
         onChange={(value) => {
           setNewChannel(value);
           setNewChannelNameSubmitError(null);
@@ -3466,6 +3506,7 @@ function App() {
         }}
         onCancel={() => {
           setShowCreateChannelModal(false);
+          createChannelOpenedFromMobileHomeRef.current = false;
           setReturnToCreateChannelAfterAgent(false);
           setNewChannelNameSubmitError(null);
           setNewChannelAgentIds(new Set());
