@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::app::{to_string, CommandResult};
 use crate::events::activity::record_agent_activity;
-use crate::models::{Channel, ChannelMember};
+use crate::models::{Channel, ChannelMember, ThreadActivity};
 use crate::ui_notifications::notify_ui_refresh;
 
 pub(crate) async fn load_channels(pool: &SqlitePool) -> CommandResult<Vec<Channel>> {
@@ -62,6 +62,114 @@ pub(crate) async fn load_channels(pool: &SqlitePool) -> CommandResult<Vec<Channe
             kind: row.get("kind"),
             dm_agent_id: row.get("dm_agent_id"),
             unread_count: row.get("unread_count"),
+        })
+        .collect())
+}
+
+pub(crate) async fn load_thread_activities(
+    pool: &SqlitePool,
+) -> CommandResult<Vec<ThreadActivity>> {
+    let rows = sqlx::query(
+        r#"
+        with visible_thread_replies as (
+            select
+                m.id,
+                m.channel_id,
+                m.thread_root_id,
+                m.sender_role,
+                m.created_at
+            from messages m
+            where m.thread_root_id is not null
+              and m.delivery_state <> 'streaming'
+              and not (
+                m.sender_role <> 'system'
+                and m.sender_role <> 'owner'
+                and m.stream_key glob '????????-????-????-????-????????????:*'
+                and m.delivery_state = 'complete'
+                and trim(m.body) = ''
+                and not exists (
+                  select 1 from message_attachments ma where ma.message_id = m.id
+                )
+                and not exists (
+                  select 1 from artifacts ar where ar.message_id = m.id
+                )
+              )
+        ),
+        thread_read_markers as (
+            select
+                root.id as thread_root_id,
+                case
+                    when thread_read_state.read_until is null then read_state.last_read_at
+                    when read_state.last_read_at is null then thread_read_state.read_until
+                    when julianday(thread_read_state.read_until) >= julianday(read_state.last_read_at)
+                        then thread_read_state.read_until
+                    else read_state.last_read_at
+                end as read_until
+            from messages root
+            left join channel_read_state read_state on read_state.channel_id = root.channel_id
+            left join owner_inbox_read_state thread_read_state
+              on thread_read_state.item_id = 'thread:' || lower(
+                substr(hex(root.id), 1, 8) || '-' ||
+                substr(hex(root.id), 9, 4) || '-' ||
+                substr(hex(root.id), 13, 4) || '-' ||
+                substr(hex(root.id), 17, 4) || '-' ||
+                substr(hex(root.id), 21, 12)
+              )
+            where root.thread_root_id is null
+        ),
+        latest_visible_thread_replies as (
+            select
+                ranked.thread_root_id,
+                ranked.id as latest_message_id,
+                ranked.created_at as latest_activity_at
+            from (
+                select
+                    vr.*,
+                    row_number() over (
+                        partition by vr.thread_root_id
+                        order by julianday(vr.created_at) desc, vr.created_at desc, vr.id desc
+                    ) as row_num
+                from visible_thread_replies vr
+            ) ranked
+            where ranked.row_num = 1
+        )
+        select
+            root.id as thread_root_id,
+            root.channel_id,
+            cast(sum(case
+                when reply.sender_role <> 'owner'
+                  and julianday(reply.created_at) > julianday(
+                    coalesce(read_marker.read_until, '0001-01-01T00:00:00+00:00')
+                  ) then 1
+                else 0
+            end) as integer) as unread_count,
+            latest.latest_message_id,
+            latest.latest_activity_at
+        from messages root
+        join visible_thread_replies reply on reply.thread_root_id = root.id
+        join latest_visible_thread_replies latest on latest.thread_root_id = root.id
+        left join thread_read_markers read_marker on read_marker.thread_root_id = root.id
+        where root.thread_root_id is null
+        group by
+            root.id,
+            root.channel_id,
+            latest.latest_message_id,
+            latest.latest_activity_at
+        order by julianday(latest.latest_activity_at) desc, latest.latest_activity_at desc, root.id desc
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| ThreadActivity {
+            thread_root_id: row.get("thread_root_id"),
+            channel_id: row.get("channel_id"),
+            unread_count: row.get("unread_count"),
+            latest_message_id: row.get("latest_message_id"),
+            latest_activity_at: row.get("latest_activity_at"),
         })
         .collect())
 }
@@ -426,8 +534,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        create_channel_in_pool, delete_channel_in_pool, load_channels, open_dm_with_agent_in_pool,
-        set_channel_agent_membership_in_pool, update_channel_in_pool,
+        create_channel_in_pool, delete_channel_in_pool, load_channels, load_thread_activities,
+        open_dm_with_agent_in_pool, set_channel_agent_membership_in_pool, update_channel_in_pool,
     };
     use crate::db::{db_connect_with_url, migrate};
 
@@ -640,6 +748,342 @@ mod tests {
                 .find(|channel| channel.id == channel_id)
                 .ok_or_else(|| "missing test channel".to_owned())?;
             assert_eq!(channel.unread_count, 2);
+
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn thread_activities_report_latest_visible_reply_and_unread_counts() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "thread-unread-activity").await?;
+            sqlx::query(
+                r#"
+                insert into channel_read_state (channel_id, last_read_at)
+                values ($1, '2026-05-22T08:00:00+00:00')
+                "#,
+            )
+            .bind(channel_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let thread_a_root: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, created_at)
+                values ($1, 'Martin', 'owner', 'thread a root', '2026-05-22T07:00:00+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            sqlx::query(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, created_at
+                )
+                values ($1, $2, 'Dylan', 'agent', 'already read reply', '2026-05-22T07:30:00+00:00')
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_a_root)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            sqlx::query(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, delivery_state, stream_key, created_at
+                )
+                values (
+                    $1,
+                    $2,
+                    'Dylan',
+                    'agent',
+                    '',
+                    'complete',
+                    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:msg_hidden',
+                    '2026-05-22T08:10:00+00:00'
+                )
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_a_root)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            sqlx::query(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, created_at
+                )
+                values ($1, $2, 'Martin', 'owner', 'owner follow-up should not be unread', '2026-05-22T08:12:00+00:00')
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_a_root)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let thread_a_latest_reply: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, created_at
+                )
+                values ($1, $2, 'Dylan', 'agent', 'visible unread reply', '2026-05-22T08:15:00+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_a_root)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let thread_b_root: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, created_at)
+                values ($1, 'Martin', 'owner', 'thread b root', '2026-05-22T07:05:00+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let thread_b_latest_reply: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, created_at
+                )
+                values ($1, $2, 'OtherAgent', 'agent', 'second thread latest', '2026-05-22T08:05:00+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_b_root)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let thread_c_root: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, created_at)
+                values ($1, 'Martin', 'owner', 'thread c root', '2026-05-22T07:08:00+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            sqlx::query(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, created_at
+                )
+                values ($1, $2, 'OtherAgent', 'agent', 'thread read before marker', '2026-05-22T08:05:00+00:00')
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_c_root)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let thread_c_latest_reply: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, created_at
+                )
+                values ($1, $2, 'OtherAgent', 'agent', 'thread unread after marker', '2026-05-22T08:12:30+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_c_root)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            sqlx::query(
+                r#"
+                insert into owner_inbox_read_state (item_id, read_until)
+                values ($1, '2026-05-22T08:10:00+00:00')
+                "#,
+            )
+            .bind(format!("thread:{thread_c_root}"))
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let thread_hidden_only_root: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, created_at)
+                values ($1, 'Martin', 'owner', 'hidden-only root', '2026-05-22T07:10:00+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            sqlx::query(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, delivery_state, stream_key, created_at
+                )
+                values (
+                    $1,
+                    $2,
+                    'Dylan',
+                    'agent',
+                    '',
+                    'streaming',
+                    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:msg_streaming',
+                    '2026-05-22T08:20:00+00:00'
+                )
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_hidden_only_root)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            sqlx::query(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, delivery_state, stream_key, created_at
+                )
+                values (
+                    $1,
+                    $2,
+                    'Dylan',
+                    'agent',
+                    'non-uuid streaming should not count',
+                    'streaming',
+                    'manual-stream-key',
+                    '2026-05-22T08:25:00+00:00'
+                )
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_hidden_only_root)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let activities = load_thread_activities(&pool).await?;
+            assert_eq!(activities.len(), 3);
+
+            let first = &activities[0];
+            assert_eq!(first.thread_root_id, thread_a_root);
+            assert_eq!(first.channel_id, channel_id);
+            assert_eq!(first.unread_count, 1);
+            assert_eq!(first.latest_message_id, thread_a_latest_reply);
+
+            let second = &activities[1];
+            assert_eq!(second.thread_root_id, thread_c_root);
+            assert_eq!(second.channel_id, channel_id);
+            assert_eq!(second.unread_count, 1);
+            assert_eq!(second.latest_message_id, thread_c_latest_reply);
+
+            let third = &activities[2];
+            assert_eq!(third.thread_root_id, thread_b_root);
+            assert_eq!(third.channel_id, channel_id);
+            assert_eq!(third.unread_count, 1);
+            assert_eq!(third.latest_message_id, thread_b_latest_reply);
+
+            assert!(activities
+                .iter()
+                .all(|activity| activity.thread_root_id != thread_hidden_only_root));
+
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn thread_activities_use_newer_channel_read_marker_over_older_thread_marker() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "thread-read-marker-max").await?;
+            sqlx::query(
+                r#"
+                insert into channel_read_state (channel_id, last_read_at)
+                values ($1, '2026-05-22T08:30:00+00:00')
+                "#,
+            )
+            .bind(channel_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let thread_root: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, created_at)
+                values ($1, 'Martin', 'owner', 'thread root', '2026-05-22T07:00:00+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let latest_reply: Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, created_at
+                )
+                values ($1, $2, 'Dylan', 'agent', 'reply after old thread marker', '2026-05-22T08:20:00+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .bind(thread_root)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            sqlx::query(
+                r#"
+                insert into owner_inbox_read_state (item_id, read_until)
+                values ($1, '2026-05-22T08:10:00+00:00')
+                "#,
+            )
+            .bind(format!("thread:{thread_root}"))
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let activities = load_thread_activities(&pool).await?;
+            let activity = activities
+                .iter()
+                .find(|activity| activity.thread_root_id == thread_root)
+                .ok_or_else(|| "missing thread activity".to_owned())?;
+            assert_eq!(activity.latest_message_id, latest_reply);
+            assert_eq!(activity.unread_count, 0);
 
             Ok(())
         }
