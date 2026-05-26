@@ -151,8 +151,10 @@ export function ThreadPanel({
   const [messageMenu, setMessageMenu] = useState<MessageMenuState>(null);
   const [tapFocusedMessageId, setTapFocusedMessageId] = useState<string | null>(null);
   const [expandedThreadMessageIds, setExpandedThreadMessageIds] = useState<Set<string>>(() => new Set());
+  const [pendingCollapsedThreadMessageId, setPendingCollapsedThreadMessageId] = useState<string | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const threadBottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const threadMessageRefs = useRef(new Map<string, HTMLElement>());
   const threadScrollFrameRef = useRef<number | null>(null);
   const threadScrollTimeoutRef = useRef<number | null>(null);
   const shouldFollowThreadRef = useRef(true);
@@ -306,7 +308,22 @@ export function ThreadPanel({
     setMessageMenu(null);
     setTapFocusedMessageId(null);
     setExpandedThreadMessageIds(new Set());
+    setPendingCollapsedThreadMessageId(null);
   }, [activeRoot?.id]);
+
+  useEffect(() => {
+    if (!pendingCollapsedThreadMessageId) return;
+    const frameId = window.requestAnimationFrame(() => {
+      threadMessageRefs.current.get(pendingCollapsedThreadMessageId)?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+      const element = threadScrollRef.current;
+      if (element) rememberThreadScrollMetrics(element);
+      setPendingCollapsedThreadMessageId(null);
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [expandedThreadMessageIds, pendingCollapsedThreadMessageId]);
 
   useEffect(() => () => {
     if (threadScrollFrameRef.current !== null) window.cancelAnimationFrame(threadScrollFrameRef.current);
@@ -380,6 +397,10 @@ export function ThreadPanel({
   }
 
   function toggleThreadMessageExpanded(messageId: string) {
+    if (expandedThreadMessageIds.has(messageId)) {
+      stopFollowingThread();
+      setPendingCollapsedThreadMessageId(messageId);
+    }
     setExpandedThreadMessageIds((current) => {
       const next = new Set(current);
       if (next.has(messageId)) next.delete(messageId);
@@ -469,6 +490,13 @@ export function ThreadPanel({
                 </div>
                 <article
                   data-message-id={activeRoot.id}
+                  ref={(node) => {
+                    if (node) {
+                      threadMessageRefs.current.set(activeRoot.id, node);
+                    } else {
+                      threadMessageRefs.current.delete(activeRoot.id);
+                    }
+                  }}
                   className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${tapFocusedMessageId === activeRoot.id ? "tap-focused" : ""} ${rootSaved ? "saved" : ""}`}
                   data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
                   onClick={() => {
@@ -735,6 +763,13 @@ export function ThreadPanel({
                   )}
                   <article
                     data-message-id={reply.id}
+                    ref={(node) => {
+                      if (node) {
+                        threadMessageRefs.current.set(reply.id, node);
+                      } else {
+                        threadMessageRefs.current.delete(reply.id);
+                      }
+                    }}
                     className={`${isCompact ? "compact" : ""} ${replySaved ? "saved" : ""} ${tapFocusedMessageId === reply.id ? "tap-focused" : ""}`}
                     data-jump-focused={focusedMessageId === reply.id ? "true" : "false"}
                     onClick={() => {
