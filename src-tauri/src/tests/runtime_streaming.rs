@@ -7,13 +7,75 @@ use super::{
     streaming_message_body_is_empty, STREAMING_MESSAGE_BODY_LIMIT,
 };
 use crate::domain::reminders::load_reminders;
+use crate::events::control::handle_streaming_agent_event_json;
 use crate::message_store::load_messages;
+use crate::publish_guard::{bump_thread_version, current_thread_version};
 use crate::runtime::process::{load_runtime_thread_id, upsert_runtime_thread_id};
 use crate::test_support::{drop_test_schema, insert_test_agent, insert_test_channel, test_pool};
 use chrono::{Duration as ChronoDuration, Utc};
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
+
+async fn insert_publish_gate_work(
+    pool: &sqlx::SqlitePool,
+    agent_id: Uuid,
+    channel_id: Uuid,
+    thread_root_id: Option<Uuid>,
+    base_thread_version: i64,
+) -> Result<(Uuid, Uuid), String> {
+    let inbox_item_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_inbox_items (
+            agent_id, channel_id, thread_root_id, kind, priority, state, title, payload
+        )
+        values ($1, $2, $3, 'mention', 80, 'processing', 'publish gate test', $4)
+        returning id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(json!({"base_thread_version": base_thread_version}).to_string())
+    .fetch_one(pool)
+    .await
+    .map_err(|err| err.to_string())?;
+    let work_item_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_work_items (
+            agent_id, channel_id, thread_root_id, inbox_item_id, source_kind, title, context, status
+        )
+        values ($1, $2, $3, $4, 'inbox_wake', 'publish gate test', 'context', 'running')
+        returning id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(inbox_item_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| err.to_string())?;
+    sqlx::query("update agent_inbox_items set work_item_id = $2 where id = $1")
+        .bind(inbox_item_id)
+        .bind(work_item_id)
+        .execute(pool)
+        .await
+        .map_err(|err| err.to_string())?;
+    let run_id: Uuid = sqlx::query_scalar(
+        r#"
+        insert into agent_runs (agent_id, work_item_id, command, status)
+        values ($1, $2, 'codex app-server', 'running')
+        returning id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(work_item_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| err.to_string())?;
+    Ok((work_item_id, run_id))
+}
 
 #[tokio::test]
 async fn streaming_agent_messages_append_and_finish() {
@@ -48,6 +110,29 @@ async fn streaming_agent_messages_append_and_finish() {
             load_runtime_thread_id(&pool, agent_id, "codex").await?,
             Some("thread-1".to_owned())
         );
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn truncation_completion_bumps_thread_version() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "truncation-version-agent").await?;
+        let channel_id = insert_test_channel(&pool, "truncation-version").await?;
+        let stream_key = "truncation-version-stream";
+        let body = "x".repeat(STREAMING_MESSAGE_BODY_LIMIT + 1024);
+
+        append_streaming_agent_message(&pool, agent_id, channel_id, None, stream_key, &body)
+            .await?;
+
+        let version = current_thread_version(&pool, channel_id, None).await?;
+        assert_eq!(version, 1);
         Ok(())
     }
     .await;
@@ -105,6 +190,441 @@ async fn streaming_placeholder_is_reused_for_visible_reply() {
         assert_eq!(message.body, "Done");
         assert_eq!(message.delivery_state, "complete");
         assert_eq!(message.stream_key, final_stream_key);
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn gate_blocks_before_placeholder_creation() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "held-placeholder-agent").await?;
+        let channel_id = insert_test_channel(&pool, "held-placeholder-channel").await?;
+        let (_work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, channel_id, None, 0).await?;
+        bump_thread_version(&pool, channel_id, None).await?;
+        let stream_key = format!("{run_id}:pending");
+
+        let _buffer_id =
+            ensure_streaming_agent_message(&pool, agent_id, channel_id, None, &stream_key).await?;
+
+        let visible_rows: i64 = sqlx::query_scalar(
+            "select count(*) from messages where stream_key = $1 and delivery_state in ('streaming', 'complete')",
+        )
+        .bind(&stream_key)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(visible_rows, 0);
+
+        let interrupted: i64 = sqlx::query_scalar(
+            "select count(*) from agent_inbox_items where agent_id = $1 and kind = 'interrupted_action' and state <> 'archived'",
+        )
+        .bind(agent_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(interrupted, 1);
+        let base_thread_version: i64 = sqlx::query_scalar(
+            "select json_extract(payload, '$.base_thread_version') from agent_inbox_items where kind = 'interrupted_action' order by created_at desc limit 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(base_thread_version, 1);
+
+        let status: String =
+            sqlx::query_scalar("select status from agent_work_items where run_id is null limit 1")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(status, "interrupted");
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn interrupted_action_revise_allows_revised_reply_on_same_stream_key() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "revise-held-agent").await?;
+        let channel_id = insert_test_channel(&pool, "revise-held-channel").await?;
+        let (_work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, channel_id, None, 0).await?;
+        bump_thread_version(&pool, channel_id, None).await?;
+        let stream_key = format!("{run_id}:claude-assistant");
+
+        append_streaming_agent_message(&pool, agent_id, channel_id, None, &stream_key, "Old")
+            .await?;
+        crate::publish_guard::resolve_interrupted_action(
+            &pool,
+            agent_id,
+            run_id,
+            &stream_key,
+            "revise",
+        )
+        .await?;
+
+        let buffer_state: String =
+            sqlx::query_scalar("select state from agent_output_buffers where stream_key = $1")
+                .bind(&stream_key)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(buffer_state, "revised");
+        let buffer_body: String =
+            sqlx::query_scalar("select body from agent_output_buffers where stream_key = $1")
+                .bind(&stream_key)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(buffer_body, "");
+
+        let open_items: i64 = sqlx::query_scalar(
+            "select count(*) from agent_inbox_items where kind = 'interrupted_action' and state <> 'archived'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(open_items, 0);
+
+        append_streaming_agent_message(
+            &pool,
+            agent_id,
+            channel_id,
+            None,
+            &stream_key,
+            "Revised answer",
+        )
+        .await?;
+        finish_streaming_agent_message(&pool, &stream_key, "complete").await?;
+
+        let messages = load_messages(&pool).await?;
+        let message = messages
+            .iter()
+            .find(|message| message.stream_key == stream_key)
+            .expect("revised reply should publish on the same stream key");
+        assert_eq!(message.body, "Revised answer");
+        assert_eq!(message.delivery_state, "complete");
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn held_visible_preserves_internal_control_events() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "held-internal-agent").await?;
+        let channel_id = insert_test_channel(&pool, "held-internal-channel").await?;
+        let (_work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, channel_id, None, 0).await?;
+        bump_thread_version(&pool, channel_id, None).await?;
+        let stream_key = format!("{run_id}:item-1");
+        let body = "Visible text\nLANTOR_EVENT {\"type\":\"activity\",\"title\":\"Buffered internal\",\"detail\":\"kept\"}";
+
+        append_streaming_agent_message(&pool, agent_id, channel_id, None, &stream_key, body)
+            .await?;
+        finish_streaming_agent_message(&pool, &stream_key, "complete").await?;
+
+        let visible_rows: i64 = sqlx::query_scalar(
+            "select count(*) from messages where stream_key = $1 and delivery_state in ('streaming', 'complete')",
+        )
+        .bind(&stream_key)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(visible_rows, 0);
+
+        let activity_count: i64 = sqlx::query_scalar(
+            "select count(*) from agent_activities where run_id = $1 and title = 'Buffered internal'",
+        )
+        .bind(run_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(activity_count, 1);
+
+        let draft_body: String = sqlx::query_scalar(
+            "select json_extract(payload, '$.draft_body') from agent_inbox_items where kind = 'interrupted_action' order by created_at desc limit 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(draft_body, "Visible text");
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn held_visible_also_gates_visible_side_effects() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "held-side-effect-agent").await?;
+        let channel_id = insert_test_channel(&pool, "held-side-effect-channel").await?;
+        sqlx::query("insert into channel_members (channel_id, agent_id) values ($1, $2)")
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (_work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, channel_id, None, 0).await?;
+        bump_thread_version(&pool, channel_id, None).await?;
+        let stream_key = format!("{run_id}:item-1");
+        let event = json!({
+            "type": "channel_message_create",
+            "channel_id": channel_id,
+            "body": "side effect body"
+        });
+        let body = format!("Visible text\nLANTOR_EVENT {event}");
+
+        append_streaming_agent_message(&pool, agent_id, channel_id, None, &stream_key, &body)
+            .await?;
+        finish_streaming_agent_message(&pool, &stream_key, "complete").await?;
+
+        let posted_side_effects: i64 =
+            sqlx::query_scalar("select count(*) from messages where body = 'side effect body'")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(posted_side_effects, 0);
+
+        let held_events: String = sqlx::query_scalar(
+            "select held_visible_events from agent_output_buffers where stream_key = $1",
+        )
+        .bind(&stream_key)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert!(held_events.contains("channel_message_create"));
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn held_visible_side_effects_use_source_surface_freshness() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "held-cross-surface-agent").await?;
+        let source_channel_id = insert_test_channel(&pool, "source-surface").await?;
+        let target_channel_id = insert_test_channel(&pool, "target-surface").await?;
+        sqlx::query("insert into channel_members (channel_id, agent_id) values ($1, $2)")
+            .bind(target_channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (_work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, source_channel_id, None, 0).await?;
+        bump_thread_version(&pool, source_channel_id, None).await?;
+        let event = json!({
+            "type": "channel_message_create",
+            "channel_id": target_channel_id,
+            "body": "cross surface side effect"
+        })
+        .to_string();
+
+        handle_streaming_agent_event_json(&pool, agent_id, run_id, &event).await?;
+
+        let posted_side_effects: i64 = sqlx::query_scalar(
+            "select count(*) from messages where channel_id = $1 and body = 'cross surface side effect'",
+        )
+        .bind(target_channel_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(posted_side_effects, 0);
+
+        let held_surface: (Uuid, Option<Uuid>) = sqlx::query_as(
+            "select channel_id, thread_root_id from agent_output_buffers where run_id = $1",
+        )
+        .bind(run_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(held_surface, (source_channel_id, None));
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn target_surface_change_does_not_hold_cross_surface_side_effect() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "allowed-cross-surface-agent").await?;
+        let source_channel_id = insert_test_channel(&pool, "fresh-source-surface").await?;
+        let target_channel_id = insert_test_channel(&pool, "changed-target-surface").await?;
+        sqlx::query("insert into channel_members (channel_id, agent_id) values ($1, $2)")
+            .bind(target_channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (_work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, source_channel_id, None, 0).await?;
+        bump_thread_version(&pool, target_channel_id, None).await?;
+        let event = json!({
+            "type": "channel_message_create",
+            "channel_id": target_channel_id,
+            "body": "allowed cross surface side effect"
+        })
+        .to_string();
+
+        handle_streaming_agent_event_json(&pool, agent_id, run_id, &event).await?;
+
+        let posted_side_effects: i64 = sqlx::query_scalar(
+            "select count(*) from messages where channel_id = $1 and body = 'allowed cross surface side effect'",
+        )
+        .bind(target_channel_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(posted_side_effects, 1);
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn repeated_held_visible_events_are_aggregated_into_one_interruption() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "aggregate-held-agent").await?;
+        let channel_id = insert_test_channel(&pool, "aggregate-held-channel").await?;
+        sqlx::query("insert into channel_members (channel_id, agent_id) values ($1, $2)")
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (_work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, channel_id, None, 0).await?;
+        bump_thread_version(&pool, channel_id, None).await?;
+        for body in ["first held event", "second held event"] {
+            let event = json!({
+                "type": "channel_message_create",
+                "channel_id": channel_id,
+                "body": body
+            })
+            .to_string();
+            handle_streaming_agent_event_json(&pool, agent_id, run_id, &event).await?;
+        }
+
+        let buffer_count: i64 =
+            sqlx::query_scalar("select count(*) from agent_output_buffers where run_id = $1")
+                .bind(run_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(buffer_count, 1);
+        let item_count: i64 = sqlx::query_scalar(
+            "select count(*) from agent_inbox_items where kind = 'interrupted_action'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(item_count, 1);
+        let held_events: String = sqlx::query_scalar(
+            "select held_visible_events from agent_output_buffers where run_id = $1",
+        )
+        .bind(run_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert!(held_events.contains("first held event"));
+        assert!(held_events.contains("second held event"));
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn force_send_replays_held_visible_side_effects() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "force-side-effect-agent").await?;
+        let channel_id = insert_test_channel(&pool, "force-side-effect-channel").await?;
+        sqlx::query("insert into channel_members (channel_id, agent_id) values ($1, $2)")
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (_work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, channel_id, None, 0).await?;
+        bump_thread_version(&pool, channel_id, None).await?;
+        let stream_key = format!("{run_id}:item-1");
+        let event = json!({
+            "type": "channel_message_create",
+            "channel_id": channel_id,
+            "body": "forced side effect"
+        });
+        let body = format!("Visible text\nLANTOR_EVENT {event}");
+
+        append_streaming_agent_message(&pool, agent_id, channel_id, None, &stream_key, &body)
+            .await?;
+        finish_streaming_agent_message(&pool, &stream_key, "complete").await?;
+
+        crate::publish_guard::resolve_interrupted_action(
+            &pool,
+            agent_id,
+            run_id,
+            &stream_key,
+            "force_send",
+        )
+        .await?;
+
+        let forced_visible_text: i64 =
+            sqlx::query_scalar("select count(*) from messages where body = 'Visible text'")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(forced_visible_text, 1);
+
+        let forced_side_effects: i64 =
+            sqlx::query_scalar("select count(*) from messages where body = 'forced side effect'")
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(forced_side_effects, 1);
         Ok(())
     }
     .await;
