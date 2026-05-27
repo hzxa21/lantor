@@ -425,6 +425,116 @@ async fn held_visible_also_gates_visible_side_effects() {
 }
 
 #[tokio::test]
+async fn streaming_event_only_buffer_advertises_side_effect_only_actions() {
+    // Follow-up regression: when the streaming path produces a buffer whose
+    // only content is held visible side effects (no draft reply body), the
+    // interrupted_action payload must label itself `visible_control_event`
+    // with `allowed_actions = ["yield", "force_send"]`, not `public_reply`
+    // with revise. This mirrors `hold_visible_control_event` and prevents
+    // payload/prompt vs. backend `revise`-guard drift in
+    // `hold_streaming_public_output`.
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "stream-event-only-agent").await?;
+        let channel_id = insert_test_channel(&pool, "stream-event-only-channel").await?;
+        sqlx::query("insert into channel_members (channel_id, agent_id) values ($1, $2)")
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, channel_id, None, 0).await?;
+        bump_thread_version(&pool, channel_id, None).await?;
+        let stream_key = format!("{run_id}:event-only");
+        let event = json!({
+            "type": "channel_message_create",
+            "channel_id": channel_id,
+            "body": "event-only side effect"
+        });
+        // Streaming body contains ONLY a visible side-effect event line and
+        // no surrounding prose; visible_body parses to empty.
+        let body = format!("LANTOR_EVENT {event}");
+
+        append_streaming_agent_message(&pool, agent_id, channel_id, None, &stream_key, &body)
+            .await?;
+        finish_streaming_agent_message(&pool, &stream_key, "complete").await?;
+
+        let (buffer_body, held_events): (String, String) = sqlx::query_as(
+            "select body, held_visible_events from agent_output_buffers where stream_key = $1",
+        )
+        .bind(&stream_key)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(
+            buffer_body, "",
+            "streaming event-only buffer should have empty body, got: {buffer_body:?}"
+        );
+        assert!(
+            held_events.contains("event-only side effect"),
+            "held_visible_events should carry the queued side effect: {held_events}"
+        );
+
+        let (interrupted_kind, allowed_actions): (String, String) = sqlx::query_as(
+            "select json_extract(payload, '$.interrupted_action'), json_extract(payload, '$.allowed_actions') from agent_inbox_items where kind = 'interrupted_action' and json_extract(payload, '$.stream_key') = $1",
+        )
+        .bind(&stream_key)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(
+            interrupted_kind, "visible_control_event",
+            "streaming event-only buffer must advertise visible_control_event, not public_reply"
+        );
+        assert_eq!(
+            allowed_actions, r#"["yield","force_send"]"#,
+            "streaming event-only buffer must not advertise revise"
+        );
+
+        // Backend must also reject `revise` for this buffer (defense in depth
+        // against any caller that ignores allowed_actions).
+        let resolve_result = crate::publish_guard::resolve_interrupted_action(
+            &pool,
+            agent_id,
+            run_id,
+            &stream_key,
+            "revise",
+        )
+        .await;
+        assert!(
+            resolve_result.is_err(),
+            "revise on a streaming event-only buffer must be rejected, got: {resolve_result:?}"
+        );
+
+        // Buffer / work item / inbox item state stays intact after rejection.
+        let (state_after, body_after, held_after): (String, String, String) = sqlx::query_as(
+            "select state, body, held_visible_events from agent_output_buffers where stream_key = $1",
+        )
+        .bind(&stream_key)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(state_after, "held");
+        assert_eq!(body_after, "");
+        assert_eq!(held_after, held_events);
+        let work_status: String =
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(work_status, "interrupted");
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
 async fn held_visible_side_effects_use_source_surface_freshness() {
     let Some((pool, schema)) = test_pool().await else {
         return;
@@ -625,6 +735,131 @@ async fn force_send_replays_held_visible_side_effects() {
                 .await
                 .map_err(|err| err.to_string())?;
         assert_eq!(forced_side_effects, 1);
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn side_effect_only_buffer_rejects_revise_and_preserves_held_events() {
+    // Regression for issue #96: a held buffer with no draft body must not be
+    // resolved via `revise`, otherwise the resolve path would clear
+    // `held_visible_events` and silently drop the queued side effect(s).
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "side-effect-only-agent").await?;
+        let channel_id = insert_test_channel(&pool, "side-effect-only-channel").await?;
+        sqlx::query("insert into channel_members (channel_id, agent_id) values ($1, $2)")
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (work_item_id, run_id) =
+            insert_publish_gate_work(&pool, agent_id, channel_id, None, 0).await?;
+        // Make the work item's pinned base_thread_version stale relative to
+        // the channel so the side-effect dispatch is held by the publish gate.
+        bump_thread_version(&pool, channel_id, None).await?;
+
+        let event = json!({
+            "type": "channel_message_create",
+            "channel_id": channel_id,
+            "body": "side effect that must not be silently dropped"
+        })
+        .to_string();
+        handle_streaming_agent_event_json(&pool, agent_id, run_id, &event).await?;
+
+        let (stream_key, body, held_before): (String, String, String) = sqlx::query_as(
+            "select stream_key, body, held_visible_events from agent_output_buffers where run_id = $1 and state = 'held'",
+        )
+        .bind(run_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert!(body.is_empty(), "side-effect-only buffer should have empty body, got: {body:?}");
+        assert!(
+            held_before.contains("side effect that must not be silently dropped"),
+            "held_visible_events should contain the queued side effect before resolve: {held_before}"
+        );
+        let interrupted_kind: String = sqlx::query_scalar(
+            "select json_extract(payload, '$.interrupted_action') from agent_inbox_items where kind = 'interrupted_action' and json_extract(payload, '$.stream_key') = $1",
+        )
+        .bind(&stream_key)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(interrupted_kind, "visible_control_event");
+
+        // Backend must reject `revise` for this side-effect-only buffer.
+        let resolve_result = crate::publish_guard::resolve_interrupted_action(
+            &pool,
+            agent_id,
+            run_id,
+            &stream_key,
+            "revise",
+        )
+        .await;
+        assert!(
+            resolve_result.is_err(),
+            "revise on a side-effect-only buffer must be rejected, got: {resolve_result:?}"
+        );
+        let err_text = resolve_result.unwrap_err();
+        assert!(
+            err_text.contains("not allowed") && err_text.contains("visible_control_event"),
+            "error message should explain the disallowed action: {err_text}"
+        );
+
+        // Buffer must remain held with its side effects intact.
+        let (state_after, body_after, held_after): (String, String, String) = sqlx::query_as(
+            "select state, body, held_visible_events from agent_output_buffers where stream_key = $1",
+        )
+        .bind(&stream_key)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(state_after, "held");
+        assert!(body_after.is_empty());
+        assert_eq!(held_after, held_before, "held_visible_events must be preserved verbatim");
+
+        // Work item must stay interrupted (not flipped to 'done' / 'revised').
+        let work_status: String =
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(work_status, "interrupted");
+
+        // The interrupted_action inbox item must still be open for re-decision.
+        let open_items: i64 = sqlx::query_scalar(
+            "select count(*) from agent_inbox_items where kind = 'interrupted_action' and json_extract(payload, '$.stream_key') = $1 and state <> 'archived'",
+        )
+        .bind(&stream_key)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(open_items, 1);
+
+        // Sanity: `yield` is still accepted for this side-effect-only buffer.
+        crate::publish_guard::resolve_interrupted_action(
+            &pool,
+            agent_id,
+            run_id,
+            &stream_key,
+            "yield",
+        )
+        .await?;
+        let final_state: String =
+            sqlx::query_scalar("select state from agent_output_buffers where stream_key = $1")
+                .bind(&stream_key)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(final_state, "yielded");
         Ok(())
     }
     .await;
