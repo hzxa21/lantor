@@ -35,10 +35,10 @@ mod ui_notifications;
 mod usage;
 mod web;
 
-use std::env;
+use std::{env, fs, path::PathBuf};
 
 use sqlx::{Row, SqlitePool};
-use tauri::Manager;
+use tauri::{LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
 use uuid::Uuid;
 
 use agent_inbox_wake::{
@@ -81,6 +81,157 @@ use lifecycle_commands::{
 use runtime::supervisor::run_supervisor;
 use system_commands::{check_runtime, open_external_url};
 use ui_notifications::spawn_ui_refresh_listener;
+
+const WINDOW_STATE_FILE: &str = "window-state.json";
+const MIN_RESTORED_WINDOW_WIDTH: f64 = 1180.0;
+const MIN_RESTORED_WINDOW_HEIGHT: f64 = 760.0;
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct WindowState {
+    width: f64,
+    height: f64,
+    #[serde(default)]
+    x: Option<f64>,
+    #[serde(default)]
+    y: Option<f64>,
+}
+
+impl WindowState {
+    fn has_valid_size(&self) -> bool {
+        self.width.is_finite()
+            && self.height.is_finite()
+            && self.width >= MIN_RESTORED_WINDOW_WIDTH
+            && self.height >= MIN_RESTORED_WINDOW_HEIGHT
+    }
+
+    fn physical_position(&self) -> Option<PhysicalPosition<i32>> {
+        let x = self.x?;
+        let y = self.y?;
+        if !x.is_finite()
+            || !y.is_finite()
+            || x < f64::from(i32::MIN)
+            || x > f64::from(i32::MAX)
+            || y < f64::from(i32::MIN)
+            || y > f64::from(i32::MAX)
+        {
+            return None;
+        }
+        Some(PhysicalPosition::new(x.round() as i32, y.round() as i32))
+    }
+
+    fn has_valid_position(&self) -> bool {
+        self.physical_position().is_some()
+    }
+}
+
+fn physical_rect_fits_within_monitor(
+    rect: (f64, f64, f64, f64),
+    monitor: (f64, f64, f64, f64),
+) -> bool {
+    let (left, top, width, height) = rect;
+    let (monitor_left, monitor_top, monitor_width, monitor_height) = monitor;
+    let right = left + width;
+    let bottom = top + height;
+    let monitor_right = monitor_left + monitor_width;
+    let monitor_bottom = monitor_top + monitor_height;
+    left >= monitor_left && right <= monitor_right && top >= monitor_top && bottom <= monitor_bottom
+}
+
+fn window_state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join(WINDOW_STATE_FILE))
+}
+
+fn load_window_state(path: &PathBuf) -> Option<WindowState> {
+    let value = fs::read_to_string(path).ok()?;
+    let state = serde_json::from_str::<WindowState>(&value).ok()?;
+    state.has_valid_size().then_some(state)
+}
+
+fn can_restore_window_position(window: &WebviewWindow, state: &WindowState) -> bool {
+    if !state.has_valid_position() {
+        return false;
+    }
+    let position = state
+        .physical_position()
+        .expect("valid position should convert to physical position");
+    let Ok(monitors) = window.available_monitors() else {
+        return true;
+    };
+    if monitors.is_empty() {
+        return true;
+    }
+    let window_size = window.outer_size().or_else(|_| window.inner_size()).ok();
+    let width = window_size
+        .map(|size| f64::from(size.width))
+        .unwrap_or(state.width);
+    let height = window_size
+        .map(|size| f64::from(size.height))
+        .unwrap_or(state.height);
+    let left = f64::from(position.x);
+    let top = f64::from(position.y);
+    monitors.iter().any(|monitor| {
+        let position = monitor.position();
+        let size = monitor.size();
+        physical_rect_fits_within_monitor(
+            (left, top, width, height),
+            (
+                f64::from(position.x),
+                f64::from(position.y),
+                f64::from(size.width),
+                f64::from(size.height),
+            ),
+        )
+    })
+}
+
+fn save_window_state(window: &WebviewWindow, path: &PathBuf) {
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let scale_factor = window.scale_factor().unwrap_or(1.0).max(0.1);
+    let position = window.outer_position().ok();
+    let state = WindowState {
+        width: f64::from(size.width) / scale_factor,
+        height: f64::from(size.height) / scale_factor,
+        x: position.map(|position| f64::from(position.x)),
+        y: position.map(|position| f64::from(position.y)),
+    };
+    if !state.has_valid_size() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(value) = serde_json::to_string_pretty(&state) {
+        let _ = fs::write(path, value);
+    }
+}
+
+fn restore_window_state(window: &WebviewWindow, path: &PathBuf) {
+    let Some(state) = load_window_state(path) else {
+        return;
+    };
+    let _ = window.set_size(LogicalSize::new(state.width, state.height));
+    if can_restore_window_position(window, &state) {
+        let _ = window.set_position(state.physical_position().expect("position should be valid"));
+    } else {
+        let _ = window.center();
+    }
+}
+
+fn install_window_state_persistence(window: &WebviewWindow, path: PathBuf) {
+    restore_window_state(window, &path);
+    let window_for_events = window.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+            save_window_state(&window_for_events, &path);
+        }
+        _ => {}
+    });
+}
 
 async fn resolve_run_reminder_anchor(
     pool: &SqlitePool,
@@ -166,6 +317,9 @@ pub fn run() {
             spawn_reminder_worker(reminder_pool.clone());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("Lantor");
+                if let Some(path) = window_state_path(app.handle()) {
+                    install_window_state_persistence(&window, path);
+                }
             }
             Ok(())
         })
@@ -241,5 +395,122 @@ fn main() {
         }
     } else {
         run();
+    }
+}
+
+#[cfg(test)]
+mod window_state_tests {
+    use super::{
+        load_window_state, physical_rect_fits_within_monitor, WindowState,
+        MIN_RESTORED_WINDOW_HEIGHT, MIN_RESTORED_WINDOW_WIDTH,
+    };
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_window_state_path() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after the unix epoch")
+            .as_nanos();
+        let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "lantor-window-state-{}-{nanos}-{count}.json",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn loads_valid_saved_window_state() {
+        let path = temp_window_state_path();
+        let value = serde_json::to_string(&WindowState {
+            width: MIN_RESTORED_WINDOW_WIDTH + 120.0,
+            height: MIN_RESTORED_WINDOW_HEIGHT + 80.0,
+            x: Some(-240.0),
+            y: Some(80.0),
+        })
+        .expect("window state should serialize");
+        fs::write(&path, value).expect("window state should be written");
+
+        let state = load_window_state(&path).expect("valid window state should load");
+        assert!(state.has_valid_size());
+        assert!(state.has_valid_position());
+        assert_eq!(state.x, Some(-240.0));
+        assert_eq!(state.y, Some(80.0));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn loads_legacy_size_only_window_state() {
+        let path = temp_window_state_path();
+        let value = serde_json::json!({
+            "width": MIN_RESTORED_WINDOW_WIDTH + 120.0,
+            "height": MIN_RESTORED_WINDOW_HEIGHT + 80.0
+        })
+        .to_string();
+        fs::write(&path, value).expect("window state should be written");
+
+        let state = load_window_state(&path).expect("legacy window state should load");
+        assert!(state.has_valid_size());
+        assert!(!state.has_valid_position());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ignores_saved_window_state_below_minimums() {
+        let path = temp_window_state_path();
+        let value = serde_json::to_string(&WindowState {
+            width: MIN_RESTORED_WINDOW_WIDTH - 1.0,
+            height: MIN_RESTORED_WINDOW_HEIGHT,
+            x: Some(120.0),
+            y: Some(80.0),
+        })
+        .expect("window state should serialize");
+        fs::write(&path, value).expect("window state should be written");
+
+        assert!(load_window_state(&path).is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn detects_when_window_rect_fits_monitor_bounds() {
+        assert!(physical_rect_fits_within_monitor(
+            (100.0, 100.0, 1200.0, 800.0),
+            (0.0, 0.0, 1440.0, 900.0),
+        ));
+        assert!(!physical_rect_fits_within_monitor(
+            (2000.0, 100.0, 1200.0, 800.0),
+            (0.0, 0.0, 1440.0, 900.0),
+        ));
+        assert!(!physical_rect_fits_within_monitor(
+            (-1000.0, 100.0, 1200.0, 800.0),
+            (0.0, 0.0, 1440.0, 900.0),
+        ));
+    }
+
+    #[test]
+    fn rejects_non_finite_or_out_of_range_window_position() {
+        assert!(!WindowState {
+            width: MIN_RESTORED_WINDOW_WIDTH,
+            height: MIN_RESTORED_WINDOW_HEIGHT,
+            x: Some(f64::NAN),
+            y: Some(0.0),
+        }
+        .has_valid_position());
+        assert!(!WindowState {
+            width: MIN_RESTORED_WINDOW_WIDTH,
+            height: MIN_RESTORED_WINDOW_HEIGHT,
+            x: Some(f64::from(i32::MAX) + 1.0),
+            y: Some(0.0),
+        }
+        .has_valid_position());
     }
 }
