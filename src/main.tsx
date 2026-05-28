@@ -3244,6 +3244,10 @@ function App() {
     setActiveChannelId(task.channel_id);
     revealThread(task.message_id, task.channel_id);
     setActiveTab("chat");
+    setFocusedMessageId(null);
+    window.requestAnimationFrame(() => {
+      setFocusedMessageId(task.message_id);
+    });
   }
 
   function openWorkItem(item: AgentWorkItem, focusedMessageIdOverride?: string | null) {
