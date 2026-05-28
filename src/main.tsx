@@ -43,6 +43,7 @@ import {
   AgentWorkItem,
   Artifact,
   Bootstrap,
+  ChannelMember,
   DraftAttachment,
   EMPTY_AGENT_FORM,
   ActivityFeedItem,
@@ -214,7 +215,9 @@ type UiBackendEvent =
   | { type: "activity_upsert"; reason?: string; activity: AgentActivity }
   | { type: "agent_run_upsert"; reason?: string; run: Omit<AgentRun, "log"> & { log?: string } }
   | { type: "work_item_upsert"; reason?: string; work_item: Omit<AgentWorkItem, "context"> & { context?: string } }
-  | { type: "artifact_upsert"; reason?: string; artifact: Artifact };
+  | { type: "artifact_upsert"; reason?: string; artifact: Artifact }
+  | { type: "channel_member_upsert"; reason?: string; member: ChannelMember }
+  | { type: "channel_member_remove"; reason?: string; channel_id: string; agent_id: string };
 
 type ConfirmRequest = {
   title: string;
@@ -1133,6 +1136,45 @@ function App() {
     });
   }
 
+  function applyChannelMemberUpsert(member: ChannelMember) {
+    if (
+      !member
+      || typeof member.channel_id !== "string"
+      || typeof member.agent_id !== "string"
+    ) {
+      requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after membership update`);
+      return;
+    }
+    setData((current) => {
+      if (!current) {
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after membership update`);
+        return current;
+      }
+      const filtered = current.channel_members.filter(
+        (entry) => !(entry.channel_id === member.channel_id && entry.agent_id === member.agent_id),
+      );
+      return { ...current, channel_members: [...filtered, member] };
+    });
+  }
+
+  function applyChannelMemberRemove(channelId: string, agentId: string) {
+    if (typeof channelId !== "string" || typeof agentId !== "string") {
+      requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after membership update`);
+      return;
+    }
+    setData((current) => {
+      if (!current) {
+        requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after membership update`);
+        return current;
+      }
+      const filtered = current.channel_members.filter(
+        (entry) => !(entry.channel_id === channelId && entry.agent_id === agentId),
+      );
+      if (filtered.length === current.channel_members.length) return current;
+      return { ...current, channel_members: filtered };
+    });
+  }
+
   async function openArtifact(artifact: Artifact) {
     try {
       const fullArtifact = await apiInvoke<Artifact>("artifact_read", { artifactId: artifact.id });
@@ -1203,6 +1245,17 @@ function App() {
       if (parsed.type === "artifact_upsert") {
         // Artifact upserts are semantic; bypass buffer.
         applyArtifactUpsert(parsed.artifact);
+        return;
+      }
+      if (parsed.type === "channel_member_upsert") {
+        // Targeted membership patch. Avoids a full bootstrap refresh on
+        // every Add/Remove tap so mobile feels snappy and other UI
+        // surfaces (e.g. agent detail drawer) see the change immediately.
+        applyChannelMemberUpsert(parsed.member);
+        return;
+      }
+      if (parsed.type === "channel_member_remove") {
+        applyChannelMemberRemove(parsed.channel_id, parsed.agent_id);
         return;
       }
       requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after backend update`);
@@ -2892,11 +2945,52 @@ function App() {
       setAppError("Direct message membership is fixed");
       return;
     }
-    await mutate("set_channel_agent_membership", {
-      channelId: channel.id,
-      agentId,
-      member,
+    const channelId = channel.id;
+    const agent = data?.agents.find((entry) => entry.id === agentId);
+    // Optimistic update so ChannelAgentsModal's controlled checkbox flips
+    // immediately on tap, matching the snappy feel of CreateChannelModal's
+    // local Set-based picker. Without this, the controlled checkbox stays
+    // pinned to the old `isMember` value until the backend round-trip and
+    // refresh complete, and on mobile that lag reads as "tap didn't hit".
+    setData((current) => {
+      if (!current) return current;
+      const without = current.channel_members.filter(
+        (entry) => !(entry.channel_id === channelId && entry.agent_id === agentId),
+      );
+      if (!member) {
+        return { ...current, channel_members: without };
+      }
+      if (!agent) return current;
+      const optimistic: ChannelMember = {
+        channel_id: channelId,
+        agent_id: agentId,
+        agent_handle: agent.handle,
+        agent_display_name: agent.display_name,
+        created_at: new Date().toISOString(),
+      };
+      return { ...current, channel_members: [...without, optimistic] };
     });
+    try {
+      // Bypass `mutate`'s blocking `await refresh()` — the backend emits a
+      // targeted `channel_member_upsert` / `channel_member_remove` event
+      // which `handleBackendEvent` patches into `channel_members` locally,
+      // so the full bootstrap round-trip is no longer needed to confirm
+      // the state. Avoiding it removes the ~hundred-ms tail that made the
+      // ChannelAgentsModal Add button feel laggy on mobile after the
+      // optimistic flip.
+      await apiInvoke("set_channel_agent_membership", {
+        channelId,
+        agentId,
+        member,
+      });
+    } catch (err) {
+      setAppError(errorMessage(err, "set_channel_agent_membership failed"));
+      console.error(err);
+      // Refresh in the background to revert the optimistic flip back to
+      // whatever the backend actually persisted; we deliberately do not
+      // await it so the error toast renders immediately.
+      refresh().catch(() => undefined);
+    }
   }
 
   async function createAgent() {

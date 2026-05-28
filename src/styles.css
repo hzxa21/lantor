@@ -7691,6 +7691,7 @@ body.resizing-row * {
   position: relative;
   min-height: 56px;
   border: 1px solid transparent;
+  touch-action: manipulation;
   transition:
     background 0.15s ease,
     border-color 0.15s ease,
@@ -10168,4 +10169,17 @@ body.resizing-row * {
     min-width: 0;
   }
 
+  /* Mobile: drop modal backdrop blur — full-viewport backdrop-filter forces
+     a fresh composite every commit, which makes state flips inside the modal
+     (e.g. ChannelAgentsModal Add → Added chip) feel ~1.5s slow on iOS/Android
+     WKWebView even though React state updates instantly. Desktop keeps the
+     frosted look. */
+  .modal-backdrop {
+    background: rgba(17, 24, 39, 0.55);
+    backdrop-filter: none;
+  }
+
+  .modal-card {
+    border-color: rgba(15, 23, 42, 0.18);
+  }
 }

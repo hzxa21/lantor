@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::app::{to_string, CommandResult};
 use crate::events::activity::record_agent_activity;
 use crate::models::{Channel, ChannelMember, ThreadActivity};
-use crate::ui_notifications::notify_ui_refresh;
+use crate::ui_notifications::{notify_ui_channel_member_change, notify_ui_refresh};
 
 pub(crate) async fn load_channels(pool: &SqlitePool) -> CommandResult<Vec<Channel>> {
     let rows = sqlx::query(
@@ -358,7 +358,14 @@ pub(crate) async fn set_channel_agent_membership_in_pool(
     )
     .await?;
 
-    let _ = notify_ui_refresh(pool, "channel_membership_updated").await;
+    let _ = notify_ui_channel_member_change(
+        pool,
+        channel_id,
+        agent_id,
+        member,
+        "channel_membership_updated",
+    )
+    .await;
     Ok(())
 }
 
@@ -515,7 +522,14 @@ pub(crate) async fn add_agent_to_channel(
     .execute(pool)
     .await
     .map_err(to_string)?;
-    let _ = notify_ui_refresh(pool, "channel_membership_updated").await;
+    let _ = notify_ui_channel_member_change(
+        pool,
+        channel_id,
+        agent_id,
+        true,
+        "channel_membership_updated",
+    )
+    .await;
     Ok(())
 }
 
