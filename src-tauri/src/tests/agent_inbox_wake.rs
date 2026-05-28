@@ -1,4 +1,7 @@
-use super::{build_steer_followup_prompt, inbox_wake_context, InboxWakeItem, InboxWakeSummary};
+use super::{
+    build_steer_followup_prompt, inbox_wake_context, requeue_orphan_interrupted_actions,
+    InboxWakeItem, InboxWakeSummary,
+};
 use crate::channels::open_dm_with_agent_in_pool;
 use crate::context_tool::short_id;
 use crate::message_store::send_owner_message_in_pool;
@@ -446,6 +449,210 @@ async fn inbox_wake_batches_unread_items_for_same_thread() {
         .await
         .map_err(|err| err.to_string())?;
         assert_eq!(archived, 2);
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[tokio::test]
+async fn requeue_orphan_interrupted_actions_releases_held_drafts_from_closed_work_items() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "interrupted-requeue").await?;
+        let dm_channel_id = Uuid::parse_str(&open_dm_with_agent_in_pool(&pool, agent_id).await?)
+            .map_err(|err| err.to_string())?;
+
+        // Stale interrupted_action whose work_item already closed but whose held buffer
+        // never got resolved by the agent. Without the requeue sweep this stays stuck in
+        // 'processing' forever and the next wake won't see it.
+        let stale_work_item: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_work_items (
+                agent_id, channel_id, source_kind, title, context, status, completed_at
+            )
+            values ($1, $2, 'inbox_wake', 'stale wake', 'stale wake', 'done',
+                    strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(dm_channel_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        let stream_key = "stream-orphan-1";
+        sqlx::query(
+            r#"
+            insert into agent_output_buffers (
+                stream_key, agent_id, work_item_id, channel_id, reason, body, state
+            )
+            values ($1, $2, $3, $4, 'stale_context', 'draft body', 'held')
+            "#,
+        )
+        .bind(stream_key)
+        .bind(agent_id)
+        .bind(stale_work_item)
+        .bind(dm_channel_id)
+        .execute(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        let stale_inbox_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_inbox_items (
+                agent_id, channel_id, kind, priority, state, title, body_preview, payload,
+                work_item_id
+            )
+            values ($1, $2, 'interrupted_action', 95, 'processing',
+                    'Public reply held because the thread changed', 'stale_context',
+                    json_object('stream_key', $3), $4)
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(dm_channel_id)
+        .bind(stream_key)
+        .bind(stale_work_item)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        // A second item whose buffer was already resolved (force_sent). It must NOT be
+        // requeued — that would replay an already-published reply.
+        let resolved_stream_key = "stream-resolved-1";
+        sqlx::query(
+            r#"
+            insert into agent_output_buffers (
+                stream_key, agent_id, work_item_id, channel_id, reason, body, state
+            )
+            values ($1, $2, $3, $4, 'stale_context', 'already sent', 'force_sent')
+            "#,
+        )
+        .bind(resolved_stream_key)
+        .bind(agent_id)
+        .bind(stale_work_item)
+        .bind(dm_channel_id)
+        .execute(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        let resolved_inbox_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_inbox_items (
+                agent_id, channel_id, kind, priority, state, title, body_preview, payload,
+                work_item_id
+            )
+            values ($1, $2, 'interrupted_action', 95, 'processing',
+                    'Public reply held because the thread changed', 'stale_context',
+                    json_object('stream_key', $3), $4)
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(dm_channel_id)
+        .bind(resolved_stream_key)
+        .bind(stale_work_item)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        // A third item whose work_item is still active (running). Active in-flight drafts
+        // are still being processed by the runtime and must not be ripped out from under it.
+        let active_work_item: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_work_items (
+                agent_id, channel_id, source_kind, title, context, status
+            )
+            values ($1, $2, 'inbox_wake', 'live wake', 'live wake', 'running')
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(dm_channel_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let active_stream_key = "stream-active-1";
+        sqlx::query(
+            r#"
+            insert into agent_output_buffers (
+                stream_key, agent_id, work_item_id, channel_id, reason, body, state
+            )
+            values ($1, $2, $3, $4, 'stale_context', 'mid-flight draft', 'held')
+            "#,
+        )
+        .bind(active_stream_key)
+        .bind(agent_id)
+        .bind(active_work_item)
+        .bind(dm_channel_id)
+        .execute(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let active_inbox_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_inbox_items (
+                agent_id, channel_id, kind, priority, state, title, body_preview, payload,
+                work_item_id
+            )
+            values ($1, $2, 'interrupted_action', 95, 'processing',
+                    'Public reply held because the thread changed', 'stale_context',
+                    json_object('stream_key', $3), $4)
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(dm_channel_id)
+        .bind(active_stream_key)
+        .bind(active_work_item)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        let affected = requeue_orphan_interrupted_actions(&pool, agent_id)
+            .await
+            .map_err(|err| err.to_string())?;
+        assert_eq!(affected, 1, "only the orphaned held draft should be requeued");
+
+        let stale_row = sqlx::query(
+            "select state, work_item_id from agent_inbox_items where id = $1",
+        )
+        .bind(stale_inbox_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(stale_row.get::<String, _>("state"), "unread");
+        assert!(
+            stale_row.get::<Option<Uuid>, _>("work_item_id").is_none(),
+            "requeued item must detach from the closed work_item"
+        );
+
+        let resolved_row = sqlx::query("select state from agent_inbox_items where id = $1")
+            .bind(resolved_inbox_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        assert_eq!(
+            resolved_row.get::<String, _>("state"),
+            "processing",
+            "already-resolved buffers must not be requeued",
+        );
+
+        let active_row = sqlx::query("select state from agent_inbox_items where id = $1")
+            .bind(active_inbox_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        assert_eq!(
+            active_row.get::<String, _>("state"),
+            "processing",
+            "items linked to a still-active work_item must not be requeued",
+        );
+
         Ok(())
     }
     .await;

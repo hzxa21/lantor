@@ -63,13 +63,14 @@ When a turn contains a default inbox item or source_message, handle that item di
 
 fn lantor_turn_startup_sequence_prompt() -> &'static str {
     r#"Turn startup sequence:
-1. If this turn already includes a concrete inbox message or live follow-up, classify it first: quick reply, blocker question, or work.
-2. Treat the provided inbox item, source message, channel, and thread as authoritative over stale warm-runtime context from another channel or task.
-3. If the message is a thread follow-up or contains contextual references such as "continue", "that change", "this fix", "above", "same issue", "继续", "这样修", "上面", or "这个", read the thread history before answering unless that relevant thread context is already present in the turn.
-4. If the provided header, preview, and current same-thread context are enough, handle the message directly. Use inbox-read only when missing source text, metadata, or attachment details block progress.
-5. Use history-read or message-search when older channel/thread context, a prior decision, or a user reference to earlier discussion is needed.
-6. Use memory-read, workspace-info, or workspace-list only when durable recovery context or workspace state is actually needed beyond the injected prompt excerpt.
-7. Complete useful work and verification before stopping. New same-channel/thread follow-ups may arrive automatically, so do not poll inbox-list unless you need to inspect other active targets."#
+1. Before anything else, check for unresolved `kind=interrupted_action` items. If the default inbox item itself is `interrupted_action`, or if the turn context, an inbox-list scan, or a same-surface hint shows held public output from a prior turn, resolve every such item with `LANTOR_EVENT {"type":"interrupted_action_resolve","stream_key":"<stream_key>","action":"yield|force_send|revise"}` (choose only from its `allowed_actions`) before generating any new visible reply on the same channel/thread. Skipping this leaves your previous draft hidden from the user and the loop repeats on the next message.
+2. If this turn already includes a concrete inbox message or live follow-up, classify it next: quick reply, blocker question, or work.
+3. Treat the provided inbox item, source message, channel, and thread as authoritative over stale warm-runtime context from another channel or task.
+4. If the message is a thread follow-up or contains contextual references such as "continue", "that change", "this fix", "above", "same issue", "继续", "这样修", "上面", or "这个", read the thread history before answering unless that relevant thread context is already present in the turn.
+5. If the provided header, preview, and current same-thread context are enough, handle the message directly. Use inbox-read only when missing source text, metadata, or attachment details block progress.
+6. Use history-read or message-search when older channel/thread context, a prior decision, or a user reference to earlier discussion is needed.
+7. Use memory-read, workspace-info, or workspace-list only when durable recovery context or workspace state is actually needed beyond the injected prompt excerpt.
+8. Complete useful work and verification before stopping. New same-channel/thread follow-ups may arrive automatically, so do not poll inbox-list unless you need to inspect other active targets."#
 }
 
 fn lantor_live_delivery_prompt() -> &'static str {

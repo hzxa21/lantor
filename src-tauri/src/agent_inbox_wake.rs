@@ -765,10 +765,57 @@ pub(crate) async fn sync_inbox_for_work_item(
     .execute(pool)
     .await
     .map_err(to_string)?;
+    // If this work_item is closing/idle, any interrupted_action inbox items it was
+    // holding need to be released back to 'unread' so the next wake can pick them up.
+    // Otherwise an agent that ignored the held draft this turn would never be re-prompted
+    // about it, and the user's reply stays hidden forever.
+    if !matches!(status.as_str(), "queued" | "running" | "cancelling") {
+        let _ = requeue_orphan_interrupted_actions(pool, agent_id).await?;
+    }
     if source_kind == "inbox_wake" && matches!(status.as_str(), "done" | "failed" | "cancelled") {
         let _ = Box::pin(ensure_agent_inbox_wake_work_item(pool, agent_id)).await?;
     }
     Ok(())
+}
+
+/// Reset any unresolved `interrupted_action` inbox items whose underlying held buffer
+/// is still in state 'held' but whose linked work_item is no longer active. This puts
+/// them back to `state='unread'` (priority 95) so the next inbox wake picks them up
+/// ahead of new dms, instead of letting the held draft accumulate silently while the
+/// agent processes newer messages on the same surface.
+pub(crate) async fn requeue_orphan_interrupted_actions(
+    pool: &SqlitePool,
+    agent_id: Uuid,
+) -> CommandResult<u64> {
+    let affected = sqlx::query(
+        r#"
+        update agent_inbox_items
+        set state = 'unread',
+            work_item_id = null,
+            archived_at = null,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
+        where id in (
+            select i.id
+            from agent_inbox_items i
+            join agent_output_buffers b
+              on json_extract(i.payload, '$.stream_key') = b.stream_key
+             and b.agent_id = i.agent_id
+            left join agent_work_items w on w.id = i.work_item_id
+            where i.agent_id = $1
+              and i.kind = 'interrupted_action'
+              and i.state <> 'unread'
+              and i.state <> 'archived'
+              and b.state = 'held'
+              and (w.id is null or w.status not in ('queued', 'running', 'cancelling'))
+        )
+        "#,
+    )
+    .bind(agent_id)
+    .execute(pool)
+    .await
+    .map_err(to_string)?
+    .rows_affected();
+    Ok(affected)
 }
 
 pub(crate) async fn ensure_agent_inbox_wake_work_item(
@@ -778,6 +825,9 @@ pub(crate) async fn ensure_agent_inbox_wake_work_item(
     if !agent_accepts_new_work(pool, agent_id).await? {
         return Ok(None);
     }
+    // Safety net: if a previous turn left an interrupted_action stranded on a closed
+    // work_item, surface it here before we pick the next primary item.
+    let _ = requeue_orphan_interrupted_actions(pool, agent_id).await?;
     let Some(primary) = next_unread_inbox_wake_item(pool, agent_id).await? else {
         return Ok(None);
     };
