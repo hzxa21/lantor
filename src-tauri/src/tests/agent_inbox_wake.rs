@@ -1,6 +1,6 @@
 use super::{
     build_steer_followup_prompt, inbox_wake_context, requeue_orphan_interrupted_actions,
-    InboxWakeItem, InboxWakeSummary,
+    HeldReplyHint, InboxWakeItem, InboxWakeSummary,
 };
 use crate::channels::open_dm_with_agent_in_pool;
 use crate::context_tool::short_id;
@@ -41,6 +41,7 @@ fn inbox_wake_context_includes_message_headers_and_other_active_summary() {
             target: "dm:Hancock".to_owned(),
             count: 2,
         }],
+        &[],
     );
 
     assert!(context.contains("[target=#support:"));
@@ -74,6 +75,7 @@ fn inbox_wake_context_tells_task_available_agents_to_claim_silently() {
             sender_name: Some("Dylan".to_owned()),
             sender_role: Some("owner".to_owned()),
         }],
+        &[],
         &[],
     );
 
@@ -154,6 +156,7 @@ fn interrupted_action_context_exposes_payload_and_resolution_protocol() {
             sender_role: None,
         }],
         &[],
+        &[],
     );
 
     assert!(context.contains("interrupted_action: review the held public output"));
@@ -203,6 +206,7 @@ fn interrupted_action_context_for_side_effect_only_omits_revise_protocol() {
             sender_name: None,
             sender_role: None,
         }],
+        &[],
         &[],
     );
 
@@ -658,4 +662,86 @@ async fn requeue_orphan_interrupted_actions_releases_held_drafts_from_closed_wor
     .await;
     drop_test_schema(pool, schema).await;
     assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[test]
+fn inbox_wake_context_lists_off_surface_held_replies_with_resolve_protocol() {
+    // Held drafts on a different channel/thread than the current wake target must
+    // still surface to the agent so they get resolved before any new visible reply
+    // on those surfaces. Same-surface ones already appear in the batch above, so
+    // we only render the off-surface hints here.
+    let primary_inbox_id = Uuid::new_v4();
+    let off_surface_inbox_id = Uuid::new_v4();
+    let same_surface_inbox_id = Uuid::new_v4();
+    let context = inbox_wake_context(
+        &[InboxWakeItem {
+            id: primary_inbox_id,
+            channel_id: Some(Uuid::new_v4()),
+            channel_name: Some("dm-target".to_owned()),
+            channel_kind: Some("dm".to_owned()),
+            thread_root_id: Some(Uuid::new_v4()),
+            source_message_id: Some(Uuid::new_v4()),
+            task_id: None,
+            kind: "dm".to_owned(),
+            priority: 85,
+            title: "another question".to_owned(),
+            body_preview: "another question".to_owned(),
+            payload: "{}".to_owned(),
+            message_created_at: Some(Utc::now()),
+            sender_name: Some("Dylan".to_owned()),
+            sender_role: Some("owner".to_owned()),
+        }],
+        &[],
+        &[HeldReplyHint {
+            inbox_id: off_surface_inbox_id,
+            target: "#dbt-risingwave:abc1234".to_owned(),
+            stream_key: "stream-off-1".to_owned(),
+            reason: "stale_context".to_owned(),
+            allowed_actions: vec![
+                "revise".to_owned(),
+                "yield".to_owned(),
+                "force_send".to_owned(),
+            ],
+        }],
+    );
+
+    assert!(context.contains("Unresolved held public replies"));
+    assert!(context.contains("target=#dbt-risingwave:abc1234"));
+    assert!(context.contains("stream_key=stream-off-1"));
+    assert!(context.contains("allowed_actions=[revise, yield, force_send]"));
+    assert!(context.contains("interrupted_action_resolve"));
+
+    // Items already present in the wake batch must NOT also appear in the
+    // off-surface hint section (renderer filters by inbox_id).
+    let context_with_same_surface_in_batch = inbox_wake_context(
+        &[InboxWakeItem {
+            id: same_surface_inbox_id,
+            channel_id: Some(Uuid::new_v4()),
+            channel_name: Some("dm-target".to_owned()),
+            channel_kind: Some("dm".to_owned()),
+            thread_root_id: Some(Uuid::new_v4()),
+            source_message_id: None,
+            task_id: None,
+            kind: "interrupted_action".to_owned(),
+            priority: 95,
+            title: "Public reply held".to_owned(),
+            body_preview: "stale_context".to_owned(),
+            payload: "{}".to_owned(),
+            message_created_at: None,
+            sender_name: None,
+            sender_role: None,
+        }],
+        &[],
+        &[HeldReplyHint {
+            inbox_id: same_surface_inbox_id,
+            target: "dm:dm-target:thread".to_owned(),
+            stream_key: "stream-same-1".to_owned(),
+            reason: "stale_context".to_owned(),
+            allowed_actions: vec!["yield".to_owned(), "force_send".to_owned()],
+        }],
+    );
+    assert!(
+        !context_with_same_surface_in_batch.contains("Unresolved held public replies"),
+        "when the only held reply is already in the batch the off-surface section must be omitted",
+    );
 }
