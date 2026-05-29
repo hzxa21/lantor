@@ -7,6 +7,7 @@ import { APP_DISPLAY_NAME } from "../branding";
 import { isImeComposing } from "../input-utils";
 import { copyText } from "../clipboard";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
+import { DESKTOP_MESSAGE_PREVIEW_CHARS, DESKTOP_MESSAGE_PREVIEW_LINES } from "../message-preview";
 import { messageShareLink, messageToMarkdown } from "../message-share";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task } from "../types";
 import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
@@ -48,13 +49,10 @@ function isNoisyTaskActivity(activity: AgentActivity) {
   return false;
 }
 
-const THREAD_MESSAGE_PREVIEW_LINES = 24;
-const THREAD_MESSAGE_PREVIEW_CHARS = 4000;
-
 function shouldCollapseThreadMessage(body: string) {
   const text = body.trim();
   if (!text) return false;
-  return text.split("\n").length > THREAD_MESSAGE_PREVIEW_LINES || text.length > THREAD_MESSAGE_PREVIEW_CHARS;
+  return text.split("\n").length > DESKTOP_MESSAGE_PREVIEW_LINES || text.length > DESKTOP_MESSAGE_PREVIEW_CHARS;
 }
 
 function closeUnbalancedCodeFence(body: string) {
@@ -66,9 +64,9 @@ function closeUnbalancedCodeFence(body: string) {
 function threadMessagePreview(body: string) {
   const text = body.trim();
   const lines = text.split("\n");
-  const linePreview = lines.slice(0, THREAD_MESSAGE_PREVIEW_LINES).join("\n");
-  const preview = linePreview.length > THREAD_MESSAGE_PREVIEW_CHARS
-    ? linePreview.slice(0, THREAD_MESSAGE_PREVIEW_CHARS).replace(/\s+\S*$/, "")
+  const linePreview = lines.slice(0, DESKTOP_MESSAGE_PREVIEW_LINES).join("\n");
+  const preview = linePreview.length > DESKTOP_MESSAGE_PREVIEW_CHARS
+    ? linePreview.slice(0, DESKTOP_MESSAGE_PREVIEW_CHARS).replace(/\s+\S*$/, "")
     : linePreview;
   return closeUnbalancedCodeFence(preview);
 }
