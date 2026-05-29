@@ -1,8 +1,8 @@
 use super::{
     agent_context_agent_inspect, agent_context_attachment_info, agent_context_history_read,
     agent_context_inbox_archive, agent_context_inbox_list, agent_context_inbox_read,
-    agent_context_memory_read, agent_context_message_search, agent_context_workspace_info,
-    agent_context_workspace_list, short_id,
+    agent_context_memory_read, agent_context_message_search, agent_context_run_read,
+    agent_context_workspace_info, agent_context_workspace_list, short_id,
 };
 use crate::channels::open_dm_with_agent_in_pool;
 use crate::events::activity::record_agent_activity;
@@ -271,6 +271,115 @@ async fn agent_inspect_tool_summarizes_profile_runs_requests_and_activity() {
         assert!(output.contains("recent_runs:"));
         assert!(output.contains("recent_requests:"));
         assert!(output.contains("recent_activity:"));
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[tokio::test]
+async fn run_read_tool_exposes_previous_run_context_on_demand() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "run-reader").await?;
+        let channel_id = insert_test_channel(&pool, "run-read-channel").await?;
+        let thread_root_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into messages (channel_id, sender_name, sender_role, body, is_task)
+            values ($1, 'Dylan', 'owner', 'thread root for run-read', false)
+            returning id
+            "#,
+        )
+        .bind(channel_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let work_item_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_work_items (
+                agent_id, channel_id, thread_root_id, title, context, status, source_kind
+            )
+            values ($1, $2, $3, 'Continue rotated work', 'Previous work item context', 'done', 'inbox_wake')
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let run_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_runs (
+                agent_id, work_item_id, command, working_directory, status, log,
+                input_tokens, output_tokens, cost_micros, stopped_at
+            )
+            values (
+                $1, $2, 'codex app-server', '/tmp/lantor-run-read', 'done',
+                '[codex] did useful work\n[thinking] next step is cargo test\n',
+                190000, 1200, 12345, strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
+            )
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(work_item_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        sqlx::query(
+            r#"
+            insert into messages (
+                channel_id, thread_root_id, sender_agent_id, sender_name, sender_role,
+                body, delivery_state, stream_key
+            )
+            values ($1, $2, $3, 'run-reader', 'agent', 'Visible reply from previous run', 'complete', $4)
+            "#,
+        )
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .bind(agent_id)
+        .bind(format!("{run_id}:item-1"))
+        .execute(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        record_agent_activity(
+            &pool,
+            Some(agent_id),
+            Some(run_id),
+            "command",
+            "Running verification",
+            "cargo test".to_owned(),
+        )
+        .await?;
+
+        let output = agent_context_run_read(
+            &pool,
+            &[
+                "run-read".to_owned(),
+                "--target".to_owned(),
+                "@run-reader".to_owned(),
+                "--run-id".to_owned(),
+                short_id(run_id),
+                "--log-limit".to_owned(),
+                "2000".to_owned(),
+            ],
+        )
+        .await?;
+
+        assert!(output.contains("Lantor run"));
+        assert!(output.contains("run_id="));
+        assert!(output.contains("tokens=190000/1200"));
+        assert!(output.contains("Continue rotated work"));
+        assert!(output.contains("Previous work item context"));
+        assert!(output.contains("history-read"));
+        assert!(output.contains("Visible reply from previous run"));
+        assert!(output.contains("Running verification"));
+        assert!(output.contains("next step is cargo test"));
         Ok(())
     }
     .await;

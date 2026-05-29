@@ -40,6 +40,7 @@ process inbox wakeups.
 "$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-info
 "$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80
 "$LANTOR_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000
+"$LANTOR_CONTEXT_TOOL" --agent-context-tool run-read --run-id "<uuid-or-prefix>"
 "$LANTOR_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20
 "$LANTOR_CONTEXT_TOOL" --agent-context-tool message-search --query "<text>" --target "#channel" --limit 20
 "$LANTOR_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"

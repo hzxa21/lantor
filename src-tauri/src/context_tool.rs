@@ -69,8 +69,37 @@ fn parse_context_tool_usize_limit(
     Ok(parsed.clamp(1, max))
 }
 
+fn parse_context_tool_named_usize(
+    args: &[String],
+    name: &str,
+    default: usize,
+    max: usize,
+) -> CommandResult<usize> {
+    let Some(raw) = arg_value(args, name) else {
+        return Ok(default);
+    };
+    let parsed = raw
+        .parse::<usize>()
+        .map_err(|_| format!("invalid {name} value: {raw}"))?;
+    Ok(parsed.clamp(1, max))
+}
+
 pub(crate) fn short_id(id: Uuid) -> String {
     id.to_string().chars().take(8).collect()
+}
+
+fn tail_chars(value: &str, limit: usize) -> String {
+    let trimmed = value.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= limit {
+        return trimmed.to_owned();
+    }
+    let omitted = chars.len().saturating_sub(limit);
+    let tail = chars
+        .iter()
+        .skip(chars.len().saturating_sub(limit))
+        .collect::<String>();
+    format!("[... Lantor omitted {omitted} earlier chars from run log ...]\n{tail}")
 }
 
 fn split_context_target(raw_target: &str) -> (String, Option<String>) {
@@ -632,6 +661,255 @@ pub(crate) async fn agent_context_agent_inspect(
                 compact_chars_middle(&row.get::<String, _>("summary"), 120).replace('\n', " ")
             ));
         }
+    }
+
+    Ok(output.join("\n"))
+}
+
+async fn resolve_agent_run_id(
+    pool: &SqlitePool,
+    agent_id: Uuid,
+    run_ref: &str,
+) -> CommandResult<Uuid> {
+    let run_ref = run_ref.trim();
+    if run_ref.is_empty() {
+        return Err("run-read requires --run-id <uuid-or-prefix>".to_owned());
+    }
+    if let Ok(run_id) = Uuid::parse_str(run_ref) {
+        let exists: bool = sqlx::query_scalar(
+            "select exists(select 1 from agent_runs where id = $1 and agent_id = $2)",
+        )
+        .bind(run_id)
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+        if exists {
+            return Ok(run_id);
+        }
+        return Err(format!("unknown run id for this agent: {run_ref}"));
+    }
+
+    let rows = sqlx::query(
+        r#"
+        select id
+        from agent_runs
+        where agent_id = $1
+        order by started_at desc
+        limit 200
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    let matches = rows
+        .into_iter()
+        .filter_map(|row| {
+            let id: Uuid = row.get("id");
+            id.to_string().starts_with(run_ref).then_some(id)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [run_id] => Ok(*run_id),
+        [] => Err(format!("unknown run id prefix for this agent: {run_ref}")),
+        _ => Err(format!("ambiguous run id prefix for this agent: {run_ref}")),
+    }
+}
+
+pub(crate) async fn agent_context_run_read(
+    pool: &SqlitePool,
+    args: &[String],
+) -> CommandResult<String> {
+    let target = resolve_agent_inbox_target(pool, args)
+        .await
+        .map_err(|err| err.replace("inbox commands", "run-read"))?;
+    let run_ref = arg_value(args, "--run-id")
+        .or_else(|| arg_value(args, "--id"))
+        .ok_or_else(|| "run-read requires --run-id <uuid-or-prefix>".to_owned())?;
+    let run_id = resolve_agent_run_id(pool, target.id, &run_ref).await?;
+    let limit = parse_context_tool_limit(args, 8, 30)?;
+    let log_limit = parse_context_tool_named_usize(args, "--log-limit", 8_000, 64_000)?;
+
+    let row = sqlx::query(
+        r#"
+        select
+            r.status,
+            r.command,
+            r.working_directory,
+            r.log,
+            r.input_tokens,
+            r.output_tokens,
+            r.cost_micros,
+            r.started_at,
+            r.stopped_at,
+            w.id as work_item_id,
+            w.source_kind,
+            w.title as work_title,
+            w.context as work_context,
+            w.status as work_status,
+            w.channel_id,
+            w.thread_root_id,
+            c.name as channel_name,
+            c.kind as channel_kind
+        from agent_runs r
+        left join agent_work_items w on w.id = r.work_item_id
+        left join channels c on c.id = w.channel_id
+        where r.id = $1 and r.agent_id = $2
+        "#,
+    )
+    .bind(run_id)
+    .bind(target.id)
+    .fetch_one(pool)
+    .await
+    .map_err(to_string)?;
+
+    let started_at: DateTime<Utc> = row.get("started_at");
+    let stopped_at: Option<DateTime<Utc>> = row.get("stopped_at");
+    let mut output = vec![
+        format!("Lantor run {} for @{}", short_id(run_id), target.handle),
+        format!("run_id={run_id}"),
+        format!(
+            "status={} tokens={}/{} cost=${:.4}",
+            row.get::<String, _>("status"),
+            row.get::<i64, _>("input_tokens"),
+            row.get::<i64, _>("output_tokens"),
+            row.get::<i64, _>("cost_micros") as f64 / 1_000_000.0
+        ),
+        format!(
+            "started_at={} stopped_at={}",
+            started_at.to_rfc3339(),
+            stopped_at
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "active".to_owned())
+        ),
+        format!(
+            "command=\"{}\"",
+            compact_chars_middle(&row.get::<String, _>("command"), 240).replace('"', "\\\"")
+        ),
+        format!(
+            "working_directory={}",
+            row.get::<String, _>("working_directory")
+        ),
+    ];
+
+    let work_item_id: Option<Uuid> = row.get("work_item_id");
+    if let Some(work_item_id) = work_item_id {
+        output.push("work_item:".to_owned());
+        output.push(format!(
+            "- id={} source_kind={} status={} title={}",
+            work_item_id,
+            row.get::<String, _>("source_kind"),
+            row.get::<String, _>("work_status"),
+            compact_chars_middle(&row.get::<String, _>("work_title"), 240).replace('\n', " ")
+        ));
+        let channel_name: Option<String> = row.get("channel_name");
+        let channel_kind: Option<String> = row.get("channel_kind");
+        let thread_root_id: Option<Uuid> = row.get("thread_root_id");
+        if let Some(channel_name) = channel_name {
+            let target_label = if channel_kind.as_deref() == Some("dm") {
+                format!("dm:{channel_name}")
+            } else {
+                format!("#{channel_name}")
+            };
+            let target_with_thread = if let Some(thread_root_id) = thread_root_id {
+                format!("{target_label}:{}", short_id(thread_root_id))
+            } else {
+                target_label
+            };
+            output.push(format!("- surface={target_with_thread}"));
+            output.push(format!(
+                "history_hint=\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool history-read --target {:?} --limit 30",
+                target_with_thread
+            ));
+        }
+        let context: String = row.get("work_context");
+        if !context.trim().is_empty() {
+            output.push("work_item_context:".to_owned());
+            output.push(compact_chars_middle(&context, 4_000));
+        }
+    }
+
+    let run_prefix = format!("{run_id}:%");
+    let messages = sqlx::query(
+        r#"
+        select
+            m.id,
+            m.sender_name,
+            m.sender_role,
+            m.body,
+            m.created_at,
+            m.thread_root_id,
+            c.name as channel_name,
+            c.kind as channel_kind,
+            null as task_number,
+            null as task_status
+        from messages m
+        join channels c on c.id = m.channel_id
+        where m.sender_agent_id = $1
+          and m.stream_key like $2
+          and trim(m.body) <> ''
+        order by m.created_at asc
+        limit $3
+        "#,
+    )
+    .bind(target.id)
+    .bind(&run_prefix)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    if !messages.is_empty() {
+        output.push("visible_messages:".to_owned());
+        for row in messages {
+            output.push(format_context_message_row(&row, None));
+        }
+    }
+
+    let activities = sqlx::query(
+        r#"
+        select phase, status, title, detail, created_at
+        from agent_activities
+        where run_id = $1
+        order by created_at asc
+        limit $2
+        "#,
+    )
+    .bind(run_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+    if !activities.is_empty() {
+        output.push("activities:".to_owned());
+        for row in activities {
+            let created_at: DateTime<Utc> = row.get("created_at");
+            let title: String = row.get("title");
+            let detail: String = row.get("detail");
+            let detail = if detail.trim().is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ": {}",
+                    compact_chars_middle(&detail, AGENT_CONTEXT_TOOL_MESSAGE_LIMIT)
+                        .replace('\n', " ")
+                )
+            };
+            output.push(format!(
+                "- {} {}:{} {}{}",
+                created_at.to_rfc3339(),
+                row.get::<String, _>("phase"),
+                row.get::<String, _>("status"),
+                compact_chars_middle(&title, 160).replace('\n', " "),
+                detail
+            ));
+        }
+    }
+
+    let log: String = row.get("log");
+    if !log.trim().is_empty() && log_limit > 0 {
+        output.push(format!("log_tail_chars={log_limit}:"));
+        output.push(tail_chars(&log, log_limit));
     }
 
     Ok(output.join("\n"))
@@ -1323,7 +1601,7 @@ pub(crate) async fn agent_context_inbox_archive(
 pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<String> {
     if args.is_empty() || has_arg(args, "--help") || has_arg(args, "-h") {
         return Ok(
-            "Lantor agent context tool\n\nCommands:\n  inbox-list [--state active|unread|processing|archived|all] [--limit 20]\n  inbox-read --inbox-id <uuid-or-prefix>\n  inbox-archive --inbox-id <uuid-or-prefix>\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, channel UUID, or channel UUID:<message-id-prefix>. Inbox, workspace, and memory commands default to the current LANTOR_AGENT_ID when invoked by an agent."
+            "Lantor agent context tool\n\nCommands:\n  inbox-list [--state active|unread|processing|archived|all] [--limit 20]\n  inbox-read --inbox-id <uuid-or-prefix>\n  inbox-archive --inbox-id <uuid-or-prefix>\n  workspace-info [--target @handle]\n  workspace-list [--target @handle] [--max-depth 2] [--limit 80]\n  memory-read [--target @handle] [--limit 16000]\n  run-read --run-id <uuid-or-prefix> [--target @handle] [--limit 8] [--log-limit 8000]\n  history-read --target \"#channel[:thread]\" [--limit 30]\n  message-search --query <text> [--target \"#channel\"] [--limit 30]\n  attachment-info --attachment-id <uuid>\n  artifact-read --artifact-id <uuid>\n  agent-inspect --target @handle\n\nTargets may be #channel, #channel:<message-id-prefix>, dm:@agent, channel UUID, or channel UUID:<message-id-prefix>. Inbox, run, workspace, and memory commands default to the current LANTOR_AGENT_ID when invoked by an agent."
                 .to_owned(),
         );
     }
@@ -1342,6 +1620,7 @@ pub(crate) async fn run_agent_context_tool(args: &[String]) -> CommandResult<Str
             agent_context_workspace_list(&pool, args).await
         }
         "memory-read" | "read-memory" | "memory" => agent_context_memory_read(&pool, args).await,
+        "run-read" | "read-run" | "run" => agent_context_run_read(&pool, args).await,
         "history-read" | "read-history" | "read" => agent_context_history_read(&pool, args).await,
         "message-search" | "search-messages" | "search" => {
             agent_context_message_search(&pool, args).await

@@ -62,12 +62,13 @@ const LANTOR_CONTEXT_TOOLS = [
   '- workspace info: "$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-info',
   '- workspace files: "$LANTOR_CONTEXT_TOOL" --agent-context-tool workspace-list --max-depth 2 --limit 80',
   '- durable memory: "$LANTOR_CONTEXT_TOOL" --agent-context-tool memory-read --limit 16000',
+  '- run details: "$LANTOR_CONTEXT_TOOL" --agent-context-tool run-read --run-id "<uuid-or-prefix>"',
   '- history: "$LANTOR_CONTEXT_TOOL" --agent-context-tool history-read --target "#channel[:thread_id]" --limit 20',
   '- search: "$LANTOR_CONTEXT_TOOL" --agent-context-tool message-search --query "text" --target "#channel" --limit 20',
   '- attachment: "$LANTOR_CONTEXT_TOOL" --agent-context-tool attachment-info --attachment-id "<uuid>"',
   '- artifact: "$LANTOR_CONTEXT_TOOL" --agent-context-tool artifact-read --artifact-id "<uuid>"',
   '- agent introspection: "$LANTOR_CONTEXT_TOOL" --agent-context-tool agent-inspect --target "@handle"',
-  'Inbox, workspace, and memory commands default to your own LANTOR_AGENT_ID; add --target "@handle" only when inspecting another visible agent.',
+  'Inbox, run, workspace, and memory commands default to your own LANTOR_AGENT_ID; add --target "@handle" only when inspecting another visible agent.',
   "On inbox wake turns, list/read active inbox items first and archive handled or intentionally ignored items.",
 ].join("\n");
 

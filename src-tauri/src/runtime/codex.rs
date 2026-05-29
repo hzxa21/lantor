@@ -73,6 +73,7 @@ struct WarmCodexState {
     alive: bool,
     active: Option<CodexActiveTurn>,
     next_request_id: i64,
+    pending_rotation_marker: Option<String>,
     last_activity: Instant,
 }
 
@@ -121,6 +122,23 @@ async fn codex_context_rotation_candidate(
         let input_tokens = row.get("input_tokens");
         (input_tokens >= threshold).then(|| (row.get("id"), input_tokens))
     }))
+}
+
+fn codex_rotation_marker(run_id: Uuid, input_tokens: i64, threshold: i64) -> String {
+    format!(
+        "Lantor rotated away from the previous Codex provider thread after run {run_id} reached {input_tokens} input tokens (threshold {threshold}). If continuity matters for this request, inspect the previous run on demand with:\n\"$LANTOR_CONTEXT_TOOL\" --agent-context-tool run-read --run-id {run_id}"
+    )
+}
+
+fn prepend_codex_rotation_marker(prompt: &str, marker: &str) -> String {
+    let marker = marker.trim();
+    if marker.is_empty() {
+        return prompt.to_owned();
+    }
+    if prompt.trim().is_empty() {
+        return marker.to_owned();
+    }
+    format!("{marker}\n\nCurrent Lantor request after context rotation:\n{prompt}")
 }
 
 pub(crate) async fn cleanup_failed_warm_codex_start(
@@ -361,6 +379,15 @@ async fn spawn_warm_codex_runtime(
 
     let rotation_candidate =
         codex_context_rotation_candidate(pool, agent_id, context_rotate_threshold).await?;
+    let rotation_marker = if let Some((run_id, input_tokens)) = rotation_candidate {
+        Some(codex_rotation_marker(
+            run_id,
+            input_tokens,
+            context_rotate_threshold,
+        ))
+    } else {
+        None
+    };
     let existing_thread_id = if rotation_candidate.is_some() {
         None
     } else {
@@ -497,6 +524,7 @@ async fn spawn_warm_codex_runtime(
             alive: true,
             active: None,
             next_request_id,
+            pending_rotation_marker: rotation_marker,
             last_activity: Instant::now(),
         }),
         thread_id,
@@ -871,6 +899,14 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
             return Ok(());
         }
     }
+
+    let codex_prompt = {
+        let mut state = runtime.state.lock().await;
+        match state.pending_rotation_marker.take() {
+            Some(marker) => prepend_codex_rotation_marker(&codex_prompt, &marker),
+            None => codex_prompt,
+        }
+    };
 
     let initial_log = if codex_prompt.is_empty() {
         format!("$ {command_text}\n[warm process reused]\n")
@@ -1546,7 +1582,7 @@ mod tests {
 
     use crate::runtime::surface::{codex_active_turn_schedule_state, CodexActiveTurnScheduleState};
 
-    use super::CODEX_TURN_START_TIMEOUT;
+    use super::{codex_rotation_marker, prepend_codex_rotation_marker, CODEX_TURN_START_TIMEOUT};
 
     #[test]
     fn codex_active_turn_without_turn_id_times_out_for_scheduling() {
@@ -1577,5 +1613,21 @@ mod tests {
             ),
             CodexActiveTurnScheduleState::StuckBeforeTurnId
         );
+    }
+
+    #[test]
+    fn codex_rotation_marker_points_to_run_read_context_tool() {
+        let run_id = uuid::Uuid::new_v4();
+        let marker = codex_rotation_marker(run_id, 190_000, 180_000);
+
+        assert!(marker.contains("Lantor rotated away"));
+        assert!(marker.contains("190000 input tokens"));
+        assert!(marker.contains("run-read"));
+        assert!(marker.contains(&run_id.to_string()));
+
+        let prompt = prepend_codex_rotation_marker("Current inbox item", &marker);
+        assert!(prompt.starts_with("Lantor rotated away"));
+        assert!(prompt.contains("Current Lantor request after context rotation"));
+        assert!(prompt.ends_with("Current inbox item"));
     }
 }
