@@ -3046,7 +3046,7 @@ function App() {
       ...agentDraft,
       runtime,
       model: preset && shouldReplaceModel ? preset.defaultModel : agentDraft.model,
-      reasoningEffort: runtime === "codex" ? agentDraft.reasoningEffort || "medium" : agentDraft.reasoningEffort,
+      reasoningEffort: runtime === "codex" ? agentDraft.reasoningEffort || "medium" : "",
       serviceTier: runtime === "codex" ? agentDraft.serviceTier : "",
     });
   }
@@ -3062,7 +3062,7 @@ function App() {
       ...agentEdit,
       runtime,
       model: preset && shouldReplaceModel ? preset.defaultModel : agentEdit.model,
-      reasoningEffort: runtime === "codex" ? agentEdit.reasoningEffort || "medium" : agentEdit.reasoningEffort,
+      reasoningEffort: runtime === "codex" ? agentEdit.reasoningEffort || "medium" : "",
       serviceTier: runtime === "codex" ? agentEdit.serviceTier : "",
     });
   }
@@ -3076,7 +3076,7 @@ function App() {
       avatar: agent.avatar || "",
       runtime: agent.runtime,
       model: agent.model,
-      reasoningEffort: agent.reasoning_effort || "medium",
+      reasoningEffort: agent.reasoning_effort || (agent.runtime === "codex" ? "medium" : ""),
       serviceTier: agent.service_tier || "",
       description: agent.description,
       launchCommand: agent.launch_command,

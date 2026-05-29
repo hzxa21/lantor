@@ -406,6 +406,21 @@ export const CODEX_SERVICE_TIERS = [
   { value: "fast", label: "Fast" },
 ] as const;
 
+export const CLAUDE_REASONING_EFFORTS = [
+  { value: "", label: "Default" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra High" },
+  { value: "max", label: "Max" },
+] as const;
+
+const CLAUDE_EFFORT_VALUES = new Set(CLAUDE_REASONING_EFFORTS.map((effort) => effort.value));
+
+export function isClaudeReasoningEffort(value: string) {
+  return CLAUDE_EFFORT_VALUES.has(value as (typeof CLAUDE_REASONING_EFFORTS)[number]["value"]);
+}
+
 export function modelOptionsForRuntime(runtime: string, currentModel = "") {
   const models = RUNTIME_PRESETS[runtime]?.models ?? [];
   if (!currentModel || models.includes(currentModel)) return models;

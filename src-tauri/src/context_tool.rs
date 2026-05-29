@@ -559,11 +559,24 @@ pub(crate) async fn agent_context_agent_inspect(
             agent.get::<String, _>("runtime"),
             agent.get::<String, _>("model")
         ),
-        format!(
-            "codex_options=reasoning_effort:{} service_tier:{}",
-            agent.get::<String, _>("reasoning_effort"),
-            agent.get::<String, _>("service_tier")
-        ),
+        {
+            let runtime = agent.get::<String, _>("runtime");
+            let reasoning_effort = agent.get::<String, _>("reasoning_effort");
+            if runtime.eq_ignore_ascii_case("claude") {
+                let effort = if reasoning_effort.trim().is_empty() {
+                    "default".to_owned()
+                } else {
+                    reasoning_effort
+                };
+                format!("claude_options=effort:{effort}")
+            } else {
+                format!(
+                    "codex_options=reasoning_effort:{} service_tier:{}",
+                    reasoning_effort,
+                    agent.get::<String, _>("service_tier")
+                )
+            }
+        },
         format!("description={}", agent.get::<String, _>("description")),
         format!(
             "working_directory={}",

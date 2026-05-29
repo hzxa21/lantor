@@ -11,6 +11,7 @@ import {
   AgentWorkspaceFile,
   AgentWorkspaceListing,
   Channel,
+  CLAUDE_REASONING_EFFORTS,
   CODEX_REASONING_EFFORTS,
   CODEX_SERVICE_TIERS,
   Message,
@@ -404,10 +405,19 @@ function codexServiceTierLabel(value: string) {
   return CODEX_SERVICE_TIERS.find((tier) => tier.value === value)?.label ?? (value || "Standard");
 }
 
+function claudeEffortLabel(value: string) {
+  return CLAUDE_REASONING_EFFORTS.find((effort) => effort.value === value)?.label ?? (value || "Default");
+}
+
 function agentModelSummary(agent: Agent) {
   const base = `${runtimeLabel(agent.runtime)} · ${modelLabel(agent.model)}`;
-  if (agent.runtime !== "codex") return base;
-  return `${base} · ${codexReasoningEffortLabel(agent.reasoning_effort)} intelligence · ${codexServiceTierLabel(agent.service_tier)} speed`;
+  if (agent.runtime === "codex") {
+    return `${base} · ${codexReasoningEffortLabel(agent.reasoning_effort)} intelligence · ${codexServiceTierLabel(agent.service_tier)} speed`;
+  }
+  if (agent.runtime === "claude" && agent.reasoning_effort.trim()) {
+    return `${base} · ${claudeEffortLabel(agent.reasoning_effort)} effort`;
+  }
+  return base;
 }
 
 function isMarkdownWorkspaceFile(file: AgentWorkspaceFile) {
@@ -596,6 +606,7 @@ export function AgentDetailDrawer({
 
   function renderProfilePanel() {
     const isCodex = agent.runtime === "codex";
+    const isClaude = agent.runtime === "claude";
     return (
       <>
         <section className="detail-section model-section">
@@ -623,6 +634,12 @@ export function AgentDetailDrawer({
                   <code>{codexServiceTierLabel(agent.service_tier)}</code>
                 </div>
               </>
+            )}
+            {isClaude && (
+              <div>
+                <span>Effort</span>
+                <code>{claudeEffortLabel(agent.reasoning_effort)}</code>
+              </div>
             )}
           </div>
         </section>

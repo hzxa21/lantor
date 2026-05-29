@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { Modal } from "./Modal";
 import {
   AgentForm,
+  CLAUDE_REASONING_EFFORTS,
   CODEX_REASONING_EFFORTS,
   CODEX_SERVICE_TIERS,
   RuntimeCheck,
@@ -66,6 +67,7 @@ export function AgentFormModal({
 }: AgentFormModalProps) {
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const isCodex = form.runtime === "codex";
+  const isClaude = form.runtime === "claude";
   const previewHandle = (form.handle || form.displayName || "agent").trim().replace(/^@/, "") || "agent";
   const previewName = form.displayName.trim() || form.handle.trim().replace(/^@/, "") || "New agent";
   const previewAgent = {
@@ -141,6 +143,22 @@ export function AgentFormModal({
       </label>
     </>
   );
+  const claudeControls = isClaude && (
+    <label className="agent-select-field">
+      <span>Effort</span>
+      <div className="agent-select-control">
+        <select
+          value={form.reasoningEffort}
+          onChange={(event) => onChange({ ...form, reasoningEffort: event.target.value })}
+        >
+          {CLAUDE_REASONING_EFFORTS.map((effort) => (
+            <option key={effort.value || "default"} value={effort.value}>{effort.label}</option>
+          ))}
+        </select>
+        <ChevronDown size={16} aria-hidden="true" />
+      </div>
+    </label>
+  );
   const agentPreview = (
     <div className="agent-form-preview">
       <AgentAvatar agent={previewAgent} size="lg" showStatus={false} />
@@ -193,6 +211,7 @@ export function AgentFormModal({
             <div className={isCodex ? "three-col" : "two-col"}>
               {modelSelect}
               {codexControls}
+              {claudeControls}
             </div>
             <RuntimePreflight check={runtimeChecks[form.runtime]} />
             <details className="agent-advanced-settings">
@@ -227,6 +246,7 @@ export function AgentFormModal({
               {modelSelect}
             </div>
             {isCodex && <div className="two-col">{codexControls}</div>}
+            {isClaude && <div className="two-col">{claudeControls}</div>}
             <RuntimePreflight check={runtimeChecks[form.runtime]} />
             {showNotes && (
               <label>

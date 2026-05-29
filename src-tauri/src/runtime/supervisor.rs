@@ -638,6 +638,7 @@ async fn supervisor_start_agent(
             work_item_id,
             handle,
             model,
+            reasoning_effort,
             working_directory,
             work_item_prompt,
             memory_context,

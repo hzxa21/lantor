@@ -154,7 +154,9 @@ export function buildPresetCommand(form: AgentForm) {
     return `LANTOR_PROMPT=${prompt}\n${preset.commandName} exec --model ${quotedModel}${configSuffix} "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT"`;
   }
   if (form.runtime === "claude") {
-    return `LANTOR_PROMPT=${prompt}\n${preset.commandName} -p "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT" --model ${quotedModel}`;
+    const effort = form.reasoningEffort.trim();
+    const effortSuffix = effort ? ` --effort ${shellQuote(effort)}` : "";
+    return `LANTOR_PROMPT=${prompt}\n${preset.commandName} -p "$LANTOR_PROMPT\n\n$LANTOR_WORK_ITEM_PROMPT" --model ${quotedModel}${effortSuffix}`;
   }
   return "";
 }

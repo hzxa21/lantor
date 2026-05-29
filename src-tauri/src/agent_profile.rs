@@ -49,18 +49,30 @@ pub(crate) async fn update_owner_profile_in_pool(
 }
 
 fn normalize_reasoning_effort(runtime: &str, value: Option<&str>) -> CommandResult<String> {
-    if !runtime.eq_ignore_ascii_case("codex") {
-        return Ok(String::new());
+    if runtime.eq_ignore_ascii_case("codex") {
+        let effort = value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("medium")
+            .to_ascii_lowercase();
+        return match effort.as_str() {
+            "low" | "medium" | "high" | "xhigh" => Ok(effort),
+            _ => Err(format!("invalid Codex reasoning effort: {effort}")),
+        };
     }
-    let effort = value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("medium")
-        .to_ascii_lowercase();
-    match effort.as_str() {
-        "low" | "medium" | "high" | "xhigh" => Ok(effort),
-        _ => Err(format!("invalid Codex reasoning effort: {effort}")),
+    if runtime.eq_ignore_ascii_case("claude") {
+        let effort = value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        return match effort.as_str() {
+            "" => Ok(String::new()),
+            "low" | "medium" | "high" | "xhigh" | "max" => Ok(effort),
+            _ => Err(format!("invalid Claude effort: {effort}")),
+        };
     }
+    Ok(String::new())
 }
 
 fn normalize_service_tier(runtime: &str, value: Option<&str>) -> CommandResult<String> {

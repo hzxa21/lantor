@@ -81,6 +81,7 @@ async fn get_or_spawn_warm_claude_runtime(
     agent_id: Uuid,
     handle: &str,
     model: &str,
+    reasoning_effort: &str,
     working_directory: &str,
     memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmClaudeRuntime>> {
@@ -100,6 +101,7 @@ async fn get_or_spawn_warm_claude_runtime(
         agent_id,
         handle,
         model,
+        reasoning_effort,
         working_directory,
         memory_context,
     )
@@ -118,6 +120,7 @@ async fn spawn_warm_claude_runtime(
     agent_id: Uuid,
     handle: &str,
     model: &str,
+    reasoning_effort: &str,
     working_directory: &str,
     memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmClaudeRuntime>> {
@@ -126,13 +129,18 @@ async fn spawn_warm_claude_runtime(
     } else {
         model.trim().to_owned()
     };
+    let effort = reasoning_effort.trim();
     let mut command = Command::new("claude");
     command
         .arg("-p")
         .arg("--system-prompt")
         .arg(claude_system_prompt(handle, memory_context))
         .arg("--model")
-        .arg(&model)
+        .arg(&model);
+    if !effort.is_empty() {
+        command.arg("--effort").arg(effort);
+    }
+    command
         .arg("--output-format")
         .arg("stream-json")
         .arg("--input-format")
@@ -255,6 +263,7 @@ pub(crate) async fn supervisor_start_claude_streaming_agent(
     work_item_id: Option<Uuid>,
     handle: String,
     model: String,
+    reasoning_effort: String,
     working_directory: String,
     work_item_prompt: String,
     memory_context: Option<String>,
@@ -265,13 +274,15 @@ pub(crate) async fn supervisor_start_claude_streaming_agent(
     } else {
         model.trim().to_owned()
     };
-    let command_text = claude_streaming_command_text(&model);
+    let effort = reasoning_effort.trim().to_owned();
+    let command_text = claude_streaming_command_text(&model, &effort);
     let runtime = match get_or_spawn_warm_claude_runtime(
         pool,
         claude_registry,
         agent_id,
         &handle,
         &model,
+        &effort,
         &working_directory,
         memory_context.as_deref(),
     )

@@ -198,9 +198,15 @@ pub(super) fn claude_stream_event_activity(
     }
 }
 
-pub(super) fn claude_streaming_command_text(model: &str) -> String {
+pub(super) fn claude_streaming_command_text(model: &str, reasoning_effort: &str) -> String {
+    let effort = reasoning_effort.trim();
+    let effort_arg = if effort.is_empty() {
+        String::new()
+    } else {
+        format!(" --effort {effort}")
+    };
     format!(
-        "{CLAUDE_MAX_RETRIES_ENV}={DEFAULT_CLAUDE_MAX_RETRIES} claude -p --model {model} --output-format stream-json --input-format stream-json --include-partial-messages --verbose --permission-mode bypassPermissions"
+        "{CLAUDE_MAX_RETRIES_ENV}={DEFAULT_CLAUDE_MAX_RETRIES} claude -p --model {model}{effort_arg} --output-format stream-json --input-format stream-json --include-partial-messages --verbose --permission-mode bypassPermissions"
     )
 }
 
