@@ -82,6 +82,11 @@ struct CodexActiveTurn {
     turn_request_id: i64,
     turn_id: Option<String>,
     started_at: Instant,
+    // Bumped on every codex stdout line while this turn is active. Used by the
+    // idle reaper to detect an in-flight turn that started (got a turn_id) but
+    // then went silent and never emitted `turn/completed`, which would
+    // otherwise orphan its work_item in `running` forever.
+    last_event_at: Instant,
     first_delta_at: Option<Instant>,
     work_item_id: Option<Uuid>,
     channel_id: Option<Uuid>,
@@ -1048,6 +1053,7 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
                 turn_request_id: request_id,
                 turn_id: None,
                 started_at: Instant::now(),
+                last_event_at: Instant::now(),
                 first_delta_at: None,
                 work_item_id,
                 channel_id,
@@ -1203,13 +1209,16 @@ async fn handle_codex_warm_stdout_line(
 ) -> CommandResult<()> {
     let value: Value = serde_json::from_str(line).map_err(to_string)?;
     let active_run_id = {
-        runtime
-            .state
-            .lock()
-            .await
-            .active
-            .as_ref()
-            .map(|active| active.run_id)
+        let mut state = runtime.state.lock().await;
+        match state.active.as_mut() {
+            Some(active) => {
+                // Any codex output means the in-flight turn is still alive; reset
+                // the stall timer so the idle reaper only fires on real silence.
+                active.last_event_at = Instant::now();
+                Some(active.run_id)
+            }
+            None => None,
+        }
     };
     if let Some(run_id) = active_run_id {
         append_run_log(pool, run_id, format!("[codex] {line}\n")).await?;
