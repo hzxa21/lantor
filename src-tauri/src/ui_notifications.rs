@@ -432,6 +432,82 @@ pub(crate) fn spawn_ui_refresh_listener(app: tauri::AppHandle, pool: SqlitePool)
     });
 }
 
+/// Number of most-recent `ui_events` rows to retain on each prune.
+///
+/// `ui_events` is an append-only UI-refresh notification queue. Every consumer
+/// (desktop listener, web SSE stream, owner inbox) starts at `max(id)` and only
+/// ever reads `id > last_id`, so historical rows are never replayed — once a row
+/// has been tailed it is dead weight. Live consumers poll roughly every 150ms,
+/// so retaining several thousand rows is a very large safety margin while keeping
+/// the table from growing without bound. `id` is `autoincrement` (monotonic, never
+/// reused), so pruning by id can never strand or duplicate a consumer cursor.
+const UI_EVENTS_RETAIN_ROWS: i64 = 5_000;
+
+/// How often the background pruner runs after its initial pass.
+const UI_EVENTS_PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Reclaim the database file once the freelist holds at least this many bytes.
+/// VACUUM rewrites the whole file, so it only fires when there is meaningful
+/// slack to recover — in practice the first run after this ships, then dormant.
+const UI_EVENTS_VACUUM_THRESHOLD_BYTES: i64 = 32 * 1024 * 1024;
+
+/// Periodically trims the ephemeral `ui_events` queue so it cannot grow without
+/// bound. Runs once shortly after startup (clearing any historical backlog) and
+/// then once per day.
+pub(crate) fn spawn_ui_events_pruner(pool: SqlitePool) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match prune_ui_events(&pool).await {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        eprintln!("Lantor ui_events pruner removed {deleted} old rows");
+                        maybe_vacuum_ui_events(&pool).await;
+                        // Keep the -wal file bounded after a large delete.
+                        let _ = sqlx::query("pragma wal_checkpoint(truncate)")
+                            .execute(&pool)
+                            .await;
+                    }
+                }
+                Err(err) => eprintln!("Lantor ui_events pruner failed: {err}"),
+            }
+            sleep(UI_EVENTS_PRUNE_INTERVAL).await;
+        }
+    });
+}
+
+/// Delete all but the most recent `UI_EVENTS_RETAIN_ROWS` rows by id. Returns the
+/// number of rows removed. A no-op when the table is already within the window
+/// (the `max(id) - N` cutoff is then below every existing id).
+async fn prune_ui_events(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "delete from ui_events where id <= (select max(id) from ui_events) - $1",
+    )
+    .bind(UI_EVENTS_RETAIN_ROWS)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Best-effort one-shot space reclaim: VACUUM only when the freelist is large.
+/// Failures (e.g. transient lock) are logged and ignored — freed pages are still
+/// reused by future inserts, so the table stays bounded regardless.
+async fn maybe_vacuum_ui_events(pool: &SqlitePool) {
+    let free_pages: i64 = sqlx::query_scalar("pragma freelist_count")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let page_size: i64 = sqlx::query_scalar("pragma page_size")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(4096);
+    if free_pages.saturating_mul(page_size) < UI_EVENTS_VACUUM_THRESHOLD_BYTES {
+        return;
+    }
+    if let Err(err) = sqlx::query("vacuum").execute(pool).await {
+        eprintln!("Lantor ui_events VACUUM skipped: {err}");
+    }
+}
+
 async fn load_agent_run_patch(pool: &SqlitePool, run_id: Uuid) -> CommandResult<AgentRunPatch> {
     let row = sqlx::query(
         r#"

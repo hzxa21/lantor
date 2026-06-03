@@ -79,7 +79,7 @@ use lifecycle_commands::{
 };
 use runtime::supervisor::run_supervisor;
 use system_commands::{check_runtime, open_external_url};
-use ui_notifications::spawn_ui_refresh_listener;
+use ui_notifications::{spawn_ui_events_pruner, spawn_ui_refresh_listener};
 
 const WINDOW_STATE_FILE: &str = "window-state.json";
 const MIN_RESTORED_WINDOW_WIDTH: f64 = 1180.0;
@@ -312,6 +312,7 @@ pub fn run() {
         .manage(AppState::new(pool, state_db_url))
         .setup(move |app| {
             spawn_ui_refresh_listener(app.handle().clone(), reminder_pool.clone());
+            spawn_ui_events_pruner(reminder_pool.clone());
             web::spawn_web_server_if_configured(reminder_pool.clone(), database_url.clone());
             spawn_reminder_worker(reminder_pool.clone());
             if let Some(window) = app.get_webview_window("main") {

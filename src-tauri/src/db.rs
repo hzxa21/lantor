@@ -455,7 +455,10 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "create index if not exists agent_schedules_due_idx on agent_schedules(status, next_run_at)",
         "create index if not exists agent_inbox_items_agent_state_idx on agent_inbox_items(agent_id, state, priority desc, created_at)",
         "create unique index if not exists agent_inbox_items_source_unique on agent_inbox_items(agent_id, source_message_id, kind) where source_message_id is not null",
-        "create index if not exists ui_events_created_idx on ui_events(created_at)",
+        // `ui_events` is an ephemeral refresh queue read only by id (PK); the
+        // old created_at index was never used and is pruned by row id, so drop
+        // it on existing databases to reclaim its space.
+        "drop index if exists ui_events_created_idx",
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
