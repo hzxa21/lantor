@@ -1,4 +1,4 @@
-use sqlx::Row;
+use sqlx::{Row, SqlitePool};
 use tauri::State;
 use uuid::Uuid;
 
@@ -13,6 +13,10 @@ use crate::{
 
 #[tauri::command]
 pub(crate) async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> CommandResult<()> {
+    start_agent_in_pool(&state.pool, agent_id).await
+}
+
+pub(crate) async fn start_agent_in_pool(pool: &SqlitePool, agent_id: Uuid) -> CommandResult<()> {
     let active_run: Option<Uuid> = sqlx::query_scalar(
         r#"
         select id
@@ -24,7 +28,7 @@ pub(crate) async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> C
         "#,
     )
     .bind(agent_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(pool)
     .await
     .map_err(to_string)?;
 
@@ -43,7 +47,7 @@ pub(crate) async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> C
         "#,
     )
     .bind(agent_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(pool)
     .await
     .map_err(to_string)?;
 
@@ -53,11 +57,11 @@ pub(crate) async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> C
 
     sqlx::query("update agents set status = 'queued' where id = $1")
         .bind(agent_id)
-        .execute(&state.pool)
+        .execute(pool)
         .await
         .map_err(to_string)?;
     let (redispatched_tasks, inbox_wake_available) =
-        dispatch_agent_restart_backlog(&state.pool, agent_id).await?;
+        dispatch_agent_restart_backlog(pool, agent_id).await?;
     let pending_start_after_backlog: Option<Uuid> = sqlx::query_scalar(
         r#"
         select id
@@ -69,7 +73,7 @@ pub(crate) async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> C
         "#,
     )
     .bind(agent_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(pool)
     .await
     .map_err(to_string)?;
     if pending_start_after_backlog.is_none() {
@@ -80,14 +84,14 @@ pub(crate) async fn start_agent(agent_id: Uuid, state: State<'_, AppState>) -> C
             "#,
         )
         .bind(agent_id)
-        .execute(&state.pool)
+        .execute(pool)
         .await
         .map_err(to_string)?;
-        let _ = notify_supervisor_wake(&state.pool).await;
-        let _ = notify_ui_refresh(&state.pool, "supervisor_command").await;
+        let _ = notify_supervisor_wake(pool).await;
+        let _ = notify_ui_refresh(pool, "supervisor_command").await;
     }
     record_agent_activity(
-        &state.pool,
+        pool,
         Some(agent_id),
         None,
         "run",

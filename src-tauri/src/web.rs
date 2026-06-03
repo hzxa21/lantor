@@ -39,6 +39,7 @@ use crate::channels::{
 };
 use crate::domain::reminders::complete_reminder_in_pool;
 use crate::launch_agent;
+use crate::lifecycle_commands::start_agent_in_pool;
 use crate::message_store::{load_artifact, send_owner_message_in_pool, set_message_saved_in_pool};
 use crate::models::AttachmentUpload;
 use crate::owner_inbox::{
@@ -301,6 +302,7 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
         .route("/api/create_agent", post(api_create_agent))
         .route("/api/update_agent", post(api_update_agent))
         .route("/api/delete_agent", post(api_delete_agent))
+        .route("/api/start_agent", post(api_start_agent))
         .route(
             "/api/set_channel_agent_membership",
             post(api_set_channel_agent_membership),
@@ -522,6 +524,16 @@ async fn api_delete_agent(
     Json(request): Json<AgentIdRequest>,
 ) -> Result<impl IntoResponse, Response> {
     delete_agent_in_pool(&state.pool, request.agent_id)
+        .await
+        .map(|_| Json(json!({ "ok": true })))
+        .map_err(api_error)
+}
+
+async fn api_start_agent(
+    State(state): State<Arc<WebState>>,
+    Json(request): Json<AgentIdRequest>,
+) -> Result<impl IntoResponse, Response> {
+    start_agent_in_pool(&state.pool, request.agent_id)
         .await
         .map(|_| Json(json!({ "ok": true })))
         .map_err(api_error)
