@@ -8,8 +8,9 @@ use crate::events::activity::{record_agent_activity, work_status_title};
 use crate::runtime::{
     process::upsert_runtime_thread_id,
     streaming::{
-        consume_streaming_agent_control_lines, dispatch_streaming_agent_message_mentions,
-        finish_streaming_agent_message,
+        consume_streaming_agent_control_lines, delete_streaming_agent_message_by_key,
+        dispatch_streaming_agent_message_mentions, finish_streaming_agent_message,
+        finish_streaming_agent_message_deferred_mentions,
     },
 };
 use crate::ui_notifications::{
@@ -98,7 +99,21 @@ pub(super) async fn finish_warm_codex_active_turn(
     };
     let was_cancelled = current_work_status.as_deref() == Some("cancelling");
 
+    let final_stream_key = active.latest_agent_message_stream_key.clone();
     for stream_key in active.stream_keys {
+        if final_stream_key
+            .as_ref()
+            .is_some_and(|final_key| final_key != &stream_key)
+        {
+            delete_streaming_agent_message_by_key(
+                pool,
+                &stream_key,
+                "superseded_intermediate_reply",
+            )
+            .await?;
+            continue;
+        }
+
         let hidden = if success && !was_cancelled {
             consume_streaming_agent_control_lines(
                 pool,
@@ -112,11 +127,14 @@ pub(super) async fn finish_warm_codex_active_turn(
             false
         };
         if !hidden {
-            if active
-                .completed_agent_message_stream_keys
-                .contains(&stream_key)
+            if success
+                && !was_cancelled
+                && active
+                    .completed_agent_message_stream_keys
+                    .contains(&stream_key)
             {
-                finish_streaming_agent_message(pool, &stream_key, "complete").await?;
+                finish_streaming_agent_message_deferred_mentions(pool, &stream_key, "complete")
+                    .await?;
                 dispatch_streaming_agent_message_mentions(pool, &stream_key).await?;
             } else {
                 finish_streaming_agent_message(

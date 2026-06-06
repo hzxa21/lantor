@@ -25,8 +25,7 @@ use crate::runtime::{
     },
     streaming::{
         adopt_streaming_agent_message_key, append_streaming_agent_message_deferred_completion,
-        consume_streaming_agent_control_lines, delete_intermediate_run_messages,
-        ensure_streaming_agent_message, finish_streaming_agent_message_deferred_mentions,
+        delete_streaming_agent_message_by_key, ensure_streaming_agent_message,
         streaming_message_body_is_empty,
     },
     surface::{codex_active_turn_schedule_state, same_codex_surface, CodexActiveTurnScheduleState},
@@ -93,6 +92,7 @@ struct CodexActiveTurn {
     thread_root_id: Option<Uuid>,
     stream_keys: HashSet<String>,
     completed_agent_message_stream_keys: HashSet<String>,
+    latest_agent_message_stream_key: Option<String>,
     steer_requests: HashMap<i64, CodexSteerRequest>,
     steer_disabled: bool,
     interrupt_request_id: Option<i64>,
@@ -101,6 +101,43 @@ struct CodexActiveTurn {
 struct CodexSteerRequest {
     work_item_id: Uuid,
     run_id: Uuid,
+}
+
+struct CodexAgentMessageStream {
+    run_id: Uuid,
+    channel_id: Option<Uuid>,
+    thread_root_id: Option<Uuid>,
+    pending_stream_key: String,
+    stream_key: String,
+    superseded_stream_key: Option<String>,
+}
+
+fn track_codex_agent_message_stream(
+    active: &mut CodexActiveTurn,
+    item_id: &str,
+) -> CodexAgentMessageStream {
+    let pending_stream_key = codex_pending_stream_key(active.run_id);
+    let stream_key = codex_stream_key(active.run_id, item_id);
+    let superseded_stream_key = active
+        .latest_agent_message_stream_key
+        .replace(stream_key.clone())
+        .filter(|previous| previous != &stream_key);
+
+    if let Some(previous) = &superseded_stream_key {
+        active.stream_keys.remove(previous);
+        active.completed_agent_message_stream_keys.remove(previous);
+    }
+    active.stream_keys.remove(&pending_stream_key);
+    active.stream_keys.insert(stream_key.clone());
+
+    CodexAgentMessageStream {
+        run_id: active.run_id,
+        channel_id: active.channel_id,
+        thread_root_id: active.thread_root_id,
+        pending_stream_key,
+        stream_key,
+        superseded_stream_key,
+    }
 }
 
 async fn codex_context_rotation_candidate(
@@ -1060,6 +1097,7 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
                 thread_root_id,
                 stream_keys,
                 completed_agent_message_stream_keys: HashSet::new(),
+                latest_agent_message_stream_key: None,
                 steer_requests: HashMap::new(),
                 steer_disabled: false,
                 interrupt_request_id: None,
@@ -1169,36 +1207,6 @@ async fn codex_warm_stdout_reader(
     )
     .await;
     remove_warm_codex_runtime_if_same(&registry, agent_id, &runtime).await;
-}
-
-async fn delete_codex_intermediate_replies(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    runtime: &Arc<WarmCodexRuntime>,
-    run_id: Uuid,
-) -> CommandResult<()> {
-    let active_surface = {
-        let mut state = runtime.state.lock().await;
-        let Some(active) = state.active.as_mut() else {
-            return Ok(());
-        };
-        let run_prefix = format!("{run_id}:");
-        let pending_stream_key = codex_pending_stream_key(run_id);
-        active.stream_keys.retain(|stream_key| {
-            stream_key == &pending_stream_key || !stream_key.starts_with(&run_prefix)
-        });
-        active
-            .completed_agent_message_stream_keys
-            .retain(|stream_key| !stream_key.starts_with(&run_prefix));
-        active
-            .channel_id
-            .map(|channel_id| (active.thread_root_id, channel_id))
-    };
-    if let Some((thread_root_id, channel_id)) = active_surface {
-        delete_intermediate_run_messages(pool, agent_id, channel_id, thread_root_id, run_id)
-            .await?;
-    }
-    Ok(())
 }
 
 async fn handle_codex_warm_stdout_line(
@@ -1329,7 +1337,7 @@ async fn handle_codex_warm_stdout_line(
             if delta.is_empty() {
                 return Ok(());
             }
-            let (active, first_delta_elapsed) = {
+            let (stream, first_delta_elapsed) = {
                 let mut state = runtime.state.lock().await;
                 let Some(active) = state.active.as_mut() else {
                     return Ok(());
@@ -1341,34 +1349,44 @@ async fn handle_codex_warm_stdout_line(
                 } else {
                     None
                 };
-                let pending_stream_key = codex_pending_stream_key(active.run_id);
-                let stream_key = codex_stream_key(active.run_id, item_id);
-                active.stream_keys.remove(&pending_stream_key);
-                active.stream_keys.insert(stream_key.clone());
-                let active = (
-                    active.run_id,
-                    active.channel_id,
-                    active.thread_root_id,
-                    pending_stream_key,
-                    stream_key,
-                );
-                (active, first_delta_elapsed)
+                (
+                    track_codex_agent_message_stream(active, item_id),
+                    first_delta_elapsed,
+                )
             };
             if let Some(elapsed) = first_delta_elapsed {
                 record_agent_activity(
                     pool,
                     Some(agent_id),
-                    Some(active.0),
+                    Some(stream.run_id),
                     "acting",
                     "Responding",
                     format!("first_token_ms={}", elapsed.as_millis()),
                 )
                 .await?;
             }
-            if let Some(channel_id) = active.1 {
-                adopt_streaming_agent_message_key(pool, &active.3, &active.4).await?;
+            if let Some(previous) = &stream.superseded_stream_key {
+                delete_streaming_agent_message_by_key(
+                    pool,
+                    previous,
+                    "superseded_intermediate_reply",
+                )
+                .await?;
+            }
+            if let Some(channel_id) = stream.channel_id {
+                adopt_streaming_agent_message_key(
+                    pool,
+                    &stream.pending_stream_key,
+                    &stream.stream_key,
+                )
+                .await?;
                 append_streaming_agent_message_deferred_completion(
-                    pool, agent_id, channel_id, active.2, &active.4, delta,
+                    pool,
+                    agent_id,
+                    channel_id,
+                    stream.thread_root_id,
+                    &stream.stream_key,
+                    delta,
                 )
                 .await?;
             }
@@ -1377,48 +1395,48 @@ async fn handle_codex_warm_stdout_line(
             let Some(item_id) = codex_item_id(&value) else {
                 return Ok(());
             };
-            let active = {
+            let stream = {
                 let mut state = runtime.state.lock().await;
                 let Some(active) = state.active.as_mut() else {
                     return Ok(());
                 };
-                let pending_stream_key = codex_pending_stream_key(active.run_id);
-                let stream_key = codex_stream_key(active.run_id, item_id);
-                active.stream_keys.remove(&pending_stream_key);
-                active.stream_keys.insert(stream_key.clone());
+                let stream = track_codex_agent_message_stream(active, item_id);
                 active
                     .completed_agent_message_stream_keys
-                    .insert(stream_key.clone());
-                (
-                    active.run_id,
-                    active.channel_id,
-                    active.thread_root_id,
-                    active.work_item_id,
-                    pending_stream_key,
-                    stream_key,
-                )
+                    .insert(stream.stream_key.clone());
+                stream
             };
-            if let Some(channel_id) = active.1 {
-                adopt_streaming_agent_message_key(pool, &active.4, &active.5).await?;
-                if streaming_message_body_is_empty(pool, &active.5).await? {
+            if let Some(previous) = &stream.superseded_stream_key {
+                delete_streaming_agent_message_by_key(
+                    pool,
+                    previous,
+                    "superseded_intermediate_reply",
+                )
+                .await?;
+            }
+            if let Some(channel_id) = stream.channel_id {
+                adopt_streaming_agent_message_key(
+                    pool,
+                    &stream.pending_stream_key,
+                    &stream.stream_key,
+                )
+                .await?;
+                if streaming_message_body_is_empty(pool, &stream.stream_key).await? {
                     if let Some(text) = value
                         .pointer("/params/item/text")
                         .and_then(Value::as_str)
                         .filter(|text| !text.is_empty())
                     {
                         append_streaming_agent_message_deferred_completion(
-                            pool, agent_id, channel_id, active.2, &active.5, text,
+                            pool,
+                            agent_id,
+                            channel_id,
+                            stream.thread_root_id,
+                            &stream.stream_key,
+                            text,
                         )
                         .await?;
                     }
-                }
-                let hidden = consume_streaming_agent_control_lines(
-                    pool, agent_id, active.0, active.3, &active.5,
-                )
-                .await?;
-                if !hidden {
-                    finish_streaming_agent_message_deferred_mentions(pool, &active.5, "complete")
-                        .await?;
                 }
             }
         }
@@ -1426,9 +1444,6 @@ async fn handle_codex_warm_stdout_line(
             let Some(run_id) = active_run_id else {
                 return Ok(());
             };
-            if codex_item_type(&value) != Some("agentMessage") {
-                delete_codex_intermediate_replies(pool, agent_id, runtime, run_id).await?;
-            }
             if let Some((kind, title, detail)) = codex_tool_completion_activity(&value) {
                 record_agent_activity_throttled(
                     pool,
@@ -1445,9 +1460,6 @@ async fn handle_codex_warm_stdout_line(
             let Some(run_id) = active_run_id else {
                 return Ok(());
             };
-            if codex_item_type(&value) != Some("agentMessage") {
-                delete_codex_intermediate_replies(pool, agent_id, runtime, run_id).await?;
-            }
             let (kind, title, detail) = codex_item_started_activity(&value);
             record_agent_activity_throttled(
                 pool,
@@ -1587,11 +1599,17 @@ async fn remove_warm_codex_runtime_if_same(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        collections::{HashMap, HashSet},
+        time::{Duration, Instant},
+    };
 
     use crate::runtime::surface::{codex_active_turn_schedule_state, CodexActiveTurnScheduleState};
 
-    use super::{codex_rotation_marker, prepend_codex_rotation_marker, CODEX_TURN_START_TIMEOUT};
+    use super::{
+        codex_rotation_marker, prepend_codex_rotation_marker, track_codex_agent_message_stream,
+        CodexActiveTurn, CODEX_TURN_START_TIMEOUT,
+    };
 
     #[test]
     fn codex_active_turn_without_turn_id_times_out_for_scheduling() {
@@ -1638,5 +1656,45 @@ mod tests {
         assert!(prompt.starts_with("Lantor rotated away"));
         assert!(prompt.contains("Current Lantor request after context rotation"));
         assert!(prompt.ends_with("Current inbox item"));
+    }
+
+    #[test]
+    fn later_codex_agent_message_supersedes_hidden_candidate() {
+        let run_id = uuid::Uuid::new_v4();
+        let pending_stream_key = format!("{run_id}:pending");
+        let mut active = CodexActiveTurn {
+            run_id,
+            turn_request_id: 1,
+            turn_id: Some("turn-1".to_owned()),
+            started_at: Instant::now(),
+            last_event_at: Instant::now(),
+            first_delta_at: None,
+            work_item_id: None,
+            channel_id: None,
+            thread_root_id: None,
+            stream_keys: HashSet::from([pending_stream_key]),
+            completed_agent_message_stream_keys: HashSet::new(),
+            latest_agent_message_stream_key: None,
+            steer_requests: HashMap::new(),
+            steer_disabled: false,
+            interrupt_request_id: None,
+        };
+
+        let first = track_codex_agent_message_stream(&mut active, "item-1");
+        assert!(first.superseded_stream_key.is_none());
+        assert!(active.stream_keys.contains(&first.stream_key));
+        assert!(active.latest_agent_message_stream_key.as_ref() == Some(&first.stream_key));
+        active
+            .completed_agent_message_stream_keys
+            .insert(first.stream_key.clone());
+
+        let second = track_codex_agent_message_stream(&mut active, "item-2");
+        assert_eq!(second.superseded_stream_key, Some(first.stream_key.clone()));
+        assert!(!active.stream_keys.contains(&first.stream_key));
+        assert!(!active
+            .completed_agent_message_stream_keys
+            .contains(&first.stream_key));
+        assert!(active.stream_keys.contains(&second.stream_key));
+        assert!(active.latest_agent_message_stream_key.as_ref() == Some(&second.stream_key));
     }
 }

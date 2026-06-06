@@ -363,6 +363,23 @@ async fn delete_streaming_agent_message(
     Ok(())
 }
 
+pub(crate) async fn delete_streaming_agent_message_by_key(
+    pool: &SqlitePool,
+    stream_key: &str,
+    reason: &str,
+) -> CommandResult<()> {
+    let message_id: Option<Uuid> =
+        sqlx::query_scalar("select id from messages where stream_key = $1")
+            .bind(stream_key)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string)?;
+    if let Some(message_id) = message_id {
+        delete_streaming_agent_message(pool, message_id, reason).await?;
+    }
+    Ok(())
+}
+
 async fn delete_superseded_empty_run_progress_messages(
     pool: &SqlitePool,
     agent_id: Uuid,
