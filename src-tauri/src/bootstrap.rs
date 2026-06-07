@@ -6,19 +6,26 @@ use std::{
 use sqlx::SqlitePool;
 
 use crate::{
-    activity_store::{load_agent_activities, load_agent_runs, load_agent_work_items},
+    activity_store::{
+        load_agent_activities, load_agent_activity_summaries, load_agent_run_summaries,
+        load_agent_runs, load_agent_work_items,
+    },
     agent_profile::{load_agents, load_owner_profile},
     app::CommandResult,
     channels::{load_channel_members, load_channels, load_thread_activities},
     domain::{reminders::load_reminders, schedules::load_agent_schedules},
     launch_agent,
-    message_store::{load_artifacts, load_messages, load_saved_messages},
+    message_store::{
+        load_artifacts, load_messages, load_recent_messages_per_channel, load_saved_messages,
+    },
     models::Bootstrap,
     owner_inbox::{load_dismissed_inbox_items, load_read_inbox_items},
     runtime::supervisor::load_supervisor_status,
     task_store::load_tasks,
     web,
 };
+
+const WEB_BOOTSTRAP_MESSAGES_PER_CHANNEL: i64 = 80;
 
 fn configured_web_base_url() -> Option<String> {
     if let Ok(value) = env::var("LANTOR_WEB_PUBLIC_URL") {
@@ -39,12 +46,61 @@ fn configured_web_base_url() -> Option<String> {
 }
 
 pub(crate) async fn load_bootstrap(pool: &SqlitePool, db_url: String) -> CommandResult<Bootstrap> {
+    load_bootstrap_with_options(
+        pool,
+        db_url,
+        BootstrapLoadOptions {
+            messages: BootstrapMessageLoad::All,
+            include_run_logs: true,
+            compact_agent_activities: false,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn load_web_bootstrap(
+    pool: &SqlitePool,
+    db_url: String,
+) -> CommandResult<Bootstrap> {
+    load_bootstrap_with_options(
+        pool,
+        db_url,
+        BootstrapLoadOptions {
+            messages: BootstrapMessageLoad::RecentPerChannel(WEB_BOOTSTRAP_MESSAGES_PER_CHANNEL),
+            include_run_logs: false,
+            compact_agent_activities: true,
+        },
+    )
+    .await
+}
+
+struct BootstrapLoadOptions {
+    messages: BootstrapMessageLoad,
+    include_run_logs: bool,
+    compact_agent_activities: bool,
+}
+
+enum BootstrapMessageLoad {
+    All,
+    RecentPerChannel(i64),
+}
+
+async fn load_bootstrap_with_options(
+    pool: &SqlitePool,
+    db_url: String,
+    options: BootstrapLoadOptions,
+) -> CommandResult<Bootstrap> {
     let owner_profile = load_owner_profile(pool).await?;
     let channels = load_channels(pool).await?;
     let thread_activities = load_thread_activities(pool).await?;
     let channel_members = load_channel_members(pool).await?;
     let agents = load_agents(pool).await?;
-    let messages = load_messages(pool).await?;
+    let messages = match options.messages {
+        BootstrapMessageLoad::All => load_messages(pool).await?,
+        BootstrapMessageLoad::RecentPerChannel(limit) => {
+            load_recent_messages_per_channel(pool, limit).await?
+        }
+    };
     let saved_messages = load_saved_messages(pool).await?;
     let dismissed_inbox_items = load_dismissed_inbox_items(pool).await?;
     let read_inbox_items = load_read_inbox_items(pool).await?;
@@ -52,9 +108,17 @@ pub(crate) async fn load_bootstrap(pool: &SqlitePool, db_url: String) -> Command
     let tasks = load_tasks(pool).await?;
     let reminders = load_reminders(pool).await?;
     let agent_schedules = load_agent_schedules(pool).await?;
-    let agent_runs = load_agent_runs(pool).await?;
+    let agent_runs = if options.include_run_logs {
+        load_agent_runs(pool).await?
+    } else {
+        load_agent_run_summaries(pool).await?
+    };
     let agent_work_items = load_agent_work_items(pool).await?;
-    let agent_activities = load_agent_activities(pool).await?;
+    let agent_activities = if options.compact_agent_activities {
+        load_agent_activity_summaries(pool).await?
+    } else {
+        load_agent_activities(pool).await?
+    };
     let supervisor = load_supervisor_status(pool).await?;
     let launch_agent = launch_agent::load_launch_agent_status()?;
 

@@ -17,32 +17,120 @@ use crate::{
 };
 
 pub(crate) async fn load_messages(pool: &SqlitePool) -> CommandResult<Vec<Message>> {
-    let rows = sqlx::query(
-        r#"
-        select
-            m.id,
-            m.channel_id,
-            m.thread_root_id,
-            m.sender_agent_id,
-            m.sender_name,
-            m.sender_role,
-            m.body,
-            m.is_task,
-            m.thread_followed,
-            m.delivery_state,
-            m.stream_key,
-            t.number as task_number,
-            t.status as task_status,
-            m.created_at,
-            m.updated_at
-        from messages m
-        left join tasks t on t.message_id = m.id
-        order by julianday(m.created_at) asc, m.created_at asc
-        "#,
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(to_string)?;
+    load_messages_with_scope(pool, MessageLoadScope::All).await
+}
+
+pub(crate) async fn load_recent_messages_per_channel(
+    pool: &SqlitePool,
+    per_channel_limit: i64,
+) -> CommandResult<Vec<Message>> {
+    load_messages_with_scope(pool, MessageLoadScope::RecentPerChannel(per_channel_limit)).await
+}
+
+enum MessageLoadScope {
+    All,
+    RecentPerChannel(i64),
+}
+
+async fn load_messages_with_scope(
+    pool: &SqlitePool,
+    scope: MessageLoadScope,
+) -> CommandResult<Vec<Message>> {
+    let (sql, limit) = match scope {
+        MessageLoadScope::All => (
+            r#"
+            select
+                m.id,
+                m.channel_id,
+                m.thread_root_id,
+                m.sender_agent_id,
+                m.sender_name,
+                m.sender_role,
+                m.body,
+                m.is_task,
+                m.thread_followed,
+                m.delivery_state,
+                m.stream_key,
+                t.number as task_number,
+                t.status as task_status,
+                m.created_at,
+                m.updated_at
+            from messages m
+            left join tasks t on t.message_id = m.id
+            order by julianday(m.created_at) asc, m.created_at asc
+            "#,
+            None,
+        ),
+        MessageLoadScope::RecentPerChannel(limit) => (
+            r#"
+            with ranked_messages as (
+                select
+                    id,
+                    thread_root_id,
+                    row_number() over (
+                        partition by channel_id
+                        order by julianday(created_at) desc, created_at desc
+                    ) as message_rank
+                from messages
+            ),
+            recent_work_items as (
+                select source_message_id, thread_root_id
+                from agent_work_items
+                order by julianday(created_at) desc, created_at desc
+                limit 80
+            ),
+            base_selected_message_ids as (
+                select id
+                from ranked_messages
+                where message_rank <= $1
+                union
+                select message_id from saved_messages
+                union
+                select message_id from tasks
+                union
+                select source_message_id from recent_work_items where source_message_id is not null
+                union
+                select thread_root_id from recent_work_items where thread_root_id is not null
+            ),
+            selected_message_ids as (
+                select id
+                from base_selected_message_ids
+                where id is not null
+                union
+                select m.thread_root_id
+                from messages m
+                join base_selected_message_ids selected on selected.id = m.id
+                where m.thread_root_id is not null
+            )
+            select
+                m.id,
+                m.channel_id,
+                m.thread_root_id,
+                m.sender_agent_id,
+                m.sender_name,
+                m.sender_role,
+                m.body,
+                m.is_task,
+                m.thread_followed,
+                m.delivery_state,
+                m.stream_key,
+                t.number as task_number,
+                t.status as task_status,
+                m.created_at,
+                m.updated_at
+            from messages m
+            left join tasks t on t.message_id = m.id
+            where m.id in (select id from selected_message_ids)
+            order by julianday(m.created_at) asc, m.created_at asc
+            "#,
+            Some(limit),
+        ),
+    };
+    let mut query = sqlx::query(sql);
+    if let Some(limit) = limit {
+        query = query.bind(limit);
+    }
+    let rows = query.fetch_all(pool).await.map_err(to_string)?;
 
     let mut messages: Vec<Message> = rows
         .into_iter()
@@ -813,4 +901,67 @@ async fn attach_message_artifacts(
         message.artifacts = artifacts_by_message.remove(&message.id).unwrap_or_default();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{drop_test_schema, insert_test_channel, test_pool};
+
+    use super::{load_messages, load_recent_messages_per_channel};
+
+    #[tokio::test]
+    async fn recent_messages_per_channel_keeps_limited_replies_and_their_roots() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "recent-messages").await?;
+            let root_id: uuid::Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (
+                    channel_id, sender_name, sender_role, body, is_task, created_at
+                )
+                values ($1, 'Dylan', 'owner', 'old root', false, '2026-01-01T00:00:00.000+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            for index in 1..=3 {
+                sqlx::query(
+                    r#"
+                    insert into messages (
+                        channel_id, thread_root_id, sender_name, sender_role, body, is_task, created_at
+                    )
+                    values (
+                        $1, $2, 'agent', 'agent', $3, false,
+                        printf('2026-01-01T00:00:0%d.000+00:00', $4)
+                    )
+                    "#,
+                )
+                .bind(channel_id)
+                .bind(root_id)
+                .bind(format!("reply {index}"))
+                .bind(index)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            }
+
+            let full = load_messages(&pool).await?;
+            assert_eq!(full.len(), 4);
+
+            let recent = load_recent_messages_per_channel(&pool, 2).await?;
+            let bodies: Vec<&str> = recent.iter().map(|message| message.body.as_str()).collect();
+            assert_eq!(bodies, vec!["old root", "reply 2", "reply 3"]);
+            assert!(recent.iter().any(|message| message.id == root_id));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        result.unwrap();
+    }
 }

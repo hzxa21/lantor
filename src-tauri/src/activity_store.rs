@@ -5,8 +5,23 @@ use uuid::Uuid;
 use crate::app::{to_string, CommandResult};
 use crate::models::{AgentActivity, AgentRun, AgentWorkItem};
 
+const DEFAULT_AGENT_ACTIVITY_LIMIT_PER_AGENT: i64 = 80;
+const WEB_AGENT_ACTIVITY_LIMIT_PER_AGENT: i64 = 20;
+
 pub(crate) async fn load_agent_runs(pool: &SqlitePool) -> CommandResult<Vec<AgentRun>> {
-    let rows = sqlx::query(
+    load_agent_runs_with_log_mode(pool, true).await
+}
+
+pub(crate) async fn load_agent_run_summaries(pool: &SqlitePool) -> CommandResult<Vec<AgentRun>> {
+    load_agent_runs_with_log_mode(pool, false).await
+}
+
+async fn load_agent_runs_with_log_mode(
+    pool: &SqlitePool,
+    include_log: bool,
+) -> CommandResult<Vec<AgentRun>> {
+    let log_select = if include_log { "r.log" } else { "'' as log" };
+    let sql = format!(
         r#"
         select
             r.id,
@@ -18,7 +33,7 @@ pub(crate) async fn load_agent_runs(pool: &SqlitePool) -> CommandResult<Vec<Agen
             r.status,
             r.pid,
             r.exit_code,
-            r.log,
+            {log_select},
             r.input_tokens,
             r.output_tokens,
             r.cost_micros,
@@ -29,10 +44,8 @@ pub(crate) async fn load_agent_runs(pool: &SqlitePool) -> CommandResult<Vec<Agen
         order by r.started_at desc
         limit 30
         "#,
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(to_string)?;
+    );
+    let rows = sqlx::query(&sql).fetch_all(pool).await.map_err(to_string)?;
 
     Ok(rows
         .into_iter()
@@ -116,6 +129,19 @@ pub(crate) async fn load_agent_work_items(pool: &SqlitePool) -> CommandResult<Ve
 }
 
 pub(crate) async fn load_agent_activities(pool: &SqlitePool) -> CommandResult<Vec<AgentActivity>> {
+    load_agent_activities_with_limit(pool, DEFAULT_AGENT_ACTIVITY_LIMIT_PER_AGENT).await
+}
+
+pub(crate) async fn load_agent_activity_summaries(
+    pool: &SqlitePool,
+) -> CommandResult<Vec<AgentActivity>> {
+    load_agent_activities_with_limit(pool, WEB_AGENT_ACTIVITY_LIMIT_PER_AGENT).await
+}
+
+async fn load_agent_activities_with_limit(
+    pool: &SqlitePool,
+    limit_per_agent: i64,
+) -> CommandResult<Vec<AgentActivity>> {
     let rows = sqlx::query(
         r#"
         select
@@ -140,10 +166,11 @@ pub(crate) async fn load_agent_activities(pool: &SqlitePool) -> CommandResult<Ve
                 ) as activity_rank
             from agent_activities
         ) ranked
-        where activity_rank <= 80
+        where activity_rank <= $1
         order by julianday(created_at) desc, created_at desc
         "#,
     )
+    .bind(limit_per_agent)
     .fetch_all(pool)
     .await
     .map_err(to_string)?;

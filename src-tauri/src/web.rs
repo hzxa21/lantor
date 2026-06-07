@@ -25,14 +25,17 @@ use tokio::{
     net::TcpListener,
     time::{sleep, Duration},
 };
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::{
+    compression::CompressionLayer,
+    services::{ServeDir, ServeFile},
+};
 use uuid::Uuid;
 
 use crate::agent_profile::{
     create_agent_in_pool, delete_agent_in_pool, update_agent_in_pool, update_owner_profile_in_pool,
 };
 use crate::agent_workspace::{agent_workspace_list_in_pool, agent_workspace_read_file_in_pool};
-use crate::bootstrap::load_bootstrap;
+use crate::bootstrap::load_web_bootstrap;
 use crate::channels::{
     add_agent_to_channel, create_channel_in_pool, delete_channel_in_pool,
     open_dm_with_agent_in_pool, set_channel_agent_membership_in_pool, update_channel_in_pool,
@@ -288,7 +291,10 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
     let index = dist_dir.join("index.html");
     let app = Router::new()
         .route("/api/health", get(api_health))
-        .route("/api/bootstrap", get(api_bootstrap))
+        .route(
+            "/api/bootstrap",
+            get(api_bootstrap).layer(CompressionLayer::new()),
+        )
         .route("/api/check_runtime", post(api_check_runtime))
         .route("/api/events", get(api_events))
         .route("/api/attachments/{attachment_id}", get(api_attachment))
@@ -391,7 +397,7 @@ async fn api_health() -> impl IntoResponse {
 }
 
 async fn api_bootstrap(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, Response> {
-    load_bootstrap(&state.pool, state.db_url.clone())
+    load_web_bootstrap(&state.pool, state.db_url.clone())
         .await
         .map(Json)
         .map_err(api_error)
