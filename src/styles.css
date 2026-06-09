@@ -5472,12 +5472,20 @@ body.resizing-row * {
 .thread-scroll-shell {
   position: relative;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }
 
+.thread-progress-layer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+}
+
 .thread-scroll {
+  grid-area: 1 / 1;
   height: 100%;
   min-height: 0;
   overflow: auto;

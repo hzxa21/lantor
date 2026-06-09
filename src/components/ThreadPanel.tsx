@@ -231,7 +231,12 @@ export function ThreadPanel({
     const element = threadScrollRef.current;
     if (!element) return;
     userThreadScrollUntilRef.current = 0;
-    element.scrollTo({ top: element.scrollHeight, behavior });
+    const bottomAnchor = threadBottomAnchorRef.current;
+    if (bottomAnchor) {
+      bottomAnchor.scrollIntoView({ block: "end", inline: "nearest", behavior });
+    } else {
+      element.scrollTo({ top: element.scrollHeight, behavior });
+    }
     if (behavior === "auto") {
       shouldFollowThreadRef.current = true;
       rememberThreadScrollMetrics(element);
