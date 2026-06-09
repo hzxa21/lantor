@@ -466,6 +466,10 @@ export function Conversation({
     return Boolean(window.getSelection()?.toString().trim());
   }
 
+  function isPrimaryUnmodifiedClick(event: ReactMouseEvent<HTMLElement>) {
+    return event.button === 0 && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+  }
+
   function shouldOpenThreadFromMessageClick() {
     return window.matchMedia("(max-width: 760px)").matches;
   }
@@ -899,6 +903,7 @@ export function Conversation({
                   className={`message-card ${isCompact ? "compact" : ""} ${message.id === activeRoot?.id ? "focused" : ""} ${isSaved ? "saved" : ""}`}
                   data-jump-focused={focusedMessageId === message.id ? "true" : "false"}
                   onClick={(event) => {
+                    if (!isPrimaryUnmodifiedClick(event)) return;
                     if (isInteractiveMessageClick(event)) return;
                     if (hasSelectedText()) return;
                     if (shouldOpenThreadFromMessageClick()) setActiveThreadId(message.id);
@@ -906,6 +911,7 @@ export function Conversation({
                   onContextMenu={(event) => {
                     if (shouldUseNativeMessageSelection()) return;
                     event.preventDefault();
+                    event.stopPropagation();
                     setMessageMenu({ x: event.clientX, y: event.clientY, message });
                   }}
                 >
@@ -973,6 +979,7 @@ export function Conversation({
                         onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.stopPropagation();
+                          if (!isPrimaryUnmodifiedClick(event)) return;
                           setActiveThreadId(message.id);
                         }}
                       >
@@ -1040,6 +1047,7 @@ export function Conversation({
                         }}
                         onClick={(event) => {
                           event.stopPropagation();
+                          if (!isPrimaryUnmodifiedClick(event)) return;
                           setActiveThreadId(message.id);
                         }}
                       >

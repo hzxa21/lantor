@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, Crosshair, Hash, MessageSquare, Paperclip, RotateCcw, Send, X } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { useMobileViewport } from "../hooks/useMobileViewport";
@@ -387,6 +387,10 @@ export function ThreadPanel({
     return Boolean(window.getSelection()?.toString().trim());
   }
 
+  function isPrimaryUnmodifiedClick(event: ReactMouseEvent<HTMLElement>) {
+    return event.button === 0 && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+  }
+
   function shouldUseNativeMessageSelection() {
     return window.matchMedia("(hover: none)").matches;
   }
@@ -518,7 +522,8 @@ export function ThreadPanel({
                   }}
                   className={`thread-root ${activeRoot.sender_role === "system" ? "system-message" : ""} ${tapFocusedMessageId === activeRoot.id ? "tap-focused" : ""} ${rootSaved ? "saved" : ""}`}
                   data-jump-focused={focusedMessageId === activeRoot.id ? "true" : "false"}
-                  onClick={() => {
+                  onClick={(event) => {
+                    if (!isPrimaryUnmodifiedClick(event)) return;
                     if (hasSelectedText()) return;
                     if (activeRoot.sender_role !== "system") setTapFocusedMessageId(activeRoot.id);
                   }}
@@ -526,6 +531,7 @@ export function ThreadPanel({
                     if (activeRoot.sender_role === "system") return;
                     if (shouldUseNativeMessageSelection()) return;
                     event.preventDefault();
+                    event.stopPropagation();
                     setMessageMenu({ x: event.clientX, y: event.clientY, message: activeRoot });
                   }}
                 >
@@ -791,13 +797,15 @@ export function ThreadPanel({
                     }}
                     className={`${isCompact ? "compact" : ""} ${replySaved ? "saved" : ""} ${tapFocusedMessageId === reply.id ? "tap-focused" : ""}`}
                     data-jump-focused={focusedMessageId === reply.id ? "true" : "false"}
-                    onClick={() => {
+                    onClick={(event) => {
+                      if (!isPrimaryUnmodifiedClick(event)) return;
                       if (hasSelectedText()) return;
                       setTapFocusedMessageId(reply.id);
                     }}
                     onContextMenu={(event) => {
                       if (shouldUseNativeMessageSelection()) return;
                       event.preventDefault();
+                      event.stopPropagation();
                       setMessageMenu({ x: event.clientX, y: event.clientY, message: reply });
                     }}
                   >

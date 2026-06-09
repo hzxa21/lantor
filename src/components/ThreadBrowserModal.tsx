@@ -1,5 +1,5 @@
 import { Check, MessageSquare, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, type MouseEvent as ReactMouseEvent } from "react";
 import { Channel, Message } from "../types";
 import { firstLines, formatTime } from "../ui-utils";
 
@@ -20,6 +20,10 @@ function channelLabel(channels: Channel[], channelId: string) {
   if (!channel) return "Unknown";
   if (channel.kind === "dm") return "Direct message";
   return `#${channel.name}`;
+}
+
+function isPrimaryUnmodifiedClick(event: ReactMouseEvent<HTMLElement>) {
+  return event.button === 0 && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
 }
 
 export function ThreadBrowserModal({
@@ -74,7 +78,11 @@ export function ThreadBrowserModal({
               <article
                 key={thread.id}
                 className={`thread-browser-row ${thread.id === activeThreadId ? "selected" : ""} ${unread ? "has-unread" : ""}`}
-                onClick={() => onOpenThread(thread)}
+                onClick={(event) => {
+                  if (!isPrimaryUnmodifiedClick(event)) return;
+                  onOpenThread(thread);
+                }}
+                onContextMenu={(event) => event.stopPropagation()}
               >
                 <div className="thread-browser-content">
                   <div className="meta">

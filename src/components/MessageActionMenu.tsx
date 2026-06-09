@@ -49,7 +49,9 @@ export function MessageActionMenu({
         left: Math.max(12, Math.min(x, window.innerWidth - 248)),
         top: Math.max(12, Math.min(y, window.innerHeight - 230)),
       }}
+      onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.stopPropagation()}
       role="menu"
     >
       <button type="button" onClick={onCopyLink}>
