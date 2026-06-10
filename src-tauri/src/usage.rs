@@ -75,10 +75,12 @@ fn model_cost_micros(runtime: &str, model: &str, input_tokens: i64, output_token
     let model = model.to_lowercase();
     let runtime = runtime.to_lowercase();
     let (input_per_million, output_per_million) = if runtime == "claude" {
-        if model.contains("opus") {
-            (15_000_000_i64, 75_000_000_i64)
+        if model.contains("fable") || model.contains("mythos") {
+            (10_000_000_i64, 50_000_000_i64)
+        } else if model.contains("opus") {
+            (5_000_000_i64, 25_000_000_i64)
         } else if model.contains("haiku") {
-            (250_000_i64, 1_250_000_i64)
+            (1_000_000_i64, 5_000_000_i64)
         } else {
             (3_000_000_i64, 15_000_000_i64)
         }
@@ -213,5 +215,38 @@ pub(crate) async fn agent_budget_exhausted(
         )))
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_fable_usage_uses_current_public_rate() {
+        assert_eq!(
+            model_cost_micros("claude", "fable", 1_000_000, 1_000_000),
+            60_000_000
+        );
+        assert_eq!(
+            model_cost_micros("claude", "claude-fable-5", 1_000_000, 1_000_000),
+            60_000_000
+        );
+    }
+
+    #[test]
+    fn claude_code_aliases_use_current_public_rates() {
+        assert_eq!(
+            model_cost_micros("claude", "opus", 1_000_000, 1_000_000),
+            30_000_000
+        );
+        assert_eq!(
+            model_cost_micros("claude", "sonnet", 1_000_000, 1_000_000),
+            18_000_000
+        );
+        assert_eq!(
+            model_cost_micros("claude", "haiku", 1_000_000, 1_000_000),
+            6_000_000
+        );
     }
 }

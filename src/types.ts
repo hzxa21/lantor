@@ -382,11 +382,12 @@ export const RUNTIME_PRESETS: Record<string, { label: string; defaultModel: stri
     label: "Claude",
     defaultModel: "sonnet",
     commandName: "claude",
-    models: ["sonnet", "opus", "haiku"],
+    models: ["fable", "sonnet", "opus", "haiku"],
   },
 };
 
 const MODEL_LABELS: Record<string, string> = {
+  fable: "Claude Fable 5",
   "gpt-5.5": "GPT-5.5",
   "gpt-5.4": "GPT-5.4",
   "gpt-5.4-mini": "GPT-5.4 Mini",
