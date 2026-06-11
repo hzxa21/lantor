@@ -1,6 +1,8 @@
 import {
+  ArrowDownAZ,
   ChevronDown,
   Circle,
+  Clock3,
   Hash,
   Inbox,
   Bookmark,
@@ -9,7 +11,7 @@ import {
   Settings,
   UserRound,
 } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Agent,
   Bootstrap,
@@ -21,9 +23,13 @@ import { AgentAvatar } from "./AgentAvatar";
 import { UnreadBadge } from "./UnreadBadge";
 
 const SIDEBAR_CHANNELS_HEIGHT_STORAGE_KEY = "lantor.sidebarChannelsHeight";
+const SIDEBAR_CHANNEL_SORT_STORAGE_KEY = "lantor.sidebarChannelSort";
 const DEFAULT_SIDEBAR_CHANNELS_HEIGHT = 260;
 const MIN_SIDEBAR_SECTION_HEIGHT = 104;
 const SIDEBAR_SECTION_HANDLE_SPACE = 14;
+const CHANNEL_NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+type ChannelSortMode = "name" | "recent";
 
 type SidebarProps = {
   data: Bootstrap;
@@ -52,12 +58,27 @@ function loadSidebarChannelsHeight() {
     : DEFAULT_SIDEBAR_CHANNELS_HEIGHT;
 }
 
+function loadSidebarChannelSortMode(): ChannelSortMode {
+  return window.localStorage.getItem(SIDEBAR_CHANNEL_SORT_STORAGE_KEY) === "recent" ? "recent" : "name";
+}
+
 function clampSidebarChannelsHeight(height: number, containerHeight: number) {
   const maxHeight = Math.max(
     MIN_SIDEBAR_SECTION_HEIGHT,
     containerHeight - MIN_SIDEBAR_SECTION_HEIGHT - SIDEBAR_SECTION_HANDLE_SPACE,
   );
   return Math.min(maxHeight, Math.max(MIN_SIDEBAR_SECTION_HEIGHT, height));
+}
+
+function timestampValue(value: string | null | undefined) {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function compareChannelsByName(left: Channel, right: Channel) {
+  return CHANNEL_NAME_COLLATOR.compare(left.name, right.name)
+    || CHANNEL_NAME_COLLATOR.compare(left.id, right.id);
 }
 
 export function Sidebar({
@@ -80,10 +101,31 @@ export function Sidebar({
 }: SidebarProps) {
   const [collapsedSections, setCollapsedSections] = useState({ channels: false, dms: false });
   const [channelSectionHeight, setChannelSectionHeight] = useState(() => loadSidebarChannelsHeight());
+  const [channelSortMode, setChannelSortMode] = useState<ChannelSortMode>(() => loadSidebarChannelSortMode());
   const sidebarSectionsRef = useRef<HTMLDivElement | null>(null);
   const channelBlockRef = useRef<HTMLElement | null>(null);
   const dmListRef = useRef<HTMLElement | null>(null);
-  const normalChannels = data.channels.filter((item) => item.kind !== "dm");
+  const normalChannels = useMemo(() => {
+    const latestActivityByChannel = new Map<string, number>();
+    for (const message of data.messages) {
+      const current = latestActivityByChannel.get(message.channel_id) ?? 0;
+      latestActivityByChannel.set(message.channel_id, Math.max(current, timestampValue(message.created_at)));
+    }
+    for (const activity of data.thread_activities) {
+      const current = latestActivityByChannel.get(activity.channel_id) ?? 0;
+      latestActivityByChannel.set(activity.channel_id, Math.max(current, timestampValue(activity.latest_activity_at)));
+    }
+
+    return data.channels
+      .filter((item) => item.kind !== "dm")
+      .sort((left, right) => {
+        if (channelSortMode === "recent") {
+          const latestDelta = (latestActivityByChannel.get(right.id) ?? 0) - (latestActivityByChannel.get(left.id) ?? 0);
+          if (latestDelta !== 0) return latestDelta;
+        }
+        return compareChannelsByName(left, right);
+      });
+  }, [channelSortMode, data.channels, data.messages, data.thread_activities]);
   const dmChannels = data.channels.filter((item) => item.kind === "dm");
   const showDmConversations = mobileFocus === "dms" && window.matchMedia("(max-width: 760px)").matches;
   const dmRows = showDmConversations
@@ -145,6 +187,10 @@ export function Sidebar({
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_CHANNELS_HEIGHT_STORAGE_KEY, String(Math.round(channelSectionHeight)));
   }, [channelSectionHeight]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SIDEBAR_CHANNEL_SORT_STORAGE_KEY, channelSortMode);
+  }, [channelSortMode]);
 
   useEffect(() => {
     if (mobileFocus !== "dms") return;
@@ -210,7 +256,29 @@ export function Sidebar({
               </button>
               <span>Channels</span>
             </div>
-            <div className="section-actions">
+            <div className="section-actions channel-section-actions">
+              <div className="channel-sort-control" role="group" aria-label="Sort channels">
+                <button
+                  type="button"
+                  className={channelSortMode === "name" ? "active" : ""}
+                  title="Sort channels by name"
+                  aria-label="Sort channels by name"
+                  aria-pressed={channelSortMode === "name"}
+                  onClick={() => setChannelSortMode("name")}
+                >
+                  <ArrowDownAZ size={15} />
+                </button>
+                <button
+                  type="button"
+                  className={channelSortMode === "recent" ? "active" : ""}
+                  title="Sort channels by recent messages"
+                  aria-label="Sort channels by recent messages"
+                  aria-pressed={channelSortMode === "recent"}
+                  onClick={() => setChannelSortMode("recent")}
+                >
+                  <Clock3 size={15} />
+                </button>
+              </div>
               <button onClick={openCreateChannelModal} title="Create channel"><Plus size={18} /></button>
             </div>
           </div>

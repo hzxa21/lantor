@@ -912,6 +912,46 @@ button,
   align-items: center;
 }
 
+.section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.channel-section-actions {
+  flex: 0 0 auto;
+}
+
+.channel-sort-control {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 26px);
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--control-border);
+  border-radius: 10px;
+  background: var(--bg-control-flat);
+}
+
+.section-title .channel-sort-control button {
+  width: 26px;
+  height: 26px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.section-title .channel-sort-control button:hover,
+.section-title .channel-sort-control button:focus-visible {
+  background: var(--bg-hover);
+  color: var(--ink);
+  outline: none;
+}
+
+.section-title .channel-sort-control button.active {
+  background: var(--state-selected-emphasis);
+  color: var(--ink-control);
+}
+
 .section-title button {
   display: grid;
   width: 30px;
@@ -5626,11 +5666,6 @@ body.resizing-row * {
 
 .app.thread-hidden {
   grid-template-columns: minmax(0, var(--sidebar-width)) minmax(0, 1fr);
-}
-
-.section-actions {
-  display: inline-flex;
-  gap: 6px;
 }
 
 .modal-backdrop {
