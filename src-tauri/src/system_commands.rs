@@ -9,6 +9,33 @@ use crate::{
     models::RuntimeCheck,
 };
 
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn percent_decode_utf8(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = *bytes.get(index + 1)?;
+            let low = *bytes.get(index + 2)?;
+            decoded.push(hex_value(high)? << 4 | hex_value(low)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
 fn normalize_external_url(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once(':')?;
     let scheme = scheme.to_ascii_lowercase();
@@ -42,7 +69,10 @@ fn strip_local_path_line_suffix(value: &str) -> &str {
     value
 }
 
-fn normalize_local_path_link(url: &str) -> Option<String> {
+fn normalize_local_path_candidate(url: &str) -> Option<String> {
+    if url.chars().any(char::is_control) {
+        return None;
+    }
     let expanded = expand_home_path(url);
     let without_line_suffix = strip_local_path_line_suffix(&expanded);
     let path = Path::new(without_line_suffix);
@@ -50,6 +80,12 @@ fn normalize_local_path_link(url: &str) -> Option<String> {
         return Some(path.to_string_lossy().to_string());
     }
     None
+}
+
+fn normalize_local_path_link(url: &str) -> Option<String> {
+    normalize_local_path_candidate(url).or_else(|| {
+        percent_decode_utf8(url).and_then(|decoded| normalize_local_path_candidate(&decoded))
+    })
 }
 
 fn normalize_open_link_target(url: &str) -> Option<String> {
@@ -190,6 +226,25 @@ mod tests {
             Some(file.clone())
         );
         assert!(normalize_open_link_target("/definitely/not/a/lantor/file.rs:1").is_none());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn open_link_target_normalization_allows_percent_encoded_local_paths_with_spaces() {
+        let dir = std::env::temp_dir().join(format!("lantor-link test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let file = file.to_string_lossy().to_string();
+        let encoded = file.replace(' ', "%20");
+
+        assert_eq!(normalize_open_link_target(&encoded), Some(file.clone()));
+        assert_eq!(
+            normalize_open_link_target(&format!("{encoded}:42")),
+            Some(file)
+        );
+        assert!(normalize_open_link_target("/tmp/lantor%0Ainvalid").is_none());
 
         std::fs::remove_dir_all(dir).unwrap();
     }
