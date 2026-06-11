@@ -479,12 +479,11 @@ pub(crate) fn spawn_ui_events_pruner(pool: SqlitePool) {
 /// number of rows removed. A no-op when the table is already within the window
 /// (the `max(id) - N` cutoff is then below every existing id).
 async fn prune_ui_events(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
-        "delete from ui_events where id <= (select max(id) from ui_events) - $1",
-    )
-    .bind(UI_EVENTS_RETAIN_ROWS)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("delete from ui_events where id <= (select max(id) from ui_events) - $1")
+            .bind(UI_EVENTS_RETAIN_ROWS)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected())
 }
 

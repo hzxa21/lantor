@@ -191,8 +191,7 @@ pub(super) async fn codex_warm_idle_reaper(
             return;
         }
         if stop_reason == "stalled" {
-            let _ =
-                reap_stalled_codex_turn(&pool, &registry, agent_id, &runtime, stalled_ms).await;
+            let _ = reap_stalled_codex_turn(&pool, &registry, agent_id, &runtime, stalled_ms).await;
             return;
         }
 
