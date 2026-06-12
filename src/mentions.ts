@@ -83,6 +83,15 @@ export function filterMentionChannels(channels: Channel[], query: string) {
     .slice(0, 6);
 }
 
+export function mentionableAgentsForChannel(channel: Channel | null, agents: Agent[], channelAgents: Agent[]) {
+  if (!channel) return [];
+  if (channel.kind === "dm") {
+    const dmAgent = channel.dm_agent_id ? agents.find((agent) => agent.id === channel.dm_agent_id) ?? null : null;
+    return dmAgent ? [dmAgent] : channelAgents;
+  }
+  return channelAgents;
+}
+
 export function mentionedAgentsForBody(body: string, agents: Agent[]) {
   return agents.filter((agent) => {
     const pattern = new RegExp(`(^|[^A-Za-z0-9_-])@${escapeRegExp(agent.handle)}(?=$|\\s|[.,;:!?])`);

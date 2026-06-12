@@ -1,10 +1,11 @@
 import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, Crosshair, Hash, MessageSquare, Paperclip, RotateCcw, Send, X } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { useMobileViewport } from "../hooks/useMobileViewport";
 import { APP_DISPLAY_NAME } from "../branding";
 import { isImeComposing } from "../input-utils";
+import { mentionableAgentsForChannel } from "../mentions";
 import { copyText } from "../clipboard";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
 import { DESKTOP_MESSAGE_PREVIEW_CHARS, DESKTOP_MESSAGE_PREVIEW_LINES } from "../message-preview";
@@ -422,6 +423,10 @@ export function ThreadPanel({
     ? agents.find((agent) => agent.id === activeTask.assignee_id) ?? null
     : null;
   const taskAssigneeOptions = channelAgents.length > 0 ? channelAgents : agents;
+  const mentionAgents = useMemo(
+    () => mentionableAgentsForChannel(channel, agents, channelAgents),
+    [agents, channel, channelAgents],
+  );
   const taskWorkItems = activeTask
     ? agentWorkItems
         .filter((item) => item.task_id === activeTask.id)
@@ -945,7 +950,7 @@ export function ThreadPanel({
           activeRoot={activeRoot}
           isDm={isDm}
           dmAgent={dmAgent}
-          agents={agents}
+          mentionAgents={mentionAgents}
           channels={channels}
           replyDraft={replyDraft}
           replyAttachments={replyAttachments}
@@ -964,7 +969,7 @@ type ThreadReplyComposerProps = {
   activeRoot: Message | null;
   isDm: boolean;
   dmAgent: Agent | null;
-  agents: Agent[];
+  mentionAgents: Agent[];
   channels: Channel[];
   replyDraft: string;
   replyAttachments: DraftAttachment[];
@@ -1026,7 +1031,7 @@ function ThreadReplyComposer({
   activeRoot,
   isDm,
   dmAgent,
-  agents,
+  mentionAgents,
   channels,
   replyDraft,
   replyAttachments,
@@ -1050,7 +1055,7 @@ function ThreadReplyComposer({
     handleMentionKeyDown,
     closeMentionPicker,
     focusComposer,
-  } = useMentionPicker({ agents, channels, value: text, setValue: updateText, textareaRef });
+  } = useMentionPicker({ agents: mentionAgents, channels, value: text, setValue: updateText, textareaRef });
   useAutoGrowTextarea(textareaRef, text);
 
   useEffect(() => {

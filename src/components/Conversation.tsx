@@ -19,6 +19,7 @@ import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { useMobileViewport } from "../hooks/useMobileViewport";
 import { isImeComposing } from "../input-utils";
+import { mentionableAgentsForChannel } from "../mentions";
 import { copyText } from "../clipboard";
 import { APP_DISPLAY_NAME } from "../branding";
 import { isCompactFollowupMessage, wasEdited } from "../message-grouping";
@@ -324,6 +325,10 @@ export function Conversation({
   const unassignedTasks = visibleTasks.filter((task) => task.status !== "done" && !task.assignee_id);
   const assignedTasks = visibleTasks.filter((task) => task.assignee_id || task.status === "done");
   const taskAssigneeOptions = channelAgents.length > 0 ? channelAgents : agents;
+  const mentionAgents = useMemo(
+    () => mentionableAgentsForChannel(channel, agents, channelAgents),
+    [agents, channel, channelAgents],
+  );
   const channelAgentPreview = channelAgents.slice(0, 3);
   const surfaceLabel = channel
     ? isDm
@@ -1190,7 +1195,7 @@ export function Conversation({
           channel={channel}
           isDm={isDm}
           dmAgent={dmAgent}
-          agents={agents}
+          mentionAgents={mentionAgents}
           channels={channels}
           draft={draft}
           draftAttachments={draftAttachments}
@@ -1257,7 +1262,7 @@ type ConversationComposerProps = {
   channel: Channel | null;
   isDm: boolean;
   dmAgent: Agent | null;
-  agents: Agent[];
+  mentionAgents: Agent[];
   channels: Channel[];
   draft: string;
   draftAttachments: DraftAttachment[];
@@ -1319,7 +1324,7 @@ function ConversationComposer({
   channel,
   isDm,
   dmAgent,
-  agents,
+  mentionAgents,
   channels,
   draft,
   draftAttachments,
@@ -1345,7 +1350,7 @@ function ConversationComposer({
     handleMentionKeyDown,
     closeMentionPicker,
     focusComposer,
-  } = useMentionPicker({ agents, channels, value: text, setValue: updateText, textareaRef });
+  } = useMentionPicker({ agents: mentionAgents, channels, value: text, setValue: updateText, textareaRef });
   useAutoGrowTextarea(textareaRef, text);
 
   useEffect(() => {
