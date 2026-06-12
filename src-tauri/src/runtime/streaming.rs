@@ -426,39 +426,6 @@ async fn delete_superseded_empty_run_progress_messages(
     Ok(())
 }
 
-pub(crate) async fn delete_intermediate_run_messages(
-    pool: &SqlitePool,
-    agent_id: Uuid,
-    channel_id: Uuid,
-    thread_root_id: Option<Uuid>,
-    run_id: Uuid,
-) -> CommandResult<()> {
-    let superseded_ids: Vec<Uuid> = sqlx::query_scalar(
-        r#"
-        select id
-        from messages
-        where sender_agent_id = $1
-          and channel_id = $2
-          and thread_root_id is not distinct from $3
-          and stream_key like $4
-          and body <> ''
-          and delivery_state in ('streaming', 'complete')
-        "#,
-    )
-    .bind(agent_id)
-    .bind(channel_id)
-    .bind(thread_root_id)
-    .bind(format!("{run_id}:%"))
-    .fetch_all(pool)
-    .await
-    .map_err(to_string)?;
-
-    for message_id in superseded_ids {
-        delete_streaming_agent_message(pool, message_id, "superseded_intermediate_reply").await?;
-    }
-    Ok(())
-}
-
 pub(crate) async fn finish_streaming_agent_message(
     pool: &SqlitePool,
     stream_key: &str,
