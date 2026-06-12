@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activity_store;
+mod agent_environment;
 mod agent_inbox_wake;
 mod agent_memory;
 mod agent_profile;

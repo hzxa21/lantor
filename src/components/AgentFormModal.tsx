@@ -177,6 +177,18 @@ export function AgentFormModal({
       </button>
     </div>
   );
+  const environmentField = (
+    <label>
+      <span>Environment variables</span>
+      <textarea
+        className="agent-env-textarea"
+        value={form.environmentVariables}
+        onChange={(event) => onChange({ ...form, environmentVariables: event.target.value })}
+        placeholder={"HTTP_PROXY=http://127.0.0.1:7897\nNO_PROXY=localhost,127.0.0.1"}
+        spellCheck={false}
+      />
+    </label>
+  );
 
   useEffect(() => {
     if (!open || !shouldAutoFocusTextInput()) return;
@@ -227,6 +239,7 @@ export function AgentFormModal({
                   placeholder="~/Library/Application Support/Lantor/agents/<handle>"
                 />
               </label>
+              {environmentField}
             </details>
           </>
         ) : (
@@ -267,6 +280,7 @@ export function AgentFormModal({
               />
               <small>{APP_DISPLAY_NAME} loads MEMORY.md from this directory as persistent context when the agent runs.</small>
             </label>
+            {environmentField}
           </>
         )}
         <div className="modal-actions">

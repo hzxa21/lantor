@@ -5939,6 +5939,11 @@ body.resizing-row * {
   resize: vertical;
 }
 
+.modal-form .agent-env-textarea {
+  min-height: 104px;
+  font-family: var(--font-mono);
+}
+
 .agent-select-field {
   min-width: 0;
 }

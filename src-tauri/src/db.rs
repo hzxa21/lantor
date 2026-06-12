@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
-    SqlitePool,
+    Row, SqlitePool,
 };
 
 use crate::app::{to_string, CommandResult};
@@ -121,6 +121,29 @@ pub(crate) fn acquire_supervisor_lock(database_url: &str) -> CommandResult<Optio
     }
 }
 
+async fn ensure_text_column(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), sqlx::Error> {
+    let columns = sqlx::query(&format!("pragma table_info('{table}')"))
+        .fetch_all(pool)
+        .await?;
+    if columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == column)
+    {
+        return Ok(());
+    }
+    sqlx::query(&format!(
+        "alter table {table} add column {column} {definition}"
+    ))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     for statement in [
         r#"
@@ -144,6 +167,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             avatar text not null default '',
             description text not null default '',
             launch_command text not null default '',
+            environment_variables text not null default '',
             working_directory text not null default '',
             daily_budget_micros integer not null default 0,
             reasoning_effort text not null default 'medium',
@@ -443,6 +467,14 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
+
+    ensure_text_column(
+        pool,
+        "agents",
+        "environment_variables",
+        "text not null default ''",
+    )
+    .await?;
 
     for statement in [
         "create unique index if not exists channels_dm_unique on channels(dm_agent_id) where kind = 'dm' and dm_agent_id is not null",

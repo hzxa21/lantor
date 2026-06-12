@@ -3018,6 +3018,7 @@ function App() {
       avatar: nextForm.avatar,
       description: nextForm.description,
       launchCommand: nextForm.launchCommand,
+      environmentVariables: nextForm.environmentVariables,
       workingDirectory: nextForm.workingDirectory,
       dailyBudgetMicros: budgetMicrosFromForm(nextForm.dailyBudgetUsd),
     });
@@ -3080,6 +3081,7 @@ function App() {
       serviceTier: agent.service_tier || "",
       description: agent.description,
       launchCommand: agent.launch_command,
+      environmentVariables: agent.environment_variables,
       workingDirectory: agent.working_directory,
       dailyBudgetUsd: budgetUsdFromMicros(agent.daily_budget_micros),
     });
@@ -3112,6 +3114,7 @@ function App() {
       avatar: nextForm.avatar,
       description: nextForm.description,
       launchCommand: nextForm.launchCommand,
+      environmentVariables: nextForm.environmentVariables,
       workingDirectory: nextForm.workingDirectory,
       dailyBudgetMicros: budgetMicrosFromForm(nextForm.dailyBudgetUsd),
     });

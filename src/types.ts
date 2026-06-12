@@ -34,6 +34,7 @@ export type Agent = {
   avatar: string;
   description: string;
   launch_command: string;
+  environment_variables: string;
   working_directory: string;
   workspace_exists: boolean;
   workspace_memory_path: string;
@@ -348,6 +349,7 @@ export type AgentForm = {
   serviceTier: string;
   description: string;
   launchCommand: string;
+  environmentVariables: string;
   workingDirectory: string;
   dailyBudgetUsd: string;
 };
@@ -363,6 +365,7 @@ export const EMPTY_AGENT_FORM: AgentForm = {
   serviceTier: "",
   description: "",
   launchCommand: "",
+  environmentVariables: "",
   workingDirectory: "",
   dailyBudgetUsd: "",
 };

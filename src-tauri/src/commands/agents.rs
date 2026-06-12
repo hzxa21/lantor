@@ -32,6 +32,7 @@ pub(crate) async fn create_agent(
     avatar: Option<String>,
     description: Option<String>,
     launch_command: String,
+    environment_variables: Option<String>,
     working_directory: String,
     daily_budget_micros: Option<i64>,
     state: State<'_, AppState>,
@@ -48,6 +49,7 @@ pub(crate) async fn create_agent(
         avatar,
         description,
         launch_command,
+        environment_variables,
         working_directory,
         daily_budget_micros,
     )
@@ -69,6 +71,7 @@ pub(crate) async fn update_agent(
     avatar: Option<String>,
     description: String,
     launch_command: String,
+    environment_variables: Option<String>,
     working_directory: String,
     daily_budget_micros: Option<i64>,
     state: State<'_, AppState>,
@@ -86,6 +89,7 @@ pub(crate) async fn update_agent(
         avatar,
         description,
         launch_command,
+        environment_variables,
         working_directory,
         daily_budget_micros,
     )

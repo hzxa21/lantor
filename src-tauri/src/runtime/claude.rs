@@ -9,6 +9,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::agent_environment::apply_agent_environment_variables;
 use crate::agent_memory::append_run_log;
 use crate::app::{to_string, CommandResult};
 use crate::events::activity::{record_agent_activity, record_agent_activity_throttled};
@@ -16,7 +17,7 @@ use crate::prompts::{build_claude_streaming_prompt, claude_system_prompt};
 use crate::runtime::{
     process::{
         classify_agent_output_activity, configure_agent_context_tool_env,
-        configure_agent_identity_env, upsert_runtime_thread_id,
+        configure_agent_identity_env, terminate_process_group, upsert_runtime_thread_id,
     },
     streaming::{
         append_streaming_agent_message, ensure_streaming_agent_message, streaming_message_exists,
@@ -49,6 +50,7 @@ struct WarmClaudeRuntime {
     stdin: AsyncMutex<tokio::process::ChildStdin>,
     state: AsyncMutex<WarmClaudeState>,
     pid: Option<i32>,
+    environment_variables: String,
 }
 
 struct WarmClaudeState {
@@ -83,16 +85,29 @@ async fn get_or_spawn_warm_claude_runtime(
     model: &str,
     reasoning_effort: &str,
     working_directory: &str,
+    environment_variables: &str,
     memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmClaudeRuntime>> {
     if let Some(runtime) = {
         let runtimes = registry.runtimes.lock().await;
         runtimes.get(&agent_id).cloned()
     } {
-        if runtime.state.lock().await.alive {
+        let mut state = runtime.state.lock().await;
+        let environment_changed = runtime.environment_variables != environment_variables;
+        if state.alive && environment_changed && state.active.is_none() {
+            state.alive = false;
+            drop(state);
+            if let Some(pid) = runtime.pid {
+                let _ = terminate_process_group(pid).await;
+            }
+            remove_warm_claude_runtime_if_same(registry, agent_id, &runtime).await;
+        } else if state.alive {
+            drop(state);
             return Ok(runtime);
+        } else {
+            drop(state);
+            registry.runtimes.lock().await.remove(&agent_id);
         }
-        registry.runtimes.lock().await.remove(&agent_id);
     }
 
     let runtime = spawn_warm_claude_runtime(
@@ -103,6 +118,7 @@ async fn get_or_spawn_warm_claude_runtime(
         model,
         reasoning_effort,
         working_directory,
+        environment_variables,
         memory_context,
     )
     .await?;
@@ -122,6 +138,7 @@ async fn spawn_warm_claude_runtime(
     model: &str,
     reasoning_effort: &str,
     working_directory: &str,
+    environment_variables: &str,
     memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmClaudeRuntime>> {
     let model = if model.trim().is_empty() {
@@ -140,6 +157,7 @@ async fn spawn_warm_claude_runtime(
     if !effort.is_empty() {
         command.arg("--effort").arg(effort);
     }
+    apply_agent_environment_variables(&mut command, environment_variables)?;
     command
         .arg("--output-format")
         .arg("stream-json")
@@ -202,6 +220,7 @@ async fn spawn_warm_claude_runtime(
             last_activity: Instant::now(),
         }),
         pid,
+        environment_variables: environment_variables.to_owned(),
     });
 
     upsert_runtime_thread_id(
@@ -265,6 +284,7 @@ pub(crate) async fn supervisor_start_claude_streaming_agent(
     model: String,
     reasoning_effort: String,
     working_directory: String,
+    environment_variables: String,
     work_item_prompt: String,
     memory_context: Option<String>,
 ) -> CommandResult<()> {
@@ -284,6 +304,7 @@ pub(crate) async fn supervisor_start_claude_streaming_agent(
         &model,
         &effort,
         &working_directory,
+        &environment_variables,
         memory_context.as_deref(),
     )
     .await

@@ -8,6 +8,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::agent_environment::apply_agent_environment_variables;
 use crate::agent_memory::append_run_log;
 use crate::events::activity::{
     record_agent_activity, record_agent_activity_throttled, work_status_title,
@@ -32,6 +33,7 @@ pub(crate) struct ProcessAgentLaunch {
     pub(crate) handle: String,
     pub(crate) working_directory: String,
     pub(crate) command_text: String,
+    pub(crate) environment_variables: String,
     pub(crate) work_item_prompt: String,
 }
 
@@ -540,6 +542,7 @@ pub(crate) async fn start_process_agent(
         handle,
         working_directory,
         command_text,
+        environment_variables,
         work_item_prompt,
     } = launch;
     let initial_log = if work_item_prompt.is_empty() {
@@ -602,6 +605,7 @@ pub(crate) async fn start_process_agent(
 
     let mut command = Command::new("/bin/zsh");
     command.arg("-lc").arg(&command_text);
+    apply_agent_environment_variables(&mut command, &environment_variables)?;
     configure_agent_identity_env(&mut command, agent_id, &handle);
     configure_agent_context_tool_env(&mut command);
     let run_id_value = run_id.to_string();

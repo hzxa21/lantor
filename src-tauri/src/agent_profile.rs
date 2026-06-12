@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::ui_notifications::notify_ui_refresh;
 use crate::{
+    agent_environment::normalize_agent_environment_variables,
     agent_workspace::load_agent_workspace_summary,
     app::{to_string, CommandResult},
     db::expand_home_path,
@@ -105,6 +106,7 @@ pub(crate) async fn create_agent_in_pool(
     avatar: Option<String>,
     description: Option<String>,
     launch_command: String,
+    environment_variables: Option<String>,
     working_directory: String,
     daily_budget_micros: Option<i64>,
 ) -> CommandResult<Uuid> {
@@ -146,14 +148,17 @@ pub(crate) async fn create_agent_in_pool(
     let model = model.trim();
     let reasoning_effort = normalize_reasoning_effort(runtime, reasoning_effort.as_deref())?;
     let service_tier = normalize_service_tier(runtime, service_tier.as_deref())?;
+    let environment_variables =
+        normalize_agent_environment_variables(environment_variables.as_deref())?;
 
     let agent_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agents (
             handle, display_name, role, status, runtime, model, avatar, description,
-            launch_command, working_directory, daily_budget_micros, reasoning_effort, service_tier
+            launch_command, environment_variables, working_directory, daily_budget_micros,
+            reasoning_effort, service_tier
         )
-        values ($1, $2, $3, 'idle', $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        values ($1, $2, $3, 'idle', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         on conflict (handle) do update set
             display_name = excluded.display_name,
             role = excluded.role,
@@ -162,6 +167,7 @@ pub(crate) async fn create_agent_in_pool(
             avatar = excluded.avatar,
             description = excluded.description,
             launch_command = excluded.launch_command,
+            environment_variables = excluded.environment_variables,
             working_directory = excluded.working_directory,
             daily_budget_micros = excluded.daily_budget_micros,
             reasoning_effort = excluded.reasoning_effort,
@@ -177,6 +183,7 @@ pub(crate) async fn create_agent_in_pool(
     .bind(avatar)
     .bind(description)
     .bind(launch_command.trim())
+    .bind(&environment_variables)
     .bind(&working_directory)
     .bind(daily_budget_micros)
     .bind(&reasoning_effort)
@@ -215,6 +222,7 @@ pub(crate) async fn update_agent_in_pool(
     avatar: Option<String>,
     description: String,
     launch_command: String,
+    environment_variables: Option<String>,
     working_directory: String,
     daily_budget_micros: Option<i64>,
 ) -> CommandResult<()> {
@@ -251,6 +259,8 @@ pub(crate) async fn update_agent_in_pool(
     let model = model.trim();
     let reasoning_effort = normalize_reasoning_effort(runtime, reasoning_effort.as_deref())?;
     let service_tier = normalize_service_tier(runtime, service_tier.as_deref())?;
+    let environment_variables =
+        normalize_agent_environment_variables(environment_variables.as_deref())?;
 
     sqlx::query(
         r#"
@@ -263,10 +273,11 @@ pub(crate) async fn update_agent_in_pool(
             avatar = $7,
             description = $8,
             launch_command = $9,
-            working_directory = $10,
-            daily_budget_micros = $11,
-            reasoning_effort = $12,
-            service_tier = $13
+            environment_variables = $10,
+            working_directory = $11,
+            daily_budget_micros = $12,
+            reasoning_effort = $13,
+            service_tier = $14
         where id = $1
         "#,
     )
@@ -279,6 +290,7 @@ pub(crate) async fn update_agent_in_pool(
     .bind(avatar)
     .bind(description.trim())
     .bind(launch_command.trim())
+    .bind(&environment_variables)
     .bind(&working_directory)
     .bind(daily_budget_micros)
     .bind(&reasoning_effort)
@@ -398,6 +410,7 @@ pub(crate) async fn load_agents(pool: &SqlitePool) -> CommandResult<Vec<Agent>> 
             avatar,
             description,
             launch_command,
+            environment_variables,
             working_directory,
             daily_budget_micros
         from agents
@@ -426,6 +439,7 @@ pub(crate) async fn load_agents(pool: &SqlitePool) -> CommandResult<Vec<Agent>> 
                 avatar: row.get("avatar"),
                 description: row.get("description"),
                 launch_command: row.get("launch_command"),
+                environment_variables: row.get("environment_variables"),
                 working_directory,
                 workspace_exists: workspace.exists,
                 workspace_memory_path: workspace.memory_path,

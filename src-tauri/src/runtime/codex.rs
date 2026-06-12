@@ -14,6 +14,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::agent_environment::apply_agent_environment_variables;
 use crate::agent_memory::append_run_log;
 use crate::events::activity::{record_agent_activity, record_agent_activity_throttled};
 use crate::prompts::{build_codex_streaming_prompt, codex_developer_instructions};
@@ -66,6 +67,7 @@ struct WarmCodexRuntime {
     state: AsyncMutex<WarmCodexState>,
     thread_id: String,
     pid: Option<i32>,
+    environment_variables: String,
 }
 
 struct WarmCodexState {
@@ -286,6 +288,7 @@ async fn get_or_spawn_warm_codex_runtime(
     reasoning_effort: &str,
     service_tier: &str,
     working_directory: &str,
+    environment_variables: &str,
     memory_context: Option<&str>,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
     let context_rotate_threshold = codex_context_rotate_input_tokens();
@@ -296,7 +299,11 @@ async fn get_or_spawn_warm_codex_runtime(
         runtimes.get(&agent_id).cloned()
     } {
         let mut state = runtime.state.lock().await;
-        if state.alive && rotation_candidate.is_some() && state.active.is_none() {
+        let environment_changed = runtime.environment_variables != environment_variables;
+        if state.alive
+            && (rotation_candidate.is_some() || environment_changed)
+            && state.active.is_none()
+        {
             state.alive = false;
             drop(state);
             if let Some(pid) = runtime.pid {
@@ -321,6 +328,7 @@ async fn get_or_spawn_warm_codex_runtime(
         reasoning_effort,
         service_tier,
         working_directory,
+        environment_variables,
         memory_context,
         context_rotate_threshold,
     )
@@ -343,6 +351,7 @@ async fn spawn_warm_codex_runtime(
     reasoning_effort: &str,
     service_tier: &str,
     working_directory: &str,
+    environment_variables: &str,
     memory_context: Option<&str>,
     context_rotate_threshold: i64,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
@@ -351,6 +360,7 @@ async fn spawn_warm_codex_runtime(
     command
         .arg("-lc")
         .arg("exec codex app-server --listen stdio:// -c 'notify=[]'");
+    apply_agent_environment_variables(&mut command, environment_variables)?;
     configure_agent_identity_env(&mut command, agent_id, handle);
     configure_agent_context_tool_env(&mut command);
     #[cfg(unix)]
@@ -571,6 +581,7 @@ async fn spawn_warm_codex_runtime(
         }),
         thread_id,
         pid,
+        environment_variables: environment_variables.to_owned(),
     });
 
     tokio::spawn(codex_warm_stdout_reader(
@@ -889,6 +900,7 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
     reasoning_effort: String,
     service_tier: String,
     working_directory: String,
+    environment_variables: String,
     work_item_prompt: String,
     memory_context: Option<String>,
 ) -> CommandResult<()> {
@@ -903,6 +915,7 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
         &reasoning_effort,
         &service_tier,
         &working_directory,
+        &environment_variables,
         memory_context.as_deref(),
     )
     .await?;

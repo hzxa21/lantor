@@ -197,6 +197,7 @@ struct CreateAgentRequest {
     avatar: Option<String>,
     description: Option<String>,
     launch_command: String,
+    environment_variables: Option<String>,
     working_directory: String,
     daily_budget_micros: Option<i64>,
 }
@@ -215,6 +216,7 @@ struct UpdateAgentRequest {
     avatar: Option<String>,
     description: String,
     launch_command: String,
+    environment_variables: Option<String>,
     working_directory: String,
     daily_budget_micros: Option<i64>,
 }
@@ -492,6 +494,7 @@ async fn api_create_agent(
         request.avatar,
         request.description,
         request.launch_command,
+        request.environment_variables,
         request.working_directory,
         request.daily_budget_micros,
     )
@@ -517,6 +520,7 @@ async fn api_update_agent(
         request.avatar,
         request.description,
         request.launch_command,
+        request.environment_variables,
         request.working_directory,
         request.daily_budget_micros,
     )

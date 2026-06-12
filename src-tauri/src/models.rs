@@ -27,6 +27,7 @@ pub(crate) struct Agent {
     pub(crate) avatar: String,
     pub(crate) description: String,
     pub(crate) launch_command: String,
+    pub(crate) environment_variables: String,
     pub(crate) working_directory: String,
     pub(crate) workspace_exists: bool,
     pub(crate) workspace_memory_path: String,

@@ -502,7 +502,8 @@ async fn supervisor_start_agent(
 
     let row = sqlx::query(
         r#"
-        select handle, runtime, model, reasoning_effort, service_tier, launch_command, working_directory, avatar
+        select handle, runtime, model, reasoning_effort, service_tier, launch_command,
+               environment_variables, working_directory, avatar
         from agents
         where id = $1
         "#,
@@ -518,6 +519,7 @@ async fn supervisor_start_agent(
     let reasoning_effort: String = row.get("reasoning_effort");
     let service_tier: String = row.get("service_tier");
     let launch_command: String = row.get("launch_command");
+    let environment_variables: String = row.get("environment_variables");
     let working_directory: String = row.get::<String, _>("working_directory").trim().to_owned();
     let avatar: Option<String> = row.get("avatar");
     let is_warm_streaming_runtime =
@@ -625,6 +627,7 @@ async fn supervisor_start_agent(
             reasoning_effort,
             service_tier,
             working_directory,
+            environment_variables,
             work_item_prompt,
             memory_context,
         )
@@ -640,6 +643,7 @@ async fn supervisor_start_agent(
             model,
             reasoning_effort,
             working_directory,
+            environment_variables,
             work_item_prompt,
             memory_context,
         )
@@ -655,6 +659,7 @@ async fn supervisor_start_agent(
             handle,
             working_directory,
             command_text,
+            environment_variables,
             work_item_prompt,
         },
     )
