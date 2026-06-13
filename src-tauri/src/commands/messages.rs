@@ -7,7 +7,7 @@ use crate::{
         delete_message_in_pool, send_owner_message_in_pool, set_message_saved_in_pool,
         update_message_in_pool,
     },
-    models::AttachmentUpload,
+    models::{AttachmentUpload, Message},
 };
 
 #[tauri::command]
@@ -18,7 +18,7 @@ pub(crate) async fn send_message(
     as_task: bool,
     attachments: Option<Vec<AttachmentUpload>>,
     state: State<'_, AppState>,
-) -> CommandResult<()> {
+) -> CommandResult<Message> {
     send_owner_message_in_pool(
         &state.pool,
         channel_id,

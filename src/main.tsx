@@ -755,6 +755,7 @@ function App() {
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
+  const refreshInvalidationRef = useRef(0);
   const messageDeltaBufferRef = useRef<Map<string, { append: string; deliveryState: Message["delivery_state"] }>>(new Map());
   const optimisticMessagesRef = useRef<Map<string, Message>>(new Map());
   const optimisticAttachmentUrlsRef = useRef<Map<string, string[]>>(new Map());
@@ -846,9 +847,24 @@ function App() {
     };
   }
 
+  function invalidatePendingRefreshResult() {
+    refreshInvalidationRef.current += 1;
+  }
+
   async function refresh(includeOptimistic = true, preferredActiveChannelId?: string) {
+    const refreshInvalidation = refreshInvalidationRef.current;
     const next = normalizeBootstrap(await apiInvoke<Bootstrap>("bootstrap"));
-    setData(includeOptimistic ? withOptimisticMessages(next) : next);
+    const refreshed = includeOptimistic ? withOptimisticMessages(next) : next;
+    setData((current) => {
+      if (!current || refreshInvalidation === refreshInvalidationRef.current) return refreshed;
+      const refreshedMessageIds = new Set(refreshed.messages.map((message) => message.id));
+      const currentOnlyMessages = current.messages.filter((message) => !refreshedMessageIds.has(message.id));
+      if (currentOnlyMessages.length === 0) return refreshed;
+      return {
+        ...refreshed,
+        messages: sortedMessages([...refreshed.messages, ...currentOnlyMessages]),
+      };
+    });
     setActiveChannelId((prev) => {
       if (preferredActiveChannelId && next.channels.some((item) => item.id === preferredActiveChannelId)) {
         return preferredActiveChannelId;
@@ -884,6 +900,7 @@ function App() {
   }
 
   function requestRefresh(fallback = `Failed to refresh ${APP_DISPLAY_NAME} state`) {
+    invalidatePendingRefreshResult();
     if (refreshTimerRef.current !== null) return;
     refreshTimerRef.current = window.setTimeout(() => {
       refreshTimerRef.current = null;
@@ -893,6 +910,7 @@ function App() {
 
   function applyMessageUpsert(message: Message) {
     messageDeltaBufferRef.current.delete(message.id);
+    invalidatePendingRefreshResult();
     setData((current) => {
       if (!current) {
         requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after message update`);
@@ -921,6 +939,7 @@ function App() {
       messageDeltaFlushTimerRef.current = null;
     }
     if (messageDeltaBufferRef.current.size === 0) return;
+    invalidatePendingRefreshResult();
     const deltas = messageDeltaBufferRef.current;
     messageDeltaBufferRef.current = new Map();
     setData((current) => {
@@ -964,6 +983,7 @@ function App() {
 
   function applyMessageDelete(messageId: string) {
     messageDeltaBufferRef.current.delete(messageId);
+    invalidatePendingRefreshResult();
     setData((current) => {
       if (!current) {
         requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after message deletion`);
@@ -2894,6 +2914,7 @@ function App() {
     };
     optimisticMessagesRef.current.set(id, optimisticMessage);
     knownMessageIdsRef.current?.add(id);
+    invalidatePendingRefreshResult();
     setData((current) => current ? {
       ...current,
       messages: [...current.messages, optimisticMessage],
@@ -2905,16 +2926,26 @@ function App() {
     optimisticMessagesRef.current.delete(messageId);
     releaseOptimisticAttachmentUrls(messageId);
     knownMessageIdsRef.current?.delete(messageId);
+    invalidatePendingRefreshResult();
     setData((current) => current ? {
       ...current,
       messages: current.messages.filter((message) => message.id !== messageId),
     } : current);
   }
 
-  function finalizeOptimisticMessage(messageId: string) {
+  function settleOptimisticMessage(messageId: string, persistedMessage: Message) {
     optimisticMessagesRef.current.delete(messageId);
     releaseOptimisticAttachmentUrls(messageId);
     knownMessageIdsRef.current?.delete(messageId);
+    knownMessageIdsRef.current?.add(persistedMessage.id);
+    invalidatePendingRefreshResult();
+    setData((current) => {
+      if (!current) return current;
+      const messages = current.messages
+        .filter((message) => message.id !== messageId && message.id !== persistedMessage.id)
+        .concat(persistedMessage);
+      return { ...current, messages: sortedMessages(messages) };
+    });
   }
 
   function appendDraftAttachments(files: FileList | File[], target: "root" | "reply") {
@@ -3160,15 +3191,14 @@ function App() {
     const optimisticId = addOptimisticOwnerMessage(channel.id, null, body, sendAsTask, attachments);
     updateRootComposerDraft(channel.id, () => EMPTY_COMPOSER_DRAFT);
     try {
-      await apiInvoke("send_message", {
+      const persistedMessage = await apiInvoke<Message>("send_message", {
         channelId: channel.id,
         threadRootId: null,
         body,
         asTask: sendAsTask,
         attachments: await attachmentUploads(attachments),
       });
-      await refresh(false);
-      finalizeOptimisticMessage(optimisticId);
+      settleOptimisticMessage(optimisticId, persistedMessage);
     } catch (err) {
       removeOptimisticMessage(optimisticId);
       updateRootComposerDraft(channel.id, () => ({ text: body, attachments }));
@@ -3201,15 +3231,14 @@ function App() {
     const optimisticId = addOptimisticOwnerMessage(channel.id, activeRoot.id, body, false, attachments);
     updateReplyComposerDraft(activeRoot.id, () => EMPTY_COMPOSER_DRAFT);
     try {
-      await apiInvoke("send_message", {
+      const persistedMessage = await apiInvoke<Message>("send_message", {
         channelId: channel.id,
         threadRootId: activeRoot.id,
         body,
         asTask: false,
         attachments: await attachmentUploads(attachments),
       });
-      await refresh(false);
-      finalizeOptimisticMessage(optimisticId);
+      settleOptimisticMessage(optimisticId, persistedMessage);
     } catch (err) {
       removeOptimisticMessage(optimisticId);
       updateReplyComposerDraft(activeRoot.id, () => ({ text: body, attachments }));

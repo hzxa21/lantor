@@ -427,7 +427,7 @@ async fn api_send_message(
         request.attachments.unwrap_or_default(),
     )
     .await
-    .map(|_| Json(json!({ "ok": true })))
+    .map(Json)
     .map_err(api_error)
 }
 

@@ -408,7 +408,7 @@ pub(crate) async fn send_owner_message_in_pool(
     body: &str,
     as_task: bool,
     attachments: Vec<AttachmentUpload>,
-) -> CommandResult<()> {
+) -> CommandResult<Message> {
     if body.trim().is_empty() && attachments.is_empty() {
         return Err("message body or attachment is required".to_owned());
     }
@@ -487,8 +487,10 @@ pub(crate) async fn send_owner_message_in_pool(
     if let Some(task_id) = task_id {
         dispatch_unassigned_task_availability(pool, task_id).await?;
     }
+    let message = load_message(pool, msg_id).await?;
+    let _ = notify_ui_message_upsert(pool, &message, "message").await;
     let _ = notify_ui_refresh(pool, "message").await;
-    Ok(())
+    Ok(message)
 }
 
 pub(crate) async fn update_message_in_pool(
