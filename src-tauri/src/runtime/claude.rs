@@ -149,7 +149,6 @@ async fn spawn_warm_claude_runtime(
     let effort = reasoning_effort.trim();
     let mut command = Command::new("claude");
     command
-        .arg("-p")
         .arg("--system-prompt")
         .arg(claude_system_prompt(handle, memory_context))
         .arg("--model")

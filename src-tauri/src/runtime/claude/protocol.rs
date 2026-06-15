@@ -206,7 +206,7 @@ pub(super) fn claude_streaming_command_text(model: &str, reasoning_effort: &str)
         format!(" --effort {effort}")
     };
     format!(
-        "{CLAUDE_MAX_RETRIES_ENV}={DEFAULT_CLAUDE_MAX_RETRIES} claude -p --model {model}{effort_arg} --output-format stream-json --input-format stream-json --include-partial-messages --verbose --permission-mode bypassPermissions"
+        "{CLAUDE_MAX_RETRIES_ENV}={DEFAULT_CLAUDE_MAX_RETRIES} claude --model {model}{effort_arg} --output-format stream-json --input-format stream-json --include-partial-messages --verbose --permission-mode bypassPermissions"
     )
 }
 
@@ -261,6 +261,16 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[test]
+    fn claude_streaming_command_does_not_use_print_mode_flag() {
+        let command = claude_streaming_command_text("sonnet", "high");
+        assert!(!command.contains(" claude -p "));
+        assert!(!command.contains(" --print"));
+        assert!(command.contains("claude --model sonnet --effort high"));
+        assert!(command.contains("--input-format stream-json"));
+        assert!(command.contains("--output-format stream-json"));
+    }
 
     #[test]
     fn claude_surface_boundary_only_appears_when_surface_changes() {
