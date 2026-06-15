@@ -51,6 +51,7 @@ fn percent_decode_utf8(value: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
+#[cfg(target_os = "macos")]
 fn percent_encode_uri_path(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::with_capacity(value.len());
