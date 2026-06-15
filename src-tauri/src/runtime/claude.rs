@@ -77,23 +77,28 @@ struct ClaudeSurface {
     thread_root_id: Option<Uuid>,
 }
 
+#[derive(Clone, Copy)]
+struct ClaudeRuntimeConfig<'a> {
+    handle: &'a str,
+    model: &'a str,
+    reasoning_effort: &'a str,
+    working_directory: &'a str,
+    environment_variables: &'a str,
+    memory_context: Option<&'a str>,
+}
+
 async fn get_or_spawn_warm_claude_runtime(
     pool: &SqlitePool,
     registry: &WarmClaudeRegistry,
     agent_id: Uuid,
-    handle: &str,
-    model: &str,
-    reasoning_effort: &str,
-    working_directory: &str,
-    environment_variables: &str,
-    memory_context: Option<&str>,
+    config: ClaudeRuntimeConfig<'_>,
 ) -> CommandResult<Arc<WarmClaudeRuntime>> {
     if let Some(runtime) = {
         let runtimes = registry.runtimes.lock().await;
         runtimes.get(&agent_id).cloned()
     } {
         let mut state = runtime.state.lock().await;
-        let environment_changed = runtime.environment_variables != environment_variables;
+        let environment_changed = runtime.environment_variables != config.environment_variables;
         if state.alive && environment_changed && state.active.is_none() {
             state.alive = false;
             drop(state);
@@ -110,18 +115,7 @@ async fn get_or_spawn_warm_claude_runtime(
         }
     }
 
-    let runtime = spawn_warm_claude_runtime(
-        pool,
-        registry.clone(),
-        agent_id,
-        handle,
-        model,
-        reasoning_effort,
-        working_directory,
-        environment_variables,
-        memory_context,
-    )
-    .await?;
+    let runtime = spawn_warm_claude_runtime(pool, registry.clone(), agent_id, config).await?;
     registry
         .runtimes
         .lock()
@@ -134,29 +128,24 @@ async fn spawn_warm_claude_runtime(
     pool: &SqlitePool,
     registry: WarmClaudeRegistry,
     agent_id: Uuid,
-    handle: &str,
-    model: &str,
-    reasoning_effort: &str,
-    working_directory: &str,
-    environment_variables: &str,
-    memory_context: Option<&str>,
+    config: ClaudeRuntimeConfig<'_>,
 ) -> CommandResult<Arc<WarmClaudeRuntime>> {
-    let model = if model.trim().is_empty() {
+    let model = if config.model.trim().is_empty() {
         "sonnet".to_owned()
     } else {
-        model.trim().to_owned()
+        config.model.trim().to_owned()
     };
-    let effort = reasoning_effort.trim();
+    let effort = config.reasoning_effort.trim();
     let mut command = Command::new("claude");
     command
         .arg("--system-prompt")
-        .arg(claude_system_prompt(handle, memory_context))
+        .arg(claude_system_prompt(config.handle, config.memory_context))
         .arg("--model")
         .arg(&model);
     if !effort.is_empty() {
         command.arg("--effort").arg(effort);
     }
-    apply_agent_environment_variables(&mut command, environment_variables)?;
+    apply_agent_environment_variables(&mut command, config.environment_variables)?;
     command
         .arg("--output-format")
         .arg("stream-json")
@@ -167,12 +156,12 @@ async fn spawn_warm_claude_runtime(
         .arg("--permission-mode")
         .arg("bypassPermissions")
         .env(CLAUDE_MAX_RETRIES_ENV, DEFAULT_CLAUDE_MAX_RETRIES);
-    configure_agent_identity_env(&mut command, agent_id, handle);
+    configure_agent_identity_env(&mut command, agent_id, config.handle);
     configure_agent_context_tool_env(&mut command);
     #[cfg(unix)]
     command.process_group(0);
-    if !working_directory.is_empty() {
-        command.current_dir(working_directory);
+    if !config.working_directory.is_empty() {
+        command.current_dir(config.working_directory);
     }
     command
         .stdin(Stdio::piped())
@@ -219,7 +208,7 @@ async fn spawn_warm_claude_runtime(
             last_activity: Instant::now(),
         }),
         pid,
-        environment_variables: environment_variables.to_owned(),
+        environment_variables: config.environment_variables.to_owned(),
     });
 
     upsert_runtime_thread_id(
@@ -299,12 +288,14 @@ pub(crate) async fn supervisor_start_claude_streaming_agent(
         pool,
         claude_registry,
         agent_id,
-        &handle,
-        &model,
-        &effort,
-        &working_directory,
-        &environment_variables,
-        memory_context.as_deref(),
+        ClaudeRuntimeConfig {
+            handle: &handle,
+            model: &model,
+            reasoning_effort: &effort,
+            working_directory: &working_directory,
+            environment_variables: &environment_variables,
+            memory_context: memory_context.as_deref(),
+        },
     )
     .await
     {
