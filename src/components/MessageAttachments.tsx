@@ -91,7 +91,7 @@ export function MessageAttachments({ attachments, showImageThumbnails }: Message
                 type="button"
                 className={`message-attachment image ${showImageThumbnails ? "" : "compact-image"} ${attachment.local_url ? "pending" : ""}`}
                 aria-label={`Preview ${attachment.original_name}`}
-                title={attachment.original_name}
+                data-attachment-name={attachment.original_name}
                 onPointerDown={isolateAttachmentEvent}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -104,8 +104,9 @@ export function MessageAttachments({ attachments, showImageThumbnails }: Message
                   <>
                     <span className="attachment-icon"><Image size={18} /></span>
                     <span className="attachment-meta">
-                      <span><Image size={13} /> {attachment.original_name}</span>
-                      <small>{attachment.mime_type || "image"} · {formatBytes(attachment.size_bytes)}</small>
+                      <span className="attachment-name">{attachment.original_name}</span>
+                      <small className="attachment-type">{attachment.mime_type || "image"}</small>
+                      <small className="attachment-size">{formatBytes(attachment.size_bytes)}</small>
                     </span>
                   </>
                 )}
@@ -119,7 +120,8 @@ export function MessageAttachments({ attachments, showImageThumbnails }: Message
               href={src}
               target="_blank"
               rel="noreferrer"
-              title={attachment.original_name}
+              aria-label={`Open ${attachment.original_name}`}
+              data-attachment-name={attachment.original_name}
               onPointerDown={isolateAttachmentEvent}
               onClick={(event) => {
                 event.stopPropagation();
@@ -128,8 +130,9 @@ export function MessageAttachments({ attachments, showImageThumbnails }: Message
             >
               <span className="attachment-icon"><FileText size={18} /></span>
               <span className="attachment-meta">
-                <span><FileText size={13} /> {attachment.original_name}</span>
-                <small>{attachment.mime_type || "file"} · {formatBytes(attachment.size_bytes)}</small>
+                <span className="attachment-name">{attachment.original_name}</span>
+                <small className="attachment-type">{attachment.mime_type || "file"}</small>
+                <small className="attachment-size">{formatBytes(attachment.size_bytes)}</small>
               </span>
             </a>
           );
