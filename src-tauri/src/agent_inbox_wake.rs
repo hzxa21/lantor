@@ -16,6 +16,8 @@ use crate::{
 const DISPATCH_MESSAGE_BODY_LIMIT: usize = 4 * 1024;
 const INBOX_WAKE_BATCH_LIMIT: i64 = 8;
 const INBOX_WAKE_OTHER_SUMMARY_LIMIT: i64 = 6;
+const INBOX_WAKE_THREAD_CONTEXT_LIMIT: i64 = 10;
+const INBOX_WAKE_THREAD_CONTEXT_BODY_LIMIT: usize = 1200;
 
 pub(crate) struct AgentInboxItemInput<'a> {
     pub(crate) agent_id: Uuid,
@@ -465,11 +467,20 @@ pub(crate) fn inbox_wake_context(
     items: &[InboxWakeItem],
     other_active: &[InboxWakeSummary],
 ) -> String {
+    inbox_wake_context_with_thread_context(items, other_active, None)
+}
+
+pub(crate) fn inbox_wake_context_with_thread_context(
+    items: &[InboxWakeItem],
+    other_active: &[InboxWakeSummary],
+    same_thread_context: Option<&str>,
+) -> String {
     let Some(primary) = items.first() else {
         return "Lantor agent inbox wake.".to_owned();
     };
     let target = primary.target();
     let has_task_available = items.iter().any(|item| item.kind == "task_available");
+    let needs_existing_thread_context = items.iter().any(inbox_item_is_existing_thread_message);
     let mut lines = vec![
         "Lantor agent inbox wake.".to_owned(),
         if items.len() == 1 {
@@ -482,8 +493,8 @@ pub(crate) fn inbox_wake_context(
         },
         "The message headers below include target, source message id, created time, sender type/name, and preview. Handle directly from them when enough detail is present.".to_owned(),
         "Warm-runtime guard: the inbox item and its thread are authoritative over older context from other channels or tasks.".to_owned(),
-        "If the default inbox item is a mention in a thread with prior messages, treat it as your first entry to that thread: use history-read on the default reply target before answering unless the needed same-thread context is already present.".to_owned(),
-        "For other thread follow-ups or contextual references, also read history when the source message is not self-contained.".to_owned(),
+        "If the default inbox item is a mention in a thread with prior messages, treat it as your first entry to that thread: use the recent same-thread context or history-read on the default reply target before answering.".to_owned(),
+        "For thread follow-ups, existing-thread mentions, or contextual references like continue/this fix/that change/above/same issue/继续/这样修/上面/这个, use the recent same-thread context or history-read when the source message is not self-contained. Do not reply with only an acknowledgement when prior thread context contains pending work, an interrupted response, or an error recovery request.".to_owned(),
         "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-read --inbox-id <id> only if the preview/header is insufficient and you need a full source message or metadata.".to_owned(),
         "Use \"$LANTOR_CONTEXT_TOOL\" --agent-context-tool inbox-list --state active --limit 20 only if you need to inspect or choose among other active inbox items.".to_owned(),
         "Current work-item inbox item(s) are archived automatically when this work item finishes; use inbox-archive only for unrelated or extra active items you intentionally clear.".to_owned(),
@@ -492,6 +503,17 @@ pub(crate) fn inbox_wake_context(
         "If you handle another inbox item in this same turn with a different target, post to that item's channel/thread with channel_message_create instead of relying on the default route.".to_owned(),
         String::new(),
     ];
+    if needs_existing_thread_context {
+        lines.push("Existing-thread context rule: this inbox item is inside an existing thread. Treat the thread as task context first, not as a standalone ping. If the visible message is short, says resume/continue/retry, or follows an interrupted/error agent reply, reconstruct the needed context before responding.".to_owned());
+        lines.push(String::new());
+    }
+    if let Some(same_thread_context) =
+        same_thread_context.filter(|context| !context.trim().is_empty())
+    {
+        lines.push("Recent same-thread context (oldest to newest):".to_owned());
+        lines.push(same_thread_context.trim().to_owned());
+        lines.push(String::new());
+    }
     if has_task_available {
         lines.extend([
             "Task claim opportunity mode:".to_owned(),
@@ -536,6 +558,82 @@ pub(crate) fn inbox_wake_context(
     lines.join("\n")
 }
 
+fn inbox_item_is_existing_thread_message(item: &InboxWakeItem) -> bool {
+    matches!(
+        (item.thread_root_id, item.source_message_id),
+        (Some(thread_root_id), Some(source_message_id)) if thread_root_id != source_message_id
+    )
+}
+
+fn format_recent_thread_context_row(row: &SqliteRow, target: &str) -> String {
+    let message_id: Uuid = row.get("id");
+    let created_at: DateTime<Utc> = row.get("created_at");
+    let sender_role: String = row.get("sender_role");
+    let sender_name: String = row.get("sender_name");
+    let delivery_state: String = row.get("delivery_state");
+    let state_suffix = if delivery_state == "complete" {
+        String::new()
+    } else {
+        format!(" delivery={delivery_state}")
+    };
+    let body: String = row.get("body");
+    let body = compact_chars_middle(&body, INBOX_WAKE_THREAD_CONTEXT_BODY_LIMIT).replace('\n', " ");
+    format!(
+        "[target={target} msg={} time={} type={}{}] {}: {}",
+        short_id(message_id),
+        created_at.to_rfc3339(),
+        sender_role,
+        state_suffix,
+        sender_name,
+        body
+    )
+}
+
+async fn load_recent_same_thread_context(
+    pool: &SqlitePool,
+    items: &[InboxWakeItem],
+) -> CommandResult<Option<String>> {
+    let Some(context_item) = items
+        .iter()
+        .find(|item| inbox_item_is_existing_thread_message(item))
+    else {
+        return Ok(None);
+    };
+    let (Some(channel_id), Some(thread_root_id)) =
+        (context_item.channel_id, context_item.thread_root_id)
+    else {
+        return Ok(None);
+    };
+    let rows = sqlx::query(
+        r#"
+        select id, sender_name, sender_role, body, delivery_state, created_at
+        from messages
+        where channel_id = $1
+          and (id = $2 or thread_root_id = $2)
+        order by created_at desc
+        limit $3
+        "#,
+    )
+    .bind(channel_id)
+    .bind(thread_root_id)
+    .bind(INBOX_WAKE_THREAD_CONTEXT_LIMIT)
+    .fetch_all(pool)
+    .await
+    .map_err(to_string)?;
+
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let target = context_item.target();
+    let lines = rows
+        .into_iter()
+        .rev()
+        .map(|row| format_recent_thread_context_row(&row, &target))
+        .collect::<Vec<_>>();
+    Ok(Some(lines.join("\n")))
+}
+
 pub(crate) fn build_steer_followup_prompt(items: &[InboxWakeItem]) -> String {
     let Some(primary) = items.first() else {
         return "Same-channel/thread live inbox follow-up.".to_owned();
@@ -545,6 +643,7 @@ pub(crate) fn build_steer_followup_prompt(items: &[InboxWakeItem]) -> String {
         "Same-channel/thread live inbox follow-up.".to_owned(),
         "Treat the message header(s) below as newer input for the active turn.".to_owned(),
         "If the latest owner message explicitly mentions another agent and does not mention you, stop that newly assigned work and reply silently unless directly asked to acknowledge.".to_owned(),
+        "If a live follow-up is an existing-thread mention or asks to resume/continue/retry and the active turn lacks enough context, read the thread history before replying. Do not answer with only an acknowledgement when prior thread context contains pending work or an interrupted/error reply.".to_owned(),
         format!("Default reply target for normal assistant text: {target}"),
         "Current work-item inbox item(s) are archived automatically when the active turn finishes; use inbox-archive only for unrelated or extra active items you intentionally clear.".to_owned(),
         String::new(),
@@ -582,6 +681,7 @@ async fn refresh_inbox_wake_work_item(
     let other_active =
         load_other_active_inbox_summary(pool, agent_id, primary.channel_id, primary.thread_root_id)
             .await?;
+    let same_thread_context = load_recent_same_thread_context(pool, items).await?;
     sqlx::query(
         r#"
         update agent_work_items
@@ -603,7 +703,11 @@ async fn refresh_inbox_wake_work_item(
     .bind(primary.id)
     .bind(primary.task_id)
     .bind(inbox_wake_work_item_title(items))
-    .bind(inbox_wake_context(items, &other_active))
+    .bind(inbox_wake_context_with_thread_context(
+        items,
+        &other_active,
+        same_thread_context.as_deref(),
+    ))
     .execute(pool)
     .await
     .map_err(to_string)?;
@@ -733,6 +837,7 @@ pub(crate) async fn ensure_agent_inbox_wake_work_item(
         batch[0].thread_root_id,
     )
     .await?;
+    let same_thread_context = load_recent_same_thread_context(pool, &batch).await?;
     let work_item_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_work_items (
@@ -750,7 +855,11 @@ pub(crate) async fn ensure_agent_inbox_wake_work_item(
     .bind(batch[0].id)
     .bind(batch[0].task_id)
     .bind(inbox_wake_work_item_title(&batch))
-    .bind(inbox_wake_context(&batch, &other_active))
+    .bind(inbox_wake_context_with_thread_context(
+        &batch,
+        &other_active,
+        same_thread_context.as_deref(),
+    ))
     .fetch_one(pool)
     .await
     .map_err(to_string)?;

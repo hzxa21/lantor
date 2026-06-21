@@ -1,4 +1,8 @@
-use super::{build_steer_followup_prompt, inbox_wake_context, InboxWakeItem, InboxWakeSummary};
+use super::{
+    build_steer_followup_prompt, create_agent_inbox_item, ensure_agent_inbox_wake_work_item,
+    inbox_wake_context, inbox_wake_context_with_thread_context, AgentInboxItemInput, InboxWakeItem,
+    InboxWakeSummary,
+};
 use crate::channels::open_dm_with_agent_in_pool;
 use crate::context_tool::short_id;
 use crate::message_store::send_owner_message_in_pool;
@@ -6,6 +10,7 @@ use crate::prompts::WORK_ITEM_FINISH_PROMPT;
 use crate::test_support::{drop_test_schema, insert_test_agent, insert_test_channel, test_pool};
 use crate::ui_notifications::notify_ui_work_item_changed;
 use chrono::Utc;
+use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -44,11 +49,44 @@ fn inbox_wake_context_includes_message_headers_and_other_active_summary() {
     assert!(context.contains("Dylan: please use the latest numbers and reply directly"));
     assert!(context.contains("Warm-runtime guard"));
     assert!(context.contains("mention in a thread with prior messages"));
-    assert!(context.contains("use history-read on the default reply target"));
+    assert!(context.contains("use the recent same-thread context or history-read"));
     assert!(context.contains("source message is not self-contained"));
+    assert!(context.contains("existing-thread mentions"));
     assert!(context.contains(&format!("inbox_id: {inbox_id}")));
     assert!(context.contains("Other active inbox targets:"));
     assert!(context.contains("- dm:Hancock: 2 active"));
+}
+
+#[test]
+fn inbox_wake_context_includes_existing_thread_recovery_rule_and_recent_context() {
+    let thread_root_id = Uuid::new_v4();
+    let source_message_id = Uuid::new_v4();
+    let context = inbox_wake_context_with_thread_context(
+        &[InboxWakeItem {
+            id: Uuid::new_v4(),
+            channel_id: Some(Uuid::new_v4()),
+            channel_name: Some("support".to_owned()),
+            channel_kind: Some("channel".to_owned()),
+            thread_root_id: Some(thread_root_id),
+            source_message_id: Some(source_message_id),
+            task_id: None,
+            kind: "mention".to_owned(),
+            priority: 90,
+            title: "@worker continue".to_owned(),
+            body_preview: "@worker continue".to_owned(),
+            message_created_at: Some(Utc::now()),
+            sender_name: Some("Dylan".to_owned()),
+            sender_role: Some("owner".to_owned()),
+        }],
+        &[],
+        Some("[target=#support:abc msg=abc time=2026-01-01T00:00:00+00:00 type=agent delivery=error] Agent: partial work"),
+    );
+
+    assert!(context.contains("Existing-thread context rule"));
+    assert!(context.contains("Treat the thread as task context first"));
+    assert!(context.contains("Recent same-thread context"));
+    assert!(context.contains("partial work"));
+    assert!(context.contains("interrupted/error agent reply"));
 }
 
 #[test]
@@ -105,6 +143,8 @@ fn steer_followup_prompt_uses_compact_inbox_headers() {
 
     assert!(prompt.contains("Same-channel/thread live inbox follow-up."));
     assert!(prompt.contains("Default reply target for normal assistant text: #support:"));
+    assert!(prompt.contains("existing-thread mention"));
+    assert!(prompt.contains("interrupted/error reply"));
     assert!(prompt.contains(&format!("msg={}", short_id(source_message_id))));
     assert!(prompt.contains(&format!("inbox_id: {inbox_id}")));
     assert!(prompt.contains("archived automatically"));
@@ -113,6 +153,111 @@ fn steer_followup_prompt_uses_compact_inbox_headers() {
     assert!(!prompt.contains("title: Handle follow-up"));
     assert!(!prompt.contains("kind: owner_thread_followup"));
     assert!(!prompt.contains(WORK_ITEM_FINISH_PROMPT));
+}
+
+#[tokio::test]
+async fn inbox_wake_injects_recent_thread_context_for_existing_thread_mention() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "resume-agent").await?;
+        let channel_id = insert_test_channel(&pool, "resume-thread").await?;
+        sqlx::query(
+            r#"
+            insert into channel_members (channel_id, agent_id)
+            values ($1, $2)
+            "#,
+        )
+        .bind(channel_id)
+        .bind(agent_id)
+        .execute(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        let thread_root_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into messages (channel_id, sender_name, sender_role, body, is_task)
+            values ($1, 'Dylan', 'owner', 'please debug the network failure', false)
+            returning id
+            "#,
+        )
+        .bind(channel_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        sqlx::query(
+            r#"
+            insert into messages (
+                channel_id, thread_root_id, sender_agent_id, sender_name, sender_role,
+                body, delivery_state, is_task
+            )
+            values ($1, $2, $3, 'Air-resume-agent', 'agent',
+                    'partial investigation before network error', 'error', false)
+            "#,
+        )
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .bind(agent_id)
+        .execute(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        let source_message_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into messages (channel_id, thread_root_id, sender_name, sender_role, body, is_task)
+            values ($1, $2, 'Dylan', 'owner', '@resume-agent resume this thread', false)
+            returning id
+            "#,
+        )
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        create_agent_inbox_item(
+            &pool,
+            AgentInboxItemInput {
+                agent_id,
+                channel_id: Some(channel_id),
+                thread_root_id: Some(thread_root_id),
+                source_message_id: Some(source_message_id),
+                task_id: None,
+                kind: "mention",
+                priority: 80,
+                title: "@resume-agent resume this thread",
+                body_preview: "@resume-agent resume this thread",
+                payload: json!({}),
+            },
+        )
+        .await?;
+
+        ensure_agent_inbox_wake_work_item(&pool, agent_id).await?;
+        let context: String = sqlx::query_scalar(
+            r#"
+            select context
+            from agent_work_items
+            where agent_id = $1 and source_kind = 'inbox_wake'
+            "#,
+        )
+        .bind(agent_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        assert!(context.contains("Existing-thread context rule"));
+        assert!(context.contains("Recent same-thread context"));
+        assert!(context.contains("please debug the network failure"));
+        assert!(context.contains("partial investigation before network error"));
+        assert!(context.contains("delivery=error"));
+        assert!(context.contains("@resume-agent resume this thread"));
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    assert!(result.is_ok(), "{:?}", result.err());
 }
 
 #[tokio::test]
