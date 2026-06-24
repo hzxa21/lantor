@@ -604,6 +604,16 @@ button,
   font-family: var(--font-sans);
 }
 
+.app select {
+  color-scheme: light;
+}
+
+.app select option,
+.app select optgroup {
+  background: var(--surface-panel);
+  color: var(--ink-primary);
+}
+
 :root[data-theme="dark"],
 :root[data-theme="dark"] .app {
   --bg-app: #242b35;
@@ -4274,6 +4284,10 @@ mark {
   background: var(--surface-menu-overlay);
 }
 
+:root[data-theme="dark"] .app select {
+  color-scheme: dark;
+}
+
 :root[data-theme="dark"] .search-filters {
   border-color: var(--border-subtle);
   background: var(--bg-panel);
@@ -4400,6 +4414,22 @@ mark {
   color: var(--ink-muted);
 }
 
+:root[data-theme="dark"] .thread-reply-avatars .agent-avatar,
+:root[data-theme="dark"] .thread-reply-fallback-avatar {
+  border-color: var(--surface-panel);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .thread-reply-summary .thread-reply-avatars .agent-avatar,
+:root[data-theme="dark"] .thread-reply-summary .thread-reply-fallback-avatar {
+  border-color: var(--surface-panel-strong);
+}
+
+:root[data-theme="dark"] .thread-reply-fallback-avatar {
+  background: var(--badge-phase-default-bg);
+  color: var(--ink-secondary);
+}
+
 :root[data-theme="dark"] .reminder-quick-grid button,
 :root[data-theme="dark"] .reminder-thread-toggle {
   border-color: var(--border-subtle);
@@ -4417,11 +4447,22 @@ mark {
   box-shadow: none;
 }
 
+:root[data-theme="dark"] .thread-back-to-bottom:hover {
+  background: var(--bg-control-hover);
+}
+
 :root[data-theme="dark"] .modal-form .agent-select-control select {
   border-color: var(--border-subtle);
+  color-scheme: dark;
   background: var(--bg-control);
   color: var(--ink-primary);
   box-shadow: none;
+}
+
+:root[data-theme="dark"] .modal-form .agent-select-control select option,
+:root[data-theme="dark"] .modal-form .agent-select-control select optgroup {
+  background: var(--bg-panel);
+  color: var(--ink-primary);
 }
 
 :root[data-theme="dark"] .modal-form .agent-select-control select:hover,
@@ -6366,6 +6407,7 @@ body.resizing-column * {
   border-color: rgba(20, 23, 31, 0.1);
   border-radius: 14px;
   appearance: none;
+  color-scheme: light;
   background:
     linear-gradient(180deg, #fff 0%, #f6f7f9 100%);
   box-shadow:
@@ -6376,6 +6418,12 @@ body.resizing-column * {
   font-weight: var(--type-weight-medium);
   line-height: 44px;
   cursor: pointer;
+}
+
+.modal-form .agent-select-control select option,
+.modal-form .agent-select-control select optgroup {
+  background: var(--surface-panel);
+  color: var(--ink-primary);
 }
 
 .modal-form .agent-select-control select:hover {
