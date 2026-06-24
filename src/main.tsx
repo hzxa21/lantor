@@ -14,7 +14,7 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { Bookmark, Home, Inbox, Search } from "lucide-react";
-import { apiInvoke, isTauriRuntime, subscribeBackendEvents } from "./apiClient";
+import { apiInvoke, completeStartupSplash, isTauriRuntime, subscribeBackendEvents } from "./apiClient";
 import { APP_DISPLAY_NAME } from "./branding";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
 import type { AgentPerformance } from "./components/AgentDetailDrawer";
@@ -144,6 +144,7 @@ const MIN_COMPACT_SIDEBAR_VISIBLE_WIDTH = 220;
 const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const EPHEMERAL_FLUSH_FALLBACK_MS = 80;
+const MIN_BOOT_SPLASH_MS = 1400;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const ACTIVITY_HISTORY_LIMIT_PER_AGENT = 80;
 // Issue #82: run states that must bypass the ephemeral coalescing buffer
@@ -332,6 +333,51 @@ function errorMessage(err: unknown, fallback: string) {
   if (err instanceof Error && err.message) return err.message;
   if (typeof err === "string" && err.trim()) return err;
   return fallback;
+}
+
+function BootSplash({ appError, onRetry }: { appError: string | null; onRetry: () => void }) {
+  const statuses = [
+    "Waking agents...",
+    "Restoring workspace...",
+    "Syncing threads...",
+  ];
+
+  return (
+    <div className="boot" aria-live="polite">
+      <div className="boot-panel">
+        <div className="boot-constellation" aria-hidden="true">
+          <div className="boot-orbit">
+            <span className="boot-node node-dylan">D</span>
+            <span className="boot-node node-bugen">B</span>
+            <span className="boot-node node-admin">A</span>
+            <span className="boot-node node-owner">M</span>
+            <span className="boot-link link-one" />
+            <span className="boot-link link-two" />
+            <span className="boot-link link-three" />
+          </div>
+          <div className="boot-core">
+            <span className="boot-core-mark">L</span>
+          </div>
+        </div>
+        <div className="boot-copy">
+          <strong>{APP_DISPLAY_NAME}</strong>
+          <div className="boot-status" aria-label={statuses.join(" ")}>
+            {statuses.map((status, index) => (
+              <span key={status} style={{ "--status-index": index } as CSSProperties}>{status}</span>
+            ))}
+          </div>
+        </div>
+        {appError ? (
+          <div className="boot-error" role="alert">
+            <p>{appError}</p>
+            <button type="button" onClick={onRetry}>
+              Retry
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
@@ -643,6 +689,9 @@ function buildAgentPerformance(activities: AgentActivity[], runs: AgentRun[]): A
 }
 
 function App() {
+  const [bootStartedAt] = useState(() => performance.now());
+  const [bootReady, setBootReady] = useState(false);
+  const startupSplashCompletedRef = useRef(false);
   const [data, setData] = useState<Bootstrap | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
@@ -1315,6 +1364,22 @@ function App() {
       console.error(err);
     });
   }, []);
+
+  useEffect(() => {
+    if ((!data && !appError) || bootReady) return;
+    const elapsed = performance.now() - bootStartedAt;
+    const delay = Math.max(0, MIN_BOOT_SPLASH_MS - elapsed);
+    const timer = window.setTimeout(() => setBootReady(true), delay);
+    return () => window.clearTimeout(timer);
+  }, [appError, bootReady, bootStartedAt, data]);
+
+  useEffect(() => {
+    if (!bootReady || (!data && !appError) || startupSplashCompletedRef.current) return;
+    startupSplashCompletedRef.current = true;
+    completeStartupSplash().catch((err) => {
+      console.error("Failed to complete startup splash", err);
+    });
+  }, [appError, bootReady, data]);
 
   useEffect(() => {
     if (!data || showOwnerProfileModal) return;
@@ -3590,21 +3655,12 @@ function App() {
     await mutate("uninstall_supervisor_service");
   }
 
-  if (!data) {
+  if (!data || !bootReady) {
     return (
-      <div className="boot">
-        <div className="boot-panel">
-          <strong>Opening {APP_DISPLAY_NAME}...</strong>
-          {appError ? (
-            <>
-              <p>{appError}</p>
-              <button type="button" onClick={() => refreshWithError(`Failed to load ${APP_DISPLAY_NAME} state`)}>
-                Retry
-              </button>
-            </>
-          ) : null}
-        </div>
-      </div>
+      <BootSplash
+        appError={appError}
+        onRetry={() => refreshWithError(`Failed to load ${APP_DISPLAY_NAME} state`)}
+      />
     );
   }
 
