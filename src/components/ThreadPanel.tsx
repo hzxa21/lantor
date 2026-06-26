@@ -115,8 +115,18 @@ type ThreadMessageExpansionState = {
   lastTouchedAt: number;
 };
 
+type ThreadScrollState = {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+  shouldFollow: boolean;
+  lastTouchedAt: number;
+};
+
 const THREAD_MESSAGE_EXPANSION_TTL_MS = 24 * 60 * 60 * 1000;
 const THREAD_MESSAGE_EXPANSION_MAX_ENTRIES = 50;
+const THREAD_SCROLL_STATE_TTL_MS = 24 * 60 * 60 * 1000;
+const THREAD_SCROLL_STATE_MAX_ENTRIES = 100;
 
 function pruneThreadMessageExpansionState(
   entries: Map<string, ThreadMessageExpansionState>,
@@ -126,6 +136,14 @@ function pruneThreadMessageExpansionState(
     .filter(([, entry]) => now - entry.lastTouchedAt <= THREAD_MESSAGE_EXPANSION_TTL_MS)
     .sort((left, right) => right[1].lastTouchedAt - left[1].lastTouchedAt)
     .slice(0, THREAD_MESSAGE_EXPANSION_MAX_ENTRIES);
+  return new Map(freshEntries);
+}
+
+function pruneThreadScrollState(entries: Map<string, ThreadScrollState>, now: number) {
+  const freshEntries = Array.from(entries.entries())
+    .filter(([, entry]) => now - entry.lastTouchedAt <= THREAD_SCROLL_STATE_TTL_MS)
+    .sort((left, right) => right[1].lastTouchedAt - left[1].lastTouchedAt)
+    .slice(0, THREAD_SCROLL_STATE_MAX_ENTRIES);
   return new Map(freshEntries);
 }
 
@@ -178,6 +196,7 @@ export function ThreadPanel({
   const shouldFollowThreadRef = useRef(true);
   const userThreadScrollUntilRef = useRef(0);
   const threadScrollMetricsRef = useRef({ scrollHeight: 0, scrollTop: 0, clientHeight: 0 });
+  const threadScrollStateByThreadRef = useRef<Map<string, ThreadScrollState>>(new Map());
   function openLinkedAgentDetail(handle: string) {
     const agent = agents.find((candidate) => candidate.handle.toLowerCase() === handle.toLowerCase());
     if (agent) openAgentDetail(agent);
@@ -232,6 +251,41 @@ export function ThreadPanel({
       scrollTop: element.scrollTop,
       clientHeight: element.clientHeight,
     };
+    rememberThreadScrollState(activeRoot?.id ?? null, element);
+  }
+
+  function rememberThreadScrollState(threadId: string | null, element: HTMLDivElement | null) {
+    if (!threadId || !element) return;
+    const now = Date.now();
+    const next = pruneThreadScrollState(threadScrollStateByThreadRef.current, now);
+    next.set(threadId, {
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+      clientHeight: element.clientHeight,
+      shouldFollow: shouldFollowThreadRef.current,
+      lastTouchedAt: now,
+    });
+    threadScrollStateByThreadRef.current = next;
+  }
+
+  function restoreThreadScrollState(threadId: string) {
+    const element = threadScrollRef.current;
+    if (!element) return false;
+    const state = threadScrollStateByThreadRef.current.get(threadId);
+    if (!state) return false;
+    shouldFollowThreadRef.current = state.shouldFollow;
+    if (state.shouldFollow) {
+      scrollThreadToBottom();
+      setShowBackToBottom(false);
+      return true;
+    }
+    cancelPendingThreadBottomScroll();
+    userThreadScrollUntilRef.current = 0;
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = Math.min(state.scrollTop, maxScrollTop);
+    rememberThreadScrollMetrics(element);
+    setShowBackToBottom(Boolean(activeRoot) && !isThreadScrollAtBottom(element));
+    return true;
   }
 
   function isThreadViewportOnlyResize(element: HTMLDivElement) {
@@ -427,6 +481,12 @@ export function ThreadPanel({
   }, [activeRoot?.id]);
 
   useLayoutEffect(() => {
+    if (!activeRoot?.id) {
+      shouldFollowThreadRef.current = true;
+      setShowBackToBottom(false);
+      return;
+    }
+    if (restoreThreadScrollState(activeRoot.id)) return;
     shouldFollowThreadRef.current = true;
     setShowBackToBottom(false);
     scrollThreadToBottom();
