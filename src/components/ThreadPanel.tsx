@@ -123,6 +123,11 @@ type ThreadScrollState = {
   lastTouchedAt: number;
 };
 
+type ThreadScrollAnchor = {
+  messageId: string;
+  topOffset: number;
+};
+
 const THREAD_MESSAGE_EXPANSION_TTL_MS = 24 * 60 * 60 * 1000;
 const THREAD_MESSAGE_EXPANSION_MAX_ENTRIES = 50;
 const THREAD_SCROLL_STATE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -197,6 +202,7 @@ export function ThreadPanel({
   const userThreadScrollUntilRef = useRef(0);
   const threadScrollMetricsRef = useRef({ scrollHeight: 0, scrollTop: 0, clientHeight: 0 });
   const threadScrollStateByThreadRef = useRef<Map<string, ThreadScrollState>>(new Map());
+  const threadScrollAnchorRef = useRef<ThreadScrollAnchor | null>(null);
   function openLinkedAgentDetail(handle: string) {
     const agent = agents.find((candidate) => candidate.handle.toLowerCase() === handle.toLowerCase());
     if (agent) openAgentDetail(agent);
@@ -251,7 +257,44 @@ export function ThreadPanel({
       scrollTop: element.scrollTop,
       clientHeight: element.clientHeight,
     };
+    threadScrollAnchorRef.current = shouldFollowThreadRef.current ? null : captureThreadScrollAnchor(element);
     rememberThreadScrollState(activeRoot?.id ?? null, element);
+  }
+
+  function captureThreadScrollAnchor(element: HTMLDivElement): ThreadScrollAnchor | null {
+    const containerTop = element.getBoundingClientRect().top;
+    const candidates = Array.from(element.querySelectorAll<HTMLElement>("[data-message-id]"));
+    let closest: ThreadScrollAnchor | null = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      const rect = candidate.getBoundingClientRect();
+      if (rect.bottom < containerTop) continue;
+      const messageId = candidate.dataset.messageId;
+      if (!messageId) continue;
+      const topOffset = rect.top - containerTop;
+      const distance = Math.abs(topOffset);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        closest = { messageId, topOffset };
+      }
+      if (topOffset >= 0) break;
+    }
+    return closest;
+  }
+
+  function restoreThreadScrollAnchor() {
+    const element = threadScrollRef.current;
+    const anchor = threadScrollAnchorRef.current;
+    if (!element || !anchor) return false;
+    const anchorElement = threadMessageRefs.current.get(anchor.messageId);
+    if (!anchorElement) return false;
+    const nextTopOffset = anchorElement.getBoundingClientRect().top - element.getBoundingClientRect().top;
+    const delta = nextTopOffset - anchor.topOffset;
+    if (Math.abs(delta) > 0.5) {
+      element.scrollTop += delta;
+    }
+    rememberThreadScrollMetrics(element);
+    return true;
   }
 
   function rememberThreadScrollState(threadId: string | null, element: HTMLDivElement | null) {
@@ -328,12 +371,7 @@ export function ThreadPanel({
     const element = threadScrollRef.current;
     if (!element) return;
     userThreadScrollUntilRef.current = 0;
-    const bottomAnchor = threadBottomAnchorRef.current;
-    if (bottomAnchor) {
-      bottomAnchor.scrollIntoView({ block: "end", inline: "nearest", behavior });
-    } else {
-      element.scrollTo({ top: element.scrollHeight, behavior });
-    }
+    element.scrollTo({ top: element.scrollHeight, behavior });
     if (behavior === "auto") {
       shouldFollowThreadRef.current = true;
       rememberThreadScrollMetrics(element);
@@ -493,7 +531,10 @@ export function ThreadPanel({
   }, [activeRoot?.id]);
 
   useLayoutEffect(() => {
-    if (!shouldFollowThreadRef.current) return;
+    if (!shouldFollowThreadRef.current) {
+      restoreThreadScrollAnchor();
+      return;
+    }
     scrollThreadToBottom();
   }, [activeRoot?.id, activeRoot?.updated_at, replies.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
 
