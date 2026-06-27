@@ -162,7 +162,13 @@ fn open_link_target_with_system(target: &str) -> CommandResult<()> {
     let status = StdCommand::new("xdg-open")
         .arg(target)
         .status()
-        .map_err(to_string)?;
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                "xdg-open not found; install xdg-utils to open links from Lantor".to_owned()
+            } else {
+                err.to_string()
+            }
+        })?;
 
     if status.success() {
         Ok(())
