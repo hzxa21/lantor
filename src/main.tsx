@@ -565,7 +565,12 @@ async function attachmentUploads(attachments: DraftAttachment[]) {
 
 function defaultAgentWorkspace(handle: string) {
   const normalized = handle.trim().replace(/^@/, "").replace(/[^A-Za-z0-9_-]/g, "-");
-  return normalized ? `~/Library/Application Support/Lantor/agents/${normalized}` : "";
+  if (!normalized) return "";
+  const platform = navigator.platform.toLowerCase();
+  const baseDir = platform.includes("linux")
+    ? "~/.local/share/lantor"
+    : "~/Library/Application Support/Lantor";
+  return `${baseDir}/agents/${normalized}`;
 }
 
 function newAgentDraft(): AgentForm {

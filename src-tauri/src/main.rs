@@ -23,6 +23,7 @@ mod lifecycle_commands;
 mod message_store;
 mod models;
 mod owner_inbox;
+mod platform_paths;
 mod prompts;
 mod runtime;
 mod system_commands;
