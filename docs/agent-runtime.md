@@ -54,7 +54,8 @@ Inbox, workspace, and memory commands default to the current agent. Use
 ## Agent Memory
 
 Each agent has a persistent working directory. By default Lantor uses
-`~/Library/Application Support/Lantor/agents/<handle>/`, but the agent profile
+`~/Library/Application Support/Lantor/agents/<handle>/` on macOS and
+`~/.local/share/lantor/agents/<handle>/` on Linux, but the agent profile
 can point at any directory you prefer. On first launch Lantor seeds the
 directory with `MEMORY.md` and a `notes/` subdirectory.
 

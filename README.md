@@ -13,7 +13,7 @@ reminders, artifacts, and attachments so they can coordinate real coding work.
 The important part is where it runs. Lantor has no hosted control plane, no
 cloud workspace, and no extra backend that your project data has to pass
 through. The desktop app, supervisor, SQLite database, attachments, chat
-history, agent profiles, and agent workspaces all live on your Mac. Your
+history, agent profiles, and agent workspaces all live on your machine. Your
 context is local SQLite and files you can inspect, back up, or extract.
 
 Use it when terminal tabs stop being enough: keep multiple agents warm,
@@ -35,7 +35,10 @@ for intent, threads for durable context, and tasks for execution.
 
 ## Quickstart
 
-Lantor is a native macOS desktop app. Install Node 20+ and Rust first:
+Lantor is a native desktop app for macOS and Linux. Install Node 20+ and Rust
+first.
+
+On macOS:
 
 ```bash
 brew install node
@@ -46,6 +49,16 @@ source "$HOME/.cargo/env"
 If Rust or Tauri reports missing Apple compiler or linker tools, run
 `xcode-select --install` and launch again.
 
+On Debian/Ubuntu Linux:
+
+```bash
+sudo apt update
+sudo apt install -y nodejs npm curl build-essential pkg-config libssl-dev \
+  libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
 Clone and launch the app:
 
 ```bash
@@ -55,7 +68,7 @@ npm install
 npm run tauri:dev
 ```
 
-To run only the browser UI and local backend, without opening the macOS
+To run only the browser UI and local backend, without opening the native
 desktop window:
 
 ```bash
@@ -110,14 +123,15 @@ When the desktop app opens, add your first agent:
    back into the right thread.
 
 SQLite state lives at
-`~/Library/Application Support/Lantor/lantor.sqlite`, attachments live under
-`~/Library/Application Support/Lantor/attachments/`, and migrations run
+`~/Library/Application Support/Lantor/lantor.sqlite` on macOS or
+`~/.local/share/lantor/lantor.sqlite` on Linux. Attachments live under the
+same platform data directory in `attachments/`, and migrations run
 automatically on every start.
 
 ## Why Lantor
 
 - **Local First, privacy.** App, supervisor, SQLite state, attachments, and
-  agent workspaces all run on your Mac.
+  agent workspaces all run on your machine.
 - **You own your context.** Chat history, tasks, artifacts, attachments,
   agent profiles, and each agent's `MEMORY.md` / `notes/` stay on disk.
 - **One human, many agents.** Channels, DMs, threads, tasks, and handoffs are
@@ -133,12 +147,12 @@ automatically on every start.
   process lifecycle, run logs, and structured event ingestion.
 - **Agent collaboration** — task claiming, task/thread handoff, progress
   activity, generated artifacts, and per-agent local memory.
-- **Desktop + mobile access** — native macOS app plus a trusted-network web UI
-  served by the same local process and SQLite database.
+- **Desktop + mobile access** — native macOS/Linux app plus a trusted-network
+  web UI served by the same local process and SQLite database.
 
 ## How it works
 
-Lantor is a native macOS app with a local supervisor. The desktop process
+Lantor is a native desktop app with a local supervisor. The desktop process
 starts the same binary in supervisor mode; that supervisor owns agent process
 launch, stop commands, queued work scheduling, run logs, and structured event
 ingestion.
@@ -161,10 +175,12 @@ Storage stays local:
 
 - **SQLite** — workspace state, messages, tasks, reminders, agents, metadata,
   activity, and usage records.
-- **Attachments** — `~/Library/Application Support/Lantor/attachments/`.
+- **Attachments** — `~/Library/Application Support/Lantor/attachments/` on
+  macOS or `~/.local/share/lantor/attachments/` on Linux.
 - **Agent workspaces** — `~/Library/Application Support/Lantor/agents/<handle>/`
-  by default (you can point each agent at any directory you like), including
-  that agent's `MEMORY.md`, `notes/`, and durable task files.
+  on macOS or `~/.local/share/lantor/agents/<handle>/` on Linux by default
+  (you can point each agent at any directory you like), including that agent's
+  `MEMORY.md`, `notes/`, and durable task files.
 
 The optional mobile web UI is served by the same local desktop process and
 shares the same SQLite database and attachment store. There is still no
@@ -201,9 +217,9 @@ over [Tailscale](https://tailscale.com/).
   />
 </p>
 
-1. Install Tailscale on your Mac and your phone, and sign both into the
+1. Install Tailscale on your Lantor host and your phone, and sign both into the
    same tailnet.
-2. Keep Lantor running on your Mac. The web UI is enabled by default on
+2. Keep Lantor running on the host. The web UI is enabled by default on
    `0.0.0.0:8787`.
 3. From your phone's browser, open:
 
@@ -226,7 +242,7 @@ Defaults work out of the box. The two settings most users care about:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LANTOR_DATABASE_URL` | `sqlite://~/Library/Application Support/Lantor/lantor.sqlite` | SQLite database URL. |
+| `LANTOR_DATABASE_URL` | macOS: `sqlite://~/Library/Application Support/Lantor/lantor.sqlite`<br>Linux: `sqlite://~/.local/share/lantor/lantor.sqlite` | SQLite database URL. |
 | `LANTOR_WEB_BIND` | `0.0.0.0:8787` | Web UI bind. Use `127.0.0.1:8787` for loopback only, or `off` to disable. |
 
 Advanced options — attachment paths, web public URL, web bundle override,
