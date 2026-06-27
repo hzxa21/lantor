@@ -6,12 +6,13 @@ use uuid::Uuid;
 use super::{CodexSteerRequest, WarmCodexRuntime};
 use crate::events::activity::{record_agent_activity, work_status_title};
 use crate::runtime::{
-    process::upsert_runtime_thread_id,
+    process::{terminate_process_group, upsert_runtime_thread_id},
     streaming::{
         consume_streaming_agent_control_lines, delete_streaming_agent_message_by_key,
         dispatch_streaming_agent_message_mentions, finish_streaming_agent_message,
         finish_streaming_agent_message_deferred_mentions,
     },
+    turn_outcome::resolve_warm_turn_outcome,
 };
 use crate::ui_notifications::{
     notify_supervisor_wake, notify_ui_agent_run_changed, notify_ui_work_item_changed,
@@ -166,18 +167,7 @@ pub(super) async fn finish_warm_codex_active_turn(
         .await?;
     }
 
-    let run_status = if was_cancelled {
-        "cancelled"
-    } else if success {
-        "exited"
-    } else {
-        "failed"
-    };
-    let agent_status = if success || was_cancelled {
-        "idle"
-    } else {
-        "error"
-    };
+    let outcome = resolve_warm_turn_outcome(success, was_cancelled);
     let log_line = if was_cancelled {
         "codex warm turn cancelled\n".to_owned()
     } else {
@@ -186,6 +176,15 @@ pub(super) async fn finish_warm_codex_active_turn(
             .map(|error| format!("codex warm turn failed: {error}\n"))
             .unwrap_or_else(|| format!("codex warm turn completed in {elapsed_ms} ms\n"))
     };
+    if outcome.should_reset_runtime {
+        {
+            let mut state = runtime.state.lock().await;
+            state.alive = false;
+        }
+        if let Some(pid) = runtime.pid {
+            let _ = terminate_process_group(pid).await;
+        }
+    }
     sqlx::query(
         r#"
         update agent_runs
@@ -197,7 +196,7 @@ pub(super) async fn finish_warm_codex_active_turn(
         "#,
     )
     .bind(active.run_id)
-    .bind(run_status)
+    .bind(outcome.run_status)
     .bind(&log_line)
     .execute(pool)
     .await
@@ -206,7 +205,7 @@ pub(super) async fn finish_warm_codex_active_turn(
 
     sqlx::query("update agents set status = $2 where id = $1")
         .bind(agent_id)
-        .bind(agent_status)
+        .bind(outcome.agent_status)
         .execute(pool)
         .await
         .map_err(to_string)?;
@@ -267,29 +266,15 @@ pub(super) async fn finish_warm_codex_active_turn(
         agent_id,
         "codex",
         &runtime.thread_id,
-        if success || was_cancelled {
-            "idle"
-        } else {
-            "failed"
-        },
+        outcome.runtime_session_status,
     )
     .await?;
     record_agent_activity(
         pool,
         Some(agent_id),
         Some(active.run_id),
-        if success || was_cancelled {
-            "run"
-        } else {
-            "run_error"
-        },
-        if was_cancelled {
-            "Stopped"
-        } else if success {
-            "Completed"
-        } else {
-            "Failed"
-        },
+        outcome.activity_kind,
+        outcome.activity_title,
         if success || was_cancelled {
             format!("duration={elapsed_ms} ms")
         } else {
