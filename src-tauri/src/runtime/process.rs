@@ -23,6 +23,7 @@ use crate::{
     app::{to_string, CommandResult},
     db::db_url,
     mark_task_after_work_item_finished,
+    platform_paths::script_shell,
 };
 
 const LANTOR_CONTEXT_TOOL_ENV: &str = "LANTOR_CONTEXT_TOOL";
@@ -603,8 +604,9 @@ pub(crate) async fn start_process_agent(
     )
     .await?;
 
-    let mut command = Command::new("/bin/zsh");
-    command.arg("-lc").arg(&command_text);
+    let (shell, shell_args) = script_shell();
+    let mut command = Command::new(shell);
+    command.args(shell_args).arg(&command_text);
     apply_agent_environment_variables(&mut command, &environment_variables)?;
     configure_agent_identity_env(&mut command, agent_id, &handle);
     configure_agent_context_tool_env(&mut command);

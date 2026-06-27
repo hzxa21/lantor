@@ -8,6 +8,7 @@ use crate::{
     app::{to_string, CommandResult},
     db::expand_home_path,
     models::RuntimeCheck,
+    platform_paths::script_shell,
 };
 use tauri::Manager;
 
@@ -178,8 +179,9 @@ fn editor_command_candidates() -> [&'static str; 3] {
 fn resolve_editor_command(command: &str) -> String {
     // GUI apps launched by Finder do not always inherit the shell PATH.
     let script = format!("command -v {command}");
-    let output = StdCommand::new("/bin/zsh")
-        .arg("-lc")
+    let (shell, shell_args) = script_shell();
+    let output = StdCommand::new(shell)
+        .args(shell_args)
         .arg(script)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -396,8 +398,9 @@ pub(crate) async fn check_runtime_in_env(runtime: String) -> CommandResult<Runti
     let script = format!(
         "if command -v {command} >/dev/null 2>&1; then {command} --version 2>&1 | head -n 1; else echo '{command} not found in PATH' >&2; exit 127; fi"
     );
-    let output = StdCommand::new("/bin/zsh")
-        .arg("-lc")
+    let (shell, shell_args) = script_shell();
+    let output = StdCommand::new(shell)
+        .args(shell_args)
         .arg(script)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

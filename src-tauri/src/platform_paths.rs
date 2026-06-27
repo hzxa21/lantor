@@ -67,6 +67,46 @@ pub(crate) fn default_attachment_dir() -> PathBuf {
     default_app_data_dir().join("attachments")
 }
 
+fn executable_exists(path: &str) -> bool {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn script_shell() -> (PathBuf, Vec<&'static str>) {
+    (PathBuf::from("/bin/zsh"), vec!["-lc"])
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn script_shell() -> (PathBuf, Vec<&'static str>) {
+    if let Some(shell) = env::var_os("SHELL").and_then(|value| {
+        let path = PathBuf::from(value);
+        let name = path.file_name()?.to_str()?;
+        matches!(name, "bash" | "zsh").then_some(path)
+    }) {
+        if executable_exists(&shell.to_string_lossy()) {
+            return (shell, vec!["-lc"]);
+        }
+    }
+
+    if executable_exists("/bin/bash") {
+        return (PathBuf::from("/bin/bash"), vec!["-lc"]);
+    }
+
+    (PathBuf::from("/bin/sh"), vec!["-c"])
+}
+
+#[cfg(windows)]
+pub(crate) fn script_shell() -> (PathBuf, Vec<&'static str>) {
+    (PathBuf::from("cmd"), vec!["/C"])
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn script_shell() -> (PathBuf, Vec<&'static str>) {
+    (PathBuf::from("sh"), vec!["-c"])
+}
+
 #[cfg(test)]
 mod tests {
     use super::expand_home_path;
