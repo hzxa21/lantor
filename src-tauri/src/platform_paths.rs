@@ -6,6 +6,14 @@ fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME").map(PathBuf::from)
 }
 
+fn legacy_app_data_dir() -> Option<PathBuf> {
+    home_dir().map(|home| {
+        home.join("Library")
+            .join("Application Support")
+            .join(APP_DIR_NAME)
+    })
+}
+
 pub(crate) fn expand_home_path(value: &str) -> String {
     let value = value.trim();
     if value == "~" {
@@ -21,11 +29,12 @@ pub(crate) fn expand_home_path(value: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn default_app_data_dir() -> PathBuf {
-    home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join("Library")
-        .join("Application Support")
-        .join(APP_DIR_NAME)
+    legacy_app_data_dir().unwrap_or_else(|| {
+        PathBuf::from("~")
+            .join("Library")
+            .join("Application Support")
+            .join(APP_DIR_NAME)
+    })
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -54,15 +63,42 @@ fn default_app_data_dir() -> PathBuf {
         .join(APP_DIR_NAME)
 }
 
-pub(crate) fn default_database_url() -> String {
-    format!(
-        "sqlite://{}",
-        default_app_data_dir()
-            .join("lantor.sqlite")
-            .to_string_lossy()
+fn compatible_default_path(xdg_path: PathBuf, legacy_path: Option<PathBuf>) -> PathBuf {
+    let Some(legacy_path) = legacy_path else {
+        return xdg_path;
+    };
+    if legacy_path.exists() && !xdg_path.exists() {
+        return legacy_path;
+    }
+    xdg_path
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn default_database_path() -> PathBuf {
+    compatible_default_path(
+        default_app_data_dir().join("lantor.sqlite"),
+        legacy_app_data_dir().map(|dir| dir.join("lantor.sqlite")),
     )
 }
 
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn default_database_path() -> PathBuf {
+    default_app_data_dir().join("lantor.sqlite")
+}
+
+pub(crate) fn default_database_url() -> String {
+    format!("sqlite://{}", default_database_path().to_string_lossy())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn default_attachment_dir() -> PathBuf {
+    compatible_default_path(
+        default_app_data_dir().join("attachments"),
+        legacy_app_data_dir().map(|dir| dir.join("attachments")),
+    )
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 pub(crate) fn default_attachment_dir() -> PathBuf {
     default_app_data_dir().join("attachments")
 }
@@ -109,12 +145,48 @@ pub(crate) fn script_shell() -> (PathBuf, Vec<&'static str>) {
 
 #[cfg(test)]
 mod tests {
-    use super::expand_home_path;
+    use super::{compatible_default_path, expand_home_path};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        std::env::temp_dir().join(format!("lantor-platform-paths-{nanos}-{name}"))
+    }
 
     #[test]
     fn expands_home_prefixes() {
         let home = std::env::var("HOME").expect("HOME should be set for tests");
         assert_eq!(expand_home_path("~"), home);
         assert!(expand_home_path("~/example").ends_with("example"));
+    }
+
+    #[test]
+    fn compatible_default_path_uses_legacy_only_when_new_path_is_missing() {
+        let root = temp_path("compat");
+        let xdg_path = root.join("xdg").join("lantor.sqlite");
+        let legacy_path = root.join("legacy").join("lantor.sqlite");
+
+        fs::create_dir_all(legacy_path.parent().expect("legacy parent")).expect("mkdir legacy");
+        fs::write(&legacy_path, "").expect("write legacy");
+        assert_eq!(
+            compatible_default_path(xdg_path.clone(), Some(legacy_path.clone())),
+            legacy_path
+        );
+
+        fs::create_dir_all(xdg_path.parent().expect("xdg parent")).expect("mkdir xdg");
+        fs::write(&xdg_path, "").expect("write xdg");
+        assert_eq!(
+            compatible_default_path(xdg_path.clone(), Some(legacy_path)),
+            xdg_path
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 }
