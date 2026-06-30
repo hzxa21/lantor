@@ -124,8 +124,10 @@ When the desktop app opens, add your first agent:
 
 SQLite state lives at
 `~/Library/Application Support/Lantor/lantor.sqlite` on macOS or
-`~/.local/share/lantor/lantor.sqlite` on Linux. Attachments live under the
-same platform data directory in `attachments/`, and migrations run
+`~/.local/share/lantor/lantor.sqlite` on Linux. Linux keeps using the legacy
+`~/Library/Application Support/Lantor/lantor.sqlite` path when that database
+already exists, so existing main-branch data remains visible. Attachments live
+under the same platform data directory in `attachments/`, and migrations run
 automatically on every start.
 
 ## Why Lantor
@@ -176,10 +178,12 @@ Storage stays local:
 - **SQLite** — workspace state, messages, tasks, reminders, agents, metadata,
   activity, and usage records.
 - **Attachments** — `~/Library/Application Support/Lantor/attachments/` on
-  macOS or `~/.local/share/lantor/attachments/` on Linux.
+  macOS or `~/.local/share/lantor/attachments/` on Linux. Linux keeps the
+  legacy Application Support attachment path when it already exists.
 - **Agent workspaces** — `~/Library/Application Support/Lantor/agents/<handle>/`
   on macOS or `~/.local/share/lantor/agents/<handle>/` on Linux by default
-  (you can point each agent at any directory you like), including that agent's
+  (or the active data directory when using a legacy Linux database). You can
+  point each agent at any directory you like, including that agent's
   `MEMORY.md`, `notes/`, and durable task files.
 
 The optional mobile web UI is served by the same local desktop process and
@@ -242,7 +246,7 @@ Defaults work out of the box. The two settings most users care about:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LANTOR_DATABASE_URL` | macOS: `sqlite://~/Library/Application Support/Lantor/lantor.sqlite`<br>Linux: `sqlite://~/.local/share/lantor/lantor.sqlite` | SQLite database URL. |
+| `LANTOR_DATABASE_URL` | macOS: `sqlite://~/Library/Application Support/Lantor/lantor.sqlite`<br>Linux: `sqlite://~/.local/share/lantor/lantor.sqlite`, unless the legacy main-branch database already exists | SQLite database URL. |
 | `LANTOR_WEB_BIND` | `0.0.0.0:8787` | Web UI bind. Use `127.0.0.1:8787` for loopback only, or `off` to disable. |
 
 Advanced options — attachment paths, web public URL, web bundle override,

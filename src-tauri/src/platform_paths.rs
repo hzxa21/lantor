@@ -67,7 +67,7 @@ fn compatible_default_path(xdg_path: PathBuf, legacy_path: Option<PathBuf>) -> P
     let Some(legacy_path) = legacy_path else {
         return xdg_path;
     };
-    if legacy_path.exists() && !xdg_path.exists() {
+    if legacy_path.exists() {
         return legacy_path;
     }
     xdg_path
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn compatible_default_path_uses_legacy_only_when_new_path_is_missing() {
+    fn compatible_default_path_uses_legacy_when_present_even_if_new_path_exists() {
         let root = temp_path("compat");
         let xdg_path = root.join("xdg").join("lantor.sqlite");
         let legacy_path = root.join("legacy").join("lantor.sqlite");
@@ -184,7 +184,7 @@ mod tests {
         fs::write(&xdg_path, "").expect("write xdg");
         assert_eq!(
             compatible_default_path(xdg_path.clone(), Some(legacy_path)),
-            xdg_path
+            root.join("legacy").join("lantor.sqlite")
         );
 
         let _ = fs::remove_dir_all(root);

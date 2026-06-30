@@ -8,7 +8,7 @@ also appear in [`.env.example`](../.env.example).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LANTOR_DATABASE_URL` | macOS: `sqlite://~/Library/Application Support/Lantor/lantor.sqlite`<br>Linux: `sqlite://~/.local/share/lantor/lantor.sqlite` | SQLite database URL used by both the desktop process and the web server. `DATABASE_URL` is honored as a fallback only when it is also a `sqlite:` URL. |
+| `LANTOR_DATABASE_URL` | macOS: `sqlite://~/Library/Application Support/Lantor/lantor.sqlite`<br>Linux: `sqlite://~/.local/share/lantor/lantor.sqlite`, unless the legacy main-branch database already exists | SQLite database URL used by both the desktop process and the web server. `DATABASE_URL` is honored as a fallback only when it is also a `sqlite:` URL. |
 | `LANTOR_WEB_BIND` | `0.0.0.0:8787` | Address the embedded web/SSE server binds to. Set to `127.0.0.1:8787` to stay loopback-only, or `off` / `none` to disable the browser UI entirely. |
 
 ## Web UI
@@ -22,7 +22,7 @@ also appear in [`.env.example`](../.env.example).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LANTOR_ATTACHMENT_DIR` | macOS: `~/Library/Application Support/Lantor/attachments`<br>Linux: `~/.local/share/lantor/attachments` | Disk location where Lantor copies inbound message attachments. Point this at an alternative volume if you want attachments stored elsewhere. |
+| `LANTOR_ATTACHMENT_DIR` | macOS: `~/Library/Application Support/Lantor/attachments`<br>Linux: `~/.local/share/lantor/attachments`, unless the legacy main-branch attachment directory already exists | Disk location where Lantor copies inbound message attachments. Point this at an alternative volume if you want attachments stored elsewhere. |
 
 ## Runtime tuning
 
