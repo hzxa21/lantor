@@ -1453,7 +1453,7 @@ pub(crate) async fn agent_context_inbox_read(
     .map_err(to_string)?;
     notify_context_tool_refresh(pool, "inbox_read").await;
 
-    let row = sqlx::query(
+    let row = sqlx::query(&format!(
         r#"
         select
             i.id,
@@ -1475,13 +1475,15 @@ pub(crate) async fn agent_context_inbox_read(
             m.sender_name as source_sender_name,
             m.sender_role as source_sender_role,
             m.body as source_body,
-            m.created_at as source_created_at
+            m.created_at as source_created_at,
+            {}
         from agent_inbox_items i
         left join channels c on c.id = i.channel_id
         left join messages m on m.id = i.source_message_id
         where i.id = $1 and i.agent_id = $2
         "#,
-    )
+        attachment_summary_sql()
+    ))
     .bind(inbox_id)
     .bind(target.id)
     .fetch_one(pool)
@@ -1542,13 +1544,25 @@ pub(crate) async fn agent_context_inbox_read(
             .get::<Option<DateTime<Utc>>, _>("source_created_at")
             .map(|created| created.to_rfc3339())
             .unwrap_or_else(|| "unknown".to_owned());
-        output.push(format!(
+        let mut source_message = format!(
             "source_message:\n  sender={}({})\n  created_at={}\n  body:\n{}",
             source_sender,
             source_role,
             source_created,
             compact_chars_middle(source_body.trim(), AGENT_CONTEXT_TOOL_MESSAGE_LIMIT)
-        ));
+        );
+        let attachment_summary: String = row.get("attachment_summary");
+        if !attachment_summary.trim().is_empty() {
+            source_message.push_str("\n  attachments:");
+            for line in attachment_summary.lines() {
+                source_message.push_str("\n  - ");
+                source_message.push_str(line);
+            }
+            source_message.push_str(
+                "\n  To inspect an attachment, run attachment-info with its attachment_id.",
+            );
+        }
+        output.push(source_message);
     }
     output.push(format!("payload:\n{payload}"));
     if let Some(channel_id) = row.get::<Option<Uuid>, _>("channel_id") {

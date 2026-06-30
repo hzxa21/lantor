@@ -6,6 +6,7 @@ use super::{
 use crate::channels::open_dm_with_agent_in_pool;
 use crate::context_tool::short_id;
 use crate::message_store::send_owner_message_in_pool;
+use crate::models::AttachmentUpload;
 use crate::prompts::WORK_ITEM_FINISH_PROMPT;
 use crate::test_support::{drop_test_schema, insert_test_agent, insert_test_channel, test_pool};
 use crate::ui_notifications::notify_ui_work_item_changed;
@@ -33,6 +34,7 @@ fn inbox_wake_context_includes_message_headers_and_other_active_summary() {
             priority: 90,
             title: "Handle follow-up".to_owned(),
             body_preview: "please use the latest numbers\nand reply directly".to_owned(),
+            attachment_summary: String::new(),
             message_created_at: Some(Utc::now()),
             sender_name: Some("Dylan".to_owned()),
             sender_role: Some("owner".to_owned()),
@@ -74,6 +76,7 @@ fn inbox_wake_context_includes_existing_thread_recovery_rule_and_recent_context(
             priority: 90,
             title: "@worker continue".to_owned(),
             body_preview: "@worker continue".to_owned(),
+            attachment_summary: String::new(),
             message_created_at: Some(Utc::now()),
             sender_name: Some("Dylan".to_owned()),
             sender_role: Some("owner".to_owned()),
@@ -104,6 +107,7 @@ fn inbox_wake_context_tells_task_available_agents_to_claim_silently() {
             priority: 70,
             title: "Implement queue behavior".to_owned(),
             body_preview: "Implement queue behavior".to_owned(),
+            attachment_summary: String::new(),
             message_created_at: Some(Utc::now()),
             sender_name: Some("Dylan".to_owned()),
             sender_role: Some("owner".to_owned()),
@@ -136,6 +140,9 @@ fn steer_followup_prompt_uses_compact_inbox_headers() {
         priority: 90,
         title: "Handle follow-up".to_owned(),
         body_preview: "please use the latest numbers\nand reply directly".to_owned(),
+        attachment_summary:
+            "attachment_id=00000000-0000-0000-0000-000000000001 name='metrics.csv' mime=text/csv size=123 local_path='/tmp/metrics.csv'"
+                .to_owned(),
         message_created_at: Some(Utc::now()),
         sender_name: Some("Dylan".to_owned()),
         sender_role: Some("owner".to_owned()),
@@ -146,6 +153,9 @@ fn steer_followup_prompt_uses_compact_inbox_headers() {
     assert!(prompt.contains("existing-thread mention"));
     assert!(prompt.contains("interrupted/error reply"));
     assert!(prompt.contains(&format!("msg={}", short_id(source_message_id))));
+    assert!(prompt.contains("attachments:"));
+    assert!(prompt.contains("attachment_id=00000000-0000-0000-0000-000000000001"));
+    assert!(prompt.contains("attachment-info"));
     assert!(prompt.contains(&format!("inbox_id: {inbox_id}")));
     assert!(prompt.contains("archived automatically"));
     assert!(!prompt.contains("inbox-archive --inbox-id <id>"));
@@ -183,6 +193,19 @@ async fn inbox_wake_injects_recent_thread_context_for_existing_thread_mention() 
             "#,
         )
         .bind(channel_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let attachment_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into message_attachments (
+                message_id, original_name, mime_type, size_bytes, storage_path
+            )
+            values ($1, 'debug.log', 'text/plain', 12, '/tmp/debug.log')
+            returning id
+            "#,
+        )
+        .bind(thread_root_id)
         .fetch_one(&pool)
         .await
         .map_err(|err| err.to_string())?;
@@ -250,9 +273,65 @@ async fn inbox_wake_injects_recent_thread_context_for_existing_thread_mention() 
         assert!(context.contains("Existing-thread context rule"));
         assert!(context.contains("Recent same-thread context"));
         assert!(context.contains("please debug the network failure"));
+        assert!(context.contains(&attachment_id.to_string()));
+        assert!(context.contains("debug.log"));
+        assert!(context.contains("attachment-info"));
         assert!(context.contains("partial investigation before network error"));
         assert!(context.contains("delivery=error"));
         assert!(context.contains("@resume-agent resume this thread"));
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[tokio::test]
+async fn inbox_wake_context_exposes_root_message_attachments() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "file-agent").await?;
+        let channel_id = insert_test_channel(&pool, "file-root").await?;
+
+        let message = send_owner_message_in_pool(
+            &pool,
+            channel_id,
+            None,
+            "@file-agent please inspect the attached plan",
+            false,
+            vec![AttachmentUpload {
+                original_name: "plan.md".to_owned(),
+                mime_type: "text/markdown".to_owned(),
+                bytes: b"# plan\n".to_vec(),
+            }],
+        )
+        .await?;
+        let attachment_id = message
+            .attachments
+            .first()
+            .ok_or_else(|| "expected attachment on message".to_owned())?
+            .id;
+
+        let context: String = sqlx::query_scalar(
+            r#"
+            select context
+            from agent_work_items
+            where agent_id = $1 and source_kind = 'inbox_wake'
+            "#,
+        )
+        .bind(agent_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        assert!(context.contains("@file-agent please inspect the attached plan"));
+        assert!(context.contains("attachments:"));
+        assert!(context.contains(&attachment_id.to_string()));
+        assert!(context.contains("plan.md"));
+        assert!(context.contains("text/markdown"));
+        assert!(context.contains("attachment-info"));
         Ok(())
     }
     .await;

@@ -7,6 +7,7 @@ use super::{
 use crate::channels::open_dm_with_agent_in_pool;
 use crate::events::activity::record_agent_activity;
 use crate::message_store::send_owner_message_in_pool;
+use crate::models::AttachmentUpload;
 use crate::test_support::{drop_test_schema, insert_test_agent, insert_test_channel, test_pool};
 use uuid::Uuid;
 
@@ -396,15 +397,24 @@ async fn agent_context_inbox_tools_list_read_and_archive_items() {
         let agent_id = insert_test_agent(&pool, "inbox-tool").await?;
         let dm_channel_id = Uuid::parse_str(&open_dm_with_agent_in_pool(&pool, agent_id).await?)
             .map_err(|err| err.to_string())?;
-        send_owner_message_in_pool(
+        let message = send_owner_message_in_pool(
             &pool,
             dm_channel_id,
             None,
             "please inspect inbox tools",
             false,
-            vec![],
+            vec![AttachmentUpload {
+                original_name: "inbox.txt".to_owned(),
+                mime_type: "text/plain".to_owned(),
+                bytes: b"inbox context".to_vec(),
+            }],
         )
         .await?;
+        let attachment_id = message
+            .attachments
+            .first()
+            .ok_or_else(|| "expected inbox attachment".to_owned())?
+            .id;
         let inbox_id: Uuid = sqlx::query_scalar(
             "select id from agent_inbox_items where agent_id = $1 and kind = 'dm'",
         )
@@ -441,6 +451,9 @@ async fn agent_context_inbox_tools_list_read_and_archive_items() {
         .await?;
         assert!(read.contains("source_message:"));
         assert!(read.contains("please inspect inbox tools"));
+        assert!(read.contains(&attachment_id.to_string()));
+        assert!(read.contains("inbox.txt"));
+        assert!(read.contains("attachment-info"));
         assert!(read.contains(&format!("--target \"{dm_channel_id}")));
         assert!(!read.contains("--target \"dm:"));
         assert!(

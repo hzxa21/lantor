@@ -8,6 +8,7 @@ use crate::ui_notifications::{
 };
 use crate::{
     app::{to_string, CommandResult},
+    attachments::attachment_summary_sql,
     context_tool::short_id,
     events::activity::record_agent_activity,
     text::compact_chars_middle,
@@ -45,6 +46,7 @@ pub(crate) struct InboxWakeItem {
     pub(crate) priority: i32,
     pub(crate) title: String,
     pub(crate) body_preview: String,
+    pub(crate) attachment_summary: String,
     pub(crate) message_created_at: Option<DateTime<Utc>>,
     pub(crate) sender_name: Option<String>,
     pub(crate) sender_role: Option<String>,
@@ -76,7 +78,7 @@ impl InboxWakeItem {
             .unwrap_or("unknown");
         let preview = compact_chars_middle(&self.body_preview, DISPATCH_MESSAGE_BODY_LIMIT)
             .replace('\n', " ");
-        format!(
+        let mut output = format!(
             "[target={} msg={} time={} type={}] {}: {}",
             self.target(),
             msg,
@@ -84,7 +86,9 @@ impl InboxWakeItem {
             sender_role,
             sender,
             preview
-        )
+        );
+        append_attachment_summary(&mut output, &self.attachment_summary);
+        output
     }
 }
 
@@ -241,17 +245,30 @@ fn inbox_wake_item_from_row(row: &SqliteRow) -> InboxWakeItem {
         priority: row.get("priority"),
         title: row.get("title"),
         body_preview: row.get("body_preview"),
+        attachment_summary: row.get("attachment_summary"),
         message_created_at: row.get("message_created_at"),
         sender_name: row.get("sender_name"),
         sender_role: row.get("sender_role"),
     }
 }
 
+fn append_attachment_summary(output: &mut String, attachment_summary: &str) {
+    if attachment_summary.trim().is_empty() {
+        return;
+    }
+    output.push_str("\n  attachments:");
+    for line in attachment_summary.lines() {
+        output.push_str("\n  - ");
+        output.push_str(line);
+    }
+    output.push_str("\n  To inspect an attachment, run attachment-info with its attachment_id.");
+}
+
 async fn next_unread_inbox_wake_item(
     pool: &SqlitePool,
     agent_id: Uuid,
 ) -> CommandResult<Option<InboxWakeItem>> {
-    let row = sqlx::query(
+    let row = sqlx::query(&format!(
         r#"
         select
             i.id,
@@ -267,7 +284,8 @@ async fn next_unread_inbox_wake_item(
             i.body_preview,
             m.created_at as message_created_at,
             m.sender_name,
-            m.sender_role
+            m.sender_role,
+            {}
         from agent_inbox_items i
         left join channels c on c.id = i.channel_id
         left join messages m on m.id = i.source_message_id
@@ -276,7 +294,8 @@ async fn next_unread_inbox_wake_item(
         order by i.priority desc, i.created_at asc
         limit 1
         "#,
-    )
+        attachment_summary_sql()
+    ))
     .bind(agent_id)
     .fetch_optional(pool)
     .await
@@ -291,7 +310,7 @@ async fn load_unread_inbox_wake_batch(
     channel_id: Option<Uuid>,
     thread_root_id: Option<Uuid>,
 ) -> CommandResult<Vec<InboxWakeItem>> {
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         r#"
         select
             i.id,
@@ -307,7 +326,8 @@ async fn load_unread_inbox_wake_batch(
             i.body_preview,
             m.created_at as message_created_at,
             m.sender_name,
-            m.sender_role
+            m.sender_role,
+            {}
         from agent_inbox_items i
         left join channels c on c.id = i.channel_id
         left join messages m on m.id = i.source_message_id
@@ -318,7 +338,8 @@ async fn load_unread_inbox_wake_batch(
         order by i.priority desc, i.created_at asc
         limit $4
         "#,
-    )
+        attachment_summary_sql()
+    ))
     .bind(agent_id)
     .bind(channel_id)
     .bind(thread_root_id)
@@ -334,7 +355,7 @@ pub(crate) async fn load_inbox_wake_items_for_work_item(
     pool: &SqlitePool,
     work_item_id: Uuid,
 ) -> CommandResult<Vec<InboxWakeItem>> {
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         r#"
         select
             i.id,
@@ -350,14 +371,16 @@ pub(crate) async fn load_inbox_wake_items_for_work_item(
             i.body_preview,
             m.created_at as message_created_at,
             m.sender_name,
-            m.sender_role
+            m.sender_role,
+            {}
         from agent_inbox_items i
         left join channels c on c.id = i.channel_id
         left join messages m on m.id = i.source_message_id
         where i.work_item_id = $1
         order by i.priority desc, i.created_at asc
         "#,
-    )
+        attachment_summary_sql()
+    ))
     .bind(work_item_id)
     .fetch_all(pool)
     .await
@@ -579,7 +602,7 @@ fn format_recent_thread_context_row(row: &SqliteRow, target: &str) -> String {
     };
     let body: String = row.get("body");
     let body = compact_chars_middle(&body, INBOX_WAKE_THREAD_CONTEXT_BODY_LIMIT).replace('\n', " ");
-    format!(
+    let mut output = format!(
         "[target={target} msg={} time={} type={}{}] {}: {}",
         short_id(message_id),
         created_at.to_rfc3339(),
@@ -587,7 +610,10 @@ fn format_recent_thread_context_row(row: &SqliteRow, target: &str) -> String {
         state_suffix,
         sender_name,
         body
-    )
+    );
+    let attachment_summary: String = row.get("attachment_summary");
+    append_attachment_summary(&mut output, &attachment_summary);
+    output
 }
 
 async fn load_recent_same_thread_context(
@@ -605,16 +631,24 @@ async fn load_recent_same_thread_context(
     else {
         return Ok(None);
     };
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         r#"
-        select id, sender_name, sender_role, body, delivery_state, created_at
-        from messages
-        where channel_id = $1
-          and (id = $2 or thread_root_id = $2)
-        order by created_at desc
+        select
+            m.id,
+            m.sender_name,
+            m.sender_role,
+            m.body,
+            m.delivery_state,
+            m.created_at,
+            {}
+        from messages m
+        where m.channel_id = $1
+          and (m.id = $2 or m.thread_root_id = $2)
+        order by m.created_at desc
         limit $3
         "#,
-    )
+        attachment_summary_sql()
+    ))
     .bind(channel_id)
     .bind(thread_root_id)
     .bind(INBOX_WAKE_THREAD_CONTEXT_LIMIT)
