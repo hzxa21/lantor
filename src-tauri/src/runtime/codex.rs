@@ -38,6 +38,7 @@ use crate::usage::{record_run_usage, usage_from_runtime_event};
 use crate::{
     app::{to_string, CommandResult},
     build_steer_followup_prompt, load_inbox_wake_items_for_work_item,
+    platform_paths::script_shell,
 };
 
 mod protocol;
@@ -356,9 +357,10 @@ async fn spawn_warm_codex_runtime(
     context_rotate_threshold: i64,
 ) -> CommandResult<Arc<WarmCodexRuntime>> {
     let cwd = effective_codex_cwd(working_directory)?;
-    let mut command = Command::new("/bin/zsh");
+    let (shell, shell_args) = script_shell();
+    let mut command = Command::new(shell);
     command
-        .arg("-lc")
+        .args(shell_args)
         .arg("exec codex app-server --listen stdio:// -c 'notify=[]'");
     apply_agent_environment_variables(&mut command, environment_variables)?;
     configure_agent_identity_env(&mut command, agent_id, handle);
