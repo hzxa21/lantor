@@ -81,6 +81,204 @@
       "n": 0
     },
     {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card",
+      "prop": "background",
+      "literal": "rgba(25, 29, 36, 0.78)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card",
+      "prop": "background",
+      "literal": "rgba(96, 165, 250, 0.16)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card",
+      "prop": "background",
+      "literal": "rgba(96, 165, 250, 0)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card",
+      "prop": "border-color",
+      "literal": "rgba(96, 165, 250, 0.28)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card",
+      "prop": "box-shadow",
+      "literal": "rgba(0, 0, 0, 0.18)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card",
+      "prop": "box-shadow",
+      "literal": "rgba(255, 255, 255, 0.04)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.compact",
+      "prop": "background",
+      "literal": "rgba(96, 165, 250, 0.16)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.compact",
+      "prop": "border-color",
+      "literal": "rgba(96, 165, 250, 0.34)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.compact.thread",
+      "prop": "background",
+      "literal": "rgba(139, 136, 255, 0.18)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.compact.thread",
+      "prop": "border-color",
+      "literal": "rgba(139, 136, 255, 0.42)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.compact.thread[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(139, 136, 255, 0.24)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.compact.thread[role=\"button\"]:hover",
+      "prop": "border-color",
+      "literal": "rgba(139, 136, 255, 0.54)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.compact[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(96, 165, 250, 0.22)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.compact[role=\"button\"]:hover",
+      "prop": "border-color",
+      "literal": "rgba(96, 165, 250, 0.48)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.thread",
+      "prop": "background",
+      "literal": "rgba(139, 136, 255, 0.18)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.thread",
+      "prop": "background",
+      "literal": "rgba(139, 136, 255, 0)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.thread",
+      "prop": "background",
+      "literal": "rgba(25, 29, 36, 0.78)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.thread",
+      "prop": "border-color",
+      "literal": "rgba(139, 136, 255, 0.34)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.thread .message-reference-icon",
+      "prop": "background",
+      "literal": "rgba(139, 136, 255, 0.14)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.thread .message-reference-icon",
+      "prop": "border-color",
+      "literal": "rgba(139, 136, 255, 0.25)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card.thread .message-reference-icon",
+      "prop": "color",
+      "literal": "#9b99ff",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(31, 36, 45, 0.92)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(96, 165, 250, 0.2)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(96, 165, 250, 0)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-card[role=\"button\"]:hover",
+      "prop": "border-color",
+      "literal": "rgba(96, 165, 250, 0.44)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-remove:hover",
+      "prop": "background",
+      "literal": "rgba(255, 255, 255, 0.08)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-remove:hover",
+      "prop": "border-color",
+      "literal": "rgba(255, 255, 255, 0.12)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-stack-summary button, :root[data-theme=\"dark\"] .message-reference-stack-toggle",
+      "prop": "background",
+      "literal": "rgba(96, 165, 250, 0.12)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-stack-summary button, :root[data-theme=\"dark\"] .message-reference-stack-toggle",
+      "prop": "border-color",
+      "literal": "rgba(96, 165, 250, 0.24)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-stack-summary button, :root[data-theme=\"dark\"] .message-reference-stack-toggle",
+      "prop": "color",
+      "literal": "#9dccff",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-stack-summary button:hover, :root[data-theme=\"dark\"] .message-reference-stack-toggle:hover",
+      "prop": "background",
+      "literal": "rgba(96, 165, 250, 0.18)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-stack-summary button:hover, :root[data-theme=\"dark\"] .message-reference-stack-toggle:hover",
+      "prop": "border-color",
+      "literal": "rgba(96, 165, 250, 0.38)",
+      "n": 0
+    },
+    {
+      "selector": ":root[data-theme=\"dark\"] .message-reference-title em",
+      "prop": "color",
+      "literal": "#a5adba",
+      "n": 0
+    },
+    {
       "selector": ":root[data-theme=\"dark\"] .search-filter-group button.active",
       "prop": "background",
       "literal": "rgba(105, 170, 252, 0.14)",
@@ -336,6 +534,48 @@
       "selector": ".composer textarea:focus, .reply-composer textarea:focus",
       "prop": "box-shadow",
       "literal": "rgba(10, 132, 255, 0.08)",
+      "n": 0
+    },
+    {
+      "selector": ".composer-reference-input:focus-within",
+      "prop": "border-color",
+      "literal": "rgba(10, 132, 255, 0.42)",
+      "n": 0
+    },
+    {
+      "selector": ".composer-reference-input:focus-within",
+      "prop": "box-shadow",
+      "literal": "rgba(10, 132, 255, 0.08)",
+      "n": 0
+    },
+    {
+      "selector": ".composer-reference-token",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0.12)",
+      "n": 0
+    },
+    {
+      "selector": ".composer-reference-token",
+      "prop": "box-shadow",
+      "literal": "rgba(10, 132, 255, 0.24)",
+      "n": 0
+    },
+    {
+      "selector": ".composer-reference-token.thread",
+      "prop": "background",
+      "literal": "rgba(111, 66, 193, 0.12)",
+      "n": 0
+    },
+    {
+      "selector": ".composer-reference-token.thread",
+      "prop": "box-shadow",
+      "literal": "rgba(111, 66, 193, 0.24)",
+      "n": 0
+    },
+    {
+      "selector": ".composer-reference-token.thread",
+      "prop": "color",
+      "literal": "#6f42c1",
       "n": 0
     },
     {
@@ -792,6 +1032,282 @@
       "selector": ".message-long-preview.collapsed::after",
       "prop": "background",
       "literal": "rgba(255, 255, 255, 0)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0.09)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card",
+      "prop": "background",
+      "literal": "rgba(255, 255, 255, 0.74)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card",
+      "prop": "border",
+      "literal": "rgba(30, 111, 201, 0.22)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card",
+      "prop": "box-shadow",
+      "literal": "rgba(255, 255, 255, 0.82)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card",
+      "prop": "box-shadow",
+      "literal": "rgba(31, 42, 68, 0.08)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.compact",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0.12)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.compact",
+      "prop": "border-color",
+      "literal": "rgba(10, 132, 255, 0.28)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.compact.thread",
+      "prop": "background",
+      "literal": "rgba(88, 86, 214, 0.13)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.compact.thread",
+      "prop": "border-color",
+      "literal": "rgba(88, 86, 214, 0.3)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.compact.thread[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(88, 86, 214, 0.19)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.compact.thread[role=\"button\"]:hover",
+      "prop": "border-color",
+      "literal": "rgba(88, 86, 214, 0.45)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.compact[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0.18)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.compact[role=\"button\"]:hover",
+      "prop": "border-color",
+      "literal": "rgba(10, 132, 255, 0.42)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.missing",
+      "prop": "background",
+      "literal": "rgba(142, 142, 147, 0.08)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.missing",
+      "prop": "border-color",
+      "literal": "rgba(142, 142, 147, 0.38)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.thread",
+      "prop": "background",
+      "literal": "rgba(255, 255, 255, 0.74)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.thread",
+      "prop": "background",
+      "literal": "rgba(88, 86, 214, 0.11)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.thread",
+      "prop": "background",
+      "literal": "rgba(88, 86, 214, 0)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.thread",
+      "prop": "border-color",
+      "literal": "rgba(88, 86, 214, 0.25)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.thread .message-reference-icon",
+      "prop": "background",
+      "literal": "rgba(88, 86, 214, 0.11)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.thread .message-reference-icon",
+      "prop": "border-color",
+      "literal": "rgba(88, 86, 214, 0.2)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.thread .message-reference-icon",
+      "prop": "color",
+      "literal": "#5856d6",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card.thread .message-reference-rail",
+      "prop": "background",
+      "literal": "#5856d6",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card[role=\"button\"]:focus-visible",
+      "prop": "border-color",
+      "literal": "rgba(10, 132, 255, 0.5)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card[role=\"button\"]:focus-visible",
+      "prop": "box-shadow",
+      "literal": "rgba(10, 132, 255, 0.14)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0.12)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card[role=\"button\"]:hover",
+      "prop": "background",
+      "literal": "rgba(255, 255, 255, 0.92)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-card[role=\"button\"]:hover",
+      "prop": "border-color",
+      "literal": "rgba(30, 111, 201, 0.38)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-hovercard",
+      "prop": "background",
+      "literal": "#fff",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-hovercard",
+      "prop": "border",
+      "literal": "rgba(20, 23, 31, 0.12)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-hovercard",
+      "prop": "box-shadow",
+      "literal": "rgba(20, 23, 31, 0.08)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-hovercard",
+      "prop": "box-shadow",
+      "literal": "rgba(20, 23, 31, 0.16)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-hovercard-body",
+      "prop": "color",
+      "literal": "#14171f",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-hovercard-head span",
+      "prop": "color",
+      "literal": "#6b7280",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-hovercard.thread .message-reference-hovercard-head strong",
+      "prop": "color",
+      "literal": "#6f42c1",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-icon",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0.1)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-icon",
+      "prop": "border",
+      "literal": "rgba(10, 132, 255, 0.18)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-remove:hover",
+      "prop": "background",
+      "literal": "rgba(20, 23, 31, 0.06)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-remove:hover",
+      "prop": "border-color",
+      "literal": "rgba(20, 23, 31, 0.12)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-stack-summary button, .message-reference-stack-toggle",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0.07)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-stack-summary button, .message-reference-stack-toggle",
+      "prop": "border",
+      "literal": "rgba(10, 132, 255, 0.16)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-stack-summary button:hover, .message-reference-stack-toggle:hover",
+      "prop": "background",
+      "literal": "rgba(10, 132, 255, 0.11)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-stack-summary button:hover, .message-reference-stack-toggle:hover",
+      "prop": "border-color",
+      "literal": "rgba(10, 132, 255, 0.3)",
+      "n": 0
+    },
+    {
+      "selector": ".message-reference-title em",
+      "prop": "color",
+      "literal": "#7b8089",
       "n": 0
     },
     {
