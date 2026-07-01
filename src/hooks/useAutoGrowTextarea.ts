@@ -14,10 +14,19 @@ export function useAutoGrowTextarea(textareaRef: RefObject<HTMLTextAreaElement |
     if (!textareaElement) return;
     const computedStyle = window.getComputedStyle(textareaElement);
     const maxHeight = cssPixelValue(computedStyle.maxHeight);
-    textareaElement.style.height = "auto";
+    const previousHeight = textareaElement.style.height;
+    textareaElement.style.height = "0px";
     const nextHeight = Math.min(textareaElement.scrollHeight, maxHeight);
-    textareaElement.style.height = `${nextHeight}px`;
-    textareaElement.style.overflowY = textareaElement.scrollHeight > maxHeight ? "auto" : "hidden";
+    const nextHeightValue = `${nextHeight}px`;
+    if (previousHeight !== nextHeightValue) {
+      textareaElement.style.height = nextHeightValue;
+    } else {
+      textareaElement.style.height = previousHeight;
+    }
+    const nextOverflowY = textareaElement.scrollHeight > maxHeight ? "auto" : "hidden";
+    if (textareaElement.style.overflowY !== nextOverflowY) {
+      textareaElement.style.overflowY = nextOverflowY;
+    }
   }, [textareaRef]);
 
   const scheduleResize = useCallback(() => {

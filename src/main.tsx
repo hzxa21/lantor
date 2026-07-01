@@ -43,6 +43,7 @@ import {
   AgentWorkItem,
   Artifact,
   Bootstrap,
+  Channel,
   ChannelMember,
   DraftAttachment,
   EMPTY_AGENT_FORM,
@@ -246,6 +247,7 @@ type AppHistoryState = {
   showMobileSidebar: boolean;
   selectedAgentId: string | null;
   activeModal: MobileModal | null;
+  focusedMessageId: string | null;
 };
 
 type AppErrorBoundaryState = {
@@ -313,6 +315,7 @@ function isAppHistoryState(value: unknown): value is AppHistoryState {
     && typeof state.showThread === "boolean"
     && typeof state.showMobileSidebar === "boolean"
     && (state.selectedAgentId === null || typeof state.selectedAgentId === "string")
+    && (state.focusedMessageId === undefined || state.focusedMessageId === null || typeof state.focusedMessageId === "string")
     && (
       state.activeModal === null ||
       state.activeModal === "search" ||
@@ -330,6 +333,7 @@ function appHistoryKey(state: AppHistoryState) {
     state.showMobileSidebar ? "sidebar" : "content",
     state.selectedAgentId ?? "",
     state.activeModal ?? "",
+    state.focusedMessageId ?? "",
   ].join("|");
 }
 
@@ -793,7 +797,10 @@ function App() {
 
   useEffect(() => {
     if (!focusedMessageId) return;
-    const timer = window.setTimeout(() => setFocusedMessageId(null), 2600);
+    const timer = window.setTimeout(() => {
+      replaceNextAppHistoryEntryRef.current = true;
+      setFocusedMessageId(null);
+    }, 2600);
     return () => window.clearTimeout(timer);
   }, [focusedMessageId]);
 
@@ -820,6 +827,11 @@ function App() {
   const refreshInvalidationRef = useRef(0);
   const messageDeltaBufferRef = useRef<Map<string, { append: string; deliveryState: Message["delivery_state"] }>>(new Map());
   const optimisticMessagesRef = useRef<Map<string, Message>>(new Map());
+  // Channels created locally but not yet reflected by an authoritative bootstrap.
+  // Merged back in `refresh()` so an in-flight bootstrap can't drop the new
+  // channel and fall the active channel back to another one before the backend
+  // catches up. Entries self-evict once bootstrap returns the channel.
+  const optimisticChannelsRef = useRef<Map<string, Channel>>(new Map());
   const optimisticAttachmentUrlsRef = useRef<Map<string, string[]>>(new Map());
   // Per-message latest-intent sequence for save/unsave, so a late-failing
   // request cannot roll back over a newer toggle for the same message.
@@ -843,6 +855,7 @@ function App() {
   const restoringAppHistoryRef = useRef(false);
   const replaceNextAppHistoryEntryRef = useRef(false);
   const lastAppHistoryKeyRef = useRef<string | null>(null);
+  const historyFocusedMessageIdRef = useRef<string | null>(null);
   const searchResultThreadIdRef = useRef<string | null>(null);
   const searchResultAgentIdRef = useRef<string | null>(null);
   const [appHistoryIndex, setAppHistoryIndex] = useState(0);
@@ -862,6 +875,7 @@ function App() {
       });
       optimisticAttachmentUrlsRef.current.clear();
       optimisticMessagesRef.current.clear();
+      optimisticChannelsRef.current.clear();
     };
   }, []);
 
@@ -885,6 +899,7 @@ function App() {
       showMobileSidebar,
       selectedAgentId,
       activeModal: activeMobileModal,
+      focusedMessageId: historyFocusedMessageIdRef.current,
     };
   }
 
@@ -921,7 +936,9 @@ function App() {
   async function refresh(includeOptimistic = true, preferredActiveChannelId?: string) {
     const refreshInvalidation = refreshInvalidationRef.current;
     const next = normalizeBootstrap(await apiInvoke<Bootstrap>("bootstrap"));
-    const refreshed = withPendingSavedToggles(includeOptimistic ? withOptimisticMessages(next) : next);
+    const refreshed = withPendingSavedToggles(
+      includeOptimistic ? withOptimisticChannels(withOptimisticMessages(next)) : next,
+    );
     setData((current) => {
       if (!current || refreshInvalidation === refreshInvalidationRef.current) return refreshed;
       const refreshedMessageIds = new Set(refreshed.messages.map((message) => message.id));
@@ -933,11 +950,15 @@ function App() {
       };
     });
     setActiveChannelId((prev) => {
-      if (preferredActiveChannelId && next.channels.some((item) => item.id === preferredActiveChannelId)) {
+      // Use the merged list so a still-optimistic channel keeps the active
+      // selection instead of falling back to channels[0] when a stale bootstrap
+      // that predates its creation lands.
+      const channels = refreshed.channels;
+      if (preferredActiveChannelId && channels.some((item) => item.id === preferredActiveChannelId)) {
         return preferredActiveChannelId;
       }
-      if (next.channels.some((item) => item.id === prev)) return prev;
-      return next.channels[0]?.id || "";
+      if (channels.some((item) => item.id === prev)) return prev;
+      return channels[0]?.id || "";
     });
     setActiveThreadId((prev) => {
       const rootIds = new Set(next.messages.filter((item) => !item.thread_root_id).map((item) => item.id));
@@ -989,6 +1010,19 @@ function App() {
         : [...current.messages, message];
       return { ...current, messages: sortedMessages(messages) };
     });
+  }
+
+  function withOptimisticChannels(next: Bootstrap): Bootstrap {
+    if (optimisticChannelsRef.current.size === 0) return next;
+    const existingIds = new Set(next.channels.map((channel) => channel.id));
+    const pending: Channel[] = [];
+    for (const [id, channel] of optimisticChannelsRef.current) {
+      // Authoritative bootstrap now knows this channel — stop shadowing it.
+      if (existingIds.has(id)) optimisticChannelsRef.current.delete(id);
+      else pending.push(channel);
+    }
+    if (pending.length === 0) return next;
+    return { ...next, channels: [...next.channels, ...pending] };
   }
 
   function withOptimisticMessages(next: Bootstrap): Bootstrap {
@@ -1748,6 +1782,7 @@ function App() {
       const activeChannelIdFromState = event.state.activeChannelId ?? null;
       const activeThreadIdFromState = event.state.activeThreadId ?? null;
       const activeTabFromState = event.state.activeTab ?? "chat";
+      historyFocusedMessageIdRef.current = event.state.focusedMessageId ?? null;
       lastAppHistoryKeyRef.current = appHistoryKey({
         ...event.state,
         activeChannelId: activeChannelIdFromState,
@@ -1764,6 +1799,7 @@ function App() {
       setShowMobileSidebar(event.state.showMobileSidebar);
       setMobileSidebarDragPx(0);
       setSelectedAgentId(event.state.selectedAgentId);
+      setFocusedMessageId(event.state.focusedMessageId ?? null);
       setShowSearchModal(event.state.activeModal === "search");
       setShowActivityFeedModal(event.state.activeModal === "activity");
       setShowSavedModal(event.state.activeModal === "saved");
@@ -2596,7 +2632,6 @@ function App() {
         name,
         agentIds: agentIds.length > 0 ? agentIds : undefined,
       });
-      await refresh(true, shouldReturnToMobileHome ? undefined : result.channelId);
     } catch (err) {
       const message = errorMessage(err, "create_channel failed");
       if (isDuplicateChannelNameError(message)) {
@@ -2616,15 +2651,40 @@ function App() {
     setNewChannelAgentIds(new Set());
     setShowCreateChannelModal(false);
     createChannelOpenedFromMobileHomeRef.current = false;
+    // Optimistically insert the new channel so navigation is instant instead of
+    // waiting on a full `bootstrap` reload. The backend already emits a
+    // `channel_created` refresh event, and we also kick a background refresh
+    // below to reconcile ordering / membership.
+    if (result.channelId) {
+      const channelId = result.channelId;
+      const optimisticChannel: Channel = {
+        id: channelId,
+        name,
+        description: "",
+        kind: "channel",
+        dm_agent_id: null,
+        unread_count: 0,
+      };
+      // Track it so any in-flight/subsequent `refresh()` re-merges the channel
+      // instead of clobbering it back to the old list (and fallback-navigating
+      // away). It self-evicts once an authoritative bootstrap includes it.
+      optimisticChannelsRef.current.set(channelId, optimisticChannel);
+      // A `bootstrap` dispatched before create committed must not overwrite the
+      // optimistic insert with a stale channel list when it lands.
+      invalidatePendingRefreshResult();
+      setData((current) => {
+        if (!current || current.channels.some((item) => item.id === channelId)) return current;
+        return { ...current, channels: [...current.channels, optimisticChannel] };
+      });
+    }
     if (shouldReturnToMobileHome) {
       returnToMobileHome();
-      return;
-    }
-    if (result.channelId) {
+    } else if (result.channelId) {
       setActiveChannelId(result.channelId);
       setShowMobileSidebar(false);
       openThread(null, result.channelId);
     }
+    requestRefresh();
   }
 
   async function saveChannel() {
@@ -2790,6 +2850,7 @@ function App() {
 
   function selectChannel(channelId: string) {
     const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
+    historyFocusedMessageIdRef.current = null;
     setSelectedAgentId(null);
     setActiveChannelId(channelId);
     setShowMobileSidebar(false);
@@ -2800,6 +2861,7 @@ function App() {
   }
 
   function openThread(threadId: string | null, channelId = activeChannelId) {
+    historyFocusedMessageIdRef.current = null;
     setActiveThreadId(threadId);
     rememberChannelThread(channelId, threadId);
     setFocusedMessageId(null);
@@ -2861,6 +2923,33 @@ function App() {
     if (canNavigateForward()) {
       window.history.forward();
     }
+  }
+
+  function pushReferenceMessageHistory(originMessageId: string, targetMessageId: string) {
+    if (isMobileViewport() || !appHistoryReadyRef.current) return;
+    const existingState = window.history.state;
+    if (!isAppHistoryState(existingState)) return;
+    const originState = {
+      ...buildAppHistoryState(existingState.index),
+      focusedMessageId: originMessageId,
+    };
+    window.history.replaceState(originState, "");
+    const targetState = {
+      ...buildAppHistoryState(existingState.index + 1),
+      focusedMessageId: targetMessageId,
+    };
+    window.history.pushState(targetState, "");
+    historyFocusedMessageIdRef.current = targetMessageId;
+    setAppHistoryPosition(targetState.index, targetState.index);
+    lastAppHistoryKeyRef.current = appHistoryKey(targetState);
+  }
+
+  function navigateToReferencedMessage(originMessageId: string, targetMessageId: string) {
+    pushReferenceMessageHistory(originMessageId, targetMessageId);
+    setFocusedMessageId(null);
+    window.requestAnimationFrame(() => {
+      setFocusedMessageId(targetMessageId);
+    });
   }
 
   function openMobileSidebarFromContent() {
@@ -3946,6 +4035,7 @@ function App() {
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openArtifact={openArtifact}
         openWorkItem={openWorkItem}
+        onReferenceMessageJump={navigateToReferencedMessage}
         shareBaseUrl={shareBaseUrl}
         savedMessageIds={savedMessageIds}
         focusedMessageId={focusedMessageId}
@@ -4008,6 +4098,7 @@ function App() {
           openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
           openArtifact={openArtifact}
           openWorkItem={openWorkItem}
+          onReferenceMessageJump={navigateToReferencedMessage}
           onLocateRoot={revealThreadRootInChannel}
           shareBaseUrl={shareBaseUrl}
           savedMessageIds={savedMessageIds}
