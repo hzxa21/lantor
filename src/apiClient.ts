@@ -13,6 +13,16 @@ export function isTauriRuntime() {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
 }
 
+export type WebAuthStatus = {
+  ok: boolean;
+  required: boolean;
+  authenticated: boolean;
+  locked: boolean;
+  failedAttempts: number;
+  maxFailures: number | null;
+  unlockCommand?: string;
+};
+
 export async function openExternalUrl(url: string): Promise<void> {
   if (isTauriRuntime()) {
     await tauriInvoke("open_external_url", { url });
@@ -63,6 +73,34 @@ export async function apiInvoke<T>(command: string, args: Record<string, unknown
     throw new Error(message);
   }
   return payload as T;
+}
+
+export async function webAuthStatus(): Promise<WebAuthStatus> {
+  const response = await fetch("/api/auth/status");
+  if (!response.ok) throw new Error("Failed to check web authentication");
+  return response.json();
+}
+
+export async function webAuthLogin(pin: string): Promise<void> {
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pin }),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = payload && typeof payload.message === "string"
+      ? payload.message
+      : "PIN login failed";
+    const unlockCommand = payload && typeof payload.unlockCommand === "string"
+      ? `\n${payload.unlockCommand}`
+      : "";
+    throw new Error(`${message}${unlockCommand}`);
+  }
+}
+
+export async function webAuthLogout(): Promise<void> {
+  await fetch("/api/auth/logout", { method: "POST" });
 }
 
 export async function subscribeBackendEvents(handler: (payload: string) => void): Promise<UnlistenFn> {

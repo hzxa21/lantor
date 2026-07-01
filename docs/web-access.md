@@ -25,8 +25,27 @@ To restrict to loopback, set `LANTOR_WEB_BIND=127.0.0.1:8787`. To turn the web
 server off, set `LANTOR_WEB_BIND=off` (also accepts `none`, `disabled`,
 `false`, or `0`).
 
-The web UI does not perform its own token check. Only expose Lantor on a
-trusted private network such as your Tailscale tailnet.
+For browser access outside the local machine, set a 6-digit PIN:
+
+```bash
+LANTOR_WEB_PIN=123456 npm run tauri:dev
+```
+
+The PIN protects all browser API routes except `/api/health` and
+`/api/auth/*`. Desktop Tauri commands still use native IPC and do not require
+the browser PIN. The default lockout threshold is 10 failed attempts; override
+it with `LANTOR_WEB_PIN_MAX_FAILURES`.
+
+After lockout, login stays blocked until someone with shell access to the host
+runs the `sqlite3` unlock command shown on the locked login page. It has this
+shape:
+
+```bash
+sqlite3 '~/Library/Application Support/Lantor/lantor.sqlite' "update web_auth_state set failed_attempts=0, locked_at=null where id='web_pin';"
+```
+
+The PIN is sent to the Lantor host during login, so use HTTPS or a trusted
+private network such as your Tailscale tailnet.
 
 The web UI uses HTTP endpoints under `/api/` for the subset of Tauri commands
 the chat surface needs, including:

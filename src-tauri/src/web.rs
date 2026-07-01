@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     convert::Infallible,
     env,
     net::SocketAddr,
@@ -9,7 +10,8 @@ use std::{
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Path as AxumPath, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive},
         IntoResponse, Response, Sse,
@@ -20,9 +22,11 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 use tokio::{
     net::TcpListener,
+    sync::Mutex,
     time::{sleep, Duration},
 };
 use tower_http::{
@@ -57,17 +61,33 @@ use crate::{
 };
 
 const WEB_SEND_MESSAGE_BODY_LIMIT: usize = 128 * 1024 * 1024;
+const WEB_AUTH_COOKIE: &str = "lantor_web_session";
+const WEB_AUTH_STATE_ID: &str = "web_pin";
+const DEFAULT_WEB_PIN_MAX_FAILURES: i64 = 10;
 
 #[derive(Clone)]
 struct WebState {
     pool: SqlitePool,
     db_url: String,
+    auth: Option<Arc<WebAuth>>,
+}
+
+struct WebAuth {
+    pin_hash: String,
+    max_failures: i64,
+    sessions: Mutex<HashSet<String>>,
 }
 
 #[derive(Serialize)]
 struct ApiError {
     ok: bool,
     message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthLoginRequest {
+    pin: String,
 }
 
 #[derive(Deserialize)]
@@ -268,7 +288,14 @@ pub(crate) fn spawn_web_server_if_configured(pool: SqlitePool, db_url: String) {
 
     let dist_dir = web_dist_dir();
     tauri::async_runtime::spawn(async move {
-        let state = Arc::new(WebState { pool, db_url });
+        let auth = match resolve_web_auth(&pool).await {
+            Ok(auth) => auth,
+            Err(err) => {
+                eprintln!("Lantor web access disabled: {err}");
+                return;
+            }
+        };
+        let state = Arc::new(WebState { pool, db_url, auth });
         let app = web_router(state, dist_dir);
         match TcpListener::bind(addr).await {
             Ok(listener) => {
@@ -289,62 +316,125 @@ pub(crate) fn spawn_web_server_if_configured(pool: SqlitePool, db_url: String) {
     });
 }
 
+async fn resolve_web_auth(pool: &SqlitePool) -> Result<Option<Arc<WebAuth>>, String> {
+    let pin = match env::var("LANTOR_WEB_PIN") {
+        Ok(value) => value.trim().to_owned(),
+        Err(_) => return Ok(None),
+    };
+    if pin.len() != 6 || !pin.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err("LANTOR_WEB_PIN must be exactly 6 digits".to_owned());
+    }
+    ensure_web_auth_state(pool).await?;
+    let max_failures = env::var("LANTOR_WEB_PIN_MAX_FAILURES")
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_WEB_PIN_MAX_FAILURES);
+    Ok(Some(Arc::new(WebAuth {
+        pin_hash: hash_pin(&pin),
+        max_failures,
+        sessions: Mutex::new(HashSet::new()),
+    })))
+}
+
+async fn ensure_web_auth_state(pool: &SqlitePool) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        create table if not exists web_auth_state (
+            id text primary key not null,
+            failed_attempts integer not null default 0,
+            locked_at text
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+
+    sqlx::query(
+        r#"
+        insert into web_auth_state (id, failed_attempts, locked_at)
+        values (?1, 0, null)
+        on conflict(id) do nothing
+        "#,
+    )
+    .bind(WEB_AUTH_STATE_ID)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    Ok(())
+}
+
+fn hash_pin(pin: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(pin.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
     let index = dist_dir.join("index.html");
-    let app = Router::new()
-        .route("/api/health", get(api_health))
+    let protected_api = Router::new()
         .route(
-            "/api/bootstrap",
+            "/bootstrap",
             get(api_bootstrap).layer(CompressionLayer::new()),
         )
-        .route("/api/check_runtime", post(api_check_runtime))
-        .route("/api/events", get(api_events))
-        .route("/api/attachments/{attachment_id}", get(api_attachment))
+        .route("/check_runtime", post(api_check_runtime))
+        .route("/events", get(api_events))
+        .route("/attachments/{attachment_id}", get(api_attachment))
         .route(
-            "/api/send_message",
+            "/send_message",
             post(api_send_message).layer(DefaultBodyLimit::max(WEB_SEND_MESSAGE_BODY_LIMIT)),
         )
-        .route("/api/create_channel", post(api_create_channel))
-        .route("/api/update_channel", post(api_update_channel))
-        .route("/api/delete_channel", post(api_delete_channel))
-        .route("/api/create_agent", post(api_create_agent))
-        .route("/api/update_agent", post(api_update_agent))
-        .route("/api/delete_agent", post(api_delete_agent))
-        .route("/api/start_agent", post(api_start_agent))
+        .route("/create_channel", post(api_create_channel))
+        .route("/update_channel", post(api_update_channel))
+        .route("/delete_channel", post(api_delete_channel))
+        .route("/create_agent", post(api_create_agent))
+        .route("/update_agent", post(api_update_agent))
+        .route("/delete_agent", post(api_delete_agent))
+        .route("/start_agent", post(api_start_agent))
         .route(
-            "/api/set_channel_agent_membership",
+            "/set_channel_agent_membership",
             post(api_set_channel_agent_membership),
         )
-        .route("/api/set_message_saved", post(api_set_message_saved))
-        .route("/api/update_owner_profile", post(api_update_owner_profile))
-        .route("/api/dismiss_inbox_items", post(api_dismiss_inbox_items))
+        .route("/set_message_saved", post(api_set_message_saved))
+        .route("/update_owner_profile", post(api_update_owner_profile))
+        .route("/dismiss_inbox_items", post(api_dismiss_inbox_items))
+        .route("/mark_inbox_items_read", post(api_mark_inbox_items_read))
+        .route("/mark_all_inbox_read", post(api_mark_all_inbox_read))
+        .route("/mark_channel_read", post(api_mark_channel_read))
+        .route("/complete_reminder", post(api_complete_reminder))
+        .route("/update_task_status", post(api_update_task_status))
+        .route("/update_task_title", post(api_update_task_title))
+        .route("/claim_task", post(api_claim_task))
+        .route("/cancel_agent_work", post(api_cancel_agent_work))
+        .route("/retry_agent_work", post(api_retry_agent_work))
         .route(
-            "/api/mark_inbox_items_read",
-            post(api_mark_inbox_items_read),
-        )
-        .route("/api/mark_all_inbox_read", post(api_mark_all_inbox_read))
-        .route("/api/mark_channel_read", post(api_mark_channel_read))
-        .route("/api/complete_reminder", post(api_complete_reminder))
-        .route("/api/update_task_status", post(api_update_task_status))
-        .route("/api/update_task_title", post(api_update_task_title))
-        .route("/api/claim_task", post(api_claim_task))
-        .route("/api/cancel_agent_work", post(api_cancel_agent_work))
-        .route("/api/retry_agent_work", post(api_retry_agent_work))
-        .route(
-            "/api/install_supervisor_service",
+            "/install_supervisor_service",
             post(api_install_supervisor_service),
         )
         .route(
-            "/api/uninstall_supervisor_service",
+            "/uninstall_supervisor_service",
             post(api_uninstall_supervisor_service),
         )
-        .route("/api/artifact_read", post(api_artifact_read))
-        .route("/api/open_dm_with_agent", post(api_open_dm_with_agent))
-        .route("/api/agent_workspace_list", post(api_agent_workspace_list))
+        .route("/artifact_read", post(api_artifact_read))
+        .route("/open_dm_with_agent", post(api_open_dm_with_agent))
+        .route("/agent_workspace_list", post(api_agent_workspace_list))
         .route(
-            "/api/agent_workspace_read_file",
+            "/agent_workspace_read_file",
             post(api_agent_workspace_read_file),
         )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_web_auth,
+        ))
+        .with_state(state.clone());
+
+    let app = Router::new()
+        .route("/api/health", get(api_health))
+        .route("/api/auth/status", get(api_auth_status))
+        .route("/api/auth/login", post(api_auth_login))
+        .route("/api/auth/logout", post(api_auth_logout))
+        .nest("/api", protected_api)
         .with_state(state);
 
     if index.is_file() {
@@ -396,6 +486,101 @@ async fn missing_dist(dist_dir: PathBuf) -> impl IntoResponse {
 
 async fn api_health() -> impl IntoResponse {
     Json(json!({ "ok": true }))
+}
+
+async fn api_auth_status(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Response> {
+    let Some(auth) = state.auth.as_ref() else {
+        return Ok(Json(json!({
+            "ok": true,
+            "required": false,
+            "authenticated": true,
+            "locked": false,
+            "failedAttempts": 0,
+            "maxFailures": null,
+        })));
+    };
+    let (failed_attempts, locked) = web_auth_status(&state.pool).await.map_err(api_error)?;
+    Ok(Json(json!({
+        "ok": true,
+        "required": true,
+        "authenticated": web_session_authenticated(&state, &headers).await,
+        "locked": locked,
+        "failedAttempts": failed_attempts,
+        "maxFailures": auth.max_failures,
+        "unlockCommand": locked.then(|| web_auth_unlock_command(&state.db_url)),
+    })))
+}
+
+async fn api_auth_login(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Json(request): Json<AuthLoginRequest>,
+) -> Result<Response, Response> {
+    let Some(auth) = state.auth.as_ref() else {
+        return Ok(Json(json!({ "ok": true, "required": false })).into_response());
+    };
+    if web_session_authenticated(&state, &headers).await {
+        return Ok(Json(json!({ "ok": true, "authenticated": true })).into_response());
+    }
+
+    let (_, locked) = web_auth_status(&state.pool).await.map_err(api_error)?;
+    if locked {
+        return Err(web_auth_locked_response(&state.db_url));
+    }
+    if request.pin.trim().len() != 6 || hash_pin(request.pin.trim()) != auth.pin_hash {
+        let (failed_attempts, locked) = web_auth_record_failure(&state.pool, auth.max_failures)
+            .await
+            .map_err(api_error)?;
+        if locked {
+            return Err(web_auth_locked_response(&state.db_url));
+        }
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "ok": false,
+                "message": "Invalid PIN",
+                "failedAttempts": failed_attempts,
+                "maxFailures": auth.max_failures,
+            })),
+        )
+            .into_response());
+    }
+
+    web_auth_clear_failures(&state.pool)
+        .await
+        .map_err(api_error)?;
+    let session = Uuid::new_v4().simple().to_string();
+    auth.sessions.lock().await.insert(session.clone());
+    let mut response = Json(json!({ "ok": true, "authenticated": true })).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&format!(
+            "{WEB_AUTH_COOKIE}={session}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800"
+        ))
+        .map_err(to_string)
+        .map_err(api_error)?,
+    );
+    Ok(response)
+}
+
+async fn api_auth_logout(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Result<Response, Response> {
+    if let Some(auth) = state.auth.as_ref() {
+        if let Some(session) = cookie_value(&headers, WEB_AUTH_COOKIE) {
+            auth.sessions.lock().await.remove(&session);
+        }
+    }
+    let mut response = Json(json!({ "ok": true })).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_static("lantor_web_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"),
+    );
+    Ok(response)
 }
 
 async fn api_bootstrap(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, Response> {
@@ -856,10 +1041,176 @@ async fn api_attachment(
     Ok(response)
 }
 
+async fn require_web_auth(
+    State(state): State<Arc<WebState>>,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, Response> {
+    if state.auth.is_none() || web_session_authenticated(&state, request.headers()).await {
+        return Ok(next.run(request).await);
+    }
+    Err((
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "ok": false,
+            "message": "PIN login required",
+            "authRequired": true,
+        })),
+    )
+        .into_response())
+}
+
+async fn web_session_authenticated(state: &WebState, headers: &HeaderMap) -> bool {
+    let Some(auth) = state.auth.as_ref() else {
+        return true;
+    };
+    let Some(session) = cookie_value(headers, WEB_AUTH_COOKIE) else {
+        return false;
+    };
+    auth.sessions.lock().await.contains(&session)
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
+    cookie.split(';').find_map(|part| {
+        let (key, value) = part.trim().split_once('=')?;
+        (key == name).then(|| value.to_owned())
+    })
+}
+
+async fn web_auth_status(pool: &SqlitePool) -> Result<(i64, bool), String> {
+    ensure_web_auth_state(pool).await?;
+    let row = sqlx::query("select failed_attempts, locked_at from web_auth_state where id = ?1")
+        .bind(WEB_AUTH_STATE_ID)
+        .fetch_one(pool)
+        .await
+        .map_err(to_string)?;
+    let failed_attempts: i64 = row.get("failed_attempts");
+    let locked_at: Option<String> = row.get("locked_at");
+    Ok((failed_attempts, locked_at.is_some()))
+}
+
+async fn web_auth_record_failure(
+    pool: &SqlitePool,
+    max_failures: i64,
+) -> Result<(i64, bool), String> {
+    ensure_web_auth_state(pool).await?;
+    sqlx::query(
+        r#"
+        update web_auth_state
+        set
+            failed_attempts = failed_attempts + 1,
+            locked_at = case
+                when failed_attempts + 1 >= ?2 then strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
+                else locked_at
+            end
+        where id = ?1 and locked_at is null
+        "#,
+    )
+    .bind(WEB_AUTH_STATE_ID)
+    .bind(max_failures)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    web_auth_status(pool).await
+}
+
+async fn web_auth_clear_failures(pool: &SqlitePool) -> Result<(), String> {
+    ensure_web_auth_state(pool).await?;
+    sqlx::query("update web_auth_state set failed_attempts = 0, locked_at = null where id = ?1")
+        .bind(WEB_AUTH_STATE_ID)
+        .execute(pool)
+        .await
+        .map_err(to_string)?;
+    Ok(())
+}
+
+fn web_auth_locked_response(db_url: &str) -> Response {
+    (
+        StatusCode::LOCKED,
+        Json(json!({
+            "ok": false,
+            "message": "PIN login locked after too many failed attempts. Run the unlock command on the Lantor host to allow more attempts.",
+            "locked": true,
+            "unlockCommand": web_auth_unlock_command(db_url),
+        })),
+    )
+        .into_response()
+}
+
+fn web_auth_unlock_command(db_url: &str) -> String {
+    let database = sqlite_path_from_url(db_url).unwrap_or_else(|| db_url.to_owned());
+    format!(
+        "sqlite3 {} \"update web_auth_state set failed_attempts=0, locked_at=null where id='web_pin';\"",
+        shell_quote(&database)
+    )
+}
+
+fn sqlite_path_from_url(db_url: &str) -> Option<String> {
+    db_url
+        .strip_prefix("sqlite://")
+        .or_else(|| db_url.strip_prefix("sqlite:"))
+        .map(str::to_owned)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn api_error(message: String) -> Response {
     (
         StatusCode::BAD_REQUEST,
         Json(ApiError { ok: false, message }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn web_auth_failure_lock_persists_until_cleared() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect memory sqlite");
+
+        assert_eq!(web_auth_status(&pool).await.expect("status"), (0, false));
+        assert_eq!(
+            web_auth_record_failure(&pool, 2)
+                .await
+                .expect("first failure"),
+            (1, false)
+        );
+        assert_eq!(
+            web_auth_record_failure(&pool, 2)
+                .await
+                .expect("second failure"),
+            (2, true)
+        );
+        assert_eq!(
+            web_auth_record_failure(&pool, 2)
+                .await
+                .expect("locked failure"),
+            (2, true)
+        );
+
+        web_auth_clear_failures(&pool)
+            .await
+            .expect("clear failures");
+        assert_eq!(web_auth_status(&pool).await.expect("cleared"), (0, false));
+    }
+
+    #[test]
+    fn cookie_value_reads_named_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("theme=dark; lantor_web_session=abc123; other=value"),
+        );
+        assert_eq!(
+            cookie_value(&headers, WEB_AUTH_COOKIE),
+            Some("abc123".to_owned())
+        );
+    }
 }

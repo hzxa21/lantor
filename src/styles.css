@@ -262,6 +262,97 @@ button,
   font-weight: var(--type-weight-semibold);
 }
 
+.web-auth-shell {
+  display: grid;
+  min-height: 100vh;
+  padding: 24px;
+  place-items: center;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-page) 84%, var(--accent-soft)), var(--surface-page));
+}
+
+.web-auth-panel {
+  display: grid;
+  width: min(360px, 100%);
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-floating);
+  box-shadow: var(--state-selected-shadow);
+}
+
+.web-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-primary);
+  font-weight: var(--type-weight-bold);
+}
+
+.web-auth-brand span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  place-items: center;
+  background: var(--accent);
+  color: var(--ink-on-accent);
+}
+
+.web-auth-panel label {
+  color: var(--ink-muted);
+  font-size: var(--type-size-meta);
+  font-weight: var(--type-weight-semibold);
+}
+
+.web-auth-panel input {
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-page);
+  color: var(--ink-primary);
+  font-family: var(--font-mono);
+  font-size: 22px;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.web-auth-panel button {
+  min-height: 40px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--ink-on-accent);
+  font-weight: var(--type-weight-semibold);
+}
+
+.web-auth-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.web-auth-panel p {
+  margin: 0;
+  color: var(--status-danger);
+  font-size: var(--type-size-body);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.web-auth-panel pre {
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-page) 86%, var(--ink-primary) 6%);
+  color: var(--ink-primary);
+  font-size: var(--type-size-meta);
+  line-height: 1.4;
+}
+
 @keyframes bootOrbit {
   0%,
   100% {

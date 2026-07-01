@@ -14,7 +14,15 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { Bookmark, Home, Inbox, Search } from "lucide-react";
-import { apiInvoke, completeStartupSplash, isTauriRuntime, subscribeBackendEvents } from "./apiClient";
+import {
+  apiInvoke,
+  completeStartupSplash,
+  isTauriRuntime,
+  subscribeBackendEvents,
+  webAuthLogin,
+  webAuthStatus,
+  type WebAuthStatus,
+} from "./apiClient";
 import { APP_DISPLAY_NAME } from "./branding";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
 import type { AgentPerformance } from "./components/AgentDetailDrawer";
@@ -377,6 +385,59 @@ function BootSplash({ appError, onRetry }: { appError: string | null; onRetry: (
   );
 }
 
+function WebPinLogin({
+  pin,
+  authStatus,
+  authError,
+  submitting,
+  onChange,
+  onSubmit,
+}: {
+  pin: string;
+  authStatus: WebAuthStatus;
+  authError: string | null;
+  submitting: boolean;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  const locked = Boolean(authStatus.locked);
+  return (
+    <main className="web-auth-shell">
+      <form
+        className="web-auth-panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!locked && pin.length === 6 && !submitting) onSubmit();
+        }}
+      >
+        <div className="web-auth-brand">
+          <span aria-hidden="true">L</span>
+          <strong>{APP_DISPLAY_NAME}</strong>
+        </div>
+        <label htmlFor="web-pin">PIN</label>
+        <input
+          id="web-pin"
+          value={pin}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          pattern="[0-9]*"
+          maxLength={6}
+          disabled={locked || submitting}
+          autoFocus
+          onChange={(event) => onChange(event.target.value.replace(/\D/g, "").slice(0, 6))}
+        />
+        <button type="submit" disabled={locked || submitting || pin.length !== 6}>
+          {submitting ? "Checking..." : "Unlock"}
+        </button>
+        {authError ? <p role="alert">{authError}</p> : null}
+        {locked && authStatus.unlockCommand ? (
+          <pre>{authStatus.unlockCommand}</pre>
+        ) : null}
+      </form>
+    </main>
+  );
+}
+
 class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
   state: AppErrorBoundaryState = { error: null, info: null };
 
@@ -690,6 +751,10 @@ function App() {
   const [bootReady, setBootReady] = useState(false);
   const startupSplashCompletedRef = useRef(false);
   const [data, setData] = useState<Bootstrap | null>(null);
+  const [webAuth, setWebAuth] = useState<WebAuthStatus | null>(null);
+  const [webPin, setWebPin] = useState("");
+  const [webAuthError, setWebAuthError] = useState<string | null>(null);
+  const [webAuthSubmitting, setWebAuthSubmitting] = useState(false);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [channelThreadMemory, setChannelThreadMemory] = useState<ChannelThreadMemory>(() => loadChannelThreadMemory());
@@ -844,6 +909,8 @@ function App() {
       : showSavedModal
         ? "saved"
         : null;
+  const webAuthRequired = Boolean(webAuth?.required && !webAuth.authenticated);
+  const backendEventsReady = Boolean(data && !webAuthRequired);
 
   useEffect(() => {
     return () => {
@@ -1361,6 +1428,36 @@ function App() {
     }
   }
 
+  async function loadInitialState() {
+    setAppError(null);
+    if (!isTauriRuntime()) {
+      const status = await webAuthStatus();
+      setWebAuth(status);
+      if (status.required && !status.authenticated) return;
+    }
+    await refresh();
+    await refreshRuntimeChecks();
+  }
+
+  async function submitWebPin() {
+    setWebAuthSubmitting(true);
+    setWebAuthError(null);
+    try {
+      await webAuthLogin(webPin);
+      setWebPin("");
+      await loadInitialState();
+    } catch (err) {
+      setWebAuthError(errorMessage(err, "PIN login failed"));
+      try {
+        setWebAuth(await webAuthStatus());
+      } catch {
+        // Keep the login form visible with the existing error.
+      }
+    } finally {
+      setWebAuthSubmitting(false);
+    }
+  }
+
   async function mutate<T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> {
     try {
       const result = await apiInvoke<T>(command, args);
@@ -1375,31 +1472,27 @@ function App() {
   }
 
   useEffect(() => {
-    refresh().catch((err) => {
+    loadInitialState().catch((err) => {
       setAppError(errorMessage(err, `Failed to load ${APP_DISPLAY_NAME} state`));
-      console.error(err);
-    });
-    refreshRuntimeChecks().catch((err) => {
-      setAppError(errorMessage(err, "Failed to check local runtimes"));
       console.error(err);
     });
   }, []);
 
   useEffect(() => {
-    if ((!data && !appError) || bootReady) return;
+    if ((!data && !appError && !webAuthRequired) || bootReady) return;
     const elapsed = performance.now() - bootStartedAt;
     const delay = Math.max(0, MIN_BOOT_SPLASH_MS - elapsed);
     const timer = window.setTimeout(() => setBootReady(true), delay);
     return () => window.clearTimeout(timer);
-  }, [appError, bootReady, bootStartedAt, data]);
+  }, [appError, bootReady, bootStartedAt, data, webAuthRequired]);
 
   useEffect(() => {
-    if (!bootReady || (!data && !appError) || startupSplashCompletedRef.current) return;
+    if (!bootReady || (!data && !appError && !webAuthRequired) || startupSplashCompletedRef.current) return;
     startupSplashCompletedRef.current = true;
     completeStartupSplash().catch((err) => {
       console.error("Failed to complete startup splash", err);
     });
-  }, [appError, bootReady, data]);
+  }, [appError, bootReady, data, webAuthRequired]);
 
   useEffect(() => {
     if (!data || showOwnerProfileModal) return;
@@ -1425,6 +1518,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!backendEventsReady) return;
     let unlisten: (() => void) | null = null;
     let disposed = false;
 
@@ -1475,15 +1569,16 @@ function App() {
       cancelEphemeralFlushTimers();
       disconnect();
     };
-  }, []);
+  }, [backendEventsReady]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
+      if (webAuthRequired) return;
       if (document.visibilityState !== "visible") return;
       requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state`);
     }, 5000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [webAuthRequired]);
 
   useEffect(() => {
     if (!data) return;
@@ -3746,11 +3841,30 @@ function App() {
     await mutate("uninstall_supervisor_service");
   }
 
+  if (webAuthRequired && bootReady && webAuth) {
+    return (
+      <WebPinLogin
+        pin={webPin}
+        authStatus={webAuth}
+        authError={webAuthError}
+        submitting={webAuthSubmitting}
+        onChange={(value) => {
+          setWebPin(value);
+          setWebAuthError(null);
+        }}
+        onSubmit={submitWebPin}
+      />
+    );
+  }
+
   if (!data || !bootReady) {
     return (
       <BootSplash
         appError={appError}
-        onRetry={() => refreshWithError(`Failed to load ${APP_DISPLAY_NAME} state`)}
+        onRetry={() => loadInitialState().catch((err) => {
+          setAppError(errorMessage(err, `Failed to load ${APP_DISPLAY_NAME} state`));
+          console.error(err);
+        })}
       />
     );
   }
