@@ -1,11 +1,13 @@
 import { Hash, MessageSquare, PanelRightOpen, X } from "lucide-react";
-import type { KeyboardEvent, MouseEvent } from "react";
+import { useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
 import type { Channel, Message } from "../types";
 import { formatTime } from "../ui-utils";
 import {
   type ResolvedMessageReference,
   parseMessageReferences,
   resolveMessageReference,
+  withoutMessageReferenceTokens,
 } from "../message-references";
 
 type MessageReferenceCardProps = {
@@ -20,6 +22,31 @@ export function firstLinePreview(body: string, limit = 140) {
   const normalized = body.replace(/\s+/g, " ").trim();
   if (!normalized) return "Empty message";
   return normalized.length > limit ? `${normalized.slice(0, limit - 1).trimEnd()}...` : normalized;
+}
+
+function firstLinesPreview(body: string, maxLines = 3) {
+  const lines = withoutMessageReferenceTokens(body)
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return "Empty message";
+  return lines.slice(0, maxLines).join("\n");
+}
+
+function hovercardStyle(rect: DOMRect): CSSProperties {
+  const MAX_WIDTH = 320;
+  const left = Math.max(12, Math.min(rect.left, window.innerWidth - MAX_WIDTH - 12));
+  const placeAbove = rect.bottom > window.innerHeight - 168;
+  return {
+    position: "fixed",
+    left,
+    maxWidth: MAX_WIDTH,
+    pointerEvents: "none",
+    ...(placeAbove
+      ? { bottom: window.innerHeight - rect.top + 6 }
+      : { top: rect.bottom + 6 }),
+  };
 }
 
 function referenceLabel(reference: ResolvedMessageReference) {
@@ -45,6 +72,7 @@ export function MessageReferenceCard({
   onOpen,
   onRemove,
 }: MessageReferenceCardProps) {
+  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
   const Icon = reference.kind === "thread" ? PanelRightOpen : MessageSquare;
   const preview = reference.message
     ? firstLinePreview(reference.message.body, compact ? 96 : 150)
@@ -73,11 +101,15 @@ export function MessageReferenceCard({
   if (compact) {
     const channelLabel = reference.channel ? `#${reference.channel.name}` : "Unknown channel";
     const senderLabel = reference.message?.sender_name ?? "Unknown";
+    const showHovercard = Boolean(hoverRect && reference.message);
     return (
       <span
         className={className}
         {...openProps}
-        title={reference.message ? preview : reference.token}
+        onMouseEnter={(event) => {
+          if (reference.message) setHoverRect(event.currentTarget.getBoundingClientRect());
+        }}
+        onMouseLeave={() => setHoverRect(null)}
       >
         <span className="message-reference-icon" aria-hidden="true">
           <Icon size={13} />
@@ -86,6 +118,16 @@ export function MessageReferenceCard({
           <strong>{referenceLabel(reference)}</strong>
           <span>{channelLabel} · {senderLabel}</span>
         </span>
+        {showHovercard && reference.message && createPortal(
+          <div className={`message-reference-hovercard ${reference.kind}`} style={hovercardStyle(hoverRect!)} role="tooltip">
+            <div className="message-reference-hovercard-head">
+              <strong>{referenceLabel(reference)}</strong>
+              <span>{referenceMeta(reference)}</span>
+            </div>
+            <div className="message-reference-hovercard-body">{firstLinesPreview(reference.message.body)}</div>
+          </div>,
+          document.body,
+        )}
       </span>
     );
   }
