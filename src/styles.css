@@ -2957,6 +2957,356 @@ button,
   color: var(--accent);
 }
 
+.message-reference-stack,
+.message-reference-preview-list {
+  display: grid;
+  gap: 7px;
+  width: min(100%, 560px);
+}
+
+.message-reference-stack.composer,
+.message-reference-preview-list {
+  width: 100%;
+}
+
+.message-reference-stack-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-semibold);
+  line-height: 18px;
+}
+
+.message-reference-stack-summary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-reference-stack-summary button,
+.message-reference-stack-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: max-content;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(10, 132, 255, 0.16);
+  border-radius: 7px;
+  background: rgba(10, 132, 255, 0.07);
+  color: var(--accent);
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-semibold);
+}
+
+.message-reference-stack-summary button:hover,
+.message-reference-stack-toggle:hover {
+  border-color: rgba(10, 132, 255, 0.3);
+  background: rgba(10, 132, 255, 0.11);
+}
+
+.message-reference-stack-toggle {
+  width: 100%;
+  min-width: 0;
+}
+
+.message-reference-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 50px;
+  padding: 9px 10px 9px 12px;
+  overflow: hidden;
+  border: 1px solid rgba(30, 111, 201, 0.22);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(10, 132, 255, 0.09), rgba(10, 132, 255, 0) 34%),
+    rgba(255, 255, 255, 0.74);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.82) inset,
+    0 7px 22px rgba(31, 42, 68, 0.08);
+  color: var(--ink);
+  text-align: left;
+}
+
+.message-reference-card[role="button"] {
+  cursor: pointer;
+}
+
+.message-reference-card[role="button"]:hover {
+  border-color: rgba(30, 111, 201, 0.38);
+  background:
+    linear-gradient(90deg, rgba(10, 132, 255, 0.12), rgba(10, 132, 255, 0) 38%),
+    rgba(255, 255, 255, 0.92);
+}
+
+.message-reference-card[role="button"]:focus-visible {
+  border-color: rgba(10, 132, 255, 0.5);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.14);
+  outline: none;
+}
+
+.message-reference-card.thread {
+  border-color: rgba(88, 86, 214, 0.25);
+  background:
+    linear-gradient(90deg, rgba(88, 86, 214, 0.11), rgba(88, 86, 214, 0) 36%),
+    rgba(255, 255, 255, 0.74);
+}
+
+.message-reference-card.compact {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: baseline;
+  gap: 5px;
+  width: auto;
+  min-width: 0;
+  max-width: min(100%, 360px);
+  min-height: 0;
+  margin: 0 2px;
+  padding: 2px 7px 2px 5px;
+  border-color: rgba(10, 132, 255, 0.28);
+  border-radius: 6px;
+  background: rgba(10, 132, 255, 0.12);
+  box-shadow: none;
+  color: var(--ink-primary);
+  line-height: 20px;
+}
+
+.message-reference-card.compact.thread {
+  border-color: rgba(88, 86, 214, 0.3);
+  background: rgba(88, 86, 214, 0.13);
+}
+
+.message-reference-card.compact[role="button"]:hover {
+  border-color: rgba(10, 132, 255, 0.42);
+  background: rgba(10, 132, 255, 0.18);
+}
+
+.message-reference-card.compact.thread[role="button"]:hover {
+  border-color: rgba(88, 86, 214, 0.45);
+  background: rgba(88, 86, 214, 0.19);
+}
+
+.message-reference-card.missing {
+  border-style: dashed;
+  border-color: rgba(142, 142, 147, 0.38);
+  background: rgba(142, 142, 147, 0.08);
+}
+
+.message-reference-hovercard {
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: max-content;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle, rgba(20, 23, 31, 0.12));
+  border-radius: var(--radius-lg, 14px);
+  background: var(--bg-panel-strong, #fff);
+  box-shadow:
+    0 12px 32px rgba(20, 23, 31, 0.16),
+    0 2px 8px rgba(20, 23, 31, 0.08);
+  animation: message-reference-hovercard-in 120ms ease;
+}
+
+@keyframes message-reference-hovercard-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.message-reference-hovercard-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.message-reference-hovercard-head strong {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: var(--type-size-meta, 12px);
+  font-weight: 700;
+}
+
+.message-reference-hovercard.thread .message-reference-hovercard-head strong {
+  color: #6f42c1;
+}
+
+.message-reference-hovercard-head span {
+  overflow: hidden;
+  color: var(--ink-muted, #6b7280);
+  font-size: var(--type-size-caption, 11px);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.message-reference-hovercard-body {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--ink-primary, #14171f);
+  font-size: var(--type-size-control, 13px);
+  line-height: 1.45;
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.message-reference-rail {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 99px 99px 0;
+  background: var(--accent);
+}
+
+.message-reference-card.thread .message-reference-rail {
+  background: #5856d6;
+}
+
+.message-reference-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid rgba(10, 132, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(10, 132, 255, 0.1);
+  color: var(--accent);
+}
+
+.message-reference-card.thread .message-reference-icon {
+  border-color: rgba(88, 86, 214, 0.2);
+  background: rgba(88, 86, 214, 0.11);
+  color: #5856d6;
+}
+
+.message-reference-card.compact .message-reference-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+}
+
+.message-reference-inline-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--type-size-caption);
+  line-height: 16px;
+}
+
+.message-reference-inline-copy strong {
+  flex: 0 0 auto;
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-bold);
+}
+
+.message-reference-inline-copy span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-reference-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.message-reference-title,
+.message-reference-kicker {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--type-size-caption);
+  line-height: 16px;
+}
+
+.message-reference-title strong,
+.message-reference-kicker strong {
+  flex: 0 0 auto;
+  color: var(--ink-primary);
+  font-size: var(--type-size-meta);
+  font-weight: var(--type-weight-bold);
+}
+
+.message-reference-title span,
+.message-reference-title em,
+.message-reference-kicker span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-reference-title em {
+  color: #7b8089;
+  font-style: normal;
+}
+
+.message-reference-preview {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--type-size-body);
+  line-height: 19px;
+}
+
+.message-reference-preview b {
+  flex: 0 0 auto;
+  font-weight: var(--type-weight-bold);
+}
+
+.message-reference-preview span,
+.message-reference-card.compact .message-reference-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-reference-remove {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.message-reference-remove:hover {
+  border-color: rgba(20, 23, 31, 0.12);
+  background: rgba(20, 23, 31, 0.06);
+  color: var(--ink);
+}
+
+.message-reference-channel {
+  display: none;
+}
+
 .system-message {
   margin: 2px 22px;
   padding: 0;
@@ -4293,6 +4643,79 @@ mark {
   background: var(--surface-menu-overlay);
 }
 
+:root[data-theme="dark"] .message-reference-card {
+  border-color: rgba(96, 165, 250, 0.28);
+  background:
+    linear-gradient(90deg, rgba(96, 165, 250, 0.16), rgba(96, 165, 250, 0) 38%),
+    rgba(25, 29, 36, 0.78);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 12px 28px rgba(0, 0, 0, 0.18);
+}
+
+:root[data-theme="dark"] .message-reference-card[role="button"]:hover {
+  border-color: rgba(96, 165, 250, 0.44);
+  background:
+    linear-gradient(90deg, rgba(96, 165, 250, 0.2), rgba(96, 165, 250, 0) 40%),
+    rgba(31, 36, 45, 0.92);
+}
+
+:root[data-theme="dark"] .message-reference-card.compact {
+  border-color: rgba(96, 165, 250, 0.34);
+  background: rgba(96, 165, 250, 0.16);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .message-reference-card.compact[role="button"]:hover {
+  border-color: rgba(96, 165, 250, 0.48);
+  background: rgba(96, 165, 250, 0.22);
+}
+
+:root[data-theme="dark"] .message-reference-card.thread {
+  border-color: rgba(139, 136, 255, 0.34);
+  background:
+    linear-gradient(90deg, rgba(139, 136, 255, 0.18), rgba(139, 136, 255, 0) 38%),
+    rgba(25, 29, 36, 0.78);
+}
+
+:root[data-theme="dark"] .message-reference-card.compact.thread {
+  border-color: rgba(139, 136, 255, 0.42);
+  background: rgba(139, 136, 255, 0.18);
+}
+
+:root[data-theme="dark"] .message-reference-card.compact.thread[role="button"]:hover {
+  border-color: rgba(139, 136, 255, 0.54);
+  background: rgba(139, 136, 255, 0.24);
+}
+
+:root[data-theme="dark"] .message-reference-card.thread .message-reference-icon {
+  border-color: rgba(139, 136, 255, 0.25);
+  background: rgba(139, 136, 255, 0.14);
+  color: #9b99ff;
+}
+
+:root[data-theme="dark"] .message-reference-stack-summary button,
+:root[data-theme="dark"] .message-reference-stack-toggle {
+  border-color: rgba(96, 165, 250, 0.24);
+  background: rgba(96, 165, 250, 0.12);
+  color: #9dccff;
+}
+
+:root[data-theme="dark"] .message-reference-stack-summary button:hover,
+:root[data-theme="dark"] .message-reference-stack-toggle:hover {
+  border-color: rgba(96, 165, 250, 0.38);
+  background: rgba(96, 165, 250, 0.18);
+}
+
+:root[data-theme="dark"] .message-reference-title em {
+  color: #a5adba;
+}
+
+:root[data-theme="dark"] .message-reference-remove:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 :root[data-theme="dark"] .app select {
   color-scheme: dark;
 }
@@ -4960,6 +5383,61 @@ mark {
   outline: none;
 }
 
+.composer-reference-input {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--control-border);
+  border-radius: 18px;
+  background: var(--bg-input);
+}
+
+.composer-reference-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 14px 15px;
+  border: 1px solid transparent;
+  color: var(--ink-primary);
+  font: inherit;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  white-space: pre-wrap;
+}
+
+.composer-reference-token {
+  /* Width-neutral highlight only: no padding / margin / inline-block /
+     font-weight change, so the overlay keeps the exact glyph advance of the
+     underlying textarea text and the caret stays aligned. box-shadow and
+     border-radius do not affect layout width. */
+  border-radius: 4px;
+  background: rgba(10, 132, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.24);
+  color: var(--accent);
+}
+
+.composer-reference-token.thread {
+  background: rgba(111, 66, 193, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(111, 66, 193, 0.24);
+  color: #6f42c1;
+}
+
+.composer-reference-input textarea {
+  position: relative;
+  z-index: 1;
+  border-color: transparent;
+  background: transparent;
+}
+
+.composer-reference-input.has-reference-token textarea {
+  color: transparent;
+}
+
+.composer-reference-input:focus-within {
+  border-color: rgba(10, 132, 255, 0.42);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.08);
+}
+
 .composer textarea::placeholder,
 .reply-composer textarea::placeholder {
   color: var(--ink-placeholder);
@@ -4984,6 +5462,11 @@ mark {
 .reply-composer textarea:focus {
   border-color: rgba(10, 132, 255, 0.42);
   box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.08);
+}
+
+.composer-reference-input textarea:focus {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .composer textarea:disabled,
@@ -5757,6 +6240,14 @@ body.resizing-column * {
   min-height: 44px;
   padding: 12px 14px;
   border-radius: var(--radius-lg);
+}
+
+.composer-reference-input {
+  border-radius: var(--radius-lg);
+}
+
+.composer-reference-overlay {
+  padding: 12px 14px;
 }
 
 .agent-drawer {
@@ -9996,6 +10487,19 @@ body.resizing-column * {
     font-size: var(--type-size-control);
     line-height: 20px;
     overflow-y: auto;
+  }
+
+  .composer .composer-reference-input,
+  .reply-composer .composer-reference-input {
+    grid-area: input;
+    border-radius: 14px;
+  }
+
+  .composer .composer-reference-overlay,
+  .reply-composer .composer-reference-overlay {
+    padding: 7px 13px;
+    font-size: var(--type-size-control);
+    line-height: 20px;
   }
 
   .composer-actions,

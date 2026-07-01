@@ -18,10 +18,20 @@ import type { PluggableList } from "unified";
 import "katex/dist/katex.min.css";
 import { openExternalUrl } from "../apiClient";
 import { copyText } from "../clipboard";
+import {
+  MESSAGE_REFERENCE_PATTERN,
+  type ResolvedMessageReference,
+  resolveMessageReference,
+} from "../message-references";
+import type { Channel, Message } from "../types";
+import { MessageReferenceCard } from "./MessageReferenceCard";
 
 type MessageMarkdownProps = {
   body: string;
   onLocalAgentLink?: (handle: string) => void;
+  messages?: Message[];
+  channels?: Channel[];
+  onOpenReference?: (reference: ResolvedMessageReference) => void;
   scrollKey?: string;
 };
 
@@ -82,6 +92,12 @@ function linkifyMessageBody(body: string) {
     .join("");
 }
 
+function messageReferenceMarkdown(body: string) {
+  return body.replace(MESSAGE_REFERENCE_PATTERN, (_match, kind: string, id: string) => (
+    `[${kind}:${id}](${LOCAL_ENTITY_PATH_PREFIX}reference/${kind}/${id})`
+  ));
+}
+
 function textFromNode(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textFromNode).join("");
@@ -121,6 +137,18 @@ function localAgentHandleFromHref(href: string | undefined) {
   } catch {
     return null;
   }
+}
+
+function referenceFromHref(
+  href: string | undefined,
+  messages: Message[] | undefined,
+  channels: Channel[] | undefined,
+) {
+  if (!href?.startsWith(`${LOCAL_ENTITY_PATH_PREFIX}reference/`)) return null;
+  if (!messages || !channels) return null;
+  const [, kind, id] = href.match(/^\/lantor\/reference\/(message|thread)\/([0-9a-fA-F-]{8,36})/) ?? [];
+  if (kind !== "message" && kind !== "thread") return null;
+  return resolveMessageReference({ kind, id, token: `[[${kind}:${id}]]` }, messages, channels);
 }
 
 function handleLinkClick(
@@ -181,12 +209,29 @@ function MarkdownTableScroll({ children, scrollKey }: { children?: ReactNode; sc
   );
 }
 
-export function MessageMarkdown({ body, onLocalAgentLink, scrollKey }: MessageMarkdownProps) {
-  const linkedBody = linkifyMessageBody(body);
+export function MessageMarkdown({
+  body,
+  onLocalAgentLink,
+  messages,
+  channels,
+  onOpenReference,
+  scrollKey,
+}: MessageMarkdownProps) {
+  const linkedBody = messageReferenceMarkdown(linkifyMessageBody(body));
   const tableIndexRef = useRef(0);
   tableIndexRef.current = 0;
   const markdownComponents = useMemo<Components>(() => ({
     a: ({ children, href, node: _node, ...props }) => {
+      const reference = referenceFromHref(href, messages, channels);
+      if (reference) {
+        return (
+          <MessageReferenceCard
+            reference={reference}
+            compact
+            onOpen={onOpenReference}
+          />
+        );
+      }
       const isLocalLink = Boolean(href?.startsWith(LOCAL_ENTITY_PATH_PREFIX));
       return (
         <a
@@ -211,7 +256,7 @@ export function MessageMarkdown({ body, onLocalAgentLink, scrollKey }: MessageMa
       tableIndexRef.current += 1;
       return <MarkdownTableScroll scrollKey={tableScrollKey}>{children}</MarkdownTableScroll>;
     },
-  }), [onLocalAgentLink, scrollKey]);
+  }), [channels, messages, onLocalAgentLink, onOpenReference, scrollKey]);
 
   return (
     <div className="markdown-body">

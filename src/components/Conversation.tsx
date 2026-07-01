@@ -9,6 +9,7 @@ import {
   LayoutList,
   MessageSquare,
   Paperclip,
+  Quote,
   Send,
   Settings,
   Trash2,
@@ -25,15 +26,18 @@ import { APP_DISPLAY_NAME } from "../branding";
 import { isCompactFollowupMessage, messageHasVisibleContent, wasEdited } from "../message-grouping";
 import { DESKTOP_MESSAGE_PREVIEW_CHARS, DESKTOP_MESSAGE_PREVIEW_LINES } from "../message-preview";
 import { messageShareLink, messageToMarkdown } from "../message-share";
+import { appendMessageReferenceToken, messageReferenceToken, parseMessageReferences, removeMessageReferenceToken, withoutMessageReferenceTokens, type MessageReferenceKind, type ResolvedMessageReference } from "../message-references";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task, ThreadReplySummary } from "../types";
 import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
 import { ActivityProgressDock, activeProgressByAgent } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
+import { ComposerReferenceTextarea } from "./ComposerReferenceTextarea";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { MessageReferencePreview, type MessageReferencePreviewItem } from "./MessageReferencePreview";
 import { TaskAssigneePicker } from "./TaskAssigneePicker";
 
 type WritingSuggestionsTextareaAttrs = TextareaHTMLAttributes<HTMLTextAreaElement> & { "writingsuggestions": "false" };
@@ -52,6 +56,7 @@ type ConversationProps = {
   activeTab: "chat" | "tasks";
   activeRoot: Message | null;
   rootMessages: Message[];
+  messages: Message[];
   threadReplyCounts: Record<string, number>;
   threadUnreadCounts: Record<string, number>;
   threadReplySummaries: Record<string, ThreadReplySummary>;
@@ -82,6 +87,8 @@ type ConversationProps = {
   openAgentDetail: (agent: Agent) => void;
   openArtifact: (artifact: Artifact) => void;
   openWorkItem?: (item: AgentWorkItem, focusedMessageIdOverride?: string | null) => void;
+  onReferenceMessageJump: (originMessageId: string, targetMessageId: string) => void;
+  onReferenceThreadJump: (originMessageId: string, threadId: string) => void;
   shareBaseUrl: string | null;
   savedMessageIds: Set<string>;
   focusedMessageId: string | null;
@@ -115,6 +122,13 @@ function taskStatusLabel(status: string) {
 
 type ReplyProgress = ReturnType<typeof activeProgressByAgent>[number];
 type ActiveReplyMenuPlacement = "above" | "below";
+const MESSAGE_LIST_COMPOSER_RESIZE_SUPPRESS_MS = 200;
+
+function compactReferencePreview(body: string) {
+  const text = withoutMessageReferenceTokens(body).replace(/\s+/g, " ").trim();
+  if (!text) return "No text preview";
+  return text.length > 140 ? `${text.slice(0, 139).trimEnd()}...` : text;
+}
 
 function compactReplyProgressText(value: string, limit: number) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -213,6 +227,7 @@ export function Conversation({
   activeTab,
   activeRoot,
   rootMessages,
+  messages,
   threadReplyCounts,
   threadUnreadCounts,
   threadReplySummaries,
@@ -243,6 +258,8 @@ export function Conversation({
   openAgentDetail,
   openArtifact,
   openWorkItem,
+  onReferenceMessageJump,
+  onReferenceThreadJump,
   shareBaseUrl,
   savedMessageIds,
   focusedMessageId,
@@ -259,7 +276,9 @@ export function Conversation({
   const bottomScrollFrameRef = useRef<number | null>(null);
   const bottomScrollTimeoutRef = useRef<number | null>(null);
   const shouldFollowMessagesRef = useRef(true);
+  const focusedMessageScrollKeyRef = useRef<string | null>(null);
   const userMessageScrollUntilRef = useRef(0);
+  const messageListFollowSuppressUntilRef = useRef(0);
   const messageListMetricsRef = useRef({ scrollHeight: 0, scrollTop: 0, clientHeight: 0 });
   const channelActionsRef = useRef<HTMLDivElement | null>(null);
   const isDm = channel?.kind === "dm";
@@ -325,6 +344,80 @@ export function Conversation({
       ? `DM with @${dmAgent?.handle || "agent"}`
       : `#${channel.name}`
     : APP_DISPLAY_NAME;
+  const rootMessageById = useMemo(() => new Map(rootMessages.map((message) => [message.id, message])), [rootMessages]);
+  const channelNameById = useMemo(() => new Map(channels.map((value) => [value.id, value.name])), [channels]);
+
+  function messageReferencePreviewItem(kind: MessageReferenceKind, id: string, token?: string): MessageReferencePreviewItem {
+    const message = rootMessageById.get(id);
+    if (!message) {
+      return {
+        key: `${kind}:${id}:${token ?? ""}`,
+        kind,
+        id,
+        token,
+        channelName: channel?.name ?? "unknown",
+        senderName: "Missing reference",
+        preview: id,
+        meta: "not loaded",
+        missing: true,
+      };
+    }
+    const replyCount = threadReplyCounts[message.id] ?? 0;
+    return {
+      key: `${kind}:${id}:${token ?? ""}`,
+      kind,
+      id,
+      token,
+      channelName: channelNameById.get(message.channel_id) ?? channel?.name ?? "unknown",
+      senderName: message.sender_name,
+      preview: compactReferencePreview(message.body),
+      meta: kind === "thread"
+        ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"} · ${formatTime(message.created_at)}`
+        : formatTime(message.created_at),
+    };
+  }
+
+  function referencePreviewItemsForText(text: string) {
+    return parseMessageReferences(text).map((reference) => (
+      messageReferencePreviewItem(reference.kind, reference.id, reference.token)
+    ));
+  }
+
+  function handleReferenceOpen(sourceMessage: Message, reference: ResolvedMessageReference) {
+    if (reference.kind === "thread") {
+      onReferenceThreadJump(sourceMessage.id, reference.id);
+      return;
+    }
+    onReferenceMessageJump(sourceMessage.id, reference.id);
+    targetRootMessageIntoView(reference.id);
+  }
+
+  function renderMessageBody(message: Message) {
+    if (!message.body.trim()) return null;
+    return (
+      <MessageMarkdown
+        body={message.body}
+        messages={messages}
+        channels={channels}
+        onOpenReference={(reference) => handleReferenceOpen(message, reference)}
+        onLocalAgentLink={openLinkedAgentDetail}
+        scrollKey={`message:${message.id}`}
+      />
+    );
+  }
+
+  function insertMessageReference(message: Message, kind: MessageReferenceKind) {
+    const referenceId = kind === "thread" ? (message.thread_root_id ?? message.id) : message.id;
+    setDraft(appendMessageReferenceToken(draft, kind, referenceId));
+    setMessageMenu(null);
+  }
+
+  async function copyMessageReference(message: Message, kind: MessageReferenceKind) {
+    const referenceId = kind === "thread" ? (message.thread_root_id ?? message.id) : message.id;
+    await copyText(messageReferenceToken(kind, referenceId));
+    setMessageMenu(null);
+  }
+
   function isMessageListAtBottom(element: HTMLDivElement) {
     return messageListDistanceFromBottom(element) < 32;
   }
@@ -362,6 +455,20 @@ export function Conversation({
     return clientHeightDelta < 0 && scrollHeightDelta <= 0;
   }
 
+  function suppressMessageListFollowForComposerResize(element: HTMLDivElement) {
+    if (!isMessageListComposerResize(element)) return false;
+    messageListFollowSuppressUntilRef.current = Date.now() + MESSAGE_LIST_COMPOSER_RESIZE_SUPPRESS_MS;
+    rememberMessageListMetrics(element);
+    return true;
+  }
+
+  function isMessageListFollowSuppressed(element: HTMLDivElement) {
+    if (Date.now() >= messageListFollowSuppressUntilRef.current) return false;
+    if (element.scrollHeight > messageListMetricsRef.current.scrollHeight) return false;
+    rememberMessageListMetrics(element);
+    return true;
+  }
+
   function cancelPendingMessageBottomScroll() {
     if (bottomScrollFrameRef.current !== null) {
       window.cancelAnimationFrame(bottomScrollFrameRef.current);
@@ -391,19 +498,25 @@ export function Conversation({
     return event.clientX >= element.getBoundingClientRect().right - scrollbarWidth - 2;
   }
 
+  function shouldSuppressMessageListFollow(element: HTMLDivElement) {
+    return suppressMessageListFollowForComposerResize(element) || isMessageListFollowSuppressed(element);
+  }
+
   function scrollMessagesToBottomNow(behavior: ScrollBehavior = "auto") {
     const element = messageListRef.current;
-    if (!element) return;
+    if (!element) return false;
+    if (behavior === "auto" && shouldSuppressMessageListFollow(element)) return false;
     userMessageScrollUntilRef.current = 0;
     element.scrollTo({ top: element.scrollHeight, behavior });
     if (behavior === "auto") {
       shouldFollowMessagesRef.current = true;
       rememberMessageListMetrics(element);
     }
+    return true;
   }
 
   function scrollMessagesToBottom(behavior: ScrollBehavior = "auto") {
-    scrollMessagesToBottomNow(behavior);
+    if (!scrollMessagesToBottomNow(behavior)) return;
     if (behavior !== "auto") return;
     cancelPendingMessageBottomScroll();
     bottomScrollFrameRef.current = window.requestAnimationFrame(() => {
@@ -419,6 +532,7 @@ export function Conversation({
   function handleMessageListScroll() {
     const element = messageListRef.current;
     if (!element) return;
+    if (shouldSuppressMessageListFollow(element)) return;
     const atBottom = isMessageListAtBottom(element);
     const layoutChanged =
       messageListMetricsRef.current.scrollHeight !== element.scrollHeight
@@ -446,6 +560,18 @@ export function Conversation({
     stopFollowingMessages();
   }
 
+  function targetRootMessageIntoView(messageId: string) {
+    const list = messageListRef.current;
+    const element = list?.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
+    if (!list || !element) return;
+    stopFollowingMessages(list);
+    element.scrollIntoView({ block: "center" });
+    window.requestAnimationFrame(() => {
+      const currentList = messageListRef.current;
+      if (currentList) rememberMessageListMetrics(currentList);
+    });
+  }
+
   function updateActiveReplyMenuPlacement(messageId: string, summaryElement: HTMLElement) {
     const menu = summaryElement.querySelector<HTMLElement>(".thread-reply-active-menu");
     if (!menu) return;
@@ -468,6 +594,8 @@ export function Conversation({
   }
 
   function handleMessageListContentLoad() {
+    const element = messageListRef.current;
+    if (element && shouldSuppressMessageListFollow(element)) return;
     if (!shouldFollowMessagesRef.current) return;
     scrollMessagesToBottom();
   }
@@ -577,10 +705,7 @@ export function Conversation({
     function keepBottomVisible(source: "viewport" | "content") {
       const list = messageListRef.current;
       if (!list) return;
-      if (isMessageListComposerResize(list)) {
-        rememberMessageListMetrics(list);
-        return;
-      }
+      if (shouldSuppressMessageListFollow(list)) return;
       if (source === "viewport" && isMessageListViewportOnlyResize(list)) {
         rememberMessageListMetrics(list);
         return;
@@ -627,11 +752,16 @@ export function Conversation({
   }, [channel?.id]);
 
   useLayoutEffect(() => {
+    // Don't auto-follow to bottom while the user has jumped to a referenced
+    // message (clicked a reference chip). Otherwise every agent-activity refresh
+    // bumps messageListProgressVersion and yanks them back down to the bottom.
+    if (focusedMessageId) return;
     if (!shouldFollowMessagesRef.current) return;
     scrollMessagesToBottom();
   }, [
     activeTab,
     channel?.id,
+    focusedMessageId,
     messageListProgressVersion,
     rootMessages.length,
     lastRootMessage?.id,
@@ -640,7 +770,12 @@ export function Conversation({
   ]);
 
   useLayoutEffect(() => {
-    if (!focusedMessageId) return;
+    if (!focusedMessageId) {
+      focusedMessageScrollKeyRef.current = null;
+      return;
+    }
+    const focusedMessageScrollKey = `${channel?.id ?? "none"}:${focusedMessageId}`;
+    if (focusedMessageScrollKeyRef.current === focusedMessageScrollKey) return;
     let frameId = 0;
     let settleFrameId = 0;
     let attemptsRemaining = 6;
@@ -648,6 +783,7 @@ export function Conversation({
       const list = messageListRef.current;
       const element = list?.querySelector<HTMLElement>(`[data-message-id="${focusedMessageId}"]`);
       if (element) {
+        focusedMessageScrollKeyRef.current = focusedMessageScrollKey;
         stopFollowingMessages(list);
         element.scrollIntoView({ block: "center" });
         settleFrameId = window.requestAnimationFrame(() => {
@@ -668,7 +804,6 @@ export function Conversation({
   }, [
     channel?.id,
     focusedMessageId,
-    messageListProgressVersion,
     rootMessages.length,
     lastRootMessage?.id,
     lastRootMessage?.updated_at,
@@ -903,7 +1038,7 @@ export function Conversation({
                   )}
                   <article className="system-message">
                     <div className="system-message-line">
-                      <MessageMarkdown body={message.body} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${message.id}`} />
+                      {renderMessageBody(message)}
                       <time>{formatTime(message.created_at)}</time>
                     </div>
                   </article>
@@ -994,6 +1129,19 @@ export function Conversation({
                     <div className="message-hover-actions" aria-label="Message actions">
                       <button
                         type="button"
+                        data-tooltip="Reference"
+                        title="Reference message"
+                        aria-label="Reference message"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          insertMessageReference(message, "message");
+                        }}
+                      >
+                        <Quote size={14} />
+                      </button>
+                      <button
+                        type="button"
                         data-tooltip={replyCount > 0 ? "View thread" : "Reply in thread"}
                         title={replyCount > 0 ? "View thread replies" : "Reply in thread"}
                         aria-label={replyCount > 0 ? "View thread replies" : "Reply in thread"}
@@ -1024,7 +1172,7 @@ export function Conversation({
                     {(message.delivery_state !== "streaming" || messageHasVisibleContent(message)) && (
                       <>
                         <div className={isLongChannelMessage && !isChannelMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
-                          <MessageMarkdown body={message.body} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${message.id}`} />
+                          {renderMessageBody(message)}
                         </div>
                         {isLongChannelMessage && (
                           <button
@@ -1136,6 +1284,10 @@ export function Conversation({
               isSaved={savedMessageIds.has(messageMenu.message.id)}
               onCopyLink={() => copyMessageLink(messageMenu.message)}
               onCopyMarkdown={() => copyMessageMarkdown(messageMenu.message)}
+              onCopyReferenceMessage={() => copyMessageReference(messageMenu.message, "message")}
+              onCopyReferenceThread={() => copyMessageReference(messageMenu.message, "thread")}
+              onReferenceMessage={() => insertMessageReference(messageMenu.message, "message")}
+              onReferenceThread={() => insertMessageReference(messageMenu.message, "thread")}
               onToggleSaved={() => {
                 onToggleMessageSaved(messageMenu.message, !savedMessageIds.has(messageMenu.message.id));
                 setMessageMenu(null);
@@ -1216,6 +1368,7 @@ export function Conversation({
           draft={draft}
           draftAttachments={draftAttachments}
           setDraft={setDraft}
+          resolveReferencePreviewItems={referencePreviewItemsForText}
           addDraftAttachments={addDraftAttachments}
           removeDraftAttachment={removeDraftAttachment}
           sendRootMessage={sendRootMessage}
@@ -1283,6 +1436,7 @@ type ConversationComposerProps = {
   draft: string;
   draftAttachments: DraftAttachment[];
   setDraft: (value: string) => void;
+  resolveReferencePreviewItems: (text: string) => MessageReferencePreviewItem[];
   addDraftAttachments: (files: FileList | File[]) => void;
   removeDraftAttachment: (id: string) => void;
   sendRootMessage: (asTask?: boolean, bodyOverride?: string, attachmentsOverride?: DraftAttachment[]) => void;
@@ -1345,6 +1499,7 @@ function ConversationComposer({
   draft,
   draftAttachments,
   setDraft,
+  resolveReferencePreviewItems,
   addDraftAttachments,
   removeDraftAttachment,
   sendRootMessage,
@@ -1368,6 +1523,7 @@ function ConversationComposer({
     focusComposer,
   } = useMentionPicker({ agents: mentionAgents, channels, value: text, setValue: updateText, textareaRef });
   useAutoGrowTextarea(textareaRef, text);
+  const referencePreviewItems = resolveReferencePreviewItems(text);
 
   useEffect(() => {
     if (isDm) setSendAsTask(false);
@@ -1536,15 +1692,25 @@ function ConversationComposer({
           event.target.value = "";
         }}
       />
+      <MessageReferencePreview
+        items={referencePreviewItems}
+        variant="composer"
+        onRemove={(item) => {
+          if (!item.token) return;
+          const nextText = removeMessageReferenceToken(text, item.token);
+          updateText(nextText);
+          setDraft(nextText);
+        }}
+      />
       <DraftAttachmentsPreview attachments={draftAttachments} onRemove={removeDraftAttachment} />
-      <textarea
+      <ComposerReferenceTextarea
         ref={textareaRef}
+        {...disableWritingSuggestionsAttrs}
         rows={1}
         value={text}
         autoCapitalize="none"
         autoComplete="off"
         autoCorrect="off"
-        {...disableWritingSuggestionsAttrs}
         spellCheck={false}
         onChange={(event) => {
           updateText(event.target.value);

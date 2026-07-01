@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, Crosshair, FileImage, Hash, Maximize2, MessageSquare, Minimize2, Paperclip, RotateCcw, Send, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, Crosshair, FileImage, Hash, Maximize2, MessageSquare, Minimize2, Paperclip, Quote, RotateCcw, Send, X } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type TextareaHTMLAttributes, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
 import { useMentionPicker } from "../hooks/useMentionPicker";
@@ -10,16 +10,19 @@ import { copyText } from "../clipboard";
 import { isCompactFollowupMessage, messageHasVisibleContent, wasEdited } from "../message-grouping";
 import { DESKTOP_MESSAGE_PREVIEW_CHARS, DESKTOP_MESSAGE_PREVIEW_LINES } from "../message-preview";
 import { messageShareLink, messageToMarkdown } from "../message-share";
+import { appendMessageReferenceToken, messageReferenceToken, parseMessageReferences, removeMessageReferenceToken, withoutMessageReferenceTokens, type MessageReferenceKind, type ResolvedMessageReference } from "../message-references";
 import { downloadThreadPanelSvg } from "../thread-svg-export";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task } from "../types";
 import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
 import { ActivityProgressDock } from "./ActivityProgressDock";
 import { AgentAvatar, AgentAvatarWithProfile } from "./AgentAvatar";
+import { ComposerReferenceTextarea } from "./ComposerReferenceTextarea";
 import { DraftAttachmentsPreview } from "./DraftAttachmentsPreview";
 import { MessageActionMenu } from "./MessageActionMenu";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageArtifacts } from "./MessageArtifacts";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { MessageReferencePreview, type MessageReferencePreviewItem } from "./MessageReferencePreview";
 import { TaskAssigneePicker } from "./TaskAssigneePicker";
 
 type WritingSuggestionsTextareaAttrs = TextareaHTMLAttributes<HTMLTextAreaElement> & { "writingsuggestions": "false" };
@@ -61,6 +64,12 @@ function shouldCollapseThreadMessage(body: string) {
   return text.split("\n").length > DESKTOP_MESSAGE_PREVIEW_LINES || text.length > DESKTOP_MESSAGE_PREVIEW_CHARS;
 }
 
+function compactReferencePreview(body: string) {
+  const text = withoutMessageReferenceTokens(body).replace(/\s+/g, " ").trim();
+  if (!text) return "No text preview";
+  return text.length > 140 ? `${text.slice(0, 139).trimEnd()}...` : text;
+}
+
 function waitForNextFrame() {
   return new Promise<void>((resolve) => {
     window.requestAnimationFrame(() => resolve());
@@ -95,6 +104,9 @@ type ThreadPanelProps = {
   openAgentDetail: (agent: Agent) => void;
   openArtifact: (artifact: Artifact) => void;
   openWorkItem?: (item: AgentWorkItem, focusedMessageIdOverride?: string | null) => void;
+  onReferenceMessageJump: (originMessageId: string, targetMessageId: string) => void;
+  onReferenceThreadJump: (originMessageId: string, threadId: string) => void;
+  messages: Message[];
   onLocateRoot: (message: Message) => void;
   shareBaseUrl: string | null;
   savedMessageIds: Set<string>;
@@ -179,6 +191,9 @@ export function ThreadPanel({
   openAgentDetail,
   openArtifact,
   openWorkItem,
+  onReferenceMessageJump,
+  onReferenceThreadJump,
+  messages,
   onLocateRoot,
   shareBaseUrl,
   savedMessageIds,
@@ -224,6 +239,98 @@ export function ThreadPanel({
       ? `Thread in DM with @${dmAgent?.handle || "agent"}`
       : `Thread in #${channel.name}`
     : `${APP_DISPLAY_NAME} thread`;
+  const threadMessages = useMemo(() => activeRoot ? [activeRoot, ...replies] : replies, [activeRoot, replies]);
+  const threadMessageById = useMemo(() => new Map(threadMessages.map((message) => [message.id, message])), [threadMessages]);
+  const channelNameById = useMemo(() => new Map(channels.map((value) => [value.id, value.name])), [channels]);
+
+  function messageReferencePreviewItem(kind: MessageReferenceKind, id: string, token?: string): MessageReferencePreviewItem {
+    const message = threadMessageById.get(id);
+    if (!message) {
+      return {
+        key: `${kind}:${id}:${token ?? ""}`,
+        kind,
+        id,
+        token,
+        channelName: channel?.name ?? "unknown",
+        senderName: "Missing reference",
+        preview: id,
+        meta: "not loaded",
+        missing: true,
+      };
+    }
+    const replyCount = kind === "thread" ? replies.filter((reply) => reply.thread_root_id === id).length : 0;
+    return {
+      key: `${kind}:${id}:${token ?? ""}`,
+      kind,
+      id,
+      token,
+      channelName: channelNameById.get(message.channel_id) ?? channel?.name ?? "unknown",
+      senderName: message.sender_name,
+      preview: compactReferencePreview(message.body),
+      meta: kind === "thread"
+        ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"} · ${formatTime(message.created_at)}`
+        : formatTime(message.created_at),
+    };
+  }
+
+  function referencePreviewItemsForText(text: string) {
+    return parseMessageReferences(text).map((reference) => (
+      messageReferencePreviewItem(reference.kind, reference.id, reference.token)
+    ));
+  }
+
+  function handleReferenceOpen(sourceMessage: Message, reference: ResolvedMessageReference) {
+    if (reference.kind === "thread") {
+      onReferenceThreadJump(sourceMessage.id, reference.id);
+      return;
+    }
+    const target = threadMessageById.get(reference.id);
+    if (!target) return;
+    onReferenceMessageJump(sourceMessage.id, target.id);
+    targetMessageIntoView(target.id);
+  }
+
+  function renderMessageBody(message: Message) {
+    if (!message.body.trim()) return null;
+    return (
+      <MessageMarkdown
+        body={message.body}
+        messages={messages}
+        channels={channels}
+        onOpenReference={(reference) => handleReferenceOpen(message, reference)}
+        onLocalAgentLink={openLinkedAgentDetail}
+        scrollKey={`message:${message.id}`}
+      />
+    );
+  }
+
+  function insertMessageReference(message: Message, kind: MessageReferenceKind) {
+    const referenceId = kind === "thread" ? (message.thread_root_id ?? message.id) : message.id;
+    setReplyDraft(appendMessageReferenceToken(replyDraft, kind, referenceId));
+    setMessageMenu(null);
+  }
+
+  async function copyMessageReference(message: Message, kind: MessageReferenceKind) {
+    const referenceId = kind === "thread" ? (message.thread_root_id ?? message.id) : message.id;
+    await copyText(messageReferenceToken(kind, referenceId));
+    setMessageMenu(null);
+  }
+
+  function removeDraftReference(token: string) {
+    setReplyDraft(removeMessageReferenceToken(replyDraft, token));
+  }
+
+  function targetMessageIntoView(messageId: string) {
+    const element = threadMessageRefs.current.get(messageId);
+    if (!element) return;
+    stopFollowingThread();
+    element.scrollIntoView({ block: "center" });
+    setTapFocusedMessageId(messageId);
+    window.requestAnimationFrame(() => {
+      const scrollRoot = threadScrollRef.current;
+      if (scrollRoot) rememberThreadScrollMetrics(scrollRoot);
+    });
+  }
   const lastReply = replies[replies.length - 1] ?? null;
   const collapsibleThreadMessageIds = useMemo(() => {
     const messages = activeRoot ? [activeRoot, ...replies] : replies;
@@ -531,17 +638,23 @@ export function ThreadPanel({
   }, [activeRoot?.id]);
 
   useLayoutEffect(() => {
+    // While the user has jumped to a referenced message, don't auto-follow to
+    // bottom — otherwise each reply/agent-activity update yanks them back down.
+    if (focusedMessageId) return;
     if (!shouldFollowThreadRef.current) {
       restoreThreadScrollAnchor();
       return;
     }
     scrollThreadToBottom();
-  }, [activeRoot?.id, activeRoot?.updated_at, replies.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
+  }, [activeRoot?.id, focusedMessageId, activeRoot?.updated_at, replies.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
 
   useEffect(() => {
     if (!focusedMessageId) return;
     const element = threadScrollRef.current?.querySelector<HTMLElement>(`[data-message-id="${focusedMessageId}"]`);
-    element?.scrollIntoView({ block: "center" });
+    if (!element) return;
+    // Detach from bottom-follow so the jump target stays put once focus clears.
+    stopFollowingThread();
+    element.scrollIntoView({ block: "center" });
   }, [activeRoot?.id, focusedMessageId]);
 
   function hasSelectedText() {
@@ -732,6 +845,18 @@ export function ThreadPanel({
           >
             <Crosshair size={18} />
           </button>
+          <button
+            type="button"
+            className="thread-locate-root"
+            onClick={() => {
+              if (activeRoot) insertMessageReference(activeRoot, "thread");
+            }}
+            disabled={!activeRoot}
+            data-tooltip="Reference this thread"
+            aria-label="Reference this thread"
+          >
+            <Quote size={18} />
+          </button>
           <button type="button" className="thread-close" onClick={onClose} aria-label="Close thread panel"><X size={18} /></button>
         </span>
       </header>
@@ -792,7 +917,7 @@ export function ThreadPanel({
                 >
                 {activeRoot.sender_role === "system" ? (
                   <div className="system-message-line">
-                    <MessageMarkdown body={activeRoot.body} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${activeRoot.id}`} />
+                    {renderMessageBody(activeRoot)}
                     <time>{formatTime(activeRoot.created_at)}</time>
                   </div>
                 ) : (
@@ -844,6 +969,19 @@ export function ThreadPanel({
                       <div className="message-hover-actions" aria-label="Message actions">
                         <button
                           type="button"
+                          data-tooltip="Reference"
+                          title="Reference message"
+                          aria-label="Reference message"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            insertMessageReference(activeRoot, "message");
+                          }}
+                        >
+                          <Quote size={14} />
+                        </button>
+                        <button
+                          type="button"
                           className={rootSaved ? "saved" : ""}
                           data-tooltip={rootSaved ? "Unsave" : "Save"}
                           title={rootSaved ? "Unsave message" : "Save message"}
@@ -863,7 +1001,7 @@ export function ThreadPanel({
                         return (
                           <>
                             <div className={isLongThreadMessage && !isThreadMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
-                              <MessageMarkdown body={activeRoot.body} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${activeRoot.id}`} />
+                              {renderMessageBody(activeRoot)}
                             </div>
                             {isLongThreadMessage && (
                               <button
@@ -1022,7 +1160,7 @@ export function ThreadPanel({
                     )}
                     <article className="system-message">
                       <div className="system-message-line">
-                        <MessageMarkdown body={reply.body} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${reply.id}`} />
+                        {renderMessageBody(reply)}
                         <time>{formatTime(reply.created_at)}</time>
                       </div>
                     </article>
@@ -1114,6 +1252,19 @@ export function ThreadPanel({
                       <div className="message-hover-actions" aria-label="Message actions">
                         <button
                           type="button"
+                          data-tooltip="Reference"
+                          title="Reference message"
+                          aria-label="Reference message"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            insertMessageReference(reply, "message");
+                          }}
+                        >
+                          <Quote size={14} />
+                        </button>
+                        <button
+                          type="button"
                           className={replySaved ? "saved" : ""}
                           data-tooltip={replySaved ? "Unsave" : "Save"}
                           title={replySaved ? "Unsave message" : "Save message"}
@@ -1133,7 +1284,7 @@ export function ThreadPanel({
                         return (
                           <>
                             <div className={isLongThreadMessage && !isThreadMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
-                              <MessageMarkdown body={reply.body} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${reply.id}`} />
+                              {renderMessageBody(reply)}
                             </div>
                             {isLongThreadMessage && (
                               <button
@@ -1174,6 +1325,10 @@ export function ThreadPanel({
               isSaved={savedMessageIds.has(messageMenu.message.id)}
               onCopyLink={() => copyMessageLink(messageMenu.message)}
               onCopyMarkdown={() => copyMessageMarkdown(messageMenu.message)}
+              onCopyReferenceMessage={() => copyMessageReference(messageMenu.message, "message")}
+              onCopyReferenceThread={() => copyMessageReference(messageMenu.message, "thread")}
+              onReferenceMessage={() => insertMessageReference(messageMenu.message, "message")}
+              onReferenceThread={() => insertMessageReference(messageMenu.message, "thread")}
               onToggleSaved={() => {
                 onToggleMessageSaved(messageMenu.message, !savedMessageIds.has(messageMenu.message.id));
                 setMessageMenu(null);
@@ -1199,6 +1354,8 @@ export function ThreadPanel({
           replyDraft={replyDraft}
           replyAttachments={replyAttachments}
           setReplyDraft={setReplyDraft}
+          resolveReferencePreviewItems={referencePreviewItemsForText}
+          removeDraftReference={removeDraftReference}
           addReplyAttachments={addReplyAttachments}
           removeReplyAttachment={removeReplyAttachment}
           sendReply={sendReply}
@@ -1218,6 +1375,8 @@ type ThreadReplyComposerProps = {
   replyDraft: string;
   replyAttachments: DraftAttachment[];
   setReplyDraft: (value: string) => void;
+  resolveReferencePreviewItems: (text: string) => MessageReferencePreviewItem[];
+  removeDraftReference: (token: string) => void;
   addReplyAttachments: (files: FileList | File[]) => void;
   removeReplyAttachment: (id: string) => void;
   sendReply: (bodyOverride?: string, attachmentsOverride?: DraftAttachment[]) => void;
@@ -1280,6 +1439,8 @@ function ThreadReplyComposer({
   replyDraft,
   replyAttachments,
   setReplyDraft,
+  resolveReferencePreviewItems,
+  removeDraftReference,
   addReplyAttachments,
   removeReplyAttachment,
   sendReply,
@@ -1301,6 +1462,7 @@ function ThreadReplyComposer({
     focusComposer,
   } = useMentionPicker({ agents: mentionAgents, channels, value: text, setValue: updateText, textareaRef });
   useAutoGrowTextarea(textareaRef, text);
+  const referencePreviewItems = resolveReferencePreviewItems(text);
 
   useEffect(() => {
     replyDragDepthRef.current = 0;
@@ -1432,15 +1594,25 @@ function ThreadReplyComposer({
           event.target.value = "";
         }}
       />
+      <MessageReferencePreview
+        items={referencePreviewItems}
+        variant="composer"
+        onRemove={(item) => {
+          if (!item.token) return;
+          const nextText = removeMessageReferenceToken(text, item.token);
+          updateText(nextText);
+          removeDraftReference(item.token);
+        }}
+      />
       <DraftAttachmentsPreview attachments={replyAttachments} onRemove={removeReplyAttachment} />
-      <textarea
+      <ComposerReferenceTextarea
         ref={textareaRef}
+        {...disableWritingSuggestionsAttrs}
         rows={1}
         value={text}
         autoCapitalize="none"
         autoComplete="off"
         autoCorrect="off"
-        {...disableWritingSuggestionsAttrs}
         spellCheck={false}
         onChange={(event) => {
           updateText(event.target.value);

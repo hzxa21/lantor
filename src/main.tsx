@@ -247,6 +247,7 @@ type AppHistoryState = {
   showMobileSidebar: boolean;
   selectedAgentId: string | null;
   activeModal: MobileModal | null;
+  focusedMessageId: string | null;
 };
 
 type AppErrorBoundaryState = {
@@ -314,6 +315,7 @@ function isAppHistoryState(value: unknown): value is AppHistoryState {
     && typeof state.showThread === "boolean"
     && typeof state.showMobileSidebar === "boolean"
     && (state.selectedAgentId === null || typeof state.selectedAgentId === "string")
+    && (state.focusedMessageId === undefined || state.focusedMessageId === null || typeof state.focusedMessageId === "string")
     && (
       state.activeModal === null ||
       state.activeModal === "search" ||
@@ -331,6 +333,7 @@ function appHistoryKey(state: AppHistoryState) {
     state.showMobileSidebar ? "sidebar" : "content",
     state.selectedAgentId ?? "",
     state.activeModal ?? "",
+    state.focusedMessageId ?? "",
   ].join("|");
 }
 
@@ -794,7 +797,10 @@ function App() {
 
   useEffect(() => {
     if (!focusedMessageId) return;
-    const timer = window.setTimeout(() => setFocusedMessageId(null), 2600);
+    const timer = window.setTimeout(() => {
+      replaceNextAppHistoryEntryRef.current = true;
+      setFocusedMessageId(null);
+    }, 2600);
     return () => window.clearTimeout(timer);
   }, [focusedMessageId]);
 
@@ -854,6 +860,7 @@ function App() {
   const restoringAppHistoryRef = useRef(false);
   const replaceNextAppHistoryEntryRef = useRef(false);
   const lastAppHistoryKeyRef = useRef<string | null>(null);
+  const historyFocusedMessageIdRef = useRef<string | null>(null);
   const searchResultThreadIdRef = useRef<string | null>(null);
   const searchResultAgentIdRef = useRef<string | null>(null);
   const [appHistoryIndex, setAppHistoryIndex] = useState(0);
@@ -898,6 +905,7 @@ function App() {
       showMobileSidebar,
       selectedAgentId,
       activeModal: activeMobileModal,
+      focusedMessageId: historyFocusedMessageIdRef.current,
     };
   }
 
@@ -1816,6 +1824,7 @@ function App() {
       const activeChannelIdFromState = event.state.activeChannelId ?? null;
       const activeThreadIdFromState = event.state.activeThreadId ?? null;
       const activeTabFromState = event.state.activeTab ?? "chat";
+      historyFocusedMessageIdRef.current = event.state.focusedMessageId ?? null;
       lastAppHistoryKeyRef.current = appHistoryKey({
         ...event.state,
         activeChannelId: activeChannelIdFromState,
@@ -1832,6 +1841,7 @@ function App() {
       setShowMobileSidebar(event.state.showMobileSidebar);
       setMobileSidebarDragPx(0);
       setSelectedAgentId(event.state.selectedAgentId);
+      setFocusedMessageId(event.state.focusedMessageId ?? null);
       setShowSearchModal(event.state.activeModal === "search");
       setShowActivityFeedModal(event.state.activeModal === "activity");
       setShowSavedModal(event.state.activeModal === "saved");
@@ -2899,6 +2909,7 @@ function App() {
 
   function selectChannel(channelId: string) {
     const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
+    historyFocusedMessageIdRef.current = null;
     setSelectedAgentId(null);
     setActiveChannelId(channelId);
     setShowMobileSidebar(false);
@@ -2909,6 +2920,7 @@ function App() {
   }
 
   function openThread(threadId: string | null, channelId = activeChannelId) {
+    historyFocusedMessageIdRef.current = null;
     setActiveThreadId(threadId);
     rememberChannelThread(channelId, threadId);
     setFocusedMessageId(null);
@@ -2970,6 +2982,51 @@ function App() {
     if (canNavigateForward()) {
       window.history.forward();
     }
+  }
+
+  function pushReferenceMessageHistory(originMessageId: string, targetMessageId: string) {
+    if (isMobileViewport() || !appHistoryReadyRef.current) return;
+    const existingState = window.history.state;
+    if (!isAppHistoryState(existingState)) return;
+    const originState = {
+      ...buildAppHistoryState(existingState.index),
+      focusedMessageId: originMessageId,
+    };
+    window.history.replaceState(originState, "");
+    const targetState = {
+      ...buildAppHistoryState(existingState.index + 1),
+      focusedMessageId: targetMessageId,
+    };
+    window.history.pushState(targetState, "");
+    historyFocusedMessageIdRef.current = targetMessageId;
+    setAppHistoryPosition(targetState.index, targetState.index);
+    lastAppHistoryKeyRef.current = appHistoryKey(targetState);
+  }
+
+  function navigateToReferencedMessage(originMessageId: string, targetMessageId: string) {
+    pushReferenceMessageHistory(originMessageId, targetMessageId);
+    setFocusedMessageId(null);
+    window.requestAnimationFrame(() => {
+      setFocusedMessageId(targetMessageId);
+    });
+  }
+
+  function navigateToReferencedThread(originMessageId: string, threadId: string) {
+    // Record the chip's source message in the current history entry before we
+    // switch threads, so Lantor's built-in back button returns to the message
+    // that contained the chip (the thread switch itself pushes the target entry).
+    if (!isMobileViewport() && appHistoryReadyRef.current) {
+      const existingState = window.history.state;
+      if (isAppHistoryState(existingState)) {
+        const originState = {
+          ...buildAppHistoryState(existingState.index),
+          focusedMessageId: originMessageId,
+        };
+        window.history.replaceState(originState, "");
+        lastAppHistoryKeyRef.current = appHistoryKey(originState);
+      }
+    }
+    revealThread(threadId);
   }
 
   function openMobileSidebarFromContent() {
@@ -4022,6 +4079,7 @@ function App() {
         activeTab={activeTab}
         activeRoot={activeRoot}
         rootMessages={rootMessages}
+        messages={data.messages}
         threadReplyCounts={threadReplyCounts}
         threadUnreadCounts={threadUnreadCounts}
         threadReplySummaries={threadReplySummaries}
@@ -4055,6 +4113,8 @@ function App() {
         openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
         openArtifact={openArtifact}
         openWorkItem={openWorkItem}
+        onReferenceMessageJump={navigateToReferencedMessage}
+        onReferenceThreadJump={navigateToReferencedThread}
         shareBaseUrl={shareBaseUrl}
         savedMessageIds={savedMessageIds}
         focusedMessageId={focusedMessageId}
@@ -4117,6 +4177,9 @@ function App() {
           openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
           openArtifact={openArtifact}
           openWorkItem={openWorkItem}
+          onReferenceMessageJump={navigateToReferencedMessage}
+          onReferenceThreadJump={navigateToReferencedThread}
+          messages={data.messages}
           onLocateRoot={revealThreadRootInChannel}
           shareBaseUrl={shareBaseUrl}
           savedMessageIds={savedMessageIds}
