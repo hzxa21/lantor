@@ -296,6 +296,41 @@ export type Bootstrap = {
   agent_activities: AgentActivity[];
   supervisor: SupervisorStatus;
   launch_agent: LaunchAgentStatus;
+  __perf?: BootstrapPerf;
+};
+
+export type BootstrapPerf = {
+  options: {
+    runtime: string;
+    message_load: string;
+    include_run_logs: boolean;
+    compact_agent_activities: boolean;
+  };
+  total_ms: number;
+  serialize_ms: number | null;
+  payload_bytes: number | null;
+  phases: Array<{
+    name: string;
+    duration_ms: number;
+    rows: number | null;
+  }>;
+  counts: {
+    channels: number;
+    thread_activities: number;
+    channel_members: number;
+    agents: number;
+    messages: number;
+    saved_messages: number;
+    dismissed_inbox_items: number;
+    read_inbox_items: number;
+    artifacts: number;
+    tasks: number;
+    reminders: number;
+    agent_schedules: number;
+    agent_runs: number;
+    agent_work_items: number;
+    agent_activities: number;
+  };
 };
 
 export type SearchScope = "all" | "messages" | "channels" | "tasks" | "agents" | "activity" | "artifacts";

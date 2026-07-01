@@ -6784,6 +6784,57 @@ body.resizing-column * {
   margin-top: 8px;
 }
 
+.settings-perf-fieldset {
+  margin-top: 8px;
+}
+
+.settings-perf-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-perf-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+}
+
+.settings-perf-card strong,
+.settings-perf-latest strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--type-size-meta);
+  font-weight: var(--type-weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-perf-card small,
+.settings-perf-card span,
+.settings-perf-latest span,
+.settings-perf-latest small {
+  color: var(--muted);
+  font-size: var(--type-size-caption);
+  line-height: 1.35;
+}
+
+.settings-perf-latest {
+  display: grid;
+  grid-template-columns: auto minmax(0, auto) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
 .settings-toggle-row {
   display: flex;
   align-items: center;

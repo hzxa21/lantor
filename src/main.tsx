@@ -14,7 +14,7 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { Bookmark, Home, Inbox, Search } from "lucide-react";
-import { apiInvoke, completeStartupSplash, isTauriRuntime, subscribeBackendEvents } from "./apiClient";
+import { apiInvoke, apiInvokeMeasured, completeStartupSplash, isTauriRuntime, subscribeBackendEvents } from "./apiClient";
 import { APP_DISPLAY_NAME } from "./branding";
 import { AgentDetailDrawer } from "./components/AgentDetailDrawer";
 import type { AgentPerformance } from "./components/AgentDetailDrawer";
@@ -61,6 +61,13 @@ import {
   ThreadReplySummary,
 } from "./types";
 import { agentRequestSourceLabel, buildPresetCommand, firstLines, formatTime, visibleChannelDescription } from "./ui-utils";
+import {
+  createPerfDraft,
+  initPerfTelemetry,
+  recordPerfCommit,
+  shouldEnablePerfTelemetry,
+  waitForPerfCommit,
+} from "./perf";
 import "@fontsource-variable/space-grotesk";
 import "@fontsource/space-mono/400.css";
 import "@fontsource/space-mono/700.css";
@@ -111,6 +118,15 @@ const recordBenchCommit: ProfilerOnRenderCallback = (id, phase, actualDuration, 
     startTime,
     commitTime,
   });
+};
+
+initPerfTelemetry();
+
+const recordAppCommit: ProfilerOnRenderCallback = (id, phase, actualDuration, baseDuration, startTime, commitTime) => {
+  recordPerfCommit(actualDuration, commitTime);
+  if (shouldEnableBenchProfiler()) {
+    recordBenchCommit(id, phase, actualDuration, baseDuration, startTime, commitTime);
+  }
 };
 
 const ACTIVITY_PHASE_LABELS: Record<string, string> = {
@@ -940,11 +956,42 @@ function App() {
   }
 
   async function refresh(includeOptimistic = true, preferredActiveChannelId?: string) {
+    const perf = shouldEnablePerfTelemetry() ? createPerfDraft("full-refresh") : null;
     const refreshInvalidation = refreshInvalidationRef.current;
-    const next = normalizeBootstrap(await apiInvoke<Bootstrap>("bootstrap"));
+    const { payload, measurement } = perf
+      ? await apiInvokeMeasured<Bootstrap>("bootstrap")
+      : { payload: await apiInvoke<Bootstrap>("bootstrap"), measurement: null };
+    const backendMs = payload.__perf?.total_ms;
+    if (perf && measurement) {
+      perf.backend = payload.__perf;
+      perf.payloadBytes = payload.__perf?.payload_bytes ?? undefined;
+      perf.transportPayloadBytes = measurement.payloadBytes;
+      perf.labels = {
+        messageLoad: payload.__perf?.options.message_load ?? null,
+        includeRunLogs: payload.__perf?.options.include_run_logs ?? null,
+        compactAgentActivities: payload.__perf?.options.compact_agent_activities ?? null,
+        payloadBytesKind: measurement.payloadBytes === undefined ? "tauri-estimated" : "decoded-response",
+        tauriTransportIncludesDeserialize: isTauriRuntime(),
+      };
+      perf.phases.backendMs = backendMs;
+      perf.phases.transportMs = measurement.roundtripMs - (backendMs ?? 0);
+      perf.phases.parseMs = measurement.parseMs;
+    }
+    const applyStartedAt = performance.now();
+    const next = normalizeBootstrap(payload);
     const refreshed = withPendingSavedToggles(
       includeOptimistic ? withOptimisticChannels(withOptimisticMessages(next)) : next,
     );
+    if (perf) {
+      perf.counts = {
+        channels: refreshed.channels.length,
+        messages: refreshed.messages.length,
+        agentRuns: refreshed.agent_runs.length,
+        agentActivities: refreshed.agent_activities.length,
+        artifacts: refreshed.artifacts.length,
+        tasks: refreshed.tasks.length,
+      };
+    }
     setData((current) => {
       if (!current || refreshInvalidation === refreshInvalidationRef.current) return refreshed;
       const refreshedMessageIds = new Set(refreshed.messages.map((message) => message.id));
@@ -971,6 +1018,12 @@ function App() {
       if (prev && rootIds.has(prev)) return prev;
       return null;
     });
+    const applyEndedAt = performance.now();
+    if (perf) {
+      perf.phases.applyMs = applyEndedAt - applyStartedAt;
+      perf.phases.parseApplyMs = (measurement?.parseMs ?? 0) + perf.phases.applyMs;
+      waitForPerfCommit(perf, applyEndedAt);
+    }
   }
 
   function refreshWithError(fallback: string) {
@@ -1003,8 +1056,10 @@ function App() {
   }
 
   function applyMessageUpsert(message: Message) {
+    const perf = shouldEnablePerfTelemetry() ? createPerfDraft("message-upsert") : null;
     messageDeltaBufferRef.current.delete(message.id);
     invalidatePendingRefreshResult();
+    const applyStartedAt = performance.now();
     setData((current) => {
       if (!current) {
         requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after message update`);
@@ -1016,6 +1071,12 @@ function App() {
         : [...current.messages, message];
       return { ...current, messages: sortedMessages(messages) };
     });
+    const applyEndedAt = performance.now();
+    if (perf) {
+      perf.counts.updatedMessages = 1;
+      perf.phases.applyMs = applyEndedAt - applyStartedAt;
+      waitForPerfCommit(perf, applyEndedAt);
+    }
   }
 
   function withOptimisticChannels(next: Bootstrap): Bootstrap {
@@ -1204,10 +1265,12 @@ function App() {
     const activityBuffer = ephemeralActivityBufferRef.current;
     const runBuffer = ephemeralRunBufferRef.current;
     if (activityBuffer.size === 0 && runBuffer.size === 0) return;
+    const perf = shouldEnablePerfTelemetry() ? createPerfDraft("activity-flush") : null;
     const activities = Array.from(activityBuffer.values());
     const runs = Array.from(runBuffer.values());
     ephemeralActivityBufferRef.current = new Map();
     ephemeralRunBufferRef.current = new Map();
+    const applyStartedAt = performance.now();
     setData((current) => {
       if (!current) {
         requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after buffered updates`);
@@ -1239,6 +1302,13 @@ function App() {
       }
       return { ...current, agent_activities: nextActivities, agent_runs: nextRuns };
     });
+    const applyEndedAt = performance.now();
+    if (perf) {
+      perf.counts.updatedActivities = activities.length;
+      perf.counts.updatedRuns = runs.length;
+      perf.phases.applyMs = applyEndedAt - applyStartedAt;
+      waitForPerfCommit(perf, applyEndedAt);
+    }
   }
 
   function scheduleEphemeralFlush() {
@@ -4357,7 +4427,7 @@ const app = (
 );
 
 createRoot(document.getElementById("root")!).render(
-  shouldEnableBenchProfiler()
-    ? <Profiler id="LantorApp" onRender={recordBenchCommit}>{app}</Profiler>
+  shouldEnablePerfTelemetry() || shouldEnableBenchProfiler()
+    ? <Profiler id="LantorApp" onRender={recordAppCommit}>{app}</Profiler>
     : app,
 );

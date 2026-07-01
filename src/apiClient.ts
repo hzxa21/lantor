@@ -65,6 +65,62 @@ export async function apiInvoke<T>(command: string, args: Record<string, unknown
   return payload as T;
 }
 
+export type ApiInvokeMeasurement = {
+  roundtripMs: number;
+  payloadBytes?: number;
+  parseMs?: number;
+};
+
+export async function apiInvokeMeasured<T>(
+  command: string,
+  args: Record<string, unknown> = {},
+): Promise<{ payload: T; measurement: ApiInvokeMeasurement }> {
+  const startedAt = performance.now();
+  if (isTauriRuntime()) {
+    const payload = await tauriInvoke<T>(command, args);
+    return {
+      payload,
+      measurement: {
+        roundtripMs: performance.now() - startedAt,
+      },
+    };
+  }
+
+  const response = command === "bootstrap"
+    ? await fetch(apiPath("bootstrap"))
+    : await fetch(apiPath(command), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(args),
+    });
+
+  const contentType = response.headers.get("content-type") || "";
+  const rawPayload = await response.text();
+  const roundtripMs = performance.now() - startedAt;
+  const payloadBytes = new TextEncoder().encode(rawPayload).length;
+  const parseStartedAt = performance.now();
+  const payload = contentType.includes("application/json")
+    ? JSON.parse(rawPayload)
+    : rawPayload;
+  const parseMs = performance.now() - parseStartedAt;
+  if (!response.ok) {
+    const message = typeof payload === "object" && payload && "message" in payload
+      ? String((payload as { message: unknown }).message)
+      : String(payload || `${command} failed`);
+    throw new Error(message);
+  }
+  return {
+    payload: payload as T,
+    measurement: {
+      roundtripMs,
+      payloadBytes,
+      parseMs,
+    },
+  };
+}
+
 export async function subscribeBackendEvents(handler: (payload: string) => void): Promise<UnlistenFn> {
   if (isTauriRuntime()) {
     return tauriListen<string>(UI_REFRESH_EVENT, (event) => handler(event.payload));
