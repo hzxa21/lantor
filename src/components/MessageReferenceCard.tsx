@@ -1,6 +1,6 @@
 import { Hash, MessageSquare, PanelRightOpen, X } from "lucide-react";
-import { useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
-import { createPortal } from "react-dom";
+import { useSyncExternalStore, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
+import { createRoot } from "react-dom/client";
 import type { Channel, Message } from "../types";
 import { formatTime } from "../ui-utils";
 import {
@@ -65,6 +65,75 @@ function referenceMeta(reference: ResolvedMessageReference) {
   return parts.join(" · ");
 }
 
+// Hover-preview state lives in a module-level singleton, not inside each chip.
+// The inline chip is rendered by react-markdown, whose subtree can re-render /
+// remount whenever the message feed refreshes (e.g. agent activity ticks). If
+// the hover state lived in the chip component, that remount would drop it and
+// the preview card would flicker away mid-hover. Keeping it here — with a single
+// portal host rendered once into <body> — makes the card survive any chip
+// remount: the anchored chip only reports enter/leave, it never owns the card.
+type ReferenceHoverState = { reference: ResolvedMessageReference; rect: DOMRect } | null;
+
+let hoverState: ReferenceHoverState = null;
+const hoverListeners = new Set<() => void>();
+let hoverLayerMounted = false;
+
+function emitHoverChange() {
+  for (const listener of hoverListeners) listener();
+}
+
+function subscribeHover(listener: () => void) {
+  hoverListeners.add(listener);
+  return () => {
+    hoverListeners.delete(listener);
+  };
+}
+
+function getHoverSnapshot(): ReferenceHoverState {
+  return hoverState;
+}
+
+function hideReferenceHover() {
+  if (!hoverState) return;
+  hoverState = null;
+  emitHoverChange();
+}
+
+function showReferenceHover(reference: ResolvedMessageReference, rect: DOMRect) {
+  hoverState = { reference, rect };
+  ensureHoverLayerMounted();
+  emitHoverChange();
+}
+
+function ensureHoverLayerMounted() {
+  if (hoverLayerMounted || typeof document === "undefined") return;
+  hoverLayerMounted = true;
+  const host = document.createElement("div");
+  host.className = "reference-hover-root";
+  document.body.appendChild(host);
+  // Any scroll invalidates the anchored rect, so close rather than let the card
+  // drift away from its chip.
+  window.addEventListener("scroll", hideReferenceHover, true);
+  createRoot(host).render(<ReferenceHoverLayer />);
+}
+
+function ReferenceHoverLayer() {
+  const state = useSyncExternalStore(subscribeHover, getHoverSnapshot, getHoverSnapshot);
+  if (!state) return null;
+  const { reference, rect } = state;
+  const message = reference.message;
+  if (!message) return null;
+  return (
+    <div className={`message-reference-hovercard ${reference.kind}`} style={hovercardStyle(rect)} role="tooltip">
+      <div className="message-reference-hovercard-head">
+        <strong>{referenceLabel(reference)}</strong>
+        <span>{referenceMeta(reference)}</span>
+      </div>
+      <div className="message-reference-hovercard-body">{firstLinesPreview(message.body)}</div>
+    </div>
+  );
+}
+
 export function MessageReferenceCard({
   reference,
   compact = false,
@@ -72,7 +141,6 @@ export function MessageReferenceCard({
   onOpen,
   onRemove,
 }: MessageReferenceCardProps) {
-  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
   const Icon = reference.kind === "thread" ? PanelRightOpen : MessageSquare;
   const preview = reference.message
     ? firstLinePreview(reference.message.body, compact ? 96 : 150)
@@ -101,15 +169,14 @@ export function MessageReferenceCard({
   if (compact) {
     const channelLabel = reference.channel ? `#${reference.channel.name}` : "Unknown channel";
     const senderLabel = reference.message?.sender_name ?? "Unknown";
-    const showHovercard = Boolean(hoverRect && reference.message);
     return (
       <span
         className={className}
         {...openProps}
         onMouseEnter={(event) => {
-          if (reference.message) setHoverRect(event.currentTarget.getBoundingClientRect());
+          if (reference.message) showReferenceHover(reference, event.currentTarget.getBoundingClientRect());
         }}
-        onMouseLeave={() => setHoverRect(null)}
+        onMouseLeave={hideReferenceHover}
       >
         <span className="message-reference-icon" aria-hidden="true">
           <Icon size={13} />
@@ -118,16 +185,6 @@ export function MessageReferenceCard({
           <strong>{referenceLabel(reference)}</strong>
           <span>{channelLabel} · {senderLabel}</span>
         </span>
-        {showHovercard && reference.message && createPortal(
-          <div className={`message-reference-hovercard ${reference.kind}`} style={hovercardStyle(hoverRect!)} role="tooltip">
-            <div className="message-reference-hovercard-head">
-              <strong>{referenceLabel(reference)}</strong>
-              <span>{referenceMeta(reference)}</span>
-            </div>
-            <div className="message-reference-hovercard-body">{firstLinesPreview(reference.message.body)}</div>
-          </div>,
-          document.body,
-        )}
       </span>
     );
   }
