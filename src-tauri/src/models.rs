@@ -345,6 +345,50 @@ pub(crate) struct SupervisorCommand {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct BootstrapPerfPhase {
+    pub(crate) name: String,
+    pub(crate) duration_ms: f64,
+    pub(crate) rows: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct BootstrapPerfOptions {
+    pub(crate) runtime: String,
+    pub(crate) message_load: String,
+    pub(crate) include_run_logs: bool,
+    pub(crate) compact_agent_activities: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct BootstrapPerfCounts {
+    pub(crate) channels: usize,
+    pub(crate) thread_activities: usize,
+    pub(crate) channel_members: usize,
+    pub(crate) agents: usize,
+    pub(crate) messages: usize,
+    pub(crate) saved_messages: usize,
+    pub(crate) dismissed_inbox_items: usize,
+    pub(crate) read_inbox_items: usize,
+    pub(crate) artifacts: usize,
+    pub(crate) tasks: usize,
+    pub(crate) reminders: usize,
+    pub(crate) agent_schedules: usize,
+    pub(crate) agent_runs: usize,
+    pub(crate) agent_work_items: usize,
+    pub(crate) agent_activities: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct BootstrapPerf {
+    pub(crate) options: BootstrapPerfOptions,
+    pub(crate) total_ms: f64,
+    pub(crate) serialize_ms: Option<f64>,
+    pub(crate) payload_bytes: Option<usize>,
+    pub(crate) phases: Vec<BootstrapPerfPhase>,
+    pub(crate) counts: BootstrapPerfCounts,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct Bootstrap {
     pub(crate) db_url: String,
     pub(crate) web_base_url: Option<String>,
@@ -366,4 +410,6 @@ pub(crate) struct Bootstrap {
     pub(crate) agent_activities: Vec<AgentActivity>,
     pub(crate) supervisor: SupervisorStatus,
     pub(crate) launch_agent: LaunchAgentStatus,
+    #[serde(rename = "__perf")]
+    pub(crate) perf: Option<BootstrapPerf>,
 }
