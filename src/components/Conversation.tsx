@@ -26,7 +26,7 @@ import { APP_DISPLAY_NAME } from "../branding";
 import { isCompactFollowupMessage, messageHasVisibleContent, wasEdited } from "../message-grouping";
 import { DESKTOP_MESSAGE_PREVIEW_CHARS, DESKTOP_MESSAGE_PREVIEW_LINES } from "../message-preview";
 import { messageShareLink, messageToMarkdown } from "../message-share";
-import { appendMessageReferenceToken, messageReferenceToken, parseMessageReferences, removeMessageReferenceToken, withoutMessageReferenceTokens, type MessageReferenceKind } from "../message-references";
+import { appendMessageReferenceToken, messageReferenceToken, parseMessageReferences, removeMessageReferenceToken, withoutMessageReferenceTokens, type MessageReferenceKind, type ResolvedMessageReference } from "../message-references";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task, ThreadReplySummary } from "../types";
 import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
 import { ActivityProgressDock, activeProgressByAgent } from "./ActivityProgressDock";
@@ -56,6 +56,7 @@ type ConversationProps = {
   activeTab: "chat" | "tasks";
   activeRoot: Message | null;
   rootMessages: Message[];
+  messages: Message[];
   threadReplyCounts: Record<string, number>;
   threadUnreadCounts: Record<string, number>;
   threadReplySummaries: Record<string, ThreadReplySummary>;
@@ -87,6 +88,7 @@ type ConversationProps = {
   openArtifact: (artifact: Artifact) => void;
   openWorkItem?: (item: AgentWorkItem, focusedMessageIdOverride?: string | null) => void;
   onReferenceMessageJump: (originMessageId: string, targetMessageId: string) => void;
+  onReferenceThreadJump: (originMessageId: string, threadId: string) => void;
   shareBaseUrl: string | null;
   savedMessageIds: Set<string>;
   focusedMessageId: string | null;
@@ -225,6 +227,7 @@ export function Conversation({
   activeTab,
   activeRoot,
   rootMessages,
+  messages,
   threadReplyCounts,
   threadUnreadCounts,
   threadReplySummaries,
@@ -256,6 +259,7 @@ export function Conversation({
   openArtifact,
   openWorkItem,
   onReferenceMessageJump,
+  onReferenceThreadJump,
   shareBaseUrl,
   savedMessageIds,
   focusedMessageId,
@@ -379,27 +383,27 @@ export function Conversation({
     ));
   }
 
-  function renderMessageReferencePreviews(message: Message) {
-    const items = referencePreviewItemsForText(message.body);
-    if (items.length === 0) return null;
-    return (
-      <MessageReferencePreview
-        items={items}
-        variant="message"
-        onOpen={(item) => {
-          if (item.kind === "thread") {
-            setActiveThreadId(item.id);
-            return;
-          }
-          onReferenceMessageJump(message.id, item.id);
-          targetRootMessageIntoView(item.id);
-        }}
-      />
-    );
+  function handleReferenceOpen(sourceMessage: Message, reference: ResolvedMessageReference) {
+    if (reference.kind === "thread") {
+      onReferenceThreadJump(sourceMessage.id, reference.id);
+      return;
+    }
+    onReferenceMessageJump(sourceMessage.id, reference.id);
+    targetRootMessageIntoView(reference.id);
   }
 
-  function visibleMessageBody(message: Message) {
-    return withoutMessageReferenceTokens(message.body);
+  function renderMessageBody(message: Message) {
+    if (!message.body.trim()) return null;
+    return (
+      <MessageMarkdown
+        body={message.body}
+        messages={messages}
+        channels={channels}
+        onOpenReference={(reference) => handleReferenceOpen(message, reference)}
+        onLocalAgentLink={openLinkedAgentDetail}
+        scrollKey={`message:${message.id}`}
+      />
+    );
   }
 
   function insertMessageReference(message: Message, kind: MessageReferenceKind) {
@@ -1034,7 +1038,7 @@ export function Conversation({
                   )}
                   <article className="system-message">
                     <div className="system-message-line">
-                      <MessageMarkdown body={visibleMessageBody(message)} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${message.id}`} />
+                      {renderMessageBody(message)}
                       <time>{formatTime(message.created_at)}</time>
                     </div>
                   </article>
@@ -1168,10 +1172,7 @@ export function Conversation({
                     {(message.delivery_state !== "streaming" || messageHasVisibleContent(message)) && (
                       <>
                         <div className={isLongChannelMessage && !isChannelMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
-                          {renderMessageReferencePreviews(message)}
-                          {visibleMessageBody(message) && (
-                            <MessageMarkdown body={visibleMessageBody(message)} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${message.id}`} />
-                          )}
+                          {renderMessageBody(message)}
                         </div>
                         {isLongChannelMessage && (
                           <button

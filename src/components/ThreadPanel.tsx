@@ -10,7 +10,7 @@ import { copyText } from "../clipboard";
 import { isCompactFollowupMessage, messageHasVisibleContent, wasEdited } from "../message-grouping";
 import { DESKTOP_MESSAGE_PREVIEW_CHARS, DESKTOP_MESSAGE_PREVIEW_LINES } from "../message-preview";
 import { messageShareLink, messageToMarkdown } from "../message-share";
-import { appendMessageReferenceToken, messageReferenceToken, parseMessageReferences, removeMessageReferenceToken, withoutMessageReferenceTokens, type MessageReferenceKind } from "../message-references";
+import { appendMessageReferenceToken, messageReferenceToken, parseMessageReferences, removeMessageReferenceToken, withoutMessageReferenceTokens, type MessageReferenceKind, type ResolvedMessageReference } from "../message-references";
 import { downloadThreadPanelSvg } from "../thread-svg-export";
 import { Agent, AgentActivity, AgentRun, AgentWorkItem, Artifact, Channel, DraftAttachment, Message, OwnerProfile, TASK_STATUSES, Task } from "../types";
 import { agentForMessageSender, deletedAgentForMessageSender, formatClockTime, formatDateDivider, formatTime, isSameCalendarDay, ownerAsAvatarAgent, visibleAgentDescription, visibleChannelDescription } from "../ui-utils";
@@ -105,6 +105,8 @@ type ThreadPanelProps = {
   openArtifact: (artifact: Artifact) => void;
   openWorkItem?: (item: AgentWorkItem, focusedMessageIdOverride?: string | null) => void;
   onReferenceMessageJump: (originMessageId: string, targetMessageId: string) => void;
+  onReferenceThreadJump: (originMessageId: string, threadId: string) => void;
+  messages: Message[];
   onLocateRoot: (message: Message) => void;
   shareBaseUrl: string | null;
   savedMessageIds: Set<string>;
@@ -190,6 +192,8 @@ export function ThreadPanel({
   openArtifact,
   openWorkItem,
   onReferenceMessageJump,
+  onReferenceThreadJump,
+  messages,
   onLocateRoot,
   shareBaseUrl,
   savedMessageIds,
@@ -275,25 +279,29 @@ export function ThreadPanel({
     ));
   }
 
-  function renderMessageReferencePreviews(message: Message) {
-    const items = referencePreviewItemsForText(message.body);
-    if (items.length === 0) return null;
-    return (
-      <MessageReferencePreview
-        items={items}
-        variant="message"
-        onOpen={(item) => {
-          const target = threadMessageById.get(item.id);
-          if (!target) return;
-          onReferenceMessageJump(message.id, target.id);
-          targetMessageIntoView(target.id);
-        }}
-      />
-    );
+  function handleReferenceOpen(sourceMessage: Message, reference: ResolvedMessageReference) {
+    if (reference.kind === "thread") {
+      onReferenceThreadJump(sourceMessage.id, reference.id);
+      return;
+    }
+    const target = threadMessageById.get(reference.id);
+    if (!target) return;
+    onReferenceMessageJump(sourceMessage.id, target.id);
+    targetMessageIntoView(target.id);
   }
 
-  function visibleMessageBody(message: Message) {
-    return withoutMessageReferenceTokens(message.body);
+  function renderMessageBody(message: Message) {
+    if (!message.body.trim()) return null;
+    return (
+      <MessageMarkdown
+        body={message.body}
+        messages={messages}
+        channels={channels}
+        onOpenReference={(reference) => handleReferenceOpen(message, reference)}
+        onLocalAgentLink={openLinkedAgentDetail}
+        scrollKey={`message:${message.id}`}
+      />
+    );
   }
 
   function insertMessageReference(message: Message, kind: MessageReferenceKind) {
@@ -909,7 +917,7 @@ export function ThreadPanel({
                 >
                 {activeRoot.sender_role === "system" ? (
                   <div className="system-message-line">
-                    <MessageMarkdown body={visibleMessageBody(activeRoot)} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${activeRoot.id}`} />
+                    {renderMessageBody(activeRoot)}
                     <time>{formatTime(activeRoot.created_at)}</time>
                   </div>
                 ) : (
@@ -993,10 +1001,7 @@ export function ThreadPanel({
                         return (
                           <>
                             <div className={isLongThreadMessage && !isThreadMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
-                              {renderMessageReferencePreviews(activeRoot)}
-                              {visibleMessageBody(activeRoot) && (
-                                <MessageMarkdown body={visibleMessageBody(activeRoot)} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${activeRoot.id}`} />
-                              )}
+                              {renderMessageBody(activeRoot)}
                             </div>
                             {isLongThreadMessage && (
                               <button
@@ -1155,7 +1160,7 @@ export function ThreadPanel({
                     )}
                     <article className="system-message">
                       <div className="system-message-line">
-                        <MessageMarkdown body={visibleMessageBody(reply)} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${reply.id}`} />
+                        {renderMessageBody(reply)}
                         <time>{formatTime(reply.created_at)}</time>
                       </div>
                     </article>
@@ -1279,10 +1284,7 @@ export function ThreadPanel({
                         return (
                           <>
                             <div className={isLongThreadMessage && !isThreadMessageExpanded ? "message-long-preview collapsed" : "message-long-preview"}>
-                              {renderMessageReferencePreviews(reply)}
-                              {visibleMessageBody(reply) && (
-                                <MessageMarkdown body={visibleMessageBody(reply)} onLocalAgentLink={openLinkedAgentDetail} scrollKey={`message:${reply.id}`} />
-                              )}
+                              {renderMessageBody(reply)}
                             </div>
                             {isLongThreadMessage && (
                               <button

@@ -2952,6 +2952,24 @@ function App() {
     });
   }
 
+  function navigateToReferencedThread(originMessageId: string, threadId: string) {
+    // Record the chip's source message in the current history entry before we
+    // switch threads, so Lantor's built-in back button returns to the message
+    // that contained the chip (the thread switch itself pushes the target entry).
+    if (!isMobileViewport() && appHistoryReadyRef.current) {
+      const existingState = window.history.state;
+      if (isAppHistoryState(existingState)) {
+        const originState = {
+          ...buildAppHistoryState(existingState.index),
+          focusedMessageId: originMessageId,
+        };
+        window.history.replaceState(originState, "");
+        lastAppHistoryKeyRef.current = appHistoryKey(originState);
+      }
+    }
+    revealThread(threadId);
+  }
+
   function openMobileSidebarFromContent() {
     setMobileSidebarFocus("home");
     if (isMobileViewport()) {
@@ -4002,6 +4020,7 @@ function App() {
         activeTab={activeTab}
         activeRoot={activeRoot}
         rootMessages={rootMessages}
+        messages={data.messages}
         threadReplyCounts={threadReplyCounts}
         threadUnreadCounts={threadUnreadCounts}
         threadReplySummaries={threadReplySummaries}
@@ -4036,6 +4055,7 @@ function App() {
         openArtifact={openArtifact}
         openWorkItem={openWorkItem}
         onReferenceMessageJump={navigateToReferencedMessage}
+        onReferenceThreadJump={navigateToReferencedThread}
         shareBaseUrl={shareBaseUrl}
         savedMessageIds={savedMessageIds}
         focusedMessageId={focusedMessageId}
@@ -4099,6 +4119,8 @@ function App() {
           openArtifact={openArtifact}
           openWorkItem={openWorkItem}
           onReferenceMessageJump={navigateToReferencedMessage}
+          onReferenceThreadJump={navigateToReferencedThread}
+          messages={data.messages}
           onLocateRoot={revealThreadRootInChannel}
           shareBaseUrl={shareBaseUrl}
           savedMessageIds={savedMessageIds}
