@@ -259,6 +259,7 @@ function makeBootstrap(profile, tick = 0) {
       agent_display_name: agent.display_name,
       created_at: timestamp(1),
     })),
+    thread_activities: [],
     agents,
     messages: [...messages, ...replies, ...streamingMessage],
     saved_messages: [],
