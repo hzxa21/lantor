@@ -15,10 +15,14 @@ function renderReferenceText(value: string) {
       parts.push(value.slice(lastIndex, match.index));
     }
     const kind = match[1].toLowerCase();
-    const id = match[2];
     parts.push(
+      // Render the full token text verbatim so the overlay mirrors the
+      // underlying textarea character-for-character — the highlight must not
+      // change glyph advance width, otherwise the caret / click hit-testing /
+      // selection drift after the token. The shortened chip lives in the
+      // separate composer reference-preview strip instead.
       <span key={`${match.index}:${match[0]}`} className={`composer-reference-token ${kind}`}>
-        {kind === "thread" ? "Thread" : "Message"} {id.slice(0, 8)}
+        {match[0]}
       </span>,
     );
     lastIndex = match.index + match[0].length;

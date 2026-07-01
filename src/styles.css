@@ -5347,14 +5347,14 @@ mark {
 }
 
 .composer-reference-token {
-  display: inline-block;
-  margin: 0 1px;
-  padding: 0 6px;
-  border-radius: 8px;
+  /* Width-neutral highlight only: no padding / margin / inline-block /
+     font-weight change, so the overlay keeps the exact glyph advance of the
+     underlying textarea text and the caret stays aligned. box-shadow and
+     border-radius do not affect layout width. */
+  border-radius: 4px;
   background: rgba(10, 132, 255, 0.12);
   box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.24);
   color: var(--accent);
-  font-weight: 700;
 }
 
 .composer-reference-token.thread {
