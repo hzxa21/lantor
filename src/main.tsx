@@ -6,8 +6,10 @@ import {
   type ProfilerOnRenderCallback,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  startTransition,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -719,6 +721,11 @@ function App() {
   const [bootReady, setBootReady] = useState(false);
   const startupSplashCompletedRef = useRef(false);
   const [data, setData] = useState<Bootstrap | null>(null);
+  const setEphemeralData = useCallback((update: (current: Bootstrap | null) => Bootstrap | null) => {
+    startTransition(() => {
+      setData(update);
+    });
+  }, []);
   const [activeChannelId, setActiveChannelId] = useState<string>("");
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [channelThreadMemory, setChannelThreadMemory] = useState<ChannelThreadMemory>(() => loadChannelThreadMemory());
@@ -1164,7 +1171,7 @@ function App() {
     invalidatePendingRefreshResult();
     const deltas = messageDeltaBufferRef.current;
     messageDeltaBufferRef.current = new Map();
-    setData((current) => {
+    setEphemeralData((current) => {
       if (!current) {
         requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after message delta`);
         return current;
@@ -1216,7 +1223,7 @@ function App() {
   }
 
   function applyActivityUpsert(activity: AgentActivity) {
-    setData((current) => {
+    setEphemeralData((current) => {
       if (!current) {
         requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after activity update`);
         return current;
@@ -1271,7 +1278,7 @@ function App() {
     ephemeralActivityBufferRef.current = new Map();
     ephemeralRunBufferRef.current = new Map();
     const applyStartedAt = performance.now();
-    setData((current) => {
+    setEphemeralData((current) => {
       if (!current) {
         requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after buffered updates`);
         return current;
@@ -3099,6 +3106,22 @@ function App() {
     revealThread(threadId);
   }
 
+  const openAgentDetail = useCallback((agent: Agent) => {
+    setSelectedAgentId(agent.id);
+  }, []);
+  const navigateToReferencedMessageRef = useRef(navigateToReferencedMessage);
+  const navigateToReferencedThreadRef = useRef(navigateToReferencedThread);
+  useLayoutEffect(() => {
+    navigateToReferencedMessageRef.current = navigateToReferencedMessage;
+    navigateToReferencedThreadRef.current = navigateToReferencedThread;
+  });
+  const openReferencedMessage = useCallback((originMessageId: string, targetMessageId: string) => {
+    navigateToReferencedMessageRef.current(originMessageId, targetMessageId);
+  }, []);
+  const openReferencedThread = useCallback((originMessageId: string, threadId: string) => {
+    navigateToReferencedThreadRef.current(originMessageId, threadId);
+  }, []);
+
   function openMobileSidebarFromContent() {
     setMobileSidebarFocus("home");
     if (isMobileViewport()) {
@@ -4180,11 +4203,11 @@ function App() {
           attachments: current.attachments.filter((item) => item.id !== id),
         }))}
         sendRootMessage={sendRootMessage}
-        openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
+        openAgentDetail={openAgentDetail}
         openArtifact={openArtifact}
         openWorkItem={openWorkItem}
-        onReferenceMessageJump={navigateToReferencedMessage}
-        onReferenceThreadJump={navigateToReferencedThread}
+        onReferenceMessageJump={openReferencedMessage}
+        onReferenceThreadJump={openReferencedThread}
         shareBaseUrl={shareBaseUrl}
         savedMessageIds={savedMessageIds}
         focusedMessageId={focusedMessageId}
@@ -4244,11 +4267,11 @@ function App() {
             attachments: current.attachments.filter((item) => item.id !== id),
           }))}
           sendReply={sendReply}
-          openAgentDetail={(agent) => setSelectedAgentId(agent.id)}
+          openAgentDetail={openAgentDetail}
           openArtifact={openArtifact}
           openWorkItem={openWorkItem}
-          onReferenceMessageJump={navigateToReferencedMessage}
-          onReferenceThreadJump={navigateToReferencedThread}
+          onReferenceMessageJump={openReferencedMessage}
+          onReferenceThreadJump={openReferencedThread}
           messages={data.messages}
           onLocateRoot={revealThreadRootInChannel}
           shareBaseUrl={shareBaseUrl}

@@ -2,9 +2,11 @@ import {
   Children,
   ReactNode,
   isValidElement,
+  memo,
   type MouseEvent,
   type PointerEvent,
   type UIEvent,
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -31,7 +33,8 @@ type MessageMarkdownProps = {
   onLocalAgentLink?: (handle: string) => void;
   messages?: Message[];
   channels?: Channel[];
-  onOpenReference?: (reference: ResolvedMessageReference) => void;
+  sourceMessageId?: string;
+  onOpenReference?: (sourceMessageId: string, reference: ResolvedMessageReference) => void;
   scrollKey?: string;
 };
 
@@ -209,17 +212,22 @@ function MarkdownTableScroll({ children, scrollKey }: { children?: ReactNode; sc
   );
 }
 
-export function MessageMarkdown({
+function MessageMarkdownContent({
   body,
   onLocalAgentLink,
   messages,
   channels,
+  sourceMessageId,
   onOpenReference,
   scrollKey,
 }: MessageMarkdownProps) {
-  const linkedBody = messageReferenceMarkdown(linkifyMessageBody(body));
+  const linkedBody = useMemo(() => messageReferenceMarkdown(linkifyMessageBody(body)), [body]);
   const tableIndexRef = useRef(0);
   tableIndexRef.current = 0;
+  const handleOpenReference = useCallback((reference: ResolvedMessageReference) => {
+    if (!sourceMessageId) return;
+    onOpenReference?.(sourceMessageId, reference);
+  }, [onOpenReference, sourceMessageId]);
   const markdownComponents = useMemo<Components>(() => ({
     a: ({ children, href, node: _node, ...props }) => {
       const reference = referenceFromHref(href, messages, channels);
@@ -228,7 +236,7 @@ export function MessageMarkdown({
           <MessageReferenceCard
             reference={reference}
             compact
-            onOpen={onOpenReference}
+            onOpen={sourceMessageId && onOpenReference ? handleOpenReference : undefined}
           />
         );
       }
@@ -256,7 +264,7 @@ export function MessageMarkdown({
       tableIndexRef.current += 1;
       return <MarkdownTableScroll scrollKey={tableScrollKey}>{children}</MarkdownTableScroll>;
     },
-  }), [channels, messages, onLocalAgentLink, onOpenReference, scrollKey]);
+  }), [channels, handleOpenReference, messages, onLocalAgentLink, onOpenReference, scrollKey, sourceMessageId]);
 
   return (
     <div className="markdown-body">
@@ -271,3 +279,5 @@ export function MessageMarkdown({
     </div>
   );
 }
+
+export const MessageMarkdown = memo(MessageMarkdownContent);

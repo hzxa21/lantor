@@ -1,10 +1,10 @@
 import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, Crosshair, FileImage, Hash, Maximize2, MessageSquare, Minimize2, Paperclip, Quote, RotateCcw, Send, X } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type TextareaHTMLAttributes, type WheelEvent as ReactWheelEvent } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type TextareaHTMLAttributes, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { useMobileViewport } from "../hooks/useMobileViewport";
 import { APP_DISPLAY_NAME } from "../branding";
-import { isImeComposing } from "../input-utils";
+import { isImeComposing, isInputComposing } from "../input-utils";
 import { mentionableAgentsForChannel } from "../mentions";
 import { copyText } from "../clipboard";
 import { isCompactFollowupMessage, messageHasVisibleContent, wasEdited } from "../message-grouping";
@@ -218,10 +218,10 @@ export function ThreadPanel({
   const threadScrollMetricsRef = useRef({ scrollHeight: 0, scrollTop: 0, clientHeight: 0 });
   const threadScrollStateByThreadRef = useRef<Map<string, ThreadScrollState>>(new Map());
   const threadScrollAnchorRef = useRef<ThreadScrollAnchor | null>(null);
-  function openLinkedAgentDetail(handle: string) {
+  const openLinkedAgentDetail = useCallback((handle: string) => {
     const agent = agents.find((candidate) => candidate.handle.toLowerCase() === handle.toLowerCase());
     if (agent) openAgentDetail(agent);
-  }
+  }, [agents, openAgentDetail]);
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
   const rootAgent = activeRoot ? agentForMessageSender(activeRoot, agents) : null;
@@ -274,30 +274,33 @@ export function ThreadPanel({
   }
 
   function referencePreviewItemsForText(text: string) {
+    if (!text.includes("[[")) return [];
     return parseMessageReferences(text).map((reference) => (
       messageReferencePreviewItem(reference.kind, reference.id, reference.token)
     ));
   }
 
-  function handleReferenceOpen(sourceMessage: Message, reference: ResolvedMessageReference) {
+  const handleReferenceOpen = useCallback((sourceMessageId: string, reference: ResolvedMessageReference) => {
     if (reference.kind === "thread") {
-      onReferenceThreadJump(sourceMessage.id, reference.id);
+      onReferenceThreadJump(sourceMessageId, reference.id);
       return;
     }
     const target = threadMessageById.get(reference.id);
     if (!target) return;
-    onReferenceMessageJump(sourceMessage.id, target.id);
+    onReferenceMessageJump(sourceMessageId, target.id);
     targetMessageIntoView(target.id);
-  }
+  }, [onReferenceMessageJump, onReferenceThreadJump, threadMessageById]);
 
   function renderMessageBody(message: Message) {
     if (!message.body.trim()) return null;
+    const hasReferenceTokens = message.body.includes("[[");
     return (
       <MessageMarkdown
         body={message.body}
-        messages={messages}
-        channels={channels}
-        onOpenReference={(reference) => handleReferenceOpen(message, reference)}
+        messages={hasReferenceTokens ? messages : undefined}
+        channels={hasReferenceTokens ? channels : undefined}
+        sourceMessageId={hasReferenceTokens ? message.id : undefined}
+        onOpenReference={hasReferenceTokens ? handleReferenceOpen : undefined}
         onLocalAgentLink={openLinkedAgentDetail}
         scrollKey={`message:${message.id}`}
       />
@@ -1412,7 +1415,7 @@ function useBufferedComposerText(draft: string, resetKey: string | null | undefi
 
   function updateText(value: string) {
     textRef.current = value;
-    setText(value);
+    setText((current) => current === value ? current : value);
   }
 
   function commitText(value = textRef.current) {
@@ -1424,7 +1427,7 @@ function useBufferedComposerText(draft: string, resetKey: string | null | undefi
   function markCommitted(value: string) {
     textRef.current = value;
     committedRef.current = value;
-    setText(value);
+    setText((current) => current === value ? current : value);
   }
 
   return { text, updateText, commitText, markCommitted };
@@ -1447,6 +1450,8 @@ function ThreadReplyComposer({
 }: ThreadReplyComposerProps) {
   const [isReplyDragOver, setIsReplyDragOver] = useState(false);
   const replyDragDepthRef = useRef(0);
+  const replyCompositionRef = useRef(false);
+  const ignoreReplyCompositionEndRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const shouldUseShortPlaceholder = useMobileViewport();
@@ -1462,7 +1467,7 @@ function ThreadReplyComposer({
     focusComposer,
   } = useMentionPicker({ agents: mentionAgents, channels, value: text, setValue: updateText, textareaRef });
   useAutoGrowTextarea(textareaRef, text);
-  const referencePreviewItems = resolveReferencePreviewItems(text);
+  const referencePreviewItems = useMemo(() => resolveReferencePreviewItems(text), [resolveReferencePreviewItems, text]);
 
   useEffect(() => {
     replyDragDepthRef.current = 0;
@@ -1471,9 +1476,12 @@ function ThreadReplyComposer({
   }, [activeRoot?.id]);
 
   function submitReply() {
-    if (!activeRoot || (!text.trim() && replyAttachments.length === 0)) return;
-    const body = text;
+    const body = textareaRef.current?.value ?? text;
+    if (!activeRoot || (!body.trim() && replyAttachments.length === 0)) return;
+    if (replyCompositionRef.current) ignoreReplyCompositionEndRef.current = true;
+    replyCompositionRef.current = false;
     markCommitted("");
+    if (textareaRef.current) textareaRef.current.value = "";
     sendReply(body, replyAttachments);
     closeMentionPicker();
     focusComposer();
@@ -1531,6 +1539,11 @@ function ThreadReplyComposer({
     if (!activeRoot) return;
     addReplyAttachments(imageFiles);
     focusComposer();
+  }
+
+  function applyReplyText(value: string, cursor: number | null) {
+    updateText(value);
+    refreshMentionState(value, cursor ?? value.length);
   }
 
   const fullReplyPlaceholder = activeRoot
@@ -1614,11 +1627,29 @@ function ThreadReplyComposer({
         autoComplete="off"
         autoCorrect="off"
         spellCheck={false}
-        onChange={(event) => {
-          updateText(event.target.value);
-          refreshMentionState(event.target.value, event.target.selectionStart);
+        onCompositionStart={() => {
+          replyCompositionRef.current = true;
+          ignoreReplyCompositionEndRef.current = false;
         }}
-        onBlur={() => commitText()}
+        onCompositionEnd={(event) => {
+          replyCompositionRef.current = false;
+          if (ignoreReplyCompositionEndRef.current) {
+            ignoreReplyCompositionEndRef.current = false;
+            event.currentTarget.value = "";
+            markCommitted("");
+            return;
+          }
+          applyReplyText(event.currentTarget.value, event.currentTarget.selectionStart);
+        }}
+        onChange={(event) => {
+          if (replyCompositionRef.current || isInputComposing(event)) return;
+          applyReplyText(event.target.value, event.target.selectionStart);
+        }}
+        onBlur={(event) => {
+          replyCompositionRef.current = false;
+          applyReplyText(event.currentTarget.value, event.currentTarget.selectionStart);
+          commitText(event.currentTarget.value);
+        }}
         onSelect={(event) => refreshMentionState(text, event.currentTarget.selectionStart)}
         onKeyDown={handleReplyKeyDown}
         onPaste={handleReplyPaste}

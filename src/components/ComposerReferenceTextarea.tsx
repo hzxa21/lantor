@@ -1,4 +1,4 @@
-import { forwardRef, type ReactNode, type TextareaHTMLAttributes } from "react";
+import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, type CompositionEventHandler, type ReactNode, type TextareaHTMLAttributes } from "react";
 
 type ComposerReferenceTextareaProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value"> & {
   value: string;
@@ -35,20 +35,44 @@ function renderReferenceText(value: string) {
 }
 
 export const ComposerReferenceTextarea = forwardRef<HTMLTextAreaElement, ComposerReferenceTextareaProps>(
-  function ComposerReferenceTextarea({ value, className, ...props }, ref) {
+  function ComposerReferenceTextarea({ value, className, onCompositionStart, onCompositionEnd, ...props }, ref) {
+    const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const isComposingRef = useRef(false);
+    useImperativeHandle(ref, () => textareaRef.current as HTMLTextAreaElement);
+    useLayoutEffect(() => {
+      const textarea = textareaRef.current;
+      if (!textarea || isComposingRef.current || textarea.value === value) return;
+      textarea.value = value;
+    }, [value]);
+
+    const handleCompositionStart: CompositionEventHandler<HTMLTextAreaElement> = (event) => {
+      isComposingRef.current = true;
+      onCompositionStart?.(event);
+    };
+    const handleCompositionEnd: CompositionEventHandler<HTMLTextAreaElement> = (event) => {
+      isComposingRef.current = false;
+      onCompositionEnd?.(event);
+    };
+    const textareaProps = {
+      ref: textareaRef,
+      className,
+      defaultValue: value,
+      onCompositionStart: handleCompositionStart,
+      onCompositionEnd: handleCompositionEnd,
+      ...props,
+    };
+
+    REFERENCE_TOKEN_PATTERN.lastIndex = 0;
     const hasReferenceToken = REFERENCE_TOKEN_PATTERN.test(value);
     REFERENCE_TOKEN_PATTERN.lastIndex = 0;
     return (
       <div className={`composer-reference-input ${hasReferenceToken ? "has-reference-token" : ""}`}>
-        <div className="composer-reference-overlay" aria-hidden="true">
-          {value ? renderReferenceText(value) : "\u00a0"}
-        </div>
-        <textarea
-          ref={ref}
-          className={className}
-          value={value}
-          {...props}
-        />
+        <textarea {...textareaProps} />
+        {hasReferenceToken && (
+          <div className="composer-reference-overlay" aria-hidden="true">
+            {renderReferenceText(value)}
+          </div>
+        )}
       </div>
     );
   },

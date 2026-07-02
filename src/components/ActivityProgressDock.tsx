@@ -19,7 +19,7 @@ import {
   Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { Agent, AgentActivity, AgentRun, AgentWorkItem, Message } from "../types";
 import { messageHasVisibleContent, messageRunId } from "../message-grouping";
 import { formatClockTime } from "../ui-utils";
@@ -469,7 +469,7 @@ export function activeProgressByAgent(
     .sort((left, right) => right.latestAt - left.latestAt);
 }
 
-export function ActivityProgressDock({
+function ActivityProgressDockContent({
   messages,
   activities,
   runs,
@@ -480,7 +480,10 @@ export function ActivityProgressDock({
   onOpenWorkItem,
 }: ActivityProgressDockProps) {
   const [historyOpen, setHistoryOpen] = useState(false);
-  const progress = activeProgressByAgent(messages, activities, runs, workItems, agents, channelId, threadRootId);
+  const progress = useMemo(
+    () => activeProgressByAgent(messages, activities, runs, workItems, agents, channelId, threadRootId),
+    [activities, agents, channelId, messages, runs, threadRootId, workItems],
+  );
   if (progress.length === 0) return null;
 
   const workingCount = progress.filter((item) => item.state === "working").length;
@@ -619,3 +622,5 @@ export function ActivityProgressDock({
     </div>
   );
 }
+
+export const ActivityProgressDock = memo(ActivityProgressDockContent);

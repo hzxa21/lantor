@@ -15,11 +15,11 @@ import {
   Trash2,
   UserPlus,
 } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type TextareaHTMLAttributes, type WheelEvent as ReactWheelEvent } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type TextareaHTMLAttributes, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { useMobileViewport } from "../hooks/useMobileViewport";
-import { isImeComposing } from "../input-utils";
+import { isImeComposing, isInputComposing } from "../input-utils";
 import { mentionableAgentsForChannel } from "../mentions";
 import { copyText } from "../clipboard";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -123,6 +123,7 @@ function taskStatusLabel(status: string) {
 type ReplyProgress = ReturnType<typeof activeProgressByAgent>[number];
 type ActiveReplyMenuPlacement = "above" | "below";
 const MESSAGE_LIST_COMPOSER_RESIZE_SUPPRESS_MS = 200;
+const EMPTY_ACTIVE_REPLY_PROGRESS_BY_ROOT: Record<string, ReplyProgress[]> = Object.freeze({});
 
 function compactReferencePreview(body: string) {
   const text = withoutMessageReferenceTokens(body).replace(/\s+/g, " ").trim();
@@ -283,14 +284,22 @@ export function Conversation({
   const channelActionsRef = useRef<HTMLDivElement | null>(null);
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
-  function openLinkedAgentDetail(handle: string) {
+  const openLinkedAgentDetail = useCallback((handle: string) => {
     const agent = agents.find((candidate) => candidate.handle.toLowerCase() === handle.toLowerCase());
     if (agent) openAgentDetail(agent);
-  }
-  const activeReplyProgressByRoot = useMemo<Record<string, ReturnType<typeof activeProgressByAgent>>>(() => {
-    if (!channel) return {};
+  }, [agents, openAgentDetail]);
+  const channelId = channel?.id ?? null;
+  const activeReplyRootIds = useMemo(() => {
+    if (!channelId) return new Set<string>();
+    return new Set(agentWorkItems
+      .filter((workItem) => workItem.channel_id === channelId && workItem.thread_root_id)
+      .map((workItem) => workItem.thread_root_id as string));
+  }, [agentWorkItems, channelId]);
+  const activeReplyProgressByRoot = useMemo<Record<string, ReplyProgress[]>>(() => {
+    if (!channelId || activeReplyRootIds.size === 0) return EMPTY_ACTIVE_REPLY_PROGRESS_BY_ROOT;
     return Object.fromEntries(
       rootMessages
+        .filter((message) => activeReplyRootIds.has(message.id))
         .map((message) => [
           message.id,
           activeProgressByAgent(
@@ -299,13 +308,13 @@ export function Conversation({
             agentRuns,
             agentWorkItems,
             agents,
-            channel.id,
+            channelId,
             message.id,
           ),
         ] as const)
         .filter(([, progress]) => progress.length > 0),
     );
-  }, [agentActivities, agentRuns, agentWorkItems, agents, channel, rootMessages]);
+  }, [activeReplyRootIds, agentActivities, agentRuns, agentWorkItems, agents, channelId, rootMessages]);
   const messageListProgressVersion = useMemo(() => {
     if (!channel) return "";
     const rootMessageIds = new Set(rootMessages.map((message) => message.id));
@@ -378,28 +387,31 @@ export function Conversation({
   }
 
   function referencePreviewItemsForText(text: string) {
+    if (!text.includes("[[")) return [];
     return parseMessageReferences(text).map((reference) => (
       messageReferencePreviewItem(reference.kind, reference.id, reference.token)
     ));
   }
 
-  function handleReferenceOpen(sourceMessage: Message, reference: ResolvedMessageReference) {
+  const handleReferenceOpen = useCallback((sourceMessageId: string, reference: ResolvedMessageReference) => {
     if (reference.kind === "thread") {
-      onReferenceThreadJump(sourceMessage.id, reference.id);
+      onReferenceThreadJump(sourceMessageId, reference.id);
       return;
     }
-    onReferenceMessageJump(sourceMessage.id, reference.id);
+    onReferenceMessageJump(sourceMessageId, reference.id);
     targetRootMessageIntoView(reference.id);
-  }
+  }, [onReferenceMessageJump, onReferenceThreadJump]);
 
   function renderMessageBody(message: Message) {
     if (!message.body.trim()) return null;
+    const hasReferenceTokens = message.body.includes("[[");
     return (
       <MessageMarkdown
         body={message.body}
-        messages={messages}
-        channels={channels}
-        onOpenReference={(reference) => handleReferenceOpen(message, reference)}
+        messages={hasReferenceTokens ? messages : undefined}
+        channels={hasReferenceTokens ? channels : undefined}
+        sourceMessageId={hasReferenceTokens ? message.id : undefined}
+        onOpenReference={hasReferenceTokens ? handleReferenceOpen : undefined}
         onLocalAgentLink={openLinkedAgentDetail}
         scrollKey={`message:${message.id}`}
       />
@@ -1472,7 +1484,7 @@ function useBufferedComposerText(draft: string, resetKey: string | null | undefi
 
   function updateText(value: string) {
     textRef.current = value;
-    setText(value);
+    setText((current) => current === value ? current : value);
   }
 
   function commitText(value = textRef.current) {
@@ -1484,7 +1496,7 @@ function useBufferedComposerText(draft: string, resetKey: string | null | undefi
   function markCommitted(value: string) {
     textRef.current = value;
     committedRef.current = value;
-    setText(value);
+    setText((current) => current === value ? current : value);
   }
 
   return { text, updateText, commitText, markCommitted };
@@ -1507,6 +1519,8 @@ function ConversationComposer({
   const [sendAsTask, setSendAsTask] = useState(false);
   const [isComposerDragOver, setIsComposerDragOver] = useState(false);
   const composerDragDepthRef = useRef(0);
+  const composerCompositionRef = useRef(false);
+  const ignoreComposerCompositionEndRef = useRef(false);
   const taskToggleHandledAtRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1523,7 +1537,7 @@ function ConversationComposer({
     focusComposer,
   } = useMentionPicker({ agents: mentionAgents, channels, value: text, setValue: updateText, textareaRef });
   useAutoGrowTextarea(textareaRef, text);
-  const referencePreviewItems = resolveReferencePreviewItems(text);
+  const referencePreviewItems = useMemo(() => resolveReferencePreviewItems(text), [resolveReferencePreviewItems, text]);
 
   useEffect(() => {
     if (isDm) setSendAsTask(false);
@@ -1567,9 +1581,12 @@ function ConversationComposer({
   }
 
   function submitComposer() {
-    if (!channel || (!text.trim() && draftAttachments.length === 0)) return;
-    const body = text;
+    const body = textareaRef.current?.value ?? text;
+    if (!channel || (!body.trim() && draftAttachments.length === 0)) return;
+    if (composerCompositionRef.current) ignoreComposerCompositionEndRef.current = true;
+    composerCompositionRef.current = false;
     markCommitted("");
+    if (textareaRef.current) textareaRef.current.value = "";
     sendRootMessage(isDm ? false : sendAsTask, body, draftAttachments);
     closeMentionPicker();
     focusComposer();
@@ -1627,6 +1644,11 @@ function ConversationComposer({
     if (!channel) return;
     addDraftAttachments(imageFiles);
     focusComposer();
+  }
+
+  function applyComposerText(value: string, cursor: number | null) {
+    updateText(value);
+    refreshMentionState(value, cursor ?? value.length);
   }
 
   const fullPlaceholder = channel
@@ -1712,11 +1734,29 @@ function ConversationComposer({
         autoComplete="off"
         autoCorrect="off"
         spellCheck={false}
-        onChange={(event) => {
-          updateText(event.target.value);
-          refreshMentionState(event.target.value, event.target.selectionStart);
+        onCompositionStart={() => {
+          composerCompositionRef.current = true;
+          ignoreComposerCompositionEndRef.current = false;
         }}
-        onBlur={() => commitText()}
+        onCompositionEnd={(event) => {
+          composerCompositionRef.current = false;
+          if (ignoreComposerCompositionEndRef.current) {
+            ignoreComposerCompositionEndRef.current = false;
+            event.currentTarget.value = "";
+            markCommitted("");
+            return;
+          }
+          applyComposerText(event.currentTarget.value, event.currentTarget.selectionStart);
+        }}
+        onChange={(event) => {
+          if (composerCompositionRef.current || isInputComposing(event)) return;
+          applyComposerText(event.target.value, event.target.selectionStart);
+        }}
+        onBlur={(event) => {
+          composerCompositionRef.current = false;
+          applyComposerText(event.currentTarget.value, event.currentTarget.selectionStart);
+          commitText(event.currentTarget.value);
+        }}
         onSelect={(event) => refreshMentionState(text, event.currentTarget.selectionStart)}
         onKeyDown={handleComposerKeyDown}
         onPaste={handleComposerPaste}

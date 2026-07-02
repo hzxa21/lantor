@@ -68,16 +68,11 @@ function runtime(): "tauri" | "web" {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__) ? "tauri" : "web";
 }
 
-function isDevBuild() {
-  return Boolean((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV);
-}
-
 export function shouldEnablePerfTelemetry() {
   if (typeof window === "undefined") return false;
   const params = new URLSearchParams(window.location.search);
   return params.has("lantorPerf")
-    || window.localStorage.getItem(PERF_STORAGE_KEY) === "1"
-    || isDevBuild();
+    || window.localStorage.getItem(PERF_STORAGE_KEY) === "1";
 }
 
 function notify() {

@@ -571,8 +571,29 @@ async function installStreamingEventSource(page) {
         super();
         this.url = url;
         this.readyState = NativeEventSource.OPEN;
+        this.tick = 0;
         this.timer = window.setInterval(() => {
-          this.dispatchEvent(new MessageEvent("lantor", { data: "bench-streaming-refresh" }));
+          this.tick += 1;
+          this.dispatchEvent(new MessageEvent("lantor", {
+            data: JSON.stringify({
+              type: "activity_upsert",
+              reason: "bench-streaming-refresh",
+              activity: {
+                id: "00000000-0000-4000-8000-000000006300",
+                agent_id: "00000000-0000-4000-8000-000000001000",
+                agent_handle: "agent000",
+                run_id: "00000000-0000-4000-8000-000000006000",
+                kind: "thinking",
+                phase: "thinking",
+                status: "running",
+                title: "Synthetic streaming activity",
+                summary: `Tick ${this.tick}`,
+                detail: `Streaming update ${this.tick} for agent000`,
+                metadata: {},
+                created_at: new Date().toISOString(),
+              },
+            }),
+          }));
         }, streamingInterval);
       }
       close() {
