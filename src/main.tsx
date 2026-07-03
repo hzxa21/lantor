@@ -3898,9 +3898,13 @@ function App() {
         themePreference={themePreference}
         chatTextSize={chatTextSize}
         showImageThumbnails={showImageThumbnails}
+        launchAgent={data.launch_agent}
+        supervisor={data.supervisor}
         onThemePreferenceChange={setThemePreference}
         onChatTextSizeChange={setChatTextSize}
         onShowImageThumbnailsChange={setShowImageThumbnails}
+        onInstallSupervisorService={installSupervisorService}
+        onUninstallSupervisorService={uninstallSupervisorService}
         onClose={() => setShowSettingsModal(false)}
       />
 

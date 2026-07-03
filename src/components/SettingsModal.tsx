@@ -1,4 +1,5 @@
-import { Image, Monitor, Moon, Sun, Type } from "lucide-react";
+import { Image, Monitor, Moon, ServerCog, Sun, Type } from "lucide-react";
+import type { LaunchAgentStatus, SupervisorStatus } from "../types";
 import { Modal } from "./Modal";
 
 export type ThemePreference = "auto" | "light" | "dark";
@@ -9,9 +10,13 @@ type SettingsModalProps = {
   themePreference: ThemePreference;
   chatTextSize: ChatTextSize;
   showImageThumbnails: boolean;
+  launchAgent: LaunchAgentStatus;
+  supervisor: SupervisorStatus;
   onThemePreferenceChange: (value: ThemePreference) => void;
   onChatTextSizeChange: (value: ChatTextSize) => void;
   onShowImageThumbnailsChange: (value: boolean) => void;
+  onInstallSupervisorService: () => void;
+  onUninstallSupervisorService: () => void;
   onClose: () => void;
 };
 
@@ -42,11 +47,19 @@ export function SettingsModal({
   themePreference,
   chatTextSize,
   showImageThumbnails,
+  launchAgent,
+  supervisor,
   onThemePreferenceChange,
   onChatTextSizeChange,
   onShowImageThumbnailsChange,
+  onInstallSupervisorService,
+  onUninstallSupervisorService,
   onClose,
 }: SettingsModalProps) {
+  const serviceStatus = launchAgent.installed
+    ? launchAgent.loaded ? "Installed and running" : "Installed"
+    : "Not installed";
+
   return (
     <Modal open={open} title="Settings" onClose={onClose} width={560}>
       <section className="settings-panel">
@@ -115,6 +128,25 @@ export function SettingsModal({
             />
           </label>
           <p className="settings-hint">When disabled, images appear as compact attachment rows and still open in preview when clicked.</p>
+        </fieldset>
+        <fieldset className="settings-fieldset settings-service-fieldset">
+          <legend>Background service</legend>
+          <div className="settings-service-status">
+            <ServerCog size={17} />
+            <span>
+              <strong>{serviceStatus}</strong>
+              <small>Supervisor: {supervisor.status}{supervisor.pid ? `, pid ${supervisor.pid}` : ""}</small>
+            </span>
+          </div>
+          <div className="settings-service-actions">
+            <button type="button" onClick={onInstallSupervisorService}>
+              {launchAgent.installed ? "Reinstall service" : "Install service"}
+            </button>
+            <button type="button" disabled={!launchAgent.installed} onClick={onUninstallSupervisorService}>
+              Uninstall service
+            </button>
+          </div>
+          <p className="settings-hint">{launchAgent.plist_path}</p>
         </fieldset>
       </section>
     </Modal>
