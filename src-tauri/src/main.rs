@@ -83,6 +83,7 @@ use system_commands::{
     check_runtime, complete_startup_splash, download_attachment, open_external_url,
 };
 use ui_notifications::{spawn_ui_events_pruner, spawn_ui_refresh_listener};
+use web::{set_web_pin, web_auth_status};
 
 const WINDOW_STATE_FILE: &str = "window-state.json";
 const MIN_RESTORED_WINDOW_WIDTH: f64 = 1180.0;
@@ -369,6 +370,7 @@ pub fn run() {
             snooze_reminder,
             start_agent,
             stop_agent,
+            set_web_pin,
             uninstall_supervisor_service,
             update_agent,
             update_agent_schedule_status,
@@ -377,7 +379,8 @@ pub fn run() {
             update_owner_profile,
             update_thread_followed,
             update_task_title,
-            update_task_status
+            update_task_status,
+            web_auth_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lantor");

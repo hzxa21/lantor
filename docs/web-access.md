@@ -25,13 +25,16 @@ To restrict to loopback, set `LANTOR_WEB_BIND=127.0.0.1:8787`. To turn the web
 server off, set `LANTOR_WEB_BIND=off` (also accepts `none`, `disabled`,
 `false`, or `0`).
 
-For browser access outside the local machine, set a 6-digit PIN:
+For browser access outside the local machine, open desktop Settings and set a
+6-digit Web access PIN before exposing the port. You can also seed the first PIN
+from the environment:
 
 ```bash
 LANTOR_WEB_PIN=123456 npm run tauri:dev
 ```
 
-The PIN protects all browser API routes except `/api/health` and
+Settings can change the stored PIN later. When a PIN exists, it protects all
+browser API routes except `/api/health` and
 `/api/auth/*`. Desktop Tauri commands still use native IPC and do not require
 the browser PIN. The default lockout threshold is 10 failed attempts; override
 it with `LANTOR_WEB_PIN_MAX_FAILURES`.

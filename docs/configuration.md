@@ -17,7 +17,7 @@ also appear in [`.env.example`](../.env.example).
 | --- | --- | --- |
 | `LANTOR_WEB_PUBLIC_URL` | derived from `LANTOR_WEB_BIND` | Public base URL Lantor uses when generating links that point at itself. Set this when the bind address is not directly reachable (for example behind a reverse proxy or when using a Tailscale MagicDNS name). |
 | `LANTOR_WEB_DIST` | auto-detected `dist/` next to the repo or current working directory | Override the static web bundle directory served by the desktop process. Useful when running a packaged build from a custom location. |
-| `LANTOR_WEB_PIN` | unset | Optional 6-digit PIN required before the browser UI can call Lantor APIs. If set to a non-6-digit value, Lantor disables web access instead of serving it unprotected. |
+| `LANTOR_WEB_PIN` | unset | Optional 6-digit startup seed for the browser access PIN. If set to a non-6-digit value before any PIN exists, Lantor disables web access instead of serving it unprotected. Settings can set or change the stored PIN later. |
 | `LANTOR_WEB_PIN_MAX_FAILURES` | `10` | Failed PIN attempts allowed before browser login locks. Unlock from the host with the `sqlite3` command shown on the locked login page. |
 
 ## Attachments
@@ -34,9 +34,10 @@ also appear in [`.env.example`](../.env.example).
 
 ## Notes
 
-- Set `LANTOR_WEB_PIN` before exposing the web UI beyond loopback. The PIN gate
-  protects browser HTTP APIs only; the desktop app keeps using native Tauri IPC.
-  Use HTTPS or a private network when sending the PIN over the network.
+- Set a browser access PIN in Settings before exposing the web UI beyond
+  loopback. The PIN gate protects browser HTTP APIs only; the desktop app keeps
+  using native Tauri IPC. Use HTTPS or a private network when sending the PIN
+  over the network.
 - Schema migrations run automatically the first time the desktop process
   connects to a fresh database — there is no separate migration step.
 - Agent-local environment such as `LANTOR_AGENT_ID`, `LANTOR_RUN_ID`,

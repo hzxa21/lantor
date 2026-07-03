@@ -69,11 +69,10 @@ const DEFAULT_WEB_PIN_MAX_FAILURES: i64 = 10;
 struct WebState {
     pool: SqlitePool,
     db_url: String,
-    auth: Option<Arc<WebAuth>>,
+    auth: Arc<WebAuth>,
 }
 
 struct WebAuth {
-    pin_hash: String,
     max_failures: i64,
     sessions: Mutex<HashSet<String>>,
 }
@@ -88,6 +87,25 @@ struct ApiError {
 #[serde(rename_all = "camelCase")]
 struct AuthLoginRequest {
     pin: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebAuthStatusPayload {
+    ok: bool,
+    required: bool,
+    authenticated: bool,
+    locked: bool,
+    failed_attempts: i64,
+    max_failures: i64,
+    unlock_command: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetWebPinRequest {
+    pin: String,
+    current_pin: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -316,25 +334,30 @@ pub(crate) fn spawn_web_server_if_configured(pool: SqlitePool, db_url: String) {
     });
 }
 
-async fn resolve_web_auth(pool: &SqlitePool) -> Result<Option<Arc<WebAuth>>, String> {
-    let pin = match env::var("LANTOR_WEB_PIN") {
-        Ok(value) => value.trim().to_owned(),
-        Err(_) => return Ok(None),
-    };
-    if pin.len() != 6 || !pin.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err("LANTOR_WEB_PIN must be exactly 6 digits".to_owned());
-    }
-    ensure_web_auth_state(pool).await?;
-    let max_failures = env::var("LANTOR_WEB_PIN_MAX_FAILURES")
-        .ok()
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_WEB_PIN_MAX_FAILURES);
-    Ok(Some(Arc::new(WebAuth {
-        pin_hash: hash_pin(&pin),
+async fn resolve_web_auth(pool: &SqlitePool) -> Result<Arc<WebAuth>, String> {
+    seed_web_auth_pin_from_env(pool, true).await?;
+    let max_failures = configured_web_pin_max_failures();
+    Ok(Arc::new(WebAuth {
         max_failures,
         sessions: Mutex::new(HashSet::new()),
-    })))
+    }))
+}
+
+async fn seed_web_auth_pin_from_env(pool: &SqlitePool, reject_invalid: bool) -> Result<(), String> {
+    ensure_web_auth_state(pool).await?;
+    if web_auth_pin_hash(pool).await?.is_none() {
+        if let Ok(value) = env::var("LANTOR_WEB_PIN") {
+            let pin = value.trim();
+            if !valid_pin(pin) {
+                if reject_invalid {
+                    return Err("LANTOR_WEB_PIN must be exactly 6 digits".to_owned());
+                }
+                return Ok(());
+            }
+            write_web_auth_pin_hash(pool, Some(&hash_pin(pin))).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn ensure_web_auth_state(pool: &SqlitePool) -> Result<(), String> {
@@ -342,6 +365,7 @@ async fn ensure_web_auth_state(pool: &SqlitePool) -> Result<(), String> {
         r#"
         create table if not exists web_auth_state (
             id text primary key not null,
+            pin_hash text,
             failed_attempts integer not null default 0,
             locked_at text
         )
@@ -351,10 +375,23 @@ async fn ensure_web_auth_state(pool: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(to_string)?;
 
+    let has_pin_hash = sqlx::query("pragma table_info(web_auth_state)")
+        .fetch_all(pool)
+        .await
+        .map_err(to_string)?
+        .into_iter()
+        .any(|row| row.get::<String, _>("name") == "pin_hash");
+    if !has_pin_hash {
+        sqlx::query("alter table web_auth_state add column pin_hash text")
+            .execute(pool)
+            .await
+            .map_err(to_string)?;
+    }
+
     sqlx::query(
         r#"
-        insert into web_auth_state (id, failed_attempts, locked_at)
-        values (?1, 0, null)
+        insert into web_auth_state (id, pin_hash, failed_attempts, locked_at)
+        values (?1, null, 0, null)
         on conflict(id) do nothing
         "#,
     )
@@ -363,6 +400,18 @@ async fn ensure_web_auth_state(pool: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(to_string)?;
     Ok(())
+}
+
+fn valid_pin(pin: &str) -> bool {
+    pin.len() == 6 && pin.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn configured_web_pin_max_failures() -> i64 {
+    env::var("LANTOR_WEB_PIN_MAX_FAILURES")
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_WEB_PIN_MAX_FAILURES)
 }
 
 fn hash_pin(pin: &str) -> String {
@@ -434,6 +483,7 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
         .route("/api/auth/status", get(api_auth_status))
         .route("/api/auth/login", post(api_auth_login))
         .route("/api/auth/logout", post(api_auth_logout))
+        .route("/api/auth/set_pin", post(api_auth_set_pin))
         .nest("/api", protected_api)
         .with_state(state);
 
@@ -492,26 +542,15 @@ async fn api_auth_status(
     State(state): State<Arc<WebState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, Response> {
-    let Some(auth) = state.auth.as_ref() else {
-        return Ok(Json(json!({
-            "ok": true,
-            "required": false,
-            "authenticated": true,
-            "locked": false,
-            "failedAttempts": 0,
-            "maxFailures": null,
-        })));
-    };
-    let (failed_attempts, locked) = web_auth_status(&state.pool).await.map_err(api_error)?;
-    Ok(Json(json!({
-        "ok": true,
-        "required": true,
-        "authenticated": web_session_authenticated(&state, &headers).await,
-        "locked": locked,
-        "failedAttempts": failed_attempts,
-        "maxFailures": auth.max_failures,
-        "unlockCommand": locked.then(|| web_auth_unlock_command(&state.db_url)),
-    })))
+    web_auth_status_payload(
+        &state.pool,
+        &state.db_url,
+        state.auth.max_failures,
+        web_session_authenticated(&state, &headers).await,
+    )
+    .await
+    .map(Json)
+    .map_err(api_error)
 }
 
 async fn api_auth_login(
@@ -519,21 +558,22 @@ async fn api_auth_login(
     headers: HeaderMap,
     Json(request): Json<AuthLoginRequest>,
 ) -> Result<Response, Response> {
-    let Some(auth) = state.auth.as_ref() else {
+    let Some(pin_hash) = web_auth_pin_hash(&state.pool).await.map_err(api_error)? else {
         return Ok(Json(json!({ "ok": true, "required": false })).into_response());
     };
     if web_session_authenticated(&state, &headers).await {
         return Ok(Json(json!({ "ok": true, "authenticated": true })).into_response());
     }
 
-    let (_, locked) = web_auth_status(&state.pool).await.map_err(api_error)?;
+    let (_, locked) = web_auth_lock_status(&state.pool).await.map_err(api_error)?;
     if locked {
         return Err(web_auth_locked_response(&state.db_url));
     }
-    if request.pin.trim().len() != 6 || hash_pin(request.pin.trim()) != auth.pin_hash {
-        let (failed_attempts, locked) = web_auth_record_failure(&state.pool, auth.max_failures)
-            .await
-            .map_err(api_error)?;
+    if !pin_matches(request.pin.trim(), &pin_hash) {
+        let (failed_attempts, locked) =
+            web_auth_record_failure(&state.pool, state.auth.max_failures)
+                .await
+                .map_err(api_error)?;
         if locked {
             return Err(web_auth_locked_response(&state.db_url));
         }
@@ -543,7 +583,7 @@ async fn api_auth_login(
                 "ok": false,
                 "message": "Invalid PIN",
                 "failedAttempts": failed_attempts,
-                "maxFailures": auth.max_failures,
+                "maxFailures": state.auth.max_failures,
             })),
         )
             .into_response());
@@ -553,8 +593,52 @@ async fn api_auth_login(
         .await
         .map_err(api_error)?;
     let session = Uuid::new_v4().simple().to_string();
-    auth.sessions.lock().await.insert(session.clone());
+    state.auth.sessions.lock().await.insert(session.clone());
     let mut response = Json(json!({ "ok": true, "authenticated": true })).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&format!(
+            "{WEB_AUTH_COOKIE}={session}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800"
+        ))
+        .map_err(to_string)
+        .map_err(api_error)?,
+    );
+    Ok(response)
+}
+
+async fn api_auth_set_pin(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Json(request): Json<SetWebPinRequest>,
+) -> Result<Response, Response> {
+    let pin_is_configured = web_auth_pin_hash(&state.pool)
+        .await
+        .map_err(api_error)?
+        .is_some();
+    if pin_is_configured && !web_session_authenticated(&state, &headers).await {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "ok": false,
+                "message": "PIN login required",
+                "authRequired": true,
+            })),
+        )
+            .into_response());
+    }
+    let status = set_web_pin_in_pool(
+        &state.pool,
+        &state.db_url,
+        state.auth.max_failures,
+        request.pin,
+        request.current_pin,
+        true,
+    )
+    .await
+    .map_err(api_error)?;
+    let session = Uuid::new_v4().simple().to_string();
+    state.auth.sessions.lock().await.insert(session.clone());
+    let mut response = Json(status).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&format!(
@@ -570,10 +654,8 @@ async fn api_auth_logout(
     State(state): State<Arc<WebState>>,
     headers: HeaderMap,
 ) -> Result<Response, Response> {
-    if let Some(auth) = state.auth.as_ref() {
-        if let Some(session) = cookie_value(&headers, WEB_AUTH_COOKIE) {
-            auth.sessions.lock().await.remove(&session);
-        }
+    if let Some(session) = cookie_value(&headers, WEB_AUTH_COOKIE) {
+        state.auth.sessions.lock().await.remove(&session);
     }
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
@@ -1046,7 +1128,11 @@ async fn require_web_auth(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, Response> {
-    if state.auth.is_none() || web_session_authenticated(&state, request.headers()).await {
+    let pin_is_configured = web_auth_pin_hash(&state.pool)
+        .await
+        .map_err(api_error)?
+        .is_some();
+    if !pin_is_configured || web_session_authenticated(&state, request.headers()).await {
         return Ok(next.run(request).await);
     }
     Err((
@@ -1061,13 +1147,10 @@ async fn require_web_auth(
 }
 
 async fn web_session_authenticated(state: &WebState, headers: &HeaderMap) -> bool {
-    let Some(auth) = state.auth.as_ref() else {
-        return true;
-    };
     let Some(session) = cookie_value(headers, WEB_AUTH_COOKIE) else {
         return false;
     };
-    auth.sessions.lock().await.contains(&session)
+    state.auth.sessions.lock().await.contains(&session)
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -1078,7 +1161,7 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
-async fn web_auth_status(pool: &SqlitePool) -> Result<(i64, bool), String> {
+async fn web_auth_lock_status(pool: &SqlitePool) -> Result<(i64, bool), String> {
     ensure_web_auth_state(pool).await?;
     let row = sqlx::query("select failed_attempts, locked_at from web_auth_state where id = ?1")
         .bind(WEB_AUTH_STATE_ID)
@@ -1088,6 +1171,113 @@ async fn web_auth_status(pool: &SqlitePool) -> Result<(i64, bool), String> {
     let failed_attempts: i64 = row.get("failed_attempts");
     let locked_at: Option<String> = row.get("locked_at");
     Ok((failed_attempts, locked_at.is_some()))
+}
+
+async fn web_auth_status_payload(
+    pool: &SqlitePool,
+    db_url: &str,
+    max_failures: i64,
+    authenticated: bool,
+) -> Result<WebAuthStatusPayload, String> {
+    let required = web_auth_pin_hash(pool).await?.is_some();
+    let (failed_attempts, locked) = web_auth_lock_status(pool).await?;
+    Ok(WebAuthStatusPayload {
+        ok: true,
+        required,
+        authenticated: !required || authenticated,
+        locked,
+        failed_attempts,
+        max_failures,
+        unlock_command: locked.then(|| web_auth_unlock_command(db_url)),
+    })
+}
+
+async fn web_auth_pin_hash(pool: &SqlitePool) -> Result<Option<String>, String> {
+    ensure_web_auth_state(pool).await?;
+    sqlx::query_scalar("select pin_hash from web_auth_state where id = ?1")
+        .bind(WEB_AUTH_STATE_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(to_string)
+        .map(|value| value.flatten())
+}
+
+async fn write_web_auth_pin_hash(pool: &SqlitePool, pin_hash: Option<&str>) -> Result<(), String> {
+    ensure_web_auth_state(pool).await?;
+    sqlx::query(
+        "update web_auth_state set pin_hash = ?2, failed_attempts = 0, locked_at = null where id = ?1",
+    )
+    .bind(WEB_AUTH_STATE_ID)
+    .bind(pin_hash)
+    .execute(pool)
+    .await
+    .map_err(to_string)?;
+    Ok(())
+}
+
+fn pin_matches(pin: &str, pin_hash: &str) -> bool {
+    valid_pin(pin) && hash_pin(pin) == pin_hash
+}
+
+#[tauri::command]
+pub(crate) async fn web_auth_status(
+    state: tauri::State<'_, crate::app::AppState>,
+) -> crate::app::CommandResult<WebAuthStatusPayload> {
+    seed_web_auth_pin_from_env(&state.pool, false).await?;
+    web_auth_status_payload(
+        &state.pool,
+        state.db_url(),
+        configured_web_pin_max_failures(),
+        true,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn set_web_pin(
+    state: tauri::State<'_, crate::app::AppState>,
+    pin: String,
+    current_pin: Option<String>,
+) -> crate::app::CommandResult<WebAuthStatusPayload> {
+    seed_web_auth_pin_from_env(&state.pool, false).await?;
+    set_web_pin_in_pool(
+        &state.pool,
+        state.db_url(),
+        configured_web_pin_max_failures(),
+        pin,
+        current_pin,
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn set_web_pin_in_pool(
+    pool: &SqlitePool,
+    db_url: &str,
+    max_failures: i64,
+    pin: String,
+    current_pin: Option<String>,
+    require_current_when_configured: bool,
+) -> Result<WebAuthStatusPayload, String> {
+    let pin = pin.trim();
+    if !valid_pin(pin) {
+        return Err("PIN must be exactly 6 digits".to_owned());
+    }
+    let existing_pin_hash = web_auth_pin_hash(pool).await?;
+    if require_current_when_configured {
+        if let Some(existing_pin_hash) = existing_pin_hash.as_deref() {
+            let current_pin = current_pin
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Current PIN is required".to_owned())?;
+            if !pin_matches(current_pin, existing_pin_hash) {
+                return Err("Current PIN is incorrect".to_owned());
+            }
+        }
+    }
+    write_web_auth_pin_hash(pool, Some(&hash_pin(pin))).await?;
+    web_auth_status_payload(pool, db_url, max_failures, true).await
 }
 
 async fn web_auth_record_failure(
@@ -1112,7 +1302,7 @@ async fn web_auth_record_failure(
     .execute(pool)
     .await
     .map_err(to_string)?;
-    web_auth_status(pool).await
+    web_auth_lock_status(pool).await
 }
 
 async fn web_auth_clear_failures(pool: &SqlitePool) -> Result<(), String> {
@@ -1175,7 +1365,10 @@ mod tests {
             .await
             .expect("connect memory sqlite");
 
-        assert_eq!(web_auth_status(&pool).await.expect("status"), (0, false));
+        assert_eq!(
+            web_auth_lock_status(&pool).await.expect("status"),
+            (0, false)
+        );
         assert_eq!(
             web_auth_record_failure(&pool, 2)
                 .await
@@ -1198,7 +1391,61 @@ mod tests {
         web_auth_clear_failures(&pool)
             .await
             .expect("clear failures");
-        assert_eq!(web_auth_status(&pool).await.expect("cleared"), (0, false));
+        assert_eq!(
+            web_auth_lock_status(&pool).await.expect("cleared"),
+            (0, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn set_web_pin_requires_current_pin_when_configured() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect memory sqlite");
+
+        set_web_pin_in_pool(
+            &pool,
+            "sqlite::memory:",
+            10,
+            "123456".to_owned(),
+            None,
+            true,
+        )
+        .await
+        .expect("initial pin");
+        let current_hash = web_auth_pin_hash(&pool)
+            .await
+            .expect("pin hash")
+            .expect("configured pin hash");
+        assert!(pin_matches("123456", &current_hash));
+
+        let err = set_web_pin_in_pool(
+            &pool,
+            "sqlite::memory:",
+            10,
+            "654321".to_owned(),
+            Some("000000".to_owned()),
+            true,
+        )
+        .await
+        .expect_err("wrong current pin should fail");
+        assert_eq!(err, "Current PIN is incorrect");
+
+        set_web_pin_in_pool(
+            &pool,
+            "sqlite::memory:",
+            10,
+            "654321".to_owned(),
+            Some("123456".to_owned()),
+            true,
+        )
+        .await
+        .expect("changed pin");
+        let next_hash = web_auth_pin_hash(&pool)
+            .await
+            .expect("next pin hash")
+            .expect("configured next pin hash");
+        assert!(pin_matches("654321", &next_hash));
     }
 
     #[test]

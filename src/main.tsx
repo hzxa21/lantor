@@ -20,6 +20,7 @@ import {
   isTauriRuntime,
   subscribeBackendEvents,
   webAuthLogin,
+  webAuthSetPin,
   webAuthStatus,
   type WebAuthStatus,
 } from "./apiClient";
@@ -1430,11 +1431,9 @@ function App() {
 
   async function loadInitialState() {
     setAppError(null);
-    if (!isTauriRuntime()) {
-      const status = await webAuthStatus();
-      setWebAuth(status);
-      if (status.required && !status.authenticated) return;
-    }
+    const status = await webAuthStatus();
+    setWebAuth(status);
+    if (!isTauriRuntime() && status.required && !status.authenticated) return;
     await refresh();
     await refreshRuntimeChecks();
   }
@@ -1453,6 +1452,20 @@ function App() {
       } catch {
         // Keep the login form visible with the existing error.
       }
+    } finally {
+      setWebAuthSubmitting(false);
+    }
+  }
+
+  async function saveWebPin(currentPin: string, nextPin: string): Promise<boolean> {
+    setWebAuthSubmitting(true);
+    setWebAuthError(null);
+    try {
+      setWebAuth(await webAuthSetPin(nextPin, currentPin || undefined));
+      return true;
+    } catch (err) {
+      setWebAuthError(errorMessage(err, "Failed to update web PIN"));
+      return false;
     } finally {
       setWebAuthSubmitting(false);
     }
@@ -3992,9 +4005,13 @@ function App() {
         themePreference={themePreference}
         chatTextSize={chatTextSize}
         showImageThumbnails={showImageThumbnails}
+        webAuth={webAuth}
+        webPinSaving={webAuthSubmitting}
+        webPinError={webAuthError}
         onThemePreferenceChange={setThemePreference}
         onChatTextSizeChange={setChatTextSize}
         onShowImageThumbnailsChange={setShowImageThumbnails}
+        onWebPinSubmit={saveWebPin}
         onClose={() => setShowSettingsModal(false)}
       />
 

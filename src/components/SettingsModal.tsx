@@ -1,4 +1,6 @@
-import { Image, Monitor, Moon, Sun, Type } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Image, Lock, Monitor, Moon, ShieldCheck, Sun, Type } from "lucide-react";
+import type { WebAuthStatus } from "../apiClient";
 import { Modal } from "./Modal";
 
 export type ThemePreference = "auto" | "light" | "dark";
@@ -9,9 +11,13 @@ type SettingsModalProps = {
   themePreference: ThemePreference;
   chatTextSize: ChatTextSize;
   showImageThumbnails: boolean;
+  webAuth: WebAuthStatus | null;
+  webPinSaving: boolean;
+  webPinError: string | null;
   onThemePreferenceChange: (value: ThemePreference) => void;
   onChatTextSizeChange: (value: ChatTextSize) => void;
   onShowImageThumbnailsChange: (value: boolean) => void;
+  onWebPinSubmit: (currentPin: string, nextPin: string) => Promise<boolean>;
   onClose: () => void;
 };
 
@@ -42,11 +48,38 @@ export function SettingsModal({
   themePreference,
   chatTextSize,
   showImageThumbnails,
+  webAuth,
+  webPinSaving,
+  webPinError,
   onThemePreferenceChange,
   onChatTextSizeChange,
   onShowImageThumbnailsChange,
+  onWebPinSubmit,
   onClose,
 }: SettingsModalProps) {
+  const [currentPin, setCurrentPin] = useState("");
+  const [nextPin, setNextPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const pinConfigured = Boolean(webAuth?.required);
+  const pinMismatch = nextPin.length === 6 && confirmPin.length === 6 && nextPin !== confirmPin;
+  const canSubmitPin = nextPin.length === 6
+    && confirmPin.length === 6
+    && nextPin === confirmPin
+    && (!pinConfigured || currentPin.length === 6)
+    && !webPinSaving;
+
+  useEffect(() => {
+    if (!open) {
+      setCurrentPin("");
+      setNextPin("");
+      setConfirmPin("");
+    }
+  }, [open]);
+
+  function normalizePin(value: string) {
+    return value.replace(/\D/g, "").slice(0, 6);
+  }
+
   return (
     <Modal open={open} title="Settings" onClose={onClose} width={560}>
       <section className="settings-panel">
@@ -115,6 +148,76 @@ export function SettingsModal({
             />
           </label>
           <p className="settings-hint">When disabled, images appear as compact attachment rows and still open in preview when clicked.</p>
+        </fieldset>
+        <fieldset className="settings-fieldset settings-web-pin-fieldset">
+          <legend>Web access PIN</legend>
+          <div className="settings-pin-status">
+            {pinConfigured ? <ShieldCheck size={17} /> : <Lock size={17} />}
+            <span>
+              <strong>{pinConfigured ? "PIN enabled" : "No PIN set"}</strong>
+              <small>{pinConfigured ? "Browser access requires the 6-digit PIN." : "Set a 6-digit PIN before exposing the web UI."}</small>
+            </span>
+          </div>
+          <div className="settings-pin-grid">
+            {pinConfigured && (
+              <label>
+                <span>Current PIN</span>
+                <input
+                  type="password"
+                  value={currentPin}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete="current-password"
+                  maxLength={6}
+                  onChange={(event) => setCurrentPin(normalizePin(event.currentTarget.value))}
+                />
+              </label>
+            )}
+            <label>
+              <span>{pinConfigured ? "New PIN" : "PIN"}</span>
+              <input
+                type="password"
+                value={nextPin}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="new-password"
+                maxLength={6}
+                onChange={(event) => setNextPin(normalizePin(event.currentTarget.value))}
+              />
+            </label>
+            <label>
+              <span>Confirm PIN</span>
+              <input
+                type="password"
+                value={confirmPin}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="new-password"
+                maxLength={6}
+                onChange={(event) => setConfirmPin(normalizePin(event.currentTarget.value))}
+              />
+            </label>
+          </div>
+          {pinMismatch && <p className="settings-field-error">PIN confirmation does not match.</p>}
+          {webPinError && <p className="settings-field-error">{webPinError}</p>}
+          {webAuth?.locked && webAuth.unlockCommand && (
+            <pre className="settings-pin-command">{webAuth.unlockCommand}</pre>
+          )}
+          <button
+            type="button"
+            className="settings-pin-submit"
+            disabled={!canSubmitPin}
+            onClick={async () => {
+              const saved = await onWebPinSubmit(currentPin, nextPin);
+              if (saved) {
+                setCurrentPin("");
+                setNextPin("");
+                setConfirmPin("");
+              }
+            }}
+          >
+            {webPinSaving ? "Saving..." : pinConfigured ? "Change PIN" : "Set PIN"}
+          </button>
         </fieldset>
       </section>
     </Modal>

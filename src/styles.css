@@ -6417,6 +6417,107 @@ body.resizing-column * {
   accent-color: var(--accent);
 }
 
+.settings-web-pin-fieldset {
+  margin-top: 8px;
+}
+
+.settings-pin-status {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--panel-strong);
+  color: var(--muted);
+}
+
+.settings-pin-status > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.settings-pin-status strong {
+  color: var(--ink);
+  font-size: var(--type-size-body);
+  font-weight: var(--type-weight-semibold);
+}
+
+.settings-pin-status small {
+  color: var(--muted);
+  font-size: var(--type-size-caption);
+  line-height: 1.3;
+}
+
+.settings-pin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.settings-pin-grid label {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.settings-pin-grid label span {
+  color: var(--muted);
+  font-size: var(--type-size-meta);
+  font-weight: var(--type-weight-semibold);
+}
+
+.settings-pin-grid input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--type-size-control);
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.settings-pin-submit {
+  justify-self: start;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: var(--type-weight-semibold);
+}
+
+.settings-pin-submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.settings-pin-command {
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-strong);
+  color: var(--ink);
+  font-size: var(--type-size-meta);
+  line-height: 1.4;
+}
+
+@media (max-width: 720px) {
+  .settings-pin-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .modal-form {
   display: grid;
   gap: 14px;

@@ -215,9 +215,9 @@ The browser UI shares the same desktop process and SQLite state, so
 channels, agents, tasks, reminders, artifacts, and attachments all stay in
 sync.
 
-Set `LANTOR_WEB_PIN` to require a 6-digit PIN before the browser UI can call
-Lantor APIs. PIN failures lock after repeated attempts and must be cleared from
-the host machine. To lock the web UI down to loopback or turn it off, set
+Set a 6-digit PIN in Settings before exposing the browser UI beyond your local
+machine. PIN failures lock after repeated attempts and must be cleared from the
+host machine. To lock the web UI down to loopback or turn it off, set
 `LANTOR_WEB_BIND=127.0.0.1:8787` or `LANTOR_WEB_BIND=off`. See
 [`docs/web-access.md`](docs/web-access.md) for details.
 
@@ -229,7 +229,7 @@ Defaults work out of the box. The two settings most users care about:
 | --- | --- | --- |
 | `LANTOR_DATABASE_URL` | `sqlite://~/Library/Application Support/Lantor/lantor.sqlite` | SQLite database URL. |
 | `LANTOR_WEB_BIND` | `0.0.0.0:8787` | Web UI bind. Use `127.0.0.1:8787` for loopback only, or `off` to disable. |
-| `LANTOR_WEB_PIN` | unset | Optional 6-digit PIN for browser access. |
+| `LANTOR_WEB_PIN` | unset | Optional startup seed for the browser access PIN; Settings can set or change it later. |
 
 Advanced options — attachment paths, web public URL, web bundle override,
 web PIN failure limit, warm Codex rotation — are in

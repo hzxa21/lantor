@@ -76,9 +76,31 @@ export async function apiInvoke<T>(command: string, args: Record<string, unknown
 }
 
 export async function webAuthStatus(): Promise<WebAuthStatus> {
+  if (isTauriRuntime()) {
+    return tauriInvoke<WebAuthStatus>("web_auth_status");
+  }
   const response = await fetch("/api/auth/status");
   if (!response.ok) throw new Error("Failed to check web authentication");
   return response.json();
+}
+
+export async function webAuthSetPin(pin: string, currentPin?: string): Promise<WebAuthStatus> {
+  if (isTauriRuntime()) {
+    return tauriInvoke<WebAuthStatus>("set_web_pin", { pin, currentPin });
+  }
+  const response = await fetch("/api/auth/set_pin", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pin, currentPin }),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = payload && typeof payload.message === "string"
+      ? payload.message
+      : "Failed to update web PIN";
+    throw new Error(message);
+  }
+  return payload as WebAuthStatus;
 }
 
 export async function webAuthLogin(pin: string): Promise<void> {
