@@ -222,8 +222,8 @@ mod platform_service {
         let installed = unit_path.exists();
         let loaded = StdCommand::new("systemctl")
             .args(["--user", "is-active", "--quiet", UNIT_NAME])
-            .status()
-            .map(|status| status.success())
+            .output()
+            .map(|output| output.status.success())
             .unwrap_or(false);
 
         Ok(LaunchAgentStatus {
