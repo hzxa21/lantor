@@ -175,7 +175,7 @@ mod platform_service {
   <key>ProgramArguments</key>
   <array>
     <string>{}</string>
-    <string>--supervisor</string>
+    <string>--web-only</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -471,12 +471,12 @@ mod platform_service {
     fn render_systemd_unit(exe_path: &Path, database_url: &str, log_dir: &Path) -> String {
         format!(
             r#"[Unit]
-Description=Lantor supervisor
+Description=Lantor web service
 After=default.target
 
 [Service]
 Type=simple
-ExecStart={} --supervisor
+ExecStart={} --web-only
 Environment={}
 Restart=always
 RestartSec=2
@@ -496,13 +496,13 @@ WantedBy=default.target
     fn render_systemd_system_unit(exe_path: &Path, database_url: &str, user: &str) -> String {
         format!(
             r#"[Unit]
-Description=Lantor supervisor
+Description=Lantor web service
 After=default.target
 
 [Service]
 Type=simple
 User={}
-ExecStart={} --supervisor
+ExecStart={} --web-only
 Environment={}
 Restart=always
 RestartSec=2
@@ -544,7 +544,7 @@ mod platform_service {
     }
 
     pub(crate) fn install(_database_url: &str) -> CommandResult<LaunchAgentStatus> {
-        Err("supervisor service install is only supported on macOS and Linux".to_owned())
+        Err("background service install is only supported on macOS and Linux".to_owned())
     }
 
     pub(crate) fn uninstall() -> CommandResult<LaunchAgentStatus> {
