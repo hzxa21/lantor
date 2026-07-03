@@ -218,6 +218,27 @@ mod platform_service {
     const UNIT_NAME: &str = "local.lantor.supervisor.service";
 
     pub(crate) fn load_status() -> CommandResult<LaunchAgentStatus> {
+        if should_use_system_service() {
+            return load_system_status();
+        }
+        load_user_status()
+    }
+
+    pub(crate) fn install(database_url: &str) -> CommandResult<LaunchAgentStatus> {
+        if should_use_system_service() {
+            return install_system(database_url);
+        }
+        install_user(database_url)
+    }
+
+    pub(crate) fn uninstall() -> CommandResult<LaunchAgentStatus> {
+        if should_use_system_service() || systemd_system_unit_path().exists() {
+            return uninstall_system();
+        }
+        uninstall_user()
+    }
+
+    fn load_user_status() -> CommandResult<LaunchAgentStatus> {
         let unit_path = systemd_user_unit_path()?;
         let installed = unit_path.exists();
         let loaded = StdCommand::new("systemctl")
@@ -234,7 +255,7 @@ mod platform_service {
         })
     }
 
-    pub(crate) fn install(database_url: &str) -> CommandResult<LaunchAgentStatus> {
+    fn install_user(database_url: &str) -> CommandResult<LaunchAgentStatus> {
         let unit_path = systemd_user_unit_path()?;
         let exe_path = env::current_exe().map_err(to_string)?;
         let log_dir = systemd_log_dir()?;
@@ -252,10 +273,10 @@ mod platform_service {
         run_systemctl(&["--user", "daemon-reload"])?;
         run_systemctl(&["--user", "enable", "--now", UNIT_NAME])?;
 
-        load_status()
+        load_user_status()
     }
 
-    pub(crate) fn uninstall() -> CommandResult<LaunchAgentStatus> {
+    fn uninstall_user() -> CommandResult<LaunchAgentStatus> {
         let _ = StdCommand::new("systemctl")
             .args(["--user", "disable", "--now", UNIT_NAME])
             .output();
@@ -264,7 +285,83 @@ mod platform_service {
             .args(["--user", "daemon-reload"])
             .output();
 
-        load_status()
+        load_user_status()
+    }
+
+    fn load_system_status() -> CommandResult<LaunchAgentStatus> {
+        let unit_path = systemd_system_unit_path();
+        let installed = unit_path.exists();
+        let loaded = StdCommand::new("systemctl")
+            .args(["is-active", "--quiet", UNIT_NAME])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+
+        Ok(LaunchAgentStatus {
+            label: SERVICE_LABEL.to_owned(),
+            plist_path: unit_path.to_string_lossy().to_string(),
+            installed,
+            loaded,
+        })
+    }
+
+    fn install_system(database_url: &str) -> CommandResult<LaunchAgentStatus> {
+        let unit_path = systemd_system_unit_path();
+        let exe_path = env::current_exe().map_err(to_string)?;
+        let user = service_user()?;
+        let unit = render_systemd_system_unit(&exe_path, database_url, &user);
+        let staging_path = systemd_system_unit_staging_path()?;
+
+        if let Some(parent) = staging_path.parent() {
+            fs::create_dir_all(parent).map_err(to_string)?;
+        }
+        fs::write(&staging_path, unit).map_err(to_string)?;
+
+        run_sudo_or_command_hint(
+            &[
+                "install",
+                "-m",
+                "0644",
+                staging_path.to_string_lossy().as_ref(),
+                unit_path.to_string_lossy().as_ref(),
+            ],
+            &format!(
+                "sudo install -m 0644 {} {}",
+                shell_quote(&staging_path.to_string_lossy()),
+                shell_quote(&unit_path.to_string_lossy())
+            ),
+        )?;
+        run_sudo_or_command_hint(
+            &["systemctl", "daemon-reload"],
+            "sudo systemctl daemon-reload",
+        )?;
+        run_sudo_or_command_hint(
+            &["systemctl", "enable", "--now", UNIT_NAME],
+            &format!("sudo systemctl enable --now {UNIT_NAME}"),
+        )?;
+
+        load_system_status()
+    }
+
+    fn uninstall_system() -> CommandResult<LaunchAgentStatus> {
+        let unit_path = systemd_system_unit_path();
+        if unit_path.exists() {
+            run_sudo_or_command_hint(
+                &["systemctl", "disable", "--now", UNIT_NAME],
+                &format!("sudo systemctl disable --now {UNIT_NAME}"),
+            )?;
+        }
+        if unit_path.exists() {
+            run_sudo_or_command_hint(
+                &["rm", "-f", unit_path.to_string_lossy().as_ref()],
+                &format!("sudo rm -f {}", shell_quote(&unit_path.to_string_lossy())),
+            )?;
+        }
+        let _ = StdCommand::new("sudo")
+            .args(["-n", "systemctl", "daemon-reload"])
+            .output();
+
+        load_system_status()
     }
 
     fn systemd_user_unit_path() -> CommandResult<PathBuf> {
@@ -287,6 +384,43 @@ mod platform_service {
         Ok(state_home.join("lantor"))
     }
 
+    fn systemd_system_unit_path() -> PathBuf {
+        PathBuf::from("/etc/systemd/system").join(UNIT_NAME)
+    }
+
+    fn systemd_system_unit_staging_path() -> CommandResult<PathBuf> {
+        Ok(systemd_log_dir()?.join(UNIT_NAME))
+    }
+
+    fn should_use_system_service() -> bool {
+        is_wsl() && !user_systemctl_available()
+    }
+
+    fn is_wsl() -> bool {
+        let marker = fs::read_to_string("/proc/sys/kernel/osrelease")
+            .or_else(|_| fs::read_to_string("/proc/version"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        marker.contains("microsoft") || marker.contains("wsl")
+    }
+
+    fn user_systemctl_available() -> bool {
+        StdCommand::new("systemctl")
+            .args(["--user", "show-environment"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    fn service_user() -> CommandResult<String> {
+        env::var("USER")
+            .or_else(|_| env::var("LOGNAME"))
+            .map(|value| value.trim().to_owned())
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "cannot determine current user for systemd service".to_owned())
+    }
+
     fn run_systemctl(args: &[&str]) -> CommandResult<()> {
         let output = StdCommand::new("systemctl")
             .args(args)
@@ -301,6 +435,30 @@ mod platform_service {
         Err(format!(
             "systemctl {} failed: {}{}",
             args.join(" "),
+            stderr.trim(),
+            if stdout.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" {}", stdout.trim())
+            }
+        ))
+    }
+
+    fn run_sudo_or_command_hint(args: &[&str], command_hint: &str) -> CommandResult<()> {
+        let output = StdCommand::new("sudo")
+            .arg("-n")
+            .args(args)
+            .output()
+            .map_err(to_string)?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Err(format!(
+            "system service install requires sudo. Run this in a WSL terminal, then try again: {}. sudo failed: {}{}",
+            command_hint,
             stderr.trim(),
             if stdout.trim().is_empty() {
                 String::new()
@@ -335,6 +493,29 @@ WantedBy=default.target
         )
     }
 
+    fn render_systemd_system_unit(exe_path: &Path, database_url: &str, user: &str) -> String {
+        format!(
+            r#"[Unit]
+Description=Lantor supervisor
+After=default.target
+
+[Service]
+Type=simple
+User={}
+ExecStart={} --supervisor
+Environment={}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+"#,
+            systemd_quote(user),
+            systemd_quote(&exe_path.to_string_lossy()),
+            systemd_quote(&format!("LANTOR_DATABASE_URL={database_url}")),
+        )
+    }
+
     fn systemd_quote(value: &str) -> String {
         let escaped = value
             .replace('\\', "\\\\")
@@ -342,6 +523,10 @@ WantedBy=default.target
             .replace('$', "\\$")
             .replace('`', "\\`");
         format!("\"{escaped}\"")
+    }
+
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 
