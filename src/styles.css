@@ -6439,6 +6439,11 @@ body.resizing-column * {
   scrollbar-gutter: stable;
 }
 
+.thread-scroll-content {
+  display: flow-root;
+  min-height: 100%;
+}
+
 .thread-scroll .reply-list {
   overflow: visible;
 }

@@ -132,6 +132,7 @@ type ThreadScrollState = {
   scrollTop: number;
   clientHeight: number;
   shouldFollow: boolean;
+  anchor: ThreadScrollAnchor | null;
   lastTouchedAt: number;
 };
 
@@ -209,7 +210,7 @@ export function ThreadPanel({
   const [pendingCollapsedThreadMessageId, setPendingCollapsedThreadMessageId] = useState<string | null>(null);
   const threadPanelRef = useRef<HTMLElement | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
-  const threadBottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const threadScrollContentRef = useRef<HTMLDivElement | null>(null);
   const threadMessageRefs = useRef(new Map<string, HTMLElement>());
   const threadScrollFrameRef = useRef<number | null>(null);
   const threadScrollTimeoutRef = useRef<number | null>(null);
@@ -351,24 +352,19 @@ export function ThreadPanel({
     return threadScrollDistanceFromBottom(element) < 32;
   }
 
-  function wasThreadPreviouslyAtBottom() {
-    const metrics = threadScrollMetricsRef.current;
-    if (metrics.scrollHeight === 0 && metrics.clientHeight === 0) return true;
-    return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight < 32;
-  }
-
   function threadScrollDistanceFromBottom(element: HTMLDivElement) {
     return element.scrollHeight - element.scrollTop - element.clientHeight;
   }
 
   function rememberThreadScrollMetrics(element: HTMLDivElement) {
+    const anchor = captureThreadScrollAnchor(element);
     threadScrollMetricsRef.current = {
       scrollHeight: element.scrollHeight,
       scrollTop: element.scrollTop,
       clientHeight: element.clientHeight,
     };
-    threadScrollAnchorRef.current = shouldFollowThreadRef.current ? null : captureThreadScrollAnchor(element);
-    rememberThreadScrollState(activeRoot?.id ?? null, element);
+    threadScrollAnchorRef.current = anchor;
+    rememberThreadScrollState(activeRoot?.id ?? null, element, anchor);
   }
 
   function captureThreadScrollAnchor(element: HTMLDivElement): ThreadScrollAnchor | null {
@@ -407,7 +403,7 @@ export function ThreadPanel({
     return true;
   }
 
-  function rememberThreadScrollState(threadId: string | null, element: HTMLDivElement | null) {
+  function rememberThreadScrollState(threadId: string | null, element: HTMLDivElement | null, anchor: ThreadScrollAnchor | null) {
     if (!threadId || !element) return;
     const now = Date.now();
     const next = pruneThreadScrollState(threadScrollStateByThreadRef.current, now);
@@ -416,6 +412,7 @@ export function ThreadPanel({
       scrollTop: element.scrollTop,
       clientHeight: element.clientHeight,
       shouldFollow: shouldFollowThreadRef.current,
+      anchor,
       lastTouchedAt: now,
     });
     threadScrollStateByThreadRef.current = next;
@@ -436,7 +433,8 @@ export function ThreadPanel({
     userThreadScrollUntilRef.current = 0;
     const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
     element.scrollTop = Math.min(state.scrollTop, maxScrollTop);
-    rememberThreadScrollMetrics(element);
+    threadScrollAnchorRef.current = state.anchor;
+    if (!restoreThreadScrollAnchor()) rememberThreadScrollMetrics(element);
     setShowBackToBottom(Boolean(activeRoot) && !isThreadScrollAtBottom(element));
     return true;
   }
@@ -446,6 +444,16 @@ export function ThreadPanel({
     return previous.scrollHeight > 0 &&
       previous.scrollHeight === element.scrollHeight &&
       previous.clientHeight !== element.clientHeight;
+  }
+
+  function preserveThreadViewport() {
+    const element = threadScrollRef.current;
+    if (!element) return;
+    cancelPendingThreadBottomScroll();
+    if (!restoreThreadScrollAnchor()) rememberThreadScrollMetrics(element);
+    const atBottom = isThreadScrollAtBottom(element);
+    shouldFollowThreadRef.current = atBottom;
+    setShowBackToBottom(Boolean(activeRoot) && !atBottom);
   }
 
   function cancelPendingThreadBottomScroll() {
@@ -516,9 +524,12 @@ export function ThreadPanel({
       userThreadScrollUntilRef.current = 0;
       shouldFollowThreadRef.current = true;
       shouldShowBackToBottom = false;
-    } else if (!userScrolling && shouldFollowThreadRef.current && layoutChanged && wasThreadPreviouslyAtBottom()) {
-      scrollThreadToBottom();
-      shouldShowBackToBottom = false;
+    } else if (!atBottom && shouldFollowThreadRef.current) {
+      shouldFollowThreadRef.current = false;
+      cancelPendingThreadBottomScroll();
+      shouldShowBackToBottom = Boolean(activeRoot);
+    } else if (!atBottom && layoutChanged) {
+      shouldShowBackToBottom = Boolean(activeRoot);
     }
     setShowBackToBottom((current) => current === shouldShowBackToBottom ? current : shouldShowBackToBottom);
     rememberThreadScrollMetrics(element);
@@ -539,8 +550,7 @@ export function ThreadPanel({
   }
 
   function handleThreadContentLoad() {
-    if (!shouldFollowThreadRef.current) return;
-    scrollThreadToBottom();
+    preserveThreadViewport();
   }
 
   function returnThreadToBottom() {
@@ -595,36 +605,35 @@ export function ThreadPanel({
 
   useEffect(() => {
     const root = threadScrollRef.current;
-    const bottomAnchor = threadBottomAnchorRef.current;
-    if (!root || !bottomAnchor) return;
-    function keepBottomVisible() {
+    const content = threadScrollContentRef.current;
+    if (!root || !content) return;
+    function keepThreadViewportStable(source: "viewport" | "content") {
       const scrollRoot = threadScrollRef.current;
       if (!scrollRoot) return;
-      if (isThreadViewportOnlyResize(scrollRoot)) {
+      if (source === "viewport" && isThreadViewportOnlyResize(scrollRoot)) {
         rememberThreadScrollMetrics(scrollRoot);
         return;
       }
-      if (shouldFollowThreadRef.current && !isUserScrollingThread()) {
-        scrollThreadToBottom();
-        setShowBackToBottom(false);
-      } else {
-        rememberThreadScrollMetrics(scrollRoot);
-      }
+      preserveThreadViewport();
     }
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(keepBottomVisible);
-    const intersectionObserver = typeof IntersectionObserver === "undefined"
+    const observer = typeof ResizeObserver === "undefined"
       ? null
-      : new IntersectionObserver((entries) => {
-        if (!shouldFollowThreadRef.current) return;
-        if (entries.some((entry) => !entry.isIntersecting || entry.intersectionRatio < 1)) {
-          keepBottomVisible();
-        }
-      }, { root, threshold: 1 });
+      : new ResizeObserver((entries) => {
+        const hasContentResize = entries.some((entry) => entry.target === content);
+        keepThreadViewportStable(hasContentResize ? "content" : "viewport");
+      });
+    const mutationObserver = typeof MutationObserver === "undefined"
+      ? null
+      : new MutationObserver(() => keepThreadViewportStable("content"));
     observer?.observe(root);
-    intersectionObserver?.observe(bottomAnchor);
+    observer?.observe(content);
+    mutationObserver?.observe(content, { childList: true, characterData: true, subtree: true });
+    const handleWindowResize = () => keepThreadViewportStable("viewport");
+    window.addEventListener("resize", handleWindowResize);
     return () => {
       observer?.disconnect();
-      intersectionObserver?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener("resize", handleWindowResize);
     };
   }, [activeRoot?.id]);
 
@@ -644,11 +653,7 @@ export function ThreadPanel({
     // While the user has jumped to a referenced message, don't auto-follow to
     // bottom — otherwise each reply/agent-activity update yanks them back down.
     if (focusedMessageId) return;
-    if (!shouldFollowThreadRef.current) {
-      restoreThreadScrollAnchor();
-      return;
-    }
-    scrollThreadToBottom();
+    preserveThreadViewport();
   }, [activeRoot?.id, focusedMessageId, activeRoot?.updated_at, replies.length, lastReply?.id, lastReply?.updated_at, lastReply?.delivery_state]);
 
   useEffect(() => {
@@ -887,6 +892,7 @@ export function ThreadPanel({
             onTouchMoveCapture={handleThreadTouchMove}
             onLoadCapture={handleThreadContentLoad}
           >
+            <div ref={threadScrollContentRef} className="thread-scroll-content">
             {activeRoot && (
               <Fragment>
                 <div className="message-date-divider" role="separator">
@@ -1320,7 +1326,7 @@ export function ThreadPanel({
               );
             })}
           </section>
-          <div ref={threadBottomAnchorRef} className="thread-bottom-anchor" aria-hidden="true" />
+          <div className="thread-bottom-anchor" aria-hidden="true" />
           {messageMenu && (
             <MessageActionMenu
               x={messageMenu.x}
@@ -1339,6 +1345,7 @@ export function ThreadPanel({
               onClose={() => setMessageMenu(null)}
             />
           )}
+            </div>
           </div>
           {activeRoot && showBackToBottom && (
             <button type="button" className="thread-back-to-bottom" onClick={returnThreadToBottom}>
