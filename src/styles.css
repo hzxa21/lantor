@@ -6326,6 +6326,68 @@ body.resizing-column * {
   accent-color: var(--accent);
 }
 
+.settings-service-fieldset {
+  margin-top: 8px;
+}
+
+.settings-service-status {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--panel-strong);
+  color: var(--muted);
+}
+
+.settings-service-status > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.settings-service-status strong {
+  color: var(--ink);
+  font-size: var(--type-size-body);
+  font-weight: var(--type-weight-semibold);
+}
+
+.settings-service-status small {
+  color: var(--muted);
+  font-size: var(--type-size-caption);
+  line-height: 1.3;
+}
+
+.settings-service-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-service-actions button {
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-strong);
+  color: var(--ink);
+  font-weight: var(--type-weight-semibold);
+}
+
+.settings-service-actions button:first-child {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.settings-service-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .modal-form {
   display: grid;
   gap: 14px;

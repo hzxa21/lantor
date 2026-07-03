@@ -9,13 +9,13 @@ npm run build
 npm run tauri:dev
 ```
 
-Then open the Mac's Tailscale address from the other device:
+Then open the host machine's Tailscale address from the other device:
 
 ```text
 http://<mac-tailscale-ip>:8787/
 ```
 
-Loopback requests from the same Mac can use:
+Loopback requests from the same machine can use:
 
 ```text
 http://127.0.0.1:8787/
@@ -37,7 +37,7 @@ the chat surface needs, including:
 - inbox dismissal and read state, channel read state
 - reminders (completing) and tasks (status, title, claim)
 - cancelling and retrying agent work
-- installing and uninstalling the supervisor LaunchAgent
+- installing and uninstalling the web background service
 - opening agent DMs
 - reading artifacts and attachment preview
 - agent workspace listing and file preview
@@ -46,13 +46,28 @@ the chat surface needs, including:
 Live refresh is delivered over an SSE stream at `/api/events`. Desktop Tauri
 still uses native IPC for the same operations.
 
-## Supervisor LaunchAgent
+## Web Background Service
 
-The Runtime panel can install a user LaunchAgent at:
+The Runtime panel can install a background service that runs Lantor in
+`--web-only` mode. That starts the browser UI and shared background workers,
+including the local supervisor, without opening the desktop window. On macOS
+this is a LaunchAgent at:
 
 ```text
 ~/Library/LaunchAgents/local.lantor.supervisor.plist
 ```
 
-That lets macOS keep the `--supervisor` process alive via `launchctl`.
-Uninstall removes the plist and unloads the service.
+On Linux this is a systemd user unit at:
+
+```text
+~/.config/systemd/user/local.lantor.supervisor.service
+```
+
+That lets macOS keep the web service alive via `launchctl`, and Linux keep it
+alive via `systemctl --user` or, on WSL when the user bus is unavailable, a
+system-level `systemctl` unit. Uninstall removes the service file and unloads
+the service.
+
+On WSL, the systemd service starts when that WSL distro starts. To make it run
+after Windows login without manually opening WSL first, add a Windows Task
+Scheduler entry that starts the distro, for example with `wsl.exe -d <distro>`.

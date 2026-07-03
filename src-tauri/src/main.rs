@@ -23,6 +23,7 @@ mod lifecycle_commands;
 mod message_store;
 mod models;
 mod owner_inbox;
+mod platform_paths;
 mod prompts;
 mod runtime;
 mod system_commands;
@@ -85,7 +86,15 @@ use system_commands::{
 use ui_notifications::{spawn_ui_events_pruner, spawn_ui_refresh_listener};
 
 const WINDOW_STATE_FILE: &str = "window-state.json";
+
+#[cfg(target_os = "linux")]
+const MIN_RESTORED_WINDOW_WIDTH: f64 = 960.0;
+#[cfg(target_os = "linux")]
+const MIN_RESTORED_WINDOW_HEIGHT: f64 = 640.0;
+
+#[cfg(not(target_os = "linux"))]
 const MIN_RESTORED_WINDOW_WIDTH: f64 = 1180.0;
+#[cfg(not(target_os = "linux"))]
 const MIN_RESTORED_WINDOW_HEIGHT: f64 = 760.0;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -329,6 +338,13 @@ pub fn run() {
             spawn_shared_background_workers(reminder_pool.clone(), database_url.clone());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("Lantor");
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = window.set_min_size(Some(LogicalSize::new(
+                        MIN_RESTORED_WINDOW_WIDTH,
+                        MIN_RESTORED_WINDOW_HEIGHT,
+                    )));
+                }
                 if let Some(path) = window_state_path(app.handle()) {
                     install_window_state_persistence(&window, path);
                 }

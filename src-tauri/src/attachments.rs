@@ -6,7 +6,7 @@ use std::{
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{app::CommandResult, models::AttachmentUpload};
+use crate::{app::CommandResult, models::AttachmentUpload, platform_paths::default_attachment_dir};
 
 pub(crate) const ATTACHMENT_SIZE_LIMIT: usize = 25 * 1024 * 1024;
 
@@ -112,12 +112,7 @@ fn attachment_root_dir() -> CommandResult<PathBuf> {
     if let Ok(path) = env::var("LANTOR_ATTACHMENT_DIR") {
         return Ok(PathBuf::from(path));
     }
-    let home = env::var("HOME").map_err(|_| "HOME is not set".to_owned())?;
-    Ok(PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("Lantor")
-        .join("attachments"))
+    Ok(default_attachment_dir())
 }
 
 fn attachment_extension(original_name: &str) -> String {

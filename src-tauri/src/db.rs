@@ -9,30 +9,20 @@ use sqlx::{
     Row, SqlitePool,
 };
 
-use crate::app::{to_string, CommandResult};
 use crate::usage::backfill_agent_run_usage_from_logs;
+use crate::{
+    app::{to_string, CommandResult},
+    platform_paths::default_database_url,
+};
 
-const DEFAULT_DATABASE_URL: &str = "sqlite://~/Library/Application Support/Lantor/lantor.sqlite";
-
-pub(crate) fn expand_home_path(value: &str) -> String {
-    let value = value.trim();
-    if value == "~" {
-        return env::var("HOME").unwrap_or_else(|_| value.to_owned());
-    }
-    if let Some(rest) = value.strip_prefix("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(rest).to_string_lossy().to_string();
-        }
-    }
-    value.to_owned()
-}
+pub(crate) use crate::platform_paths::expand_home_path;
 
 pub(crate) fn db_url() -> String {
     let configured = env::var("LANTOR_DATABASE_URL").unwrap_or_else(|_| {
         env::var("DATABASE_URL")
             .ok()
             .filter(|url| url.trim_start().starts_with("sqlite:"))
-            .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_owned())
+            .unwrap_or_else(default_database_url)
     });
     if let Some(path) = configured.strip_prefix("sqlite://") {
         return format!("sqlite://{}", expand_home_path(path));

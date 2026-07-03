@@ -563,9 +563,29 @@ async function attachmentUploads(attachments: DraftAttachment[]) {
   }));
 }
 
-function defaultAgentWorkspace(handle: string) {
+function dataRootFromSqliteUrl(dbUrl?: string | null) {
+  if (!dbUrl?.startsWith("sqlite:")) return null;
+  const rawPath = dbUrl.startsWith("sqlite://")
+    ? dbUrl.slice("sqlite://".length)
+    : dbUrl.slice("sqlite:".length);
+  const databasePath = rawPath.trim();
+  if (!databasePath || databasePath === ":memory:") return null;
+  const normalized = databasePath.replace(/\/+$/, "");
+  const lastSlash = normalized.lastIndexOf("/");
+  if (lastSlash <= 0) return null;
+  return normalized.slice(0, lastSlash);
+}
+
+function defaultAgentWorkspace(handle: string, dbUrl?: string | null) {
   const normalized = handle.trim().replace(/^@/, "").replace(/[^A-Za-z0-9_-]/g, "-");
-  return normalized ? `~/Library/Application Support/Lantor/agents/${normalized}` : "";
+  if (!normalized) return "";
+  const dataRoot = dataRootFromSqliteUrl(dbUrl);
+  if (dataRoot) return `${dataRoot}/agents/${normalized}`;
+  const platform = navigator.platform.toLowerCase();
+  const baseDir = platform.includes("linux")
+    ? "~/.local/share/lantor"
+    : "~/Library/Application Support/Lantor";
+  return `${baseDir}/agents/${normalized}`;
 }
 
 function newAgentDraft(): AgentForm {
@@ -3131,7 +3151,7 @@ function App() {
       handle,
       displayName,
       launchCommand: buildPresetCommand({ ...agentDraft, handle, displayName }),
-      workingDirectory: agentDraft.workingDirectory.trim() || defaultAgentWorkspace(handle),
+      workingDirectory: agentDraft.workingDirectory.trim() || defaultAgentWorkspace(handle, data?.db_url),
     };
     await apiInvoke<string>("create_agent", {
       handle,
@@ -3878,9 +3898,13 @@ function App() {
         themePreference={themePreference}
         chatTextSize={chatTextSize}
         showImageThumbnails={showImageThumbnails}
+        launchAgent={data.launch_agent}
+        supervisor={data.supervisor}
         onThemePreferenceChange={setThemePreference}
         onChatTextSizeChange={setChatTextSize}
         onShowImageThumbnailsChange={setShowImageThumbnails}
+        onInstallSupervisorService={installSupervisorService}
+        onUninstallSupervisorService={uninstallSupervisorService}
         onClose={() => setShowSettingsModal(false)}
       />
 
