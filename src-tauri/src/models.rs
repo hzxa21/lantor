@@ -100,6 +100,7 @@ pub(crate) struct ChannelMember {
 #[derive(Debug, Serialize)]
 pub(crate) struct Message {
     pub(crate) id: Uuid,
+    pub(crate) seq: i64,
     pub(crate) channel_id: Uuid,
     pub(crate) thread_root_id: Option<Uuid>,
     pub(crate) sender_agent_id: Option<Uuid>,
@@ -116,6 +117,20 @@ pub(crate) struct Message {
     pub(crate) artifacts: Vec<Artifact>,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ChannelMessageHistory {
+    pub(crate) channel_id: Uuid,
+    pub(crate) before_seq: Option<i64>,
+    pub(crate) has_more: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ChannelMessagePage {
+    pub(crate) messages: Vec<Message>,
+    pub(crate) next_before_seq: Option<i64>,
+    pub(crate) has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -399,6 +414,7 @@ pub(crate) struct Bootstrap {
     pub(crate) channel_members: Vec<ChannelMember>,
     pub(crate) agents: Vec<Agent>,
     pub(crate) messages: Vec<Message>,
+    pub(crate) channel_message_history: Vec<ChannelMessageHistory>,
     pub(crate) saved_messages: Vec<SavedMessage>,
     pub(crate) dismissed_inbox_items: HashMap<String, DateTime<Utc>>,
     pub(crate) read_inbox_items: HashMap<String, DateTime<Utc>>,

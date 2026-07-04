@@ -93,6 +93,9 @@ type ConversationProps = {
   savedMessageIds: Set<string>;
   focusedMessageId: string | null;
   showImageThumbnails: boolean;
+  hasMoreRootMessages: boolean;
+  isLoadingOlderRootMessages: boolean;
+  onLoadOlderRootMessages: () => Promise<void>;
   onToggleMessageSaved: (message: Message, saved: boolean) => void;
 };
 
@@ -115,6 +118,7 @@ const MESSAGE_CARD_INTERACTIVE_TARGET_SELECTOR = [
   ".message-artifacts",
   ".message-attachments",
 ].join(",");
+const LOAD_OLDER_SCROLL_TOP_PX = 96;
 
 function taskStatusLabel(status: string) {
   return status.replace("_", " ");
@@ -265,6 +269,9 @@ export function Conversation({
   savedMessageIds,
   focusedMessageId,
   showImageThumbnails,
+  hasMoreRootMessages,
+  isLoadingOlderRootMessages,
+  onLoadOlderRootMessages,
   onToggleMessageSaved,
 }: ConversationProps) {
   const [showChannelActions, setShowChannelActions] = useState(false);
@@ -281,6 +288,8 @@ export function Conversation({
   const userMessageScrollUntilRef = useRef(0);
   const messageListFollowSuppressUntilRef = useRef(0);
   const messageListMetricsRef = useRef({ scrollHeight: 0, scrollTop: 0, clientHeight: 0 });
+  const olderMessagesLoadInFlightRef = useRef(false);
+  const messageListContextEpochRef = useRef(0);
   const channelActionsRef = useRef<HTMLDivElement | null>(null);
   const isDm = channel?.kind === "dm";
   const dmAgent = isDm ? agents.find((agent) => agent.id === channel?.dm_agent_id) ?? null : null;
@@ -545,6 +554,39 @@ export function Conversation({
     const element = messageListRef.current;
     if (!element) return;
     if (shouldSuppressMessageListFollow(element)) return;
+    if (
+      activeTab === "chat" &&
+      channel &&
+      rootMessages.length > 0 &&
+      hasMoreRootMessages &&
+      !isLoadingOlderRootMessages &&
+      !olderMessagesLoadInFlightRef.current &&
+      element.scrollTop <= LOAD_OLDER_SCROLL_TOP_PX
+    ) {
+      const contextEpoch = messageListContextEpochRef.current;
+      const messageList = element;
+      const previousScrollHeight = element.scrollHeight;
+      stopFollowingMessages(element);
+      olderMessagesLoadInFlightRef.current = true;
+      void onLoadOlderRootMessages()
+        .finally(() => {
+          if (messageListContextEpochRef.current !== contextEpoch) return;
+          olderMessagesLoadInFlightRef.current = false;
+          window.requestAnimationFrame(() => {
+            if (
+              messageListContextEpochRef.current !== contextEpoch
+              || messageListRef.current !== messageList
+            ) return;
+            const list = messageListRef.current;
+            if (!list) return;
+            const heightDelta = list.scrollHeight - previousScrollHeight;
+            if (heightDelta > 0) {
+              list.scrollTop += heightDelta;
+            }
+            rememberMessageListMetrics(list);
+          });
+        });
+    }
     const atBottom = isMessageListAtBottom(element);
     const layoutChanged =
       messageListMetricsRef.current.scrollHeight !== element.scrollHeight
@@ -702,6 +744,11 @@ export function Conversation({
     shouldFollowMessagesRef.current = true;
     scrollMessagesToBottom();
   }, [channel?.id]);
+
+  useLayoutEffect(() => {
+    messageListContextEpochRef.current += 1;
+    olderMessagesLoadInFlightRef.current = false;
+  }, [activeTab, channel?.id]);
 
   useEffect(() => () => {
     if (bottomScrollFrameRef.current !== null) window.cancelAnimationFrame(bottomScrollFrameRef.current);
@@ -982,8 +1029,14 @@ export function Conversation({
             <div ref={messageListContentRef} className="message-list-content">
               {channel ? (
                 rootMessages.length > 0 ? (
-                  <div className="beginning">
-                    {isDm ? `Beginning of your DM with @${dmAgent?.handle || "agent"}` : `Beginning of #${channel.name}`}
+                  <div className="beginning" aria-live="polite">
+                    {hasMoreRootMessages
+                      ? isLoadingOlderRootMessages
+                        ? "Loading earlier messages..."
+                        : "Earlier messages available"
+                      : isDm
+                        ? `Beginning of your DM with @${dmAgent?.handle || "agent"}`
+                        : `Beginning of #${channel.name}`}
                   </div>
                 ) : (
                   <div className="empty-state">

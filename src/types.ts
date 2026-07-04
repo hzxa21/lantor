@@ -76,6 +76,7 @@ export type ChannelMember = {
 
 export type Message = {
   id: string;
+  seq: number;
   channel_id: string;
   thread_root_id: string | null;
   sender_agent_id: string | null;
@@ -92,6 +93,18 @@ export type Message = {
   artifacts: Artifact[];
   created_at: string;
   updated_at: string;
+};
+
+export type ChannelMessageHistory = {
+  channel_id: string;
+  before_seq: number | null;
+  has_more: boolean;
+};
+
+export type ChannelMessagePage = {
+  messages: Message[];
+  next_before_seq: number | null;
+  has_more: boolean;
 };
 
 export type ThreadReplySummary = {
@@ -284,6 +297,7 @@ export type Bootstrap = {
   channel_members: ChannelMember[];
   agents: Agent[];
   messages: Message[];
+  channel_message_history: ChannelMessageHistory[];
   saved_messages: SavedMessage[];
   dismissed_inbox_items: Record<string, string>;
   read_inbox_items: Record<string, string>;

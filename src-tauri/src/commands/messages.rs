@@ -4,10 +4,10 @@ use uuid::Uuid;
 use crate::{
     app::{AppState, CommandResult},
     message_store::{
-        delete_message_in_pool, send_owner_message_in_pool, set_message_saved_in_pool,
-        update_message_in_pool,
+        delete_message_in_pool, load_older_channel_messages as load_older_channel_messages_in_pool,
+        send_owner_message_in_pool, set_message_saved_in_pool, update_message_in_pool,
     },
-    models::{AttachmentUpload, Message},
+    models::{AttachmentUpload, ChannelMessagePage, Message},
 };
 
 #[tauri::command]
@@ -28,6 +28,16 @@ pub(crate) async fn send_message(
         attachments.unwrap_or_default(),
     )
     .await
+}
+
+#[tauri::command]
+pub(crate) async fn load_older_channel_messages(
+    channel_id: Uuid,
+    before_seq: i64,
+    limit: i64,
+    state: State<'_, AppState>,
+) -> CommandResult<ChannelMessagePage> {
+    load_older_channel_messages_in_pool(&state.pool, channel_id, before_seq, limit).await
 }
 
 #[tauri::command]

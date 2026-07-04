@@ -569,6 +569,8 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "create unique index if not exists channels_dm_unique on channels(dm_agent_id) where kind = 'dm' and dm_agent_id is not null",
         "create unique index if not exists messages_stream_key_unique on messages(stream_key) where stream_key <> ''",
         "create index if not exists messages_seq_idx on messages(seq)",
+        "create index if not exists messages_channel_seq_idx on messages(channel_id, seq desc)",
+        "create index if not exists messages_channel_root_seq_idx on messages(channel_id, seq desc) where thread_root_id is null",
         "create index if not exists messages_channel_created_idx on messages(channel_id, created_at desc)",
         "create index if not exists messages_thread_root_idx on messages(thread_root_id) where thread_root_id is not null",
         "create index if not exists message_attachments_message_id_idx on message_attachments(message_id)",

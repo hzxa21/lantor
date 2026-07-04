@@ -17,8 +17,10 @@ use crate::{
     domain::{reminders::load_reminders, schedules::load_agent_schedules},
     launch_agent,
     message_store::{
-        load_artifact_summaries, load_artifacts, load_messages, load_recent_messages_per_channel,
+        channel_message_history_from_messages, load_artifact_summaries, load_artifacts,
+        load_messages, load_recent_messages_per_channel,
         load_recent_messages_per_channel_without_artifact_content, load_saved_messages,
+        WEB_BOOTSTRAP_ROOT_MESSAGES_PER_CHANNEL,
     },
     models::{
         Bootstrap, BootstrapPerf, BootstrapPerfCounts, BootstrapPerfOptions, BootstrapPerfPhase,
@@ -28,8 +30,6 @@ use crate::{
     task_store::load_tasks,
     web,
 };
-
-const WEB_BOOTSTRAP_MESSAGES_PER_CHANNEL: i64 = 80;
 
 fn configured_web_base_url() -> Option<String> {
     if let Ok(value) = env::var("LANTOR_WEB_PUBLIC_URL") {
@@ -73,7 +73,9 @@ pub(crate) async fn load_web_bootstrap(
         db_url,
         BootstrapLoadOptions {
             runtime: "web",
-            messages: BootstrapMessageLoad::RecentPerChannel(WEB_BOOTSTRAP_MESSAGES_PER_CHANNEL),
+            messages: BootstrapMessageLoad::RecentPerChannel(
+                WEB_BOOTSTRAP_ROOT_MESSAGES_PER_CHANNEL,
+            ),
             include_run_logs: false,
             compact_agent_activities: true,
             include_artifact_content: false,
@@ -174,6 +176,12 @@ async fn load_bootstrap_with_options(
         }
         BootstrapMessageLoad::RecentPerChannel(limit) => {
             load_recent_messages_per_channel_without_artifact_content(pool, limit).await?
+        }
+    };
+    let channel_message_history = match options.messages {
+        BootstrapMessageLoad::All => Vec::new(),
+        BootstrapMessageLoad::RecentPerChannel(limit) => {
+            channel_message_history_from_messages(&messages, limit)
         }
     };
     push_phase(&mut phases, "messages", started_at, Some(messages.len()));
@@ -300,6 +308,7 @@ async fn load_bootstrap_with_options(
         channel_members,
         agents,
         messages,
+        channel_message_history,
         saved_messages,
         dismissed_inbox_items,
         read_inbox_items,

@@ -43,7 +43,10 @@ use crate::channels::{
 use crate::domain::reminders::complete_reminder_in_pool;
 use crate::launch_agent;
 use crate::lifecycle_commands::start_agent_in_pool;
-use crate::message_store::{load_artifact, send_owner_message_in_pool, set_message_saved_in_pool};
+use crate::message_store::{
+    load_artifact, load_older_channel_messages_without_artifact_content,
+    send_owner_message_in_pool, set_message_saved_in_pool,
+};
 use crate::models::AttachmentUpload;
 use crate::owner_inbox::{
     dismiss_inbox_items_in_pool, mark_all_owner_inbox_read_in_pool, mark_channel_read_in_pool,
@@ -78,6 +81,14 @@ struct SendMessageRequest {
     body: String,
     as_task: bool,
     attachments: Option<Vec<AttachmentUpload>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoadOlderChannelMessagesRequest {
+    channel_id: Uuid,
+    before_seq: i64,
+    limit: i64,
 }
 
 #[derive(Deserialize)]
@@ -304,6 +315,10 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
             "/api/send_message",
             post(api_send_message).layer(DefaultBodyLimit::max(WEB_SEND_MESSAGE_BODY_LIMIT)),
         )
+        .route(
+            "/api/load_older_channel_messages",
+            post(api_load_older_channel_messages).layer(CompressionLayer::new()),
+        )
         .route("/api/create_channel", post(api_create_channel))
         .route("/api/update_channel", post(api_update_channel))
         .route("/api/delete_channel", post(api_delete_channel))
@@ -425,6 +440,21 @@ async fn api_send_message(
         &request.body,
         request.as_task,
         request.attachments.unwrap_or_default(),
+    )
+    .await
+    .map(Json)
+    .map_err(api_error)
+}
+
+async fn api_load_older_channel_messages(
+    State(state): State<Arc<WebState>>,
+    Json(request): Json<LoadOlderChannelMessagesRequest>,
+) -> Result<impl IntoResponse, Response> {
+    load_older_channel_messages_without_artifact_content(
+        &state.pool,
+        request.channel_id,
+        request.before_seq,
+        request.limit,
     )
     .await
     .map(Json)
