@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
 use tauri::Emitter;
 use tokio::time::sleep;
@@ -135,10 +135,15 @@ pub(crate) async fn notify_ui_artifact_upsert(
     artifact: &Artifact,
     reason: &str,
 ) -> CommandResult<()> {
+    let mut artifact_payload = serde_json::to_value(artifact).map_err(to_string)?;
+    if let Value::Object(ref mut fields) = artifact_payload {
+        fields.insert("content".to_owned(), Value::String(String::new()));
+    }
     notify_database_event(
         pool,
         UI_REFRESH_CHANNEL,
-        &json!({ "type": "artifact_upsert", "reason": reason, "artifact": artifact }).to_string(),
+        &json!({ "type": "artifact_upsert", "reason": reason, "artifact": artifact_payload })
+            .to_string(),
     )
     .await
 }
@@ -608,4 +613,58 @@ async fn load_agent_work_item_patch(
         updated_at: row.get("updated_at"),
         completed_at: row.get("completed_at"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use serde_json::Value;
+    use uuid::Uuid;
+
+    use crate::models::Artifact;
+    use crate::test_support::{drop_test_schema, test_pool};
+
+    use super::notify_ui_artifact_upsert;
+
+    #[tokio::test]
+    async fn artifact_upsert_event_omits_artifact_content() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let artifact = Artifact {
+                id: Uuid::new_v4(),
+                message_id: Uuid::new_v4(),
+                channel_id: Uuid::new_v4(),
+                thread_root_id: None,
+                creator_agent_id: None,
+                creator_agent_handle: None,
+                kind: "markdown".to_owned(),
+                title: "Large report".to_owned(),
+                summary: "short summary".to_owned(),
+                content: "large artifact content".to_owned(),
+                metadata: Value::Object(Default::default()),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+
+            notify_ui_artifact_upsert(&pool, &artifact, "test")
+                .await
+                .map_err(|err| err.to_string())?;
+            let event_json: String =
+                sqlx::query_scalar("select event_json from ui_events order by id desc limit 1")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            let payload: Value =
+                serde_json::from_str(&event_json).map_err(|err| err.to_string())?;
+            assert_eq!(payload["artifact"]["title"], "Large report");
+            assert_eq!(payload["artifact"]["summary"], "short summary");
+            assert_eq!(payload["artifact"]["content"], "");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        result.unwrap();
+    }
 }

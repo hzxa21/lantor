@@ -305,6 +305,7 @@ export type BootstrapPerf = {
     message_load: string;
     include_run_logs: boolean;
     compact_agent_activities: boolean;
+    include_artifact_content: boolean;
   };
   total_ms: number;
   serialize_ms: number | null;

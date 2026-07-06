@@ -17,7 +17,8 @@ use crate::{
     domain::{reminders::load_reminders, schedules::load_agent_schedules},
     launch_agent,
     message_store::{
-        load_artifacts, load_messages, load_recent_messages_per_channel, load_saved_messages,
+        load_artifact_summaries, load_artifacts, load_messages, load_recent_messages_per_channel,
+        load_recent_messages_per_channel_without_artifact_content, load_saved_messages,
     },
     models::{
         Bootstrap, BootstrapPerf, BootstrapPerfCounts, BootstrapPerfOptions, BootstrapPerfPhase,
@@ -57,6 +58,7 @@ pub(crate) async fn load_bootstrap(pool: &SqlitePool, db_url: String) -> Command
             messages: BootstrapMessageLoad::All,
             include_run_logs: true,
             compact_agent_activities: false,
+            include_artifact_content: true,
         },
     )
     .await
@@ -74,6 +76,7 @@ pub(crate) async fn load_web_bootstrap(
             messages: BootstrapMessageLoad::RecentPerChannel(WEB_BOOTSTRAP_MESSAGES_PER_CHANNEL),
             include_run_logs: false,
             compact_agent_activities: true,
+            include_artifact_content: false,
         },
     )
     .await
@@ -84,6 +87,7 @@ struct BootstrapLoadOptions {
     messages: BootstrapMessageLoad,
     include_run_logs: bool,
     compact_agent_activities: bool,
+    include_artifact_content: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -165,8 +169,11 @@ async fn load_bootstrap_with_options(
     let started_at = Instant::now();
     let messages = match options.messages {
         BootstrapMessageLoad::All => load_messages(pool).await?,
-        BootstrapMessageLoad::RecentPerChannel(limit) => {
+        BootstrapMessageLoad::RecentPerChannel(limit) if options.include_artifact_content => {
             load_recent_messages_per_channel(pool, limit).await?
+        }
+        BootstrapMessageLoad::RecentPerChannel(limit) => {
+            load_recent_messages_per_channel_without_artifact_content(pool, limit).await?
         }
     };
     push_phase(&mut phases, "messages", started_at, Some(messages.len()));
@@ -199,7 +206,11 @@ async fn load_bootstrap_with_options(
     );
 
     let started_at = Instant::now();
-    let artifacts = load_artifacts(pool).await?;
+    let artifacts = if options.include_artifact_content {
+        load_artifacts(pool).await?
+    } else {
+        load_artifact_summaries(pool).await?
+    };
     push_phase(&mut phases, "artifacts", started_at, Some(artifacts.len()));
 
     let started_at = Instant::now();
@@ -319,6 +330,7 @@ async fn load_bootstrap_with_options(
             message_load: options.messages.label(),
             include_run_logs: options.include_run_logs,
             compact_agent_activities: options.compact_agent_activities,
+            include_artifact_content: options.include_artifact_content,
         },
         total_ms: elapsed_ms(total_started_at),
         serialize_ms,
@@ -328,4 +340,86 @@ async fn load_bootstrap_with_options(
     });
 
     Ok(bootstrap)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{drop_test_schema, insert_test_channel, test_pool};
+
+    use super::{load_bootstrap, load_web_bootstrap};
+
+    #[tokio::test]
+    async fn web_bootstrap_omits_artifact_content() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "web-artifacts").await?;
+            let message_id: uuid::Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (
+                    channel_id, sender_name, sender_role, body, is_task, created_at
+                )
+                values ($1, 'Dylan', 'owner', 'artifact message', false, '2026-01-01T00:00:00.000+00:00')
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let artifact_content = "large artifact content that should not ride the web bootstrap";
+            let artifact_id: uuid::Uuid = sqlx::query_scalar(
+                r#"
+                insert into artifacts (
+                    message_id, channel_id, kind, title, summary, content
+                )
+                values ($1, $2, 'markdown', 'Large report', 'short summary', $3)
+                returning id
+                "#,
+            )
+            .bind(message_id)
+            .bind(channel_id)
+            .bind(artifact_content)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let desktop = load_bootstrap(&pool, "sqlite:test".to_owned()).await?;
+            let desktop_artifact = desktop
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == artifact_id)
+                .expect("desktop bootstrap should include the artifact");
+            assert_eq!(desktop_artifact.content, artifact_content);
+            let desktop_message_artifact = desktop
+                .messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .and_then(|message| message.artifacts.iter().find(|artifact| artifact.id == artifact_id))
+                .expect("desktop bootstrap should include the nested message artifact");
+            assert_eq!(desktop_message_artifact.content, artifact_content);
+
+            let web = load_web_bootstrap(&pool, "sqlite:test".to_owned()).await?;
+            let web_artifact = web
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == artifact_id)
+                .expect("web bootstrap should include artifact metadata");
+            assert_eq!(web_artifact.summary, "short summary");
+            assert_eq!(web_artifact.content, "");
+            let web_message_artifact = web
+                .messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .and_then(|message| message.artifacts.iter().find(|artifact| artifact.id == artifact_id))
+                .expect("web bootstrap should include nested artifact metadata");
+            assert_eq!(web_message_artifact.summary, "short summary");
+            assert_eq!(web_message_artifact.content, "");
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        result.unwrap();
+    }
 }

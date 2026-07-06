@@ -17,14 +17,31 @@ use crate::{
 };
 
 pub(crate) async fn load_messages(pool: &SqlitePool) -> CommandResult<Vec<Message>> {
-    load_messages_with_scope(pool, MessageLoadScope::All).await
+    load_messages_with_scope(pool, MessageLoadScope::All, true).await
 }
 
 pub(crate) async fn load_recent_messages_per_channel(
     pool: &SqlitePool,
     per_channel_limit: i64,
 ) -> CommandResult<Vec<Message>> {
-    load_messages_with_scope(pool, MessageLoadScope::RecentPerChannel(per_channel_limit)).await
+    load_messages_with_scope(
+        pool,
+        MessageLoadScope::RecentPerChannel(per_channel_limit),
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn load_recent_messages_per_channel_without_artifact_content(
+    pool: &SqlitePool,
+    per_channel_limit: i64,
+) -> CommandResult<Vec<Message>> {
+    load_messages_with_scope(
+        pool,
+        MessageLoadScope::RecentPerChannel(per_channel_limit),
+        false,
+    )
+    .await
 }
 
 enum MessageLoadScope {
@@ -35,6 +52,7 @@ enum MessageLoadScope {
 async fn load_messages_with_scope(
     pool: &SqlitePool,
     scope: MessageLoadScope,
+    include_artifact_content: bool,
 ) -> CommandResult<Vec<Message>> {
     let (sql, limit) = match scope {
         MessageLoadScope::All => (
@@ -155,7 +173,7 @@ async fn load_messages_with_scope(
         })
         .collect();
     attach_message_attachments(pool, &mut messages).await?;
-    attach_message_artifacts(pool, &mut messages).await?;
+    attach_message_artifacts(pool, &mut messages, include_artifact_content).await?;
     Ok(messages)
 }
 
@@ -249,7 +267,7 @@ pub(crate) async fn load_message(pool: &SqlitePool, message_id: Uuid) -> Command
         updated_at: row.get("updated_at"),
     };
     attach_message_attachments(pool, std::slice::from_mut(&mut message)).await?;
-    attach_message_artifacts(pool, std::slice::from_mut(&mut message)).await?;
+    attach_message_artifacts(pool, std::slice::from_mut(&mut message), true).await?;
     Ok(message)
 }
 
@@ -796,7 +814,23 @@ fn artifact_from_row(row: &SqliteRow) -> Artifact {
 }
 
 pub(crate) async fn load_artifacts(pool: &SqlitePool) -> CommandResult<Vec<Artifact>> {
-    let rows = sqlx::query(
+    load_artifacts_with_content(pool, true).await
+}
+
+pub(crate) async fn load_artifact_summaries(pool: &SqlitePool) -> CommandResult<Vec<Artifact>> {
+    load_artifacts_with_content(pool, false).await
+}
+
+async fn load_artifacts_with_content(
+    pool: &SqlitePool,
+    include_content: bool,
+) -> CommandResult<Vec<Artifact>> {
+    let content_select = if include_content {
+        "ar.content"
+    } else {
+        "'' as content"
+    };
+    let rows = sqlx::query(&format!(
         r#"
         select
             ar.id,
@@ -808,7 +842,7 @@ pub(crate) async fn load_artifacts(pool: &SqlitePool) -> CommandResult<Vec<Artif
             ar.kind,
             ar.title,
             ar.summary,
-            ar.content,
+            {content_select},
             ar.metadata,
             ar.created_at,
             ar.updated_at
@@ -816,7 +850,7 @@ pub(crate) async fn load_artifacts(pool: &SqlitePool) -> CommandResult<Vec<Artif
         left join agents a on a.id = ar.creator_agent_id
         order by ar.created_at asc
         "#,
-    )
+    ))
     .fetch_all(pool)
     .await
     .map_err(to_string)?;
@@ -855,6 +889,7 @@ pub(crate) async fn load_artifact(pool: &SqlitePool, artifact_id: Uuid) -> Comma
 async fn attach_message_artifacts(
     pool: &SqlitePool,
     messages: &mut [Message],
+    include_content: bool,
 ) -> CommandResult<()> {
     if messages.is_empty() {
         return Ok(());
@@ -864,6 +899,11 @@ async fn attach_message_artifacts(
         .map(|index| format!("${}", index + 1))
         .collect::<Vec<_>>()
         .join(", ");
+    let content_select = if include_content {
+        "ar.content"
+    } else {
+        "'' as content"
+    };
     let sql = format!(
         r#"
         select
@@ -876,7 +916,7 @@ async fn attach_message_artifacts(
             ar.kind,
             ar.title,
             ar.summary,
-            ar.content,
+            {content_select},
             ar.metadata,
             ar.created_at,
             ar.updated_at

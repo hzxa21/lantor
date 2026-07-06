@@ -357,6 +357,7 @@ pub(crate) struct BootstrapPerfOptions {
     pub(crate) message_load: String,
     pub(crate) include_run_logs: bool,
     pub(crate) compact_agent_activities: bool,
+    pub(crate) include_artifact_content: bool,
 }
 
 #[derive(Debug, Serialize)]

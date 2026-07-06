@@ -86,22 +86,18 @@ function artifactIcon(kind: string) {
   }
 }
 
-function previewContent(artifact: Artifact) {
-  const content = asText(artifact.summary || artifact.content);
-  const compact = content.trim().replace(/\s+/g, " ");
-  return compact.length > 140 ? `${compact.slice(0, 140)}...` : compact;
-}
-
 function ArtifactContent({ artifact }: { artifact: Artifact }) {
+  if (!artifact.content) return null;
+
   if (artifact.kind === "markdown") {
     return (
       <div className="artifact-markdown-content">
-        <MessageMarkdown body={artifact.content || previewContent(artifact)} scrollKey={`artifact:${artifact.id}`} />
+        <MessageMarkdown body={artifact.content} scrollKey={`artifact:${artifact.id}`} />
       </div>
     );
   }
 
-  return <pre>{artifact.content || previewContent(artifact)}</pre>;
+  return <pre>{artifact.content}</pre>;
 }
 
 function ArtifactCard({ artifact, onOpenArtifact }: { artifact: SafeArtifact; onOpenArtifact?: (artifact: Artifact) => void }) {

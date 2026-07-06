@@ -977,6 +977,7 @@ function App() {
         messageLoad: payload.__perf?.options.message_load ?? null,
         includeRunLogs: payload.__perf?.options.include_run_logs ?? null,
         compactAgentActivities: payload.__perf?.options.compact_agent_activities ?? null,
+        includeArtifactContent: payload.__perf?.options.include_artifact_content ?? null,
         payloadBytesKind: measurement.payloadBytes === undefined ? "tauri-estimated" : "decoded-response",
         tauriTransportIncludesDeserialize: isTauriRuntime(),
       };
