@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::agent_environment::apply_agent_environment_variables;
 use crate::agent_memory::append_run_log;
 use crate::events::activity::{record_agent_activity, record_agent_activity_throttled};
+use crate::freshness::advance_agent_target_watermark_for_work_item;
 use crate::prompts::{build_codex_streaming_prompt, codex_developer_instructions};
 use crate::runtime::{
     process::{
@@ -1161,6 +1162,9 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
     if let Err(err) = write_result {
         finish_warm_codex_active_turn(pool, agent_id, &runtime, false, Some(err.clone())).await?;
         return Err(err);
+    }
+    if let Some(work_item_id) = work_item_id {
+        advance_agent_target_watermark_for_work_item(pool, agent_id, work_item_id, 0).await?;
     }
 
     Ok(())

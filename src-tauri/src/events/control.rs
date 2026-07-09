@@ -20,6 +20,7 @@ use crate::channels::{add_agent_to_channel, create_channel_in_pool, normalize_ch
 use crate::domain::parse_due_at;
 use crate::domain::reminders::{cancel_reminder_in_pool, create_reminder_in_pool};
 use crate::events::activity::{normalize_agent_activity_kind, record_agent_activity};
+use crate::freshness::hold_run_event_for_target_if_stale;
 use crate::message_store::{
     insert_agent_attachment_message, insert_agent_handoff_message, insert_agent_message,
     insert_agent_message_with_options,
@@ -536,6 +537,19 @@ pub(crate) async fn handle_agent_event(
             as_task,
         } => {
             let channel_id = resolve_event_channel(pool, channel_id, channel.as_deref()).await?;
+            if hold_run_event_for_target_if_stale(
+                pool,
+                agent_id,
+                run_id,
+                channel_id,
+                thread_root_id,
+                "message_event",
+                body.trim(),
+            )
+            .await?
+            {
+                return Ok("message held for newer context".to_owned());
+            }
             let msg_id = insert_agent_message(
                 pool,
                 agent_id,
@@ -576,6 +590,19 @@ pub(crate) async fn handle_agent_event(
             let body = body.trim();
             if body.is_empty() {
                 return Err("channel_message_create body is required".to_owned());
+            }
+            if hold_run_event_for_target_if_stale(
+                pool,
+                agent_id,
+                run_id,
+                channel_id,
+                thread_root_id,
+                "channel_message_create",
+                body,
+            )
+            .await?
+            {
+                return Ok("channel message held for newer context".to_owned());
             }
             let msg_id = insert_agent_message_with_options(
                 pool,

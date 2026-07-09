@@ -55,6 +55,114 @@ async fn streaming_agent_messages_append_and_finish() {
 }
 
 #[tokio::test]
+async fn stale_streaming_reply_is_held_instead_of_completed() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "stale-streamer").await?;
+        let other_agent_id = insert_test_agent(&pool, "stale-other").await?;
+        let channel_id = insert_test_channel(&pool, "stale-streaming").await?;
+        let thread_root_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into messages (channel_id, sender_name, sender_role, body, is_task)
+            values ($1, 'Dylan', 'owner', 'count from zero', false)
+            returning id
+            "#,
+        )
+        .bind(channel_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let root_seq: i64 = sqlx::query_scalar("select seq from messages where id = $1")
+            .bind(thread_root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        let work_item_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_work_items (
+                agent_id, channel_id, thread_root_id, source_message_id,
+                source_kind, title, context, context_max_seq, status
+            )
+            values ($1, $2, $3, $3, 'inbox_wake', 'count', 'context', $4, 'running')
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .bind(root_seq)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let run_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_runs (agent_id, work_item_id, command, status)
+            values ($1, $2, 'codex app-server', 'running')
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(work_item_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let stream_key = format!("{run_id}:final");
+        let message_id = append_streaming_agent_message(
+            &pool,
+            agent_id,
+            channel_id,
+            Some(thread_root_id),
+            &stream_key,
+            "1",
+        )
+        .await?;
+        sqlx::query(
+            r#"
+            insert into messages (
+                channel_id, thread_root_id, sender_agent_id, sender_name, sender_role, body
+            )
+            values ($1, $2, $3, 'stale-other', 'agent', '1')
+            "#,
+        )
+        .bind(channel_id)
+        .bind(thread_root_id)
+        .bind(other_agent_id)
+        .execute(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        finish_streaming_agent_message(&pool, &stream_key, "complete").await?;
+
+        let remaining: i64 = sqlx::query_scalar("select count(*) from messages where id = $1")
+            .bind(message_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        assert_eq!(remaining, 0);
+        let old_status: String =
+            sqlx::query_scalar("select status from agent_work_items where id = $1")
+                .bind(work_item_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(old_status, "held");
+        let retry_count: i64 = sqlx::query_scalar(
+            "select count(*) from agent_work_items where source_kind = 'freshness_retry'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(retry_count, 1);
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    result.unwrap();
+}
+
+#[tokio::test]
 async fn streaming_placeholder_is_reused_for_visible_reply() {
     let Some((pool, schema)) = test_pool().await else {
         return;

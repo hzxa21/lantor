@@ -14,7 +14,9 @@ use super::{
     process::{
         effective_launch_command, start_process_agent, terminate_process_group, ProcessAgentLaunch,
     },
-    surface::{append_claude_thread_context, same_codex_surface, CodexActiveTurnScheduleState},
+    surface::{
+        append_claude_thread_context_with_seq, same_codex_surface, CodexActiveTurnScheduleState,
+    },
 };
 use crate::{
     agent_inbox_wake::{
@@ -117,7 +119,7 @@ pub(crate) async fn recover_supervisor_commands_at_startup(pool: &SqlitePool) ->
               select 1
               from agent_work_items w
               where w.id = supervisor_commands.work_item_id
-          and w.status in ('cancelled', 'failed', 'done', 'silent')
+          and w.status in ('cancelled', 'failed', 'done', 'silent', 'held')
           )
         "#,
     )
@@ -457,13 +459,16 @@ async fn supervisor_start_agent(
                 .fetch_optional(pool)
                 .await
                 .map_err(to_string)?;
-        if status.as_deref() == Some("cancelled") {
+        if matches!(
+            status.as_deref(),
+            Some("cancelled" | "failed" | "done" | "silent" | "held")
+        ) {
             record_agent_activity(
                 pool,
                 Some(agent_id),
                 None,
                 "dispatch",
-                "Cancelled agent request skipped",
+                "Terminal agent request skipped",
                 work_item_id.to_string(),
             )
             .await?;
@@ -539,6 +544,7 @@ async fn supervisor_start_agent(
             None
         }
     };
+    let mut rendered_context_max_seq = 0;
     let work_item_prompt = match work_item_id {
         Some(work_item_id) => {
             let row = sqlx::query(
@@ -568,14 +574,16 @@ async fn supervisor_start_agent(
             let task_number: Option<i64> = row.get("task_number");
             let thread_root_id: Option<Uuid> = row.get("thread_root_id");
             let context = if runtime.eq_ignore_ascii_case("claude") {
-                append_claude_thread_context(
+                let rendered = append_claude_thread_context_with_seq(
                     pool,
                     &context,
                     channel_id,
                     channel_name.as_deref(),
                     thread_root_id,
                 )
-                .await?
+                .await?;
+                rendered_context_max_seq = rendered.max_seq;
+                rendered.context
             } else {
                 context
             };
@@ -645,6 +653,7 @@ async fn supervisor_start_agent(
             working_directory,
             environment_variables,
             work_item_prompt,
+            rendered_context_max_seq,
             memory_context,
         )
         .await;

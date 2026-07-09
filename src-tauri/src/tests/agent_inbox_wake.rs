@@ -35,6 +35,7 @@ fn inbox_wake_context_includes_message_headers_and_other_active_summary() {
             title: "Handle follow-up".to_owned(),
             body_preview: "please use the latest numbers\nand reply directly".to_owned(),
             attachment_summary: String::new(),
+            message_seq: None,
             message_created_at: Some(Utc::now()),
             sender_name: Some("Dylan".to_owned()),
             sender_role: Some("owner".to_owned()),
@@ -77,6 +78,7 @@ fn inbox_wake_context_includes_existing_thread_recovery_rule_and_recent_context(
             title: "@worker continue".to_owned(),
             body_preview: "@worker continue".to_owned(),
             attachment_summary: String::new(),
+            message_seq: None,
             message_created_at: Some(Utc::now()),
             sender_name: Some("Dylan".to_owned()),
             sender_role: Some("owner".to_owned()),
@@ -108,6 +110,7 @@ fn inbox_wake_context_tells_task_available_agents_to_claim_silently() {
             title: "Implement queue behavior".to_owned(),
             body_preview: "Implement queue behavior".to_owned(),
             attachment_summary: String::new(),
+            message_seq: None,
             message_created_at: Some(Utc::now()),
             sender_name: Some("Dylan".to_owned()),
             sender_role: Some("owner".to_owned()),
@@ -143,6 +146,7 @@ fn steer_followup_prompt_uses_compact_inbox_headers() {
         attachment_summary:
             "attachment_id=00000000-0000-0000-0000-000000000001 name='metrics.csv' mime=text/csv size=123 local_path='/tmp/metrics.csv'"
                 .to_owned(),
+        message_seq: None,
         message_created_at: Some(Utc::now()),
         sender_name: Some("Dylan".to_owned()),
         sender_role: Some("owner".to_owned()),

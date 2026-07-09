@@ -801,7 +801,8 @@ pub(crate) async fn retry_agent_work_in_pool(
 ) -> CommandResult<Uuid> {
     let row = sqlx::query(
         r#"
-        select agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id, task_id, source_kind, title, context, status
+        select agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id, task_id,
+               source_kind, title, context, context_max_seq, freshness_generation, status
         from agent_work_items
         where id = $1
         "#,
@@ -823,9 +824,10 @@ pub(crate) async fn retry_agent_work_in_pool(
     let new_work_item_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_work_items (
-            agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id, task_id, source_kind, title, context, status
+            agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id, task_id,
+            source_kind, title, context, context_max_seq, freshness_generation, status
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued')
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'queued')
         returning id
         "#,
     )
@@ -838,6 +840,8 @@ pub(crate) async fn retry_agent_work_in_pool(
     .bind(row.get::<String, _>("source_kind"))
     .bind(&title)
     .bind(&context)
+    .bind(row.get::<i64, _>("context_max_seq"))
+    .bind(row.get::<i64, _>("freshness_generation"))
     .fetch_one(pool)
     .await
     .map_err(to_string)?;

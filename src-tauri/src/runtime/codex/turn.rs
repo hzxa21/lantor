@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use super::{CodexSteerRequest, WarmCodexRuntime};
 use crate::events::activity::{record_agent_activity, work_status_title};
+use crate::freshness::advance_agent_target_watermark_for_work_item;
 use crate::runtime::{
     process::{terminate_process_group, upsert_runtime_thread_id},
     streaming::{
@@ -55,6 +56,9 @@ pub(super) async fn finish_codex_steer_request(
     .await
     .map_err(to_string)?;
     notify_ui_work_item_changed(pool, steer.work_item_id, "codex_turn_steer_result").await;
+    if success {
+        advance_agent_target_watermark_for_work_item(pool, agent_id, steer.work_item_id, 0).await?;
+    }
 
     record_agent_activity(
         pool,
@@ -218,10 +222,13 @@ pub(super) async fn finish_warm_codex_active_turn(
                 .await
                 .map_err(to_string)?;
         let was_silent = current_work_status.as_deref() == Some("silent");
+        let was_held = current_work_status.as_deref() == Some("held");
         let work_status = if was_cancelled {
             "cancelled"
         } else if was_silent && success {
             "silent"
+        } else if was_held && success {
+            "held"
         } else if success {
             "done"
         } else {

@@ -17,6 +17,7 @@ use crate::events::control::{
     extract_agent_event_json, ingest_agent_event_line, replay_agent_events_from_run_log_if_needed,
     silent_reply_reason,
 };
+use crate::freshness::advance_agent_target_watermark_for_work_item;
 use crate::runtime::streaming::mark_run_work_item_silent;
 use crate::ui_notifications::{notify_ui_agent_run_changed, notify_ui_work_item_changed};
 use crate::{
@@ -696,6 +697,9 @@ pub(crate) async fn start_process_agent(
             .unwrap_or_else(|| "pid unavailable".to_owned()),
     )
     .await?;
+    if let Some(work_item_id) = work_item_id {
+        advance_agent_target_watermark_for_work_item(pool, agent_id, work_item_id, 0).await?;
+    }
 
     let mut pipe_tasks = Vec::new();
     if let Some(stdout) = child.stdout.take() {

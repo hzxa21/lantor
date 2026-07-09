@@ -92,6 +92,7 @@ pub(crate) fn work_status_title(status: &str) -> &'static str {
         "running" => "Request started",
         "done" => "Request completed",
         "silent" => "No visible reply needed",
+        "held" => "Reply held for newer context",
         "cancelled" => "Request cancelled",
         "failed" => "Request failed",
         "queued" => "Request queued",

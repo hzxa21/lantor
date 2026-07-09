@@ -130,10 +130,13 @@ pub(super) async fn finish_warm_claude_active_turn(
                 .await
                 .map_err(to_string)?;
         let was_silent = current_work_status.as_deref() == Some("silent");
+        let was_held = current_work_status.as_deref() == Some("held");
         let work_status = if was_cancelled {
             "cancelled"
         } else if was_silent && success {
             "silent"
+        } else if was_held && success {
+            "held"
         } else if success {
             "done"
         } else {

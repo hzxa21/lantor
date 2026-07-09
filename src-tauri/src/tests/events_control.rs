@@ -719,6 +719,134 @@ async fn channel_message_create_posts_agent_message_and_dispatches_mentions() {
 }
 
 #[tokio::test]
+async fn channel_message_create_to_other_channel_ignores_source_surface_staleness() {
+    let Some((pool, schema)) = test_pool().await else {
+        return;
+    };
+    let result: Result<(), String> = async {
+        let agent_id = insert_test_agent(&pool, "cross-surface-source").await?;
+        let source_channel_id = insert_test_channel(&pool, "cross-source").await?;
+        let target_channel_id = insert_test_channel(&pool, "cross-target").await?;
+        for channel_id in [source_channel_id, target_channel_id] {
+            sqlx::query(
+                r#"
+                insert into channel_members (channel_id, agent_id)
+                values ($1, $2)
+                "#,
+            )
+            .bind(channel_id)
+            .bind(agent_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        }
+        let source_root_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into messages (channel_id, sender_name, sender_role, body, is_task)
+            values ($1, 'Dylan', 'owner', 'write an announcement', false)
+            returning id
+            "#,
+        )
+        .bind(source_channel_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let source_root_seq: i64 = sqlx::query_scalar("select seq from messages where id = $1")
+            .bind(source_root_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+        let work_item_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_work_items (
+                agent_id, channel_id, thread_root_id, source_message_id,
+                source_kind, title, context, context_max_seq, status
+            )
+            values ($1, $2, $3, $3, 'inbox_wake', 'announce', 'context', $4, 'running')
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(source_channel_id)
+        .bind(source_root_id)
+        .bind(source_root_seq)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        let run_id: Uuid = sqlx::query_scalar(
+            r#"
+            insert into agent_runs (agent_id, work_item_id, command, status)
+            values ($1, $2, 'codex app-server', 'running')
+            returning id
+            "#,
+        )
+        .bind(agent_id)
+        .bind(work_item_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        sqlx::query(
+            r#"
+            insert into messages (channel_id, thread_root_id, sender_name, sender_role, body)
+            values ($1, $2, 'Dylan', 'owner', 'new source-thread reply')
+            "#,
+        )
+        .bind(source_channel_id)
+        .bind(source_root_id)
+        .execute(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+
+        handle_agent_event(
+            &pool,
+            agent_id,
+            run_id,
+            AgentEvent::ChannelMessageCreate {
+                channel: None,
+                channel_id: Some(target_channel_id),
+                thread_root_id: None,
+                body: "Cross-channel announcement".to_owned(),
+            },
+        )
+        .await?;
+
+        let posted_count: i64 = sqlx::query_scalar(
+            r#"
+            select count(*)
+            from messages
+            where channel_id = $1
+              and sender_agent_id = $2
+              and body = 'Cross-channel announcement'
+            "#,
+        )
+        .bind(target_channel_id)
+        .bind(agent_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(posted_count, 1);
+        let held_count: i64 =
+            sqlx::query_scalar("select count(*) from agent_held_outputs where work_item_id = $1")
+                .bind(work_item_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+        assert_eq!(held_count, 0);
+        let retry_count: i64 = sqlx::query_scalar(
+            "select count(*) from agent_work_items where source_kind = 'freshness_retry'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| err.to_string())?;
+        assert_eq!(retry_count, 0);
+        Ok(())
+    }
+    .await;
+    drop_test_schema(pool, schema).await;
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[tokio::test]
 async fn channel_message_create_requires_source_channel_membership() {
     let Some((pool, schema)) = test_pool().await else {
         return;

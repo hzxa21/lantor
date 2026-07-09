@@ -47,6 +47,7 @@ pub(crate) struct InboxWakeItem {
     pub(crate) title: String,
     pub(crate) body_preview: String,
     pub(crate) attachment_summary: String,
+    pub(crate) message_seq: Option<i64>,
     pub(crate) message_created_at: Option<DateTime<Utc>>,
     pub(crate) sender_name: Option<String>,
     pub(crate) sender_role: Option<String>,
@@ -95,6 +96,11 @@ impl InboxWakeItem {
 pub(crate) struct InboxWakeSummary {
     pub(crate) target: String,
     pub(crate) count: i64,
+}
+
+struct RecentSameThreadContext {
+    body: String,
+    max_seq: i64,
 }
 
 pub(crate) async fn create_agent_inbox_item(
@@ -246,6 +252,7 @@ fn inbox_wake_item_from_row(row: &SqliteRow) -> InboxWakeItem {
         title: row.get("title"),
         body_preview: row.get("body_preview"),
         attachment_summary: row.get("attachment_summary"),
+        message_seq: row.get("message_seq"),
         message_created_at: row.get("message_created_at"),
         sender_name: row.get("sender_name"),
         sender_role: row.get("sender_role"),
@@ -282,6 +289,7 @@ async fn next_unread_inbox_wake_item(
             i.priority,
             i.title,
             i.body_preview,
+            m.seq as message_seq,
             m.created_at as message_created_at,
             m.sender_name,
             m.sender_role,
@@ -324,6 +332,7 @@ async fn load_unread_inbox_wake_batch(
             i.priority,
             i.title,
             i.body_preview,
+            m.seq as message_seq,
             m.created_at as message_created_at,
             m.sender_name,
             m.sender_role,
@@ -369,6 +378,7 @@ pub(crate) async fn load_inbox_wake_items_for_work_item(
             i.priority,
             i.title,
             i.body_preview,
+            m.seq as message_seq,
             m.created_at as message_created_at,
             m.sender_name,
             m.sender_role,
@@ -619,7 +629,7 @@ fn format_recent_thread_context_row(row: &SqliteRow, target: &str) -> String {
 async fn load_recent_same_thread_context(
     pool: &SqlitePool,
     items: &[InboxWakeItem],
-) -> CommandResult<Option<String>> {
+) -> CommandResult<Option<RecentSameThreadContext>> {
     let Some(context_item) = items
         .iter()
         .find(|item| inbox_item_is_existing_thread_message(item))
@@ -639,12 +649,13 @@ async fn load_recent_same_thread_context(
             m.sender_role,
             m.body,
             m.delivery_state,
+            m.seq,
             m.created_at,
             {}
         from messages m
         where m.channel_id = $1
           and (m.id = $2 or m.thread_root_id = $2)
-        order by m.created_at desc
+        order by m.seq desc
         limit $3
         "#,
         attachment_summary_sql()
@@ -661,12 +672,36 @@ async fn load_recent_same_thread_context(
     }
 
     let target = context_item.target();
+    let max_seq = rows
+        .iter()
+        .map(|row| row.get::<i64, _>("seq"))
+        .max()
+        .unwrap_or(0);
     let lines = rows
         .into_iter()
         .rev()
         .map(|row| format_recent_thread_context_row(&row, &target))
         .collect::<Vec<_>>();
-    Ok(Some(lines.join("\n")))
+    Ok(Some(RecentSameThreadContext {
+        body: lines.join("\n"),
+        max_seq,
+    }))
+}
+
+fn inbox_wake_context_max_seq(
+    items: &[InboxWakeItem],
+    same_thread_context: Option<&RecentSameThreadContext>,
+) -> i64 {
+    let item_max = items
+        .iter()
+        .filter_map(|item| item.message_seq)
+        .max()
+        .unwrap_or(0);
+    item_max.max(
+        same_thread_context
+            .map(|context| context.max_seq)
+            .unwrap_or(0),
+    )
 }
 
 pub(crate) fn build_steer_followup_prompt(items: &[InboxWakeItem]) -> String {
@@ -717,6 +752,7 @@ async fn refresh_inbox_wake_work_item(
         load_other_active_inbox_summary(pool, agent_id, primary.channel_id, primary.thread_root_id)
             .await?;
     let same_thread_context = load_recent_same_thread_context(pool, items).await?;
+    let context_max_seq = inbox_wake_context_max_seq(items, same_thread_context.as_ref());
     sqlx::query(
         r#"
         update agent_work_items
@@ -727,6 +763,7 @@ async fn refresh_inbox_wake_work_item(
             task_id = $6,
             title = $7,
             context = $8,
+            context_max_seq = $9,
             updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
         where id = $1
         "#,
@@ -741,8 +778,11 @@ async fn refresh_inbox_wake_work_item(
     .bind(inbox_wake_context_with_thread_context(
         items,
         &other_active,
-        same_thread_context.as_deref(),
+        same_thread_context
+            .as_ref()
+            .map(|context| context.body.as_str()),
     ))
+    .bind(context_max_seq)
     .execute(pool)
     .await
     .map_err(to_string)?;
@@ -786,7 +826,7 @@ pub(crate) async fn sync_inbox_for_work_item(
     let status: String = row.get("status");
     let inbox_state = match status.as_str() {
         "queued" | "running" | "cancelling" => "processing",
-        "done" | "failed" | "cancelled" | "silent" => "archived",
+        "done" | "failed" | "cancelled" | "silent" | "held" => "archived",
         _ => "processing",
     };
     sqlx::query(
@@ -803,7 +843,9 @@ pub(crate) async fn sync_inbox_for_work_item(
     .execute(pool)
     .await
     .map_err(to_string)?;
-    if source_kind == "inbox_wake" && matches!(status.as_str(), "done" | "failed" | "cancelled") {
+    if source_kind == "inbox_wake"
+        && matches!(status.as_str(), "done" | "failed" | "cancelled" | "held")
+    {
         let _ = Box::pin(ensure_agent_inbox_wake_work_item(pool, agent_id)).await?;
     }
     Ok(())
@@ -873,13 +915,14 @@ pub(crate) async fn ensure_agent_inbox_wake_work_item(
     )
     .await?;
     let same_thread_context = load_recent_same_thread_context(pool, &batch).await?;
+    let context_max_seq = inbox_wake_context_max_seq(&batch, same_thread_context.as_ref());
     let work_item_id: Uuid = sqlx::query_scalar(
         r#"
         insert into agent_work_items (
             agent_id, channel_id, thread_root_id, source_message_id, inbox_item_id, task_id,
-            source_kind, title, context, status
+            source_kind, title, context, context_max_seq, status
         )
-        values ($1, $2, $3, $4, $5, $6, 'inbox_wake', $7, $8, 'queued')
+        values ($1, $2, $3, $4, $5, $6, 'inbox_wake', $7, $8, $9, 'queued')
         returning id
         "#,
     )
@@ -893,8 +936,11 @@ pub(crate) async fn ensure_agent_inbox_wake_work_item(
     .bind(inbox_wake_context_with_thread_context(
         &batch,
         &other_active,
-        same_thread_context.as_deref(),
+        same_thread_context
+            .as_ref()
+            .map(|context| context.body.as_str()),
     ))
+    .bind(context_max_seq)
     .fetch_one(pool)
     .await
     .map_err(to_string)?;

@@ -9,6 +9,11 @@ use crate::text::compact_chars_middle;
 
 const CLAUDE_THREAD_CONTEXT_MESSAGE_LIMIT: i64 = 16;
 
+pub(crate) struct RenderedThreadContext {
+    pub(crate) context: String,
+    pub(crate) max_seq: i64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CodexActiveTurnScheduleState {
     ReadyForSteer,
@@ -44,6 +49,7 @@ pub(crate) async fn same_codex_surface(
     Ok(thread_root_id == active_thread_root_id)
 }
 
+#[cfg(test)]
 pub(crate) async fn append_claude_thread_context(
     pool: &SqlitePool,
     context: &str,
@@ -51,18 +57,33 @@ pub(crate) async fn append_claude_thread_context(
     channel_name: Option<&str>,
     thread_root_id: Option<Uuid>,
 ) -> CommandResult<String> {
+    append_claude_thread_context_with_seq(pool, context, channel_id, channel_name, thread_root_id)
+        .await
+        .map(|rendered| rendered.context)
+}
+
+pub(crate) async fn append_claude_thread_context_with_seq(
+    pool: &SqlitePool,
+    context: &str,
+    channel_id: Option<Uuid>,
+    channel_name: Option<&str>,
+    thread_root_id: Option<Uuid>,
+) -> CommandResult<RenderedThreadContext> {
     let Some(channel_id) = channel_id else {
-        return Ok(context.to_owned());
+        return Ok(RenderedThreadContext {
+            context: context.to_owned(),
+            max_seq: 0,
+        });
     };
     let rows = if let Some(thread_root_id) = thread_root_id {
         sqlx::query(
             r#"
-            select id, sender_name, sender_role, body, thread_root_id
+            select id, sender_name, sender_role, body, thread_root_id, seq
             from messages
             where channel_id = $1
               and (id = $2 or thread_root_id = $2)
               and length(trim(body)) > 0
-            order by created_at desc
+            order by seq desc
             limit $3
             "#,
         )
@@ -75,12 +96,12 @@ pub(crate) async fn append_claude_thread_context(
     } else {
         sqlx::query(
             r#"
-            select id, sender_name, sender_role, body, thread_root_id
+            select id, sender_name, sender_role, body, thread_root_id, seq
             from messages
             where channel_id = $1
               and thread_root_id is null
               and length(trim(body)) > 0
-            order by created_at desc
+            order by seq desc
             limit $2
             "#,
         )
@@ -91,8 +112,16 @@ pub(crate) async fn append_claude_thread_context(
         .map_err(to_string)?
     };
     if rows.is_empty() {
-        return Ok(context.to_owned());
+        return Ok(RenderedThreadContext {
+            context: context.to_owned(),
+            max_seq: 0,
+        });
     }
+    let max_seq = rows
+        .iter()
+        .map(|row| row.get::<i64, _>("seq"))
+        .max()
+        .unwrap_or(0);
 
     let mut lines = vec![
         String::new(),
@@ -121,7 +150,10 @@ pub(crate) async fn append_claude_thread_context(
         enriched.push('\n');
     }
     enriched.push_str(&lines.join("\n"));
-    Ok(enriched)
+    Ok(RenderedThreadContext {
+        context: enriched,
+        max_seq,
+    })
 }
 
 fn claude_context_target(

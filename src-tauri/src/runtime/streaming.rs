@@ -12,6 +12,10 @@ use crate::events::{
         split_terminal_streaming_agent_event_lines,
     },
 };
+use crate::freshness::{
+    hold_work_item_output_if_stale, stale_output_for_work_item,
+    try_complete_streaming_message_if_fresh,
+};
 use crate::message_store::load_message;
 use crate::ui_notifications::{
     notify_ui_message_delete, notify_ui_message_delta, notify_ui_message_upsert, notify_ui_refresh,
@@ -462,6 +466,61 @@ async fn finish_streaming_agent_message_inner(
             .await?
             {
                 return Ok(());
+            }
+        }
+    }
+
+    if delivery_state == "complete" {
+        if let Some((agent_id, run_id, Some(work_item_id))) =
+            load_streaming_control_context(pool, stream_key).await?
+        {
+            if let Some(message_id) =
+                try_complete_streaming_message_if_fresh(pool, agent_id, work_item_id, stream_key)
+                    .await?
+            {
+                if let Ok(message) = load_message(pool, message_id).await {
+                    let _ = notify_ui_message_upsert(pool, &message, "stream_finish").await;
+                } else {
+                    let _ = notify_ui_refresh(pool, "stream_finish").await;
+                }
+                if dispatch_mentions {
+                    queue_agent_message_mentions(pool, message_id).await?;
+                }
+                return Ok(());
+            }
+
+            if stale_output_for_work_item(pool, agent_id, work_item_id)
+                .await?
+                .is_some()
+            {
+                let row = sqlx::query(
+                    "select id, body, delivery_state from messages where stream_key = $1",
+                )
+                .bind(stream_key)
+                .fetch_optional(pool)
+                .await
+                .map_err(to_string)?;
+                if let Some(row) = row {
+                    let message_id: Uuid = row.get("id");
+                    let body: String = row.get("body");
+                    let current_delivery_state: String = row.get("delivery_state");
+                    if current_delivery_state != "streaming" {
+                        return Ok(());
+                    }
+                    if hold_work_item_output_if_stale(
+                        pool,
+                        agent_id,
+                        run_id,
+                        work_item_id,
+                        "visible_reply",
+                        &body,
+                    )
+                    .await?
+                    {
+                        delete_streaming_agent_message(pool, message_id, "freshness_hold").await?;
+                        return Ok(());
+                    }
+                }
             }
         }
     }

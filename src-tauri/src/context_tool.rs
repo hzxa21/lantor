@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::agent_routing::resolve_agent_by_handle;
 use crate::db::db_connect;
+use crate::freshness::advance_agent_target_watermark;
 use crate::message_store::load_artifact;
 use crate::{
     app::{to_string, CommandResult},
@@ -318,6 +319,30 @@ fn format_context_message_row(row: &SqliteRow, target_label: Option<&str>) -> St
     output
 }
 
+async fn current_agent_id_from_env(pool: &SqlitePool) -> CommandResult<Option<Uuid>> {
+    if let Ok(agent_id) = env::var("LANTOR_AGENT_ID") {
+        let agent_id = Uuid::parse_str(agent_id.trim())
+            .map_err(|err| format!("invalid LANTOR_AGENT_ID: {err}"))?;
+        return sqlx::query_scalar("select id from agents where id = $1")
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string);
+    }
+    if let Ok(handle) = env::var("LANTOR_AGENT_HANDLE") {
+        let normalized = handle.trim().trim_start_matches('@');
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+        return sqlx::query_scalar("select id from agents where lower(handle) = lower($1)")
+            .bind(normalized)
+            .fetch_optional(pool)
+            .await
+            .map_err(to_string);
+    }
+    Ok(None)
+}
+
 pub(crate) async fn agent_context_history_read(
     pool: &SqlitePool,
     args: &[String],
@@ -333,14 +358,14 @@ pub(crate) async fn agent_context_history_read(
         sqlx::query(&format!(
             r#"
             select
-                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.seq, m.created_at,
                 t.number as task_number, t.status as task_status,
                 {}
             from messages m
             left join tasks t on t.message_id = m.id
             where m.channel_id = $1
               and (m.id = $2 or m.thread_root_id = $2)
-            order by m.created_at desc
+            order by m.seq desc
             limit $3
             "#,
             attachment_summary_sql()
@@ -355,14 +380,14 @@ pub(crate) async fn agent_context_history_read(
         sqlx::query(&format!(
             r#"
             select
-                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.created_at,
+                m.id, m.sender_name, m.sender_role, m.body, m.thread_root_id, m.seq, m.created_at,
                 t.number as task_number, t.status as task_status,
                 {}
             from messages m
             left join tasks t on t.message_id = m.id
             where m.channel_id = $1
               and m.thread_root_id is null
-            order by m.created_at desc
+            order by m.seq desc
             limit $2
             "#,
             attachment_summary_sql()
@@ -380,8 +405,23 @@ pub(crate) async fn agent_context_history_read(
         rows.len(),
         if rows.len() == 1 { "" } else { "s" }
     )];
+    let max_seq = rows
+        .iter()
+        .map(|row| row.get::<i64, _>("seq"))
+        .max()
+        .unwrap_or(0);
     for row in rows.into_iter().rev() {
         output.push(format_context_message_row(&row, Some(&target.label)));
+    }
+    if let Some(agent_id) = current_agent_id_from_env(pool).await? {
+        advance_agent_target_watermark(
+            pool,
+            agent_id,
+            Some(target.channel_id),
+            target.thread_root_id,
+            max_seq,
+        )
+        .await?;
     }
     Ok(output.join("\n\n"))
 }

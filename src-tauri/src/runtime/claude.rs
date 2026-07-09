@@ -13,6 +13,7 @@ use crate::agent_environment::apply_agent_environment_variables;
 use crate::agent_memory::append_run_log;
 use crate::app::{to_string, CommandResult};
 use crate::events::activity::{record_agent_activity, record_agent_activity_throttled};
+use crate::freshness::advance_agent_target_watermark_for_work_item;
 use crate::prompts::{build_claude_streaming_prompt, claude_system_prompt};
 use crate::runtime::{
     process::{
@@ -274,6 +275,7 @@ pub(crate) async fn supervisor_start_claude_streaming_agent(
     working_directory: String,
     environment_variables: String,
     work_item_prompt: String,
+    rendered_context_max_seq: i64,
     memory_context: Option<String>,
 ) -> CommandResult<()> {
     let claude_prompt = build_claude_streaming_prompt(&work_item_prompt);
@@ -486,6 +488,15 @@ pub(crate) async fn supervisor_start_claude_streaming_agent(
     if let Err(err) = write_result {
         finish_warm_claude_active_turn(pool, agent_id, &runtime, false, Some(err.clone())).await?;
         return Err(err);
+    }
+    if let Some(work_item_id) = work_item_id {
+        advance_agent_target_watermark_for_work_item(
+            pool,
+            agent_id,
+            work_item_id,
+            rendered_context_max_seq,
+        )
+        .await?;
     }
 
     Ok(())

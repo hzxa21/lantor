@@ -121,7 +121,7 @@ pub(crate) fn acquire_supervisor_lock(database_url: &str) -> CommandResult<Optio
     }
 }
 
-async fn ensure_text_column(
+async fn ensure_column(
     pool: &SqlitePool,
     table: &str,
     column: &str,
@@ -142,6 +142,24 @@ async fn ensure_text_column(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+async fn ensure_text_column(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), sqlx::Error> {
+    ensure_column(pool, table, column, definition).await
+}
+
+async fn ensure_integer_column(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), sqlx::Error> {
+    ensure_column(pool, table, column, definition).await
 }
 
 pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
@@ -199,6 +217,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             thread_followed boolean not null default 1,
             delivery_state text not null default 'complete',
             stream_key text not null default '',
+            seq integer not null default 0,
             created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
             updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
         )
@@ -353,6 +372,8 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             source_kind text not null default 'manual',
             title text not null,
             context text not null default '',
+            context_max_seq integer not null default 0,
+            freshness_generation integer not null default 0,
             status text not null default 'queued',
             run_id blob references agent_runs(id) on delete set null,
             created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
@@ -399,6 +420,36 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             event_hash text not null,
             created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
             primary key (run_id, event_hash)
+        )
+        "#,
+        r#"
+        create table if not exists agent_target_watermarks (
+            agent_id blob not null references agents(id) on delete cascade,
+            channel_id blob not null references channels(id) on delete cascade,
+            thread_root_id blob references messages(id) on delete cascade,
+            last_seen_seq integer not null default 0,
+            updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))
+        )
+        "#,
+        r#"
+        create table if not exists agent_held_outputs (
+            id blob primary key not null default (randomblob(16)),
+            agent_id blob not null references agents(id) on delete cascade,
+            run_id blob references agent_runs(id) on delete set null,
+            work_item_id blob references agent_work_items(id) on delete set null,
+            retry_work_item_id blob references agent_work_items(id) on delete set null,
+            channel_id blob not null references channels(id) on delete cascade,
+            thread_root_id blob references messages(id) on delete cascade,
+            output_kind text not null,
+            body text not null default '',
+            seen_seq integer not null default 0,
+            latest_seq integer not null default 0,
+            latest_message_id blob references messages(id) on delete set null,
+            state text not null default 'held',
+            reason text not null default '',
+            created_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),
+            expires_at text not null default (strftime('%Y-%m-%dT%H:%M:%f+00:00','now', '+60 minutes')),
+            resolved_at text
         )
         "#,
         r#"
@@ -475,10 +526,49 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "text not null default ''",
     )
     .await?;
+    ensure_integer_column(pool, "messages", "seq", "integer not null default 0").await?;
+    ensure_integer_column(
+        pool,
+        "agent_work_items",
+        "context_max_seq",
+        "integer not null default 0",
+    )
+    .await?;
+    ensure_integer_column(
+        pool,
+        "agent_work_items",
+        "freshness_generation",
+        "integer not null default 0",
+    )
+    .await?;
+
+    sqlx::query(
+        r#"
+        with existing_max as (
+            select coalesce(max(seq), 0) as max_seq
+            from messages
+            where seq > 0
+        ),
+        ordered as (
+            select
+                id,
+                existing_max.max_seq + row_number() over (order by julianday(created_at) asc, created_at asc, rowid asc) as next_seq
+            from messages
+            cross join existing_max
+            where seq <= 0
+        )
+        update messages
+        set seq = (select next_seq from ordered where ordered.id = messages.id)
+        where seq <= 0
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     for statement in [
         "create unique index if not exists channels_dm_unique on channels(dm_agent_id) where kind = 'dm' and dm_agent_id is not null",
         "create unique index if not exists messages_stream_key_unique on messages(stream_key) where stream_key <> ''",
+        "create index if not exists messages_seq_idx on messages(seq)",
         "create index if not exists messages_channel_created_idx on messages(channel_id, created_at desc)",
         "create index if not exists messages_thread_root_idx on messages(thread_root_id) where thread_root_id is not null",
         "create index if not exists message_attachments_message_id_idx on message_attachments(message_id)",
@@ -490,6 +580,23 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "create index if not exists agent_schedules_due_idx on agent_schedules(status, next_run_at)",
         "create index if not exists agent_inbox_items_agent_state_idx on agent_inbox_items(agent_id, state, priority desc, created_at)",
         "create unique index if not exists agent_inbox_items_source_unique on agent_inbox_items(agent_id, source_message_id, kind) where source_message_id is not null",
+        "create unique index if not exists agent_target_watermarks_root_unique on agent_target_watermarks(agent_id, channel_id) where thread_root_id is null",
+        "create unique index if not exists agent_target_watermarks_thread_unique on agent_target_watermarks(agent_id, channel_id, thread_root_id) where thread_root_id is not null",
+        "create index if not exists agent_held_outputs_state_expires_idx on agent_held_outputs(state, expires_at)",
+        "create index if not exists agent_held_outputs_work_item_idx on agent_held_outputs(work_item_id)",
+        r#"
+        create trigger if not exists messages_seq_after_insert
+        after insert on messages
+        when new.seq <= 0
+        begin
+            update messages
+            set seq = (
+                select coalesce(max(seq), 0) + 1
+                from messages
+            )
+            where id = new.id;
+        end
+        "#,
         // `ui_events` is an ephemeral refresh queue read only by id (PK); the
         // old created_at index was never used and is pruned by row id, so drop
         // it on existing databases to reclaim its space.
@@ -524,6 +631,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 #[cfg(test)]
 mod tests {
     use super::{acquire_supervisor_lock, sqlite_database_file_path};
+    use crate::test_support::{drop_test_schema, insert_test_channel, test_pool};
 
     #[test]
     fn sqlite_database_file_path_skips_memory_database() {
@@ -545,5 +653,53 @@ mod tests {
     fn supervisor_lock_skips_memory_database() {
         let lock = acquire_supervisor_lock("sqlite::memory:").expect("memory DB lock check");
         assert!(lock.is_none());
+    }
+
+    #[tokio::test]
+    async fn messages_seq_is_assigned_on_insert() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let channel_id = insert_test_channel(&pool, "seq-migration").await?;
+            let first_id: uuid::Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'first', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let second_id: uuid::Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (channel_id, sender_name, sender_role, body, is_task)
+                values ($1, 'Dylan', 'owner', 'second', false)
+                returning id
+                "#,
+            )
+            .bind(channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let first_seq: i64 = sqlx::query_scalar("select seq from messages where id = $1")
+                .bind(first_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            let second_seq: i64 = sqlx::query_scalar("select seq from messages where id = $1")
+                .bind(second_id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert!(first_seq > 0);
+            assert!(second_seq > first_seq);
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        result.unwrap();
     }
 }

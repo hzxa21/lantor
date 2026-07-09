@@ -18,6 +18,7 @@ mod context_tool;
 mod db;
 mod domain;
 mod events;
+mod freshness;
 mod launch_agent;
 mod lifecycle_commands;
 mod message_store;
