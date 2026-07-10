@@ -181,7 +181,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             role text not null default 'agent',
             status text not null default 'idle',
             runtime text not null default 'codex',
-            model text not null default 'gpt-5.5',
+            model text not null default 'gpt-5.6-sol',
             avatar text not null default '',
             description text not null default '',
             launch_command text not null default '',

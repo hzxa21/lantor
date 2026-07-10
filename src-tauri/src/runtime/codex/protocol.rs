@@ -252,16 +252,8 @@ pub(super) fn codex_model_value(model: &str) -> Value {
     }
 }
 
-pub(super) fn apply_codex_runtime_options(
-    params: &mut Value,
-    reasoning_effort: &str,
-    service_tier: &str,
-) {
+fn apply_codex_service_tier(params: &mut Value, service_tier: &str) {
     if let Some(object) = params.as_object_mut() {
-        let reasoning_effort = reasoning_effort.trim();
-        if !reasoning_effort.is_empty() {
-            object.insert("reasoningEffort".to_owned(), json!(reasoning_effort));
-        }
         let service_tier = service_tier.trim();
         if !service_tier.is_empty() {
             object.insert("serviceTier".to_owned(), json!(service_tier));
@@ -269,15 +261,48 @@ pub(super) fn apply_codex_runtime_options(
     }
 }
 
+pub(super) fn apply_codex_thread_options(params: &mut Value, service_tier: &str) {
+    apply_codex_service_tier(params, service_tier);
+}
+
+pub(super) fn apply_codex_turn_options(
+    params: &mut Value,
+    reasoning_effort: &str,
+    service_tier: &str,
+) {
+    if let Some(object) = params.as_object_mut() {
+        let reasoning_effort = reasoning_effort.trim();
+        if !reasoning_effort.is_empty() {
+            object.insert("effort".to_owned(), json!(reasoning_effort));
+        }
+    }
+    apply_codex_service_tier(params, service_tier);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
+        apply_codex_thread_options, apply_codex_turn_options,
         codex_context_rotate_input_tokens_from_env, codex_error_notification_detail,
         codex_item_started_activity, codex_turn_id_from_value,
         CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
     };
     use crate::usage::{usage_from_run_log, usage_from_runtime_event};
     use serde_json::json;
+
+    #[test]
+    fn codex_runtime_options_match_current_app_server_fields() {
+        let mut thread_params = json!({});
+        apply_codex_thread_options(&mut thread_params, " fast ");
+        assert_eq!(thread_params, json!({ "serviceTier": "fast" }));
+
+        let mut turn_params = json!({});
+        apply_codex_turn_options(&mut turn_params, " medium ", " fast ");
+        assert_eq!(
+            turn_params,
+            json!({ "effort": "medium", "serviceTier": "fast" })
+        );
+    }
 
     #[test]
     fn codex_context_rotation_threshold_is_configurable_with_floor() {

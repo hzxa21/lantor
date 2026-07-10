@@ -396,7 +396,7 @@ export const EMPTY_AGENT_FORM: AgentForm = {
   role: "agent",
   avatar: "",
   runtime: "codex",
-  model: "gpt-5.5",
+  model: "gpt-5.6-sol",
   reasoningEffort: "medium",
   serviceTier: "",
   description: "",
@@ -413,9 +413,18 @@ export const ACTIVE_RUN_STATUSES = new Set(["starting", "running", "stopping"]);
 export const RUNTIME_PRESETS: Record<string, { label: string; defaultModel: string; commandName: string; models: string[] }> = {
   codex: {
     label: "Codex",
-    defaultModel: "gpt-5.5",
+    defaultModel: "gpt-5.6-sol",
     commandName: "codex",
-    models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"],
+    models: [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+    ],
   },
   claude: {
     label: "Claude",
@@ -427,6 +436,9 @@ export const RUNTIME_PRESETS: Record<string, { label: string; defaultModel: stri
 
 const MODEL_LABELS: Record<string, string> = {
   fable: "Claude Fable 5",
+  "gpt-5.6-sol": "GPT-5.6 Sol",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-5.6-luna": "GPT-5.6 Luna",
   "gpt-5.5": "GPT-5.5",
   "gpt-5.4": "GPT-5.4",
   "gpt-5.4-mini": "GPT-5.4 Mini",
@@ -439,7 +451,40 @@ export const CODEX_REASONING_EFFORTS = [
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "xhigh", label: "Extra High" },
+  { value: "max", label: "Max" },
+  { value: "ultra", label: "Ultra" },
 ] as const;
+
+function maxCodexReasoningEffort(model: string) {
+  const normalizedModel = model.trim().toLowerCase();
+  if (
+    normalizedModel === "gpt-5.6" ||
+    normalizedModel === "gpt-5.6-sol" ||
+    normalizedModel === "gpt-5.6-terra"
+  ) {
+    return "ultra";
+  }
+  if (normalizedModel === "gpt-5.6-luna") {
+    return "max";
+  }
+  return "xhigh";
+}
+
+export function codexReasoningEffortsForModel(model: string) {
+  const maximum = maxCodexReasoningEffort(model);
+  const maximumIndex = CODEX_REASONING_EFFORTS.findIndex((effort) => effort.value === maximum);
+  return CODEX_REASONING_EFFORTS.slice(0, maximumIndex + 1);
+}
+
+export function normalizeCodexReasoningEffortForModel(model: string, reasoningEffort: string) {
+  const normalizedEffort = reasoningEffort.trim().toLowerCase();
+  const requestedIndex = CODEX_REASONING_EFFORTS.findIndex(
+    (effort) => effort.value === normalizedEffort,
+  );
+  if (requestedIndex < 0) return "medium";
+  const supportedEfforts = codexReasoningEffortsForModel(model);
+  return supportedEfforts[Math.min(requestedIndex, supportedEfforts.length - 1)].value;
+}
 
 export const CODEX_SERVICE_TIERS = [
   { value: "", label: "Standard" },

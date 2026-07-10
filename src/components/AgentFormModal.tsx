@@ -4,11 +4,12 @@ import { Modal } from "./Modal";
 import {
   AgentForm,
   CLAUDE_REASONING_EFFORTS,
-  CODEX_REASONING_EFFORTS,
   CODEX_SERVICE_TIERS,
   RuntimeCheck,
+  codexReasoningEffortsForModel,
   modelLabel,
   modelOptionsForRuntime,
+  normalizeCodexReasoningEffortForModel,
 } from "../types";
 import { randomDylanAvatarSpec } from "../avatar-utils";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -101,7 +102,16 @@ export function AgentFormModal({
       <div className="agent-select-control">
         <select
           value={form.model}
-          onChange={(event) => onChange({ ...form, model: event.target.value })}
+          onChange={(event) => {
+            const model = event.target.value;
+            onChange({
+              ...form,
+              model,
+              reasoningEffort: isCodex
+                ? normalizeCodexReasoningEffortForModel(model, form.reasoningEffort)
+                : form.reasoningEffort,
+            });
+          }}
         >
           {modelOptionsForRuntime(form.runtime, form.model).map((model) => (
             <option key={model} value={model}>{modelLabel(model)}</option>
@@ -120,7 +130,7 @@ export function AgentFormModal({
             value={form.reasoningEffort}
             onChange={(event) => onChange({ ...form, reasoningEffort: event.target.value })}
           >
-            {CODEX_REASONING_EFFORTS.map((effort) => (
+            {codexReasoningEffortsForModel(form.model).map((effort) => (
               <option key={effort.value} value={effort.value}>{effort.label}</option>
             ))}
           </select>

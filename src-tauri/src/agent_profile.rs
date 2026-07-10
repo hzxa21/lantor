@@ -49,15 +49,27 @@ pub(crate) async fn update_owner_profile_in_pool(
     Ok(())
 }
 
-fn normalize_reasoning_effort(runtime: &str, value: Option<&str>) -> CommandResult<String> {
+fn normalize_reasoning_effort(
+    runtime: &str,
+    model: &str,
+    value: Option<&str>,
+) -> CommandResult<String> {
     if runtime.eq_ignore_ascii_case("codex") {
         let effort = value
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("medium")
             .to_ascii_lowercase();
+        let model = model.trim().to_ascii_lowercase();
+        let supports_ultra = matches!(model.as_str(), "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra");
+        let supports_max = supports_ultra || model == "gpt-5.6-luna";
         return match effort.as_str() {
             "low" | "medium" | "high" | "xhigh" => Ok(effort),
+            "max" if supports_max => Ok(effort),
+            "ultra" if supports_ultra => Ok(effort),
+            "max" | "ultra" => Err(format!(
+                "Codex model {model} does not support reasoning effort {effort}"
+            )),
             _ => Err(format!("invalid Codex reasoning effort: {effort}")),
         };
     }
@@ -146,7 +158,7 @@ pub(crate) async fn create_agent_in_pool(
     ensure_agent_workspace(&working_directory, normalized_handle)?;
     let runtime = runtime.trim();
     let model = model.trim();
-    let reasoning_effort = normalize_reasoning_effort(runtime, reasoning_effort.as_deref())?;
+    let reasoning_effort = normalize_reasoning_effort(runtime, model, reasoning_effort.as_deref())?;
     let service_tier = normalize_service_tier(runtime, service_tier.as_deref())?;
     let environment_variables =
         normalize_agent_environment_variables(environment_variables.as_deref())?;
@@ -257,7 +269,7 @@ pub(crate) async fn update_agent_in_pool(
     ensure_agent_workspace(&working_directory, normalized_handle)?;
     let runtime = runtime.trim();
     let model = model.trim();
-    let reasoning_effort = normalize_reasoning_effort(runtime, reasoning_effort.as_deref())?;
+    let reasoning_effort = normalize_reasoning_effort(runtime, model, reasoning_effort.as_deref())?;
     let service_tier = normalize_service_tier(runtime, service_tier.as_deref())?;
     let environment_variables =
         normalize_agent_environment_variables(environment_variables.as_deref())?;
@@ -453,11 +465,51 @@ pub(crate) async fn load_agents(pool: &SqlitePool) -> CommandResult<Vec<Agent>> 
 
 #[cfg(test)]
 mod tests {
-    use super::delete_agent_in_pool;
+    use super::{delete_agent_in_pool, normalize_reasoning_effort};
     use crate::db::{db_connect_with_url, migrate};
     use sqlx::{Row, SqlitePool};
     use std::fs;
     use uuid::Uuid;
+
+    #[test]
+    fn codex_reasoning_effort_is_limited_by_model_capability() {
+        for (model, effort) in [
+            ("gpt-5.6", "ultra"),
+            ("gpt-5.6-sol", "max"),
+            ("gpt-5.6-sol", "ultra"),
+            ("gpt-5.6-terra", "ultra"),
+            ("gpt-5.6-luna", "max"),
+            ("gpt-5.5", "xhigh"),
+        ] {
+            assert_eq!(
+                normalize_reasoning_effort("codex", model, Some(effort)),
+                Ok(effort.to_owned()),
+                "{model} should support {effort}"
+            );
+        }
+
+        for (model, effort) in [
+            ("gpt-5.6-luna", "ultra"),
+            ("gpt-5.5", "max"),
+            ("gpt-5.5", "ultra"),
+            ("gpt-5.6-sol-custom", "ultra"),
+        ] {
+            assert!(
+                normalize_reasoning_effort("codex", model, Some(effort)).is_err(),
+                "{model} should reject {effort}"
+            );
+        }
+
+        assert_eq!(
+            normalize_reasoning_effort("codex", " GPT-5.6-SOL ", Some(" ULTRA ")),
+            Ok("ultra".to_owned())
+        );
+        assert_eq!(
+            normalize_reasoning_effort("codex", "gpt-5.6-sol", None),
+            Ok("medium".to_owned())
+        );
+        assert!(normalize_reasoning_effort("codex", "gpt-5.6-sol", Some("impossible")).is_err());
+    }
 
     async fn test_pool() -> Option<(SqlitePool, String)> {
         let database_path = std::env::temp_dir().join(format!(

@@ -52,6 +52,7 @@ import {
   ActivityFeedItem,
   Message,
   MessageAttachment,
+  normalizeCodexReasoningEffortForModel,
   RUNTIME_PRESETS,
   RuntimeCheck,
   SavedMessage,
@@ -3444,11 +3445,14 @@ function App() {
       !agentDraft.model.trim() ||
       !preset?.models.includes(agentDraft.model) ||
       (currentPreset && agentDraft.model === currentPreset.defaultModel);
+    const model = preset && shouldReplaceModel ? preset.defaultModel : agentDraft.model;
     setAgentDraft({
       ...agentDraft,
       runtime,
-      model: preset && shouldReplaceModel ? preset.defaultModel : agentDraft.model,
-      reasoningEffort: runtime === "codex" ? agentDraft.reasoningEffort || "medium" : "",
+      model,
+      reasoningEffort: runtime === "codex"
+        ? normalizeCodexReasoningEffortForModel(model, agentDraft.reasoningEffort || "medium")
+        : "",
       serviceTier: runtime === "codex" ? agentDraft.serviceTier : "",
     });
   }
@@ -3460,11 +3464,14 @@ function App() {
       !agentEdit.model.trim() ||
       !preset?.models.includes(agentEdit.model) ||
       (currentPreset && agentEdit.model === currentPreset.defaultModel);
+    const model = preset && shouldReplaceModel ? preset.defaultModel : agentEdit.model;
     setAgentEdit({
       ...agentEdit,
       runtime,
-      model: preset && shouldReplaceModel ? preset.defaultModel : agentEdit.model,
-      reasoningEffort: runtime === "codex" ? agentEdit.reasoningEffort || "medium" : "",
+      model,
+      reasoningEffort: runtime === "codex"
+        ? normalizeCodexReasoningEffortForModel(model, agentEdit.reasoningEffort || "medium")
+        : "",
       serviceTier: runtime === "codex" ? agentEdit.serviceTier : "",
     });
   }
@@ -3478,7 +3485,9 @@ function App() {
       avatar: agent.avatar || "",
       runtime: agent.runtime,
       model: agent.model,
-      reasoningEffort: agent.reasoning_effort || (agent.runtime === "codex" ? "medium" : ""),
+      reasoningEffort: agent.runtime === "codex"
+        ? normalizeCodexReasoningEffortForModel(agent.model, agent.reasoning_effort || "medium")
+        : agent.reasoning_effort || "",
       serviceTier: agent.service_tier || "",
       description: agent.description,
       launchCommand: agent.launch_command,

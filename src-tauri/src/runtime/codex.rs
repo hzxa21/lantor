@@ -46,11 +46,12 @@ mod reaper;
 mod turn;
 
 use protocol::{
-    apply_codex_runtime_options, codex_context_rotate_env, codex_context_rotate_input_tokens,
-    codex_error_notification_detail, codex_item_id, codex_item_started_activity, codex_item_type,
-    codex_model_value, codex_pending_stream_key, codex_request_error, codex_stream_key,
-    codex_thread_id_from_response, codex_tool_completion_activity, codex_turn_id_from_value,
-    codex_write_json, effective_codex_cwd,
+    apply_codex_thread_options, apply_codex_turn_options, codex_context_rotate_env,
+    codex_context_rotate_input_tokens, codex_error_notification_detail, codex_item_id,
+    codex_item_started_activity, codex_item_type, codex_model_value, codex_pending_stream_key,
+    codex_request_error, codex_stream_key, codex_thread_id_from_response,
+    codex_tool_completion_activity, codex_turn_id_from_value, codex_write_json,
+    effective_codex_cwd,
 };
 use reaper::codex_warm_idle_reaper;
 pub(crate) use reaper::reap_stuck_codex_turn;
@@ -286,7 +287,6 @@ async fn get_or_spawn_warm_codex_runtime(
     agent_id: Uuid,
     handle: &str,
     model: &str,
-    reasoning_effort: &str,
     service_tier: &str,
     working_directory: &str,
     environment_variables: &str,
@@ -326,7 +326,6 @@ async fn get_or_spawn_warm_codex_runtime(
         agent_id,
         handle,
         model,
-        reasoning_effort,
         service_tier,
         working_directory,
         environment_variables,
@@ -349,7 +348,6 @@ async fn spawn_warm_codex_runtime(
     agent_id: Uuid,
     handle: &str,
     model: &str,
-    reasoning_effort: &str,
     service_tier: &str,
     working_directory: &str,
     environment_variables: &str,
@@ -474,7 +472,7 @@ async fn spawn_warm_codex_runtime(
             "developerInstructions": developer_instructions.clone(),
             "persistExtendedHistory": true
         });
-        apply_codex_runtime_options(&mut params, reasoning_effort, service_tier);
+        apply_codex_thread_options(&mut params, service_tier);
         codex_write_json(
             &mut stdin,
             json!({
@@ -494,7 +492,7 @@ async fn spawn_warm_codex_runtime(
             "experimentalRawEvents": false,
             "persistExtendedHistory": true
         });
-        apply_codex_runtime_options(&mut params, reasoning_effort, service_tier);
+        apply_codex_thread_options(&mut params, service_tier);
         codex_write_json(
             &mut stdin,
             json!({
@@ -529,7 +527,7 @@ async fn spawn_warm_codex_runtime(
                         "experimentalRawEvents": false,
                         "persistExtendedHistory": true
                     });
-                    apply_codex_runtime_options(&mut params, reasoning_effort, service_tier);
+                    apply_codex_thread_options(&mut params, service_tier);
                     codex_write_json(
                         &mut stdin,
                         json!({
@@ -913,7 +911,6 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
         agent_id,
         &handle,
         &model,
-        &reasoning_effort,
         &service_tier,
         &working_directory,
         &environment_variables,
@@ -1147,7 +1144,7 @@ pub(crate) async fn supervisor_start_codex_streaming_agent(
             "approvalPolicy": "never",
             "model": model_value
         });
-        apply_codex_runtime_options(&mut params, &reasoning_effort, &service_tier);
+        apply_codex_turn_options(&mut params, &reasoning_effort, &service_tier);
         codex_write_json(
             &mut stdin,
             json!({
