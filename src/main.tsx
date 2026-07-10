@@ -46,6 +46,7 @@ import {
   Artifact,
   Bootstrap,
   Channel,
+  ChannelMessagePage,
   ChannelMember,
   DraftAttachment,
   EMPTY_AGENT_FORM,
@@ -170,6 +171,7 @@ const EPHEMERAL_FLUSH_FALLBACK_MS = 80;
 const MIN_BOOT_SPLASH_MS = 3000;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const ACTIVITY_HISTORY_LIMIT_PER_AGENT = 80;
+const OLDER_CHANNEL_MESSAGES_PAGE_SIZE = 40;
 // Issue #82: run states that must bypass the ephemeral coalescing buffer
 // so terminal transitions land immediately. "stopped" is included to
 // match runtime supervisor terminology even if it is rare in practice.
@@ -844,7 +846,15 @@ function App() {
   const [dismissedActivityFeedItems, setDismissedActivityFeedItems] = useState<Record<string, string>>({});
   const [readActivityFeedItems, setReadActivityFeedItems] = useState<Record<string, string>>({});
   const [locallyUnfollowedThreadIds, setLocallyUnfollowedThreadIds] = useState<Set<string>>(() => new Set());
+  const [loadingOlderChannelIds, setLoadingOlderChannelIds] = useState<Set<string>>(() => new Set());
+  const [exhaustedOlderChannelIds, setExhaustedOlderChannelIds] = useState<Set<string>>(() => new Set());
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
+  const loadedHistoricalMessageIdsRef = useRef<Set<string>>(new Set());
+  const paginatedChannelIdsRef = useRef<Set<string>>(new Set());
+  const initializedOlderChannelIdsRef = useRef<Set<string>>(new Set());
+  const olderChannelBeforeSeqRef = useRef<Map<string, number>>(new Map());
+  const loadingOlderChannelIdsRef = useRef<Set<string>>(new Set());
+  const olderChannelRequestEpochRef = useRef<Map<string, number>>(new Map());
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
@@ -948,15 +958,86 @@ function App() {
   }
 
   function sortedMessages(messages: Message[]) {
-    return [...messages].sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
+    return [...messages].sort((left, right) => {
+      const leftSeq = Number.isSafeInteger(left.seq) && left.seq > 0 ? left.seq : Number.MAX_SAFE_INTEGER;
+      const rightSeq = Number.isSafeInteger(right.seq) && right.seq > 0 ? right.seq : Number.MAX_SAFE_INTEGER;
+      if (leftSeq !== rightSeq) return leftSeq - rightSeq;
+      return new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+    });
+  }
+
+  function mergedSortedMessages(current: Message[], incoming: Message[]) {
+    if (incoming.length === 0) return current;
+    const messagesById = new Map(current.map((message) => [message.id, message]));
+    for (const message of incoming) {
+      messagesById.set(message.id, message);
+    }
+    return sortedMessages(Array.from(messagesById.values()));
   }
 
   function normalizeBootstrap(next: Bootstrap): Bootstrap {
     return {
       ...next,
       messages: sortedMessages(next.messages),
+      channel_message_history: next.channel_message_history ?? [],
       agent_activities: limitActivitiesPerAgent(next.agent_activities),
     };
+  }
+
+  function initializeChannelMessageHistory(next: Bootstrap) {
+    const availableChannelIds = new Set(next.channels.map((channel) => channel.id));
+    for (const channelId of Array.from(olderChannelBeforeSeqRef.current.keys())) {
+      if (!availableChannelIds.has(channelId)) olderChannelBeforeSeqRef.current.delete(channelId);
+    }
+    for (const channelId of Array.from(initializedOlderChannelIdsRef.current)) {
+      if (!availableChannelIds.has(channelId)) initializedOlderChannelIdsRef.current.delete(channelId);
+    }
+    for (const channelId of Array.from(paginatedChannelIdsRef.current)) {
+      if (!availableChannelIds.has(channelId)) paginatedChannelIdsRef.current.delete(channelId);
+    }
+    let removedLoadingChannel = false;
+    for (const channelId of Array.from(loadingOlderChannelIdsRef.current)) {
+      if (availableChannelIds.has(channelId)) continue;
+      loadingOlderChannelIdsRef.current.delete(channelId);
+      olderChannelRequestEpochRef.current.set(
+        channelId,
+        (olderChannelRequestEpochRef.current.get(channelId) ?? 0) + 1,
+      );
+      removedLoadingChannel = true;
+    }
+    if (removedLoadingChannel) {
+      setLoadingOlderChannelIds((current) => {
+        const filtered = new Set(Array.from(current).filter((channelId) => availableChannelIds.has(channelId)));
+        return filtered.size === current.size ? current : filtered;
+      });
+    }
+
+    const newlyExhaustedChannelIds = new Set<string>();
+    const newlyAvailableChannelIds = new Set<string>();
+    for (const history of next.channel_message_history) {
+      if (initializedOlderChannelIdsRef.current.has(history.channel_id)) continue;
+      initializedOlderChannelIdsRef.current.add(history.channel_id);
+      if (history.has_more && history.before_seq !== null) {
+        olderChannelBeforeSeqRef.current.set(history.channel_id, history.before_seq);
+        newlyAvailableChannelIds.add(history.channel_id);
+      } else {
+        paginatedChannelIdsRef.current.add(history.channel_id);
+        newlyExhaustedChannelIds.add(history.channel_id);
+      }
+    }
+    setExhaustedOlderChannelIds((current) => {
+      const exhausted = new Set(Array.from(current).filter((channelId) => availableChannelIds.has(channelId)));
+      let changed = exhausted.size !== current.size;
+      for (const channelId of newlyAvailableChannelIds) {
+        if (exhausted.delete(channelId)) changed = true;
+      }
+      for (const channelId of newlyExhaustedChannelIds) {
+        if (exhausted.has(channelId)) continue;
+        exhausted.add(channelId);
+        changed = true;
+      }
+      return changed ? exhausted : current;
+    });
   }
 
   function invalidatePendingRefreshResult() {
@@ -991,6 +1072,7 @@ function App() {
     const refreshed = withPendingSavedToggles(
       includeOptimistic ? withOptimisticChannels(withOptimisticMessages(next)) : next,
     );
+    initializeChannelMessageHistory(refreshed);
     if (perf) {
       perf.counts = {
         channels: refreshed.channels.length,
@@ -1002,9 +1084,22 @@ function App() {
       };
     }
     setData((current) => {
-      if (!current || refreshInvalidation === refreshInvalidationRef.current) return refreshed;
+      if (!current) return refreshed;
       const refreshedMessageIds = new Set(refreshed.messages.map((message) => message.id));
-      const currentOnlyMessages = current.messages.filter((message) => !refreshedMessageIds.has(message.id));
+      const refreshedChannelIds = new Set(refreshed.channels.map((channel) => channel.id));
+      let currentOnlyMessages = current.messages.filter((message) => !refreshedMessageIds.has(message.id));
+      if (refreshInvalidation === refreshInvalidationRef.current) {
+        currentOnlyMessages = currentOnlyMessages.filter((message) => (
+          refreshedChannelIds.has(message.channel_id)
+          && (loadedHistoricalMessageIdsRef.current.has(message.id)
+            || paginatedChannelIdsRef.current.has(message.channel_id))
+        ));
+        for (const message of currentOnlyMessages) {
+          loadedHistoricalMessageIdsRef.current.add(message.id);
+        }
+      } else {
+        currentOnlyMessages = currentOnlyMessages.filter((message) => refreshedChannelIds.has(message.channel_id));
+      }
       if (currentOnlyMessages.length === 0) return refreshed;
       return {
         ...refreshed,
@@ -1021,11 +1116,6 @@ function App() {
       }
       if (channels.some((item) => item.id === prev)) return prev;
       return channels[0]?.id || "";
-    });
-    setActiveThreadId((prev) => {
-      const rootIds = new Set(next.messages.filter((item) => !item.thread_root_id).map((item) => item.id));
-      if (prev && rootIds.has(prev)) return prev;
-      return null;
     });
     const applyEndedAt = performance.now();
     if (perf) {
@@ -1062,6 +1152,84 @@ function App() {
       refreshTimerRef.current = null;
       refreshWithError(fallback);
     }, UI_REFRESH_DEBOUNCE_MS);
+  }
+
+  async function loadOlderRootMessages(channelId: string) {
+    const beforeSeq = olderChannelBeforeSeqRef.current.get(channelId);
+    if (
+      isTauriRuntime()
+      || beforeSeq === undefined
+      || loadingOlderChannelIdsRef.current.has(channelId)
+      || exhaustedOlderChannelIds.has(channelId)
+    ) {
+      return;
+    }
+    const requestEpoch = (olderChannelRequestEpochRef.current.get(channelId) ?? 0) + 1;
+    olderChannelRequestEpochRef.current.set(channelId, requestEpoch);
+    loadingOlderChannelIdsRef.current.add(channelId);
+    setLoadingOlderChannelIds((current) => new Set(current).add(channelId));
+    try {
+      const page = await apiInvoke<ChannelMessagePage>("load_older_channel_messages", {
+        channelId,
+        beforeSeq,
+        limit: OLDER_CHANNEL_MESSAGES_PAGE_SIZE,
+      });
+      if (olderChannelRequestEpochRef.current.get(channelId) !== requestEpoch) return;
+      if (page.has_more && page.next_before_seq !== null) {
+        olderChannelBeforeSeqRef.current.set(channelId, page.next_before_seq);
+      } else {
+        olderChannelBeforeSeqRef.current.delete(channelId);
+        setExhaustedOlderChannelIds((current) => new Set(current).add(channelId));
+      }
+      paginatedChannelIdsRef.current.add(channelId);
+      for (const message of page.messages) {
+        loadedHistoricalMessageIdsRef.current.add(message.id);
+        knownMessageIdsRef.current?.add(message.id);
+      }
+      if (page.messages.length > 0) {
+        setData((current) => {
+          if (!current || !current.channels.some((channel) => channel.id === channelId)) return current;
+          return { ...current, messages: mergedSortedMessages(current.messages, page.messages) };
+        });
+      }
+    } catch (err) {
+      if (olderChannelRequestEpochRef.current.get(channelId) === requestEpoch) {
+        setAppError(errorMessage(err, "Failed to load earlier messages"));
+        console.error(err);
+      }
+    } finally {
+      if (olderChannelRequestEpochRef.current.get(channelId) === requestEpoch) {
+        loadingOlderChannelIdsRef.current.delete(channelId);
+        setLoadingOlderChannelIds((current) => {
+          const next = new Set(current);
+          next.delete(channelId);
+          return next;
+        });
+      }
+    }
+  }
+
+  function clearChannelMessageHistory(channelId: string) {
+    olderChannelRequestEpochRef.current.set(
+      channelId,
+      (olderChannelRequestEpochRef.current.get(channelId) ?? 0) + 1,
+    );
+    olderChannelBeforeSeqRef.current.delete(channelId);
+    paginatedChannelIdsRef.current.delete(channelId);
+    initializedOlderChannelIdsRef.current.delete(channelId);
+    loadingOlderChannelIdsRef.current.delete(channelId);
+    setLoadingOlderChannelIds((current) => {
+      if (!current.has(channelId)) return current;
+      const next = new Set(current);
+      next.delete(channelId);
+      return next;
+    });
+    setExhaustedOlderChannelIds((current) => {
+      if (!current.has(channelId)) return current;
+      const next = new Set(current);
+      next.delete(channelId);
+      return next;
+    });
   }
 
   function applyMessageUpsert(message: Message) {
@@ -1128,6 +1296,7 @@ function App() {
       thread_activities: next.thread_activities.filter((item) => !channelIds.has(item.channel_id)),
       channel_members: next.channel_members.filter((item) => !channelIds.has(item.channel_id)),
       messages: next.messages.filter((item) => !channelIds.has(item.channel_id)),
+      channel_message_history: next.channel_message_history.filter((item) => !channelIds.has(item.channel_id)),
       saved_messages: next.saved_messages.filter((item) => !channelIds.has(item.channel_id)),
       artifacts: next.artifacts.filter((item) => !channelIds.has(item.channel_id)),
       tasks: next.tasks.filter((item) => !channelIds.has(item.channel_id)),
@@ -1220,7 +1389,19 @@ function App() {
         requestRefresh(`Failed to refresh ${APP_DISPLAY_NAME} state after message deletion`);
         return current;
       }
-      return { ...current, messages: current.messages.filter((item) => item.id !== messageId) };
+      const deletedMessageIds = current.messages
+        .filter((message) => message.id === messageId || message.thread_root_id === messageId)
+        .map((message) => message.id);
+      for (const deletedMessageId of deletedMessageIds) {
+        loadedHistoricalMessageIdsRef.current.delete(deletedMessageId);
+        knownMessageIdsRef.current?.delete(deletedMessageId);
+      }
+      return {
+        ...current,
+        messages: current.messages.filter((message) => (
+          message.id !== messageId && message.thread_root_id !== messageId
+        )),
+      };
     });
   }
 
@@ -2178,8 +2359,27 @@ function App() {
     if (!channel) return [];
     return visibleMessages.filter((m) => m.channel_id === channel.id && !m.thread_root_id);
   }, [visibleMessages, channel]);
+  const hasMoreRootMessages = Boolean(
+    channel &&
+    !isTauriRuntime() &&
+    olderChannelBeforeSeqRef.current.has(channel.id) &&
+    !exhaustedOlderChannelIds.has(channel.id),
+  );
+  const isLoadingOlderRootMessages = Boolean(channel && loadingOlderChannelIds.has(channel.id));
 
   const activeRoot = activeThreadId ? rootMessages.find((m) => m.id === activeThreadId) ?? null : null;
+
+  useEffect(() => {
+    if (!data || !activeChannelId || !activeThreadId) return;
+    const rootExists = data.messages.some((message) => (
+      message.id === activeThreadId
+      && message.channel_id === activeChannelId
+      && !message.thread_root_id
+    ));
+    if (rootExists) return;
+    setActiveThreadId(null);
+    rememberChannelThread(activeChannelId, null);
+  }, [activeChannelId, activeThreadId, data]);
 
   const replies = useMemo(() => {
     if (!activeRoot) return [];
@@ -2863,8 +3063,17 @@ function App() {
         }
         optimisticChannelsRef.current.delete(channelToDelete.id);
         optimisticRemovedChannelsRef.current.add(channelToDelete.id);
+        clearChannelMessageHistory(channelToDelete.id);
         invalidatePendingRefreshResult();
-        setData((current) => current ? bootstrapWithoutChannels(current, optimisticRemovedChannelsRef.current) : current);
+        setData((current) => {
+          if (!current) return current;
+          for (const message of current.messages) {
+            if (message.channel_id !== channelToDelete.id) continue;
+            loadedHistoricalMessageIdsRef.current.delete(message.id);
+            knownMessageIdsRef.current?.delete(message.id);
+          }
+          return bootstrapWithoutChannels(current, optimisticRemovedChannelsRef.current);
+        });
         setShowChannelSettingsModal(false);
         forgetChannelThread(channelToDelete.id);
         if (activeChannelId === channelToDelete.id) {
@@ -3266,6 +3475,7 @@ function App() {
     const createdAt = new Date().toISOString();
     const optimisticMessage: Message = {
       id,
+      seq: 0,
       channel_id: channelId,
       thread_root_id: threadRootId,
       sender_agent_id: null,
@@ -4222,6 +4432,9 @@ function App() {
         savedMessageIds={savedMessageIds}
         focusedMessageId={focusedMessageId}
         showImageThumbnails={showImageThumbnails}
+        hasMoreRootMessages={hasMoreRootMessages}
+        isLoadingOlderRootMessages={isLoadingOlderRootMessages}
+        onLoadOlderRootMessages={() => channel ? loadOlderRootMessages(channel.id) : Promise.resolve()}
         onToggleMessageSaved={setMessageSaved}
       />
 

@@ -744,6 +744,7 @@ async fn render_recent_surface_context(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn freshness_retry_context(
     old_work_item_id: Uuid,
     held_output_id: Uuid,

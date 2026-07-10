@@ -66,7 +66,10 @@ use commands::{
         dismiss_inbox_items, mark_all_inbox_read, mark_channel_read, mark_inbox_items_read,
         update_thread_followed,
     },
-    messages::{delete_message, send_message, set_message_saved, update_message},
+    messages::{
+        delete_message, load_older_channel_messages, send_message, set_message_saved,
+        update_message,
+    },
     tasks::{update_task_status, update_task_title},
 };
 use context_tool::run_agent_context_tool;
@@ -364,6 +367,7 @@ pub fn run() {
             download_attachment,
             open_external_url,
             retry_agent_work,
+            load_older_channel_messages,
             send_message,
             set_message_saved,
             set_channel_agent_membership,
