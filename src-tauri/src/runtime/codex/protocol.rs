@@ -55,6 +55,24 @@ pub(super) fn codex_request_error(value: &Value) -> Option<String> {
     })
 }
 
+pub(super) fn codex_unattended_server_request_response(value: &Value) -> Option<Value> {
+    if value.get("method").and_then(Value::as_str) != Some("mcpServer/elicitation/request") {
+        return None;
+    }
+    let request_id = value.get("id")?;
+    if !(request_id.is_string() || request_id.as_i64().is_some()) {
+        return None;
+    }
+    Some(json!({
+        "id": request_id.clone(),
+        "result": {
+            "action": "decline",
+            "content": null,
+            "_meta": null
+        }
+    }))
+}
+
 pub(super) fn codex_error_notification_detail(value: &Value) -> Option<String> {
     if value.pointer("/params/willRetry").and_then(Value::as_bool) == Some(true) {
         return None;
@@ -285,7 +303,7 @@ mod tests {
         apply_codex_thread_options, apply_codex_turn_options,
         codex_context_rotate_input_tokens_from_env, codex_error_notification_detail,
         codex_item_started_activity, codex_turn_id_from_value,
-        CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
+        codex_unattended_server_request_response, CODEX_CONTEXT_ROTATE_DEFAULT_INPUT_TOKENS,
     };
     use crate::usage::{usage_from_run_log, usage_from_runtime_event};
     use serde_json::json;
@@ -361,6 +379,62 @@ mod tests {
                 }
             })),
             Some("stream disconnected".to_owned())
+        );
+    }
+
+    #[test]
+    fn declines_codex_mcp_elicitations_with_the_original_request_id() {
+        let request = json!({
+            "method": "mcpServer/elicitation/request",
+            "id": 0,
+            "params": {
+                "threadId": "thread-1",
+                "serverName": "codex_apps",
+                "mode": "form",
+                "message": "Connect GitHub?",
+                "requestedSchema": {"type": "object", "properties": {}}
+            }
+        });
+        assert_eq!(
+            codex_unattended_server_request_response(&request),
+            Some(json!({
+                "id": 0,
+                "result": {
+                    "action": "decline",
+                    "content": null,
+                    "_meta": null
+                }
+            }))
+        );
+
+        let request = json!({
+            "method": "mcpServer/elicitation/request",
+            "id": "elicitation-1",
+            "params": {}
+        });
+        assert_eq!(
+            codex_unattended_server_request_response(&request)
+                .and_then(|response| response.get("id").cloned()),
+            Some(json!("elicitation-1"))
+        );
+    }
+
+    #[test]
+    fn does_not_reuse_the_elicitation_response_for_other_codex_messages() {
+        assert_eq!(
+            codex_unattended_server_request_response(&json!({
+                "method": "item/commandExecution/requestApproval",
+                "id": 0,
+                "params": {}
+            })),
+            None
+        );
+        assert_eq!(
+            codex_unattended_server_request_response(&json!({
+                "id": 0,
+                "result": {"turn": {"id": "turn-1"}}
+            })),
+            None
         );
     }
 

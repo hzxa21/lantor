@@ -50,8 +50,8 @@ use protocol::{
     codex_context_rotate_input_tokens, codex_error_notification_detail, codex_item_id,
     codex_item_started_activity, codex_item_type, codex_model_value, codex_pending_stream_key,
     codex_request_error, codex_stream_key, codex_thread_id_from_response,
-    codex_tool_completion_activity, codex_turn_id_from_value, codex_write_json,
-    effective_codex_cwd,
+    codex_tool_completion_activity, codex_turn_id_from_value,
+    codex_unattended_server_request_response, codex_write_json, effective_codex_cwd,
 };
 use reaper::codex_warm_idle_reaper;
 pub(crate) use reaper::reap_stuck_codex_turn;
@@ -1252,6 +1252,30 @@ async fn handle_codex_warm_stdout_line(
         let _ = record_run_usage(pool, agent_id, run_id, input_tokens, output_tokens, None).await;
     }
 
+    // App-server can ask the client to collect user input even when command/file
+    // approvals are disabled. Lantor runs agents unattended, so decline MCP
+    // elicitations before interpreting `id` as a response to one of our own
+    // requests. Server and client request id spaces can overlap.
+    if let Some(response) = codex_unattended_server_request_response(&value) {
+        let method = value
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("server request");
+        {
+            let mut stdin = runtime.stdin.lock().await;
+            codex_write_json(&mut stdin, response).await?;
+        }
+        if let Some(run_id) = active_run_id {
+            append_run_log(
+                pool,
+                run_id,
+                format!("[lantor] automatically declined codex {method}\n"),
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+
     if let Some(response_id) = value.get("id").and_then(Value::as_i64) {
         let matched = {
             let mut state = runtime.state.lock().await;
@@ -1621,7 +1645,11 @@ mod tests {
     };
 
     use sqlx::Row;
-    use tokio::{process::Command, sync::Mutex as AsyncMutex};
+    use tokio::{
+        io::{AsyncBufReadExt, BufReader},
+        process::Command,
+        sync::Mutex as AsyncMutex,
+    };
 
     use crate::runtime::surface::{codex_active_turn_schedule_state, CodexActiveTurnScheduleState};
     use crate::test_support::{
@@ -1678,6 +1706,62 @@ mod tests {
             pid: child.id().map(|id| id as i32),
             environment_variables: String::new(),
         }))
+    }
+
+    #[tokio::test]
+    async fn warm_codex_declines_mcp_elicitation_without_an_active_turn() {
+        let mut command = Command::new("cat");
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command.spawn().expect("spawn stdin echo process");
+        let stdin = child.stdin.take().expect("test process stdin");
+        let stdout = child.stdout.take().expect("test process stdout");
+        let runtime = Arc::new(WarmCodexRuntime {
+            stdin: AsyncMutex::new(stdin),
+            state: AsyncMutex::new(super::WarmCodexState {
+                alive: true,
+                active: None,
+                next_request_id: 1,
+                pending_rotation_marker: None,
+                last_activity: Instant::now(),
+            }),
+            thread_id: "test-codex-thread".to_owned(),
+            pid: child.id().map(|id| id as i32),
+            environment_variables: String::new(),
+        });
+        let pool =
+            sqlx::SqlitePool::connect_lazy("sqlite::memory:").expect("create lazy sqlite pool");
+
+        super::handle_codex_warm_stdout_line(
+            &pool,
+            uuid::Uuid::new_v4(),
+            &runtime,
+            r#"{"method":"mcpServer/elicitation/request","id":0,"params":{}}"#,
+        )
+        .await
+        .expect("decline elicitation");
+
+        let mut lines = BufReader::new(stdout).lines();
+        let response = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+            .await
+            .expect("receive response before timeout")
+            .expect("read response")
+            .expect("response line");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response).expect("valid json response"),
+            serde_json::json!({
+                "id": 0,
+                "result": {
+                    "action": "decline",
+                    "content": null,
+                    "_meta": null
+                }
+            })
+        );
+
+        drop(runtime);
+        child.kill().await.expect("stop stdin echo process");
     }
 
     #[tokio::test]
