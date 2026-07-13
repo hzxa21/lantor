@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowLeft, Bookmark, CheckCircle2, Crosshair, FileImage, Hash, Maximize2, MessageSquare, Minimize2, Paperclip, Quote, RotateCcw, Send, X } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type TextareaHTMLAttributes, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
+import { useCoarsePointer } from "../hooks/useCoarsePointer";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { useMobileViewport } from "../hooks/useMobileViewport";
 import { APP_DISPLAY_NAME } from "../branding";
@@ -1462,6 +1463,7 @@ function ThreadReplyComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const shouldUseShortPlaceholder = useMobileViewport();
+  const usesSoftKeyboard = useCoarsePointer();
   const { text, updateText, commitText, markCommitted } = useBufferedComposerText(replyDraft, activeRoot?.id, setReplyDraft);
   const {
     mentionState,
@@ -1497,7 +1499,7 @@ function ThreadReplyComposer({
   function handleReplyKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isImeComposing(event)) return;
     if (handleMentionKeyDown(event)) return;
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (!usesSoftKeyboard && event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submitReply();
     }
