@@ -1,4 +1,4 @@
-import { ChevronDown, Shuffle } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Modal } from "./Modal";
 import {
@@ -11,9 +11,9 @@ import {
   modelOptionsForRuntime,
   normalizeCodexReasoningEffortForModel,
 } from "../types";
-import { randomDylanAvatarSpec } from "../avatar-utils";
 import { APP_DISPLAY_NAME } from "../branding";
 import { AgentAvatar } from "./AgentAvatar";
+import { AvatarPicker } from "./AvatarPicker";
 
 type AgentFormModalProps = {
   open: boolean;
@@ -171,20 +171,16 @@ export function AgentFormModal({
   );
   const agentPreview = (
     <div className="agent-form-preview">
-      <AgentAvatar agent={previewAgent} size="lg" showStatus={false} />
-      <div>
+      <AvatarPicker
+        seedHint={seedForAgentForm(form)}
+        onChange={(avatar) => onChange({ ...form, avatar })}
+      >
+        <AgentAvatar agent={previewAgent} size="lg" showStatus={false} />
+      </AvatarPicker>
+      <div className="avatar-preview-copy">
         <strong>{previewName}</strong>
         <span>{modelLabel(form.model)}</span>
       </div>
-      <button
-        type="button"
-        className="agent-form-preview-avatar-action"
-        title="Random avatar"
-        aria-label="Random avatar"
-        onClick={() => onChange({ ...form, avatar: randomDylanAvatarSpec(seedForAgentForm(form)) })}
-      >
-        <Shuffle size={16} />
-      </button>
     </div>
   );
   const environmentField = (

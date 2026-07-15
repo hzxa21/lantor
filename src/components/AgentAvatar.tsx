@@ -105,6 +105,10 @@ function isImageAvatar(value: string) {
   return /^https?:\/\//i.test(value) || /^data:image\//i.test(value);
 }
 
+function avatarGlyph(value: string) {
+  return Array.from(value).slice(0, 2).join("");
+}
+
 function compactProfileText(value: string | null | undefined, fallback = "") {
   const trimmed = value?.trim();
   if (!trimmed) return fallback;
@@ -173,8 +177,10 @@ export function AgentAvatar({ agent, size = "md", className = "", title, showSta
   const identicon = generateIdenticon(seedText);
   const customAvatar = agent.avatar?.trim();
   const diceBearSpec = customAvatar ? parseDiceBearAvatar(customAvatar, seedText) : null;
+  const imageAvatar = Boolean(customAvatar && !diceBearSpec && isImageAvatar(customAvatar));
   const isDeletedAgent = agent.status === "deleted";
   const [diceBearAvatar, setDiceBearAvatar] = useState<string | null>(null);
+  const [failedImageAvatar, setFailedImageAvatar] = useState("");
   const style = {
     "--avatar-color": identicon.foreground,
     "--avatar-bg": identicon.background,
@@ -208,6 +214,10 @@ export function AgentAvatar({ agent, size = "md", className = "", title, showSta
     };
   }, [diceBearSpec?.seed, diceBearSpec?.style]);
 
+  useEffect(() => {
+    setFailedImageAvatar("");
+  }, [customAvatar]);
+
   return (
     <span
       className={`avatar agent-avatar agent-avatar-${size} status-${agent.status} ${className}`.trim()}
@@ -219,10 +229,16 @@ export function AgentAvatar({ agent, size = "md", className = "", title, showSta
     >
       {diceBearAvatar ? (
         <img className="agent-avatar-image" src={diceBearAvatar} alt="" aria-hidden="true" />
-      ) : customAvatar && !diceBearSpec && isImageAvatar(customAvatar) ? (
-        <img className="agent-avatar-image" src={customAvatar} alt="" aria-hidden="true" />
-      ) : customAvatar && !diceBearSpec ? (
-        <span className="agent-avatar-glyph" aria-hidden="true">{customAvatar.slice(0, 2)}</span>
+      ) : customAvatar && imageAvatar && failedImageAvatar !== customAvatar ? (
+        <img
+          className="agent-avatar-image"
+          src={customAvatar}
+          alt=""
+          aria-hidden="true"
+          onError={() => setFailedImageAvatar(customAvatar)}
+        />
+      ) : customAvatar && !diceBearSpec && !imageAvatar ? (
+        <span className="agent-avatar-glyph" aria-hidden="true">{avatarGlyph(customAvatar)}</span>
       ) : (
         <span className="agent-avatar-pixels" aria-hidden="true">
           {identicon.cells.map((filled, index) => (

@@ -1,8 +1,7 @@
 import { useMemo } from "react";
-import { Shuffle } from "lucide-react";
 import type { OwnerProfile } from "../types";
-import { randomDylanAvatarSpec } from "../avatar-utils";
 import { AgentAvatar } from "./AgentAvatar";
+import { AvatarPicker } from "./AvatarPicker";
 import { Modal } from "./Modal";
 
 export type OwnerProfileForm = {
@@ -60,20 +59,16 @@ export function OwnerProfileModal({
     >
       <div className="modal-form owner-profile-form">
         <div className="owner-profile-preview">
-          <AgentAvatar agent={previewAgent} size="lg" showStatus={false} />
-          <div>
+          <AvatarPicker
+            seedHint={seedForProfile(form)}
+            onChange={(avatar) => onChange({ ...form, avatar })}
+          >
+            <AgentAvatar agent={previewAgent} size="lg" showStatus={false} />
+          </AvatarPicker>
+          <div className="avatar-preview-copy">
             <strong>{previewAgent.display_name}</strong>
             <span>{form.description.trim() || "local owner"}</span>
           </div>
-          <button
-            type="button"
-            className="agent-form-preview-avatar-action"
-            title="Random avatar"
-            aria-label="Random avatar"
-            onClick={() => onChange({ ...form, avatar: randomDylanAvatarSpec(seedForProfile(form)) })}
-          >
-            <Shuffle size={16} />
-          </button>
         </div>
         <label>
           <span>Name</span>

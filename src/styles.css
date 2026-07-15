@@ -1736,12 +1736,12 @@ button,
   white-space: normal;
 }
 
-.profile strong {
+.profile-main > div > strong {
   display: block;
   font-size: var(--type-size-message);
 }
 
-.profile span {
+.profile-main > div > span {
   display: block;
   color: currentColor;
   font-size: var(--type-size-meta);
@@ -7040,10 +7040,127 @@ body.resizing-column * {
   color: var(--accent);
 }
 
+.avatar-image-picker {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  display: grid;
+  width: 62px;
+  height: 62px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+}
+
+.avatar-image-picker > .agent-avatar {
+  display: inline-grid;
+  margin-top: 0;
+  overflow: hidden;
+}
+
+.avatar-image-picker > .avatar-image-picker-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  isolation: isolate;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  margin-top: 0;
+  place-items: center;
+  border-radius: 999px;
+  box-shadow:
+    0 0 0 2px var(--surface-panel-strong),
+    0 3px 8px color-mix(in srgb, var(--accent) 24%, transparent);
+  color: var(--ink-on-accent);
+  line-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition:
+    box-shadow 190ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 190ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
+}
+
+.avatar-image-picker-badge::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background-color: var(--accent);
+  content: "";
+  transition: background-color 190ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.avatar-image-picker-badge svg {
+  position: relative;
+  z-index: 1;
+  display: block;
+}
+
+.avatar-image-picker:hover .avatar-image-picker-badge,
+.avatar-image-picker:focus-visible .avatar-image-picker-badge {
+  box-shadow:
+    0 0 0 2px var(--surface-panel-strong),
+    0 5px 12px color-mix(in srgb, var(--accent) 32%, transparent);
+  transform: translate3d(0, -1px, 0) scale(1.05);
+}
+
+.avatar-image-picker:hover .avatar-image-picker-badge::before,
+.avatar-image-picker:focus-visible .avatar-image-picker-badge::before {
+  background-color: color-mix(in srgb, var(--accent) 88%, var(--ink-on-accent));
+}
+
+.avatar-image-picker:active .avatar-image-picker-badge {
+  transform: translate3d(0, 0, 0) scale(0.96);
+  transition-duration: 80ms;
+}
+
+.avatar-image-picker:focus-visible {
+  outline: 3px solid var(--state-focus-ring);
+  outline-offset: 3px;
+}
+
+.avatar-image-picker:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-image-picker-badge,
+  .avatar-image-picker-badge::before {
+    transition: none;
+  }
+}
+
+.avatar-preview-copy {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.agent-form-preview > .agent-form-preview-avatar-action,
+.owner-profile-preview > .agent-form-preview-avatar-action {
+  grid-column: 3;
+  grid-row: 1;
+}
+
 .agent-form-preview-avatar-action:hover,
 .agent-form-preview-avatar-action:focus-visible {
   background: rgba(10, 132, 255, 0.13);
   outline: none;
+}
+
+.agent-form-preview-avatar-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.avatar-picker-error {
+  grid-column: 1 / -1;
 }
 
 .agent-form-preview strong,
