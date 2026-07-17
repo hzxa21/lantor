@@ -1668,10 +1668,11 @@ mod tests {
         channel_id: uuid::Uuid,
         stream_key: String,
     ) -> Result<Arc<WarmCodexRuntime>, String> {
-        let mut command = Command::new("sleep");
-        command.arg("60").stdin(Stdio::piped());
-        #[cfg(unix)]
-        command.process_group(0);
+        // This fixture exercises turn finalization, not process-group signaling. Keep the
+        // placeholder process detached from the runtime pid so the test cannot signal its
+        // surrounding test runner process group on CI.
+        let mut command = Command::new("true");
+        command.stdin(Stdio::piped());
         let mut child = command.spawn().map_err(|err| err.to_string())?;
         let stdin = child
             .stdin
@@ -1703,7 +1704,7 @@ mod tests {
                 last_activity: Instant::now(),
             }),
             thread_id: "test-codex-thread".to_owned(),
-            pid: child.id().map(|id| id as i32),
+            pid: None,
             environment_variables: String::new(),
         }))
     }

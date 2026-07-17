@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FocusEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type TextareaHTMLAttributes, type WheelEvent as ReactWheelEvent } from "react";
 import { useAutoGrowTextarea } from "../hooks/useAutoGrowTextarea";
+import { useCoarsePointer } from "../hooks/useCoarsePointer";
 import { useMentionPicker } from "../hooks/useMentionPicker";
 import { useMobileViewport } from "../hooks/useMobileViewport";
 import { isImeComposing, isInputComposing } from "../input-utils";
@@ -1578,6 +1579,7 @@ function ConversationComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const shouldUseShortPlaceholder = useMobileViewport();
+  const usesSoftKeyboard = useCoarsePointer();
   const { text, updateText, commitText, markCommitted } = useBufferedComposerText(draft, channel?.id, setDraft);
   const {
     mentionState,
@@ -1648,7 +1650,7 @@ function ConversationComposer({
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isImeComposing(event)) return;
     if (handleMentionKeyDown(event)) return;
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (!usesSoftKeyboard && event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submitComposer();
     }
