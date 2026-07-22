@@ -168,7 +168,7 @@ const MIN_COMPACT_SIDEBAR_VISIBLE_WIDTH = 220;
 const MOBILE_BREAKPOINT = 760;
 const UI_REFRESH_DEBOUNCE_MS = 80;
 const EPHEMERAL_FLUSH_FALLBACK_MS = 80;
-const MIN_BOOT_SPLASH_MS = 3000;
+const MIN_BOOT_SPLASH_MS = 600;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const ACTIVITY_HISTORY_LIMIT_PER_AGENT = 80;
 const OLDER_CHANNEL_MESSAGES_PAGE_SIZE = 40;
@@ -180,6 +180,7 @@ const DEFAULT_OWNER_DISPLAY_NAME = "Me";
 const DEFAULT_OWNER_AVATAR = "dicebear:dylan:owner";
 const DEFAULT_OWNER_DESCRIPTION = "local owner";
 const OWNER_MENTION_HANDLES = ["@Theo", "@Dylan"];
+const ACTIVE_CHANNEL_STORAGE_KEY = "lantor.activeChannelId";
 const CHANNEL_THREAD_MEMORY_STORAGE_KEY = "lantor.channelThreadMemory";
 const THREAD_PANEL_WIDTH_STORAGE_KEY = "lantor.threadPanelWidth";
 const AGENT_DRAWER_WIDTH_STORAGE_KEY = "lantor.agentDrawerWidth";
@@ -562,6 +563,10 @@ function loadChannelThreadMemory(): ChannelThreadMemory {
   }
 }
 
+function getStoredActiveChannelId() {
+  return window.localStorage.getItem(ACTIVE_CHANNEL_STORAGE_KEY)?.trim() ?? "";
+}
+
 function getStoredNumber(key: string, fallback: number) {
   const stored = window.localStorage.getItem(key);
   return stored ? Number(stored) : fallback;
@@ -729,7 +734,7 @@ function App() {
       setData(update);
     });
   }, []);
-  const [activeChannelId, setActiveChannelId] = useState<string>("");
+  const [activeChannelId, setActiveChannelId] = useState<string>(() => getStoredActiveChannelId());
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [channelThreadMemory, setChannelThreadMemory] = useState<ChannelThreadMemory>(() => loadChannelThreadMemory());
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
@@ -855,6 +860,7 @@ function App() {
   const olderChannelBeforeSeqRef = useRef<Map<string, number>>(new Map());
   const loadingOlderChannelIdsRef = useRef<Set<string>>(new Set());
   const olderChannelRequestEpochRef = useRef<Map<string, number>>(new Map());
+  const pendingChannelRestoreRef = useRef<Set<string>>(new Set());
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
@@ -1047,9 +1053,13 @@ function App() {
   async function refresh(includeOptimistic = true, preferredActiveChannelId?: string) {
     const perf = shouldEnablePerfTelemetry() ? createPerfDraft("full-refresh") : null;
     const refreshInvalidation = refreshInvalidationRef.current;
+    const bootstrapChannelId = preferredActiveChannelId || activeChannelId;
+    const bootstrapArgs = !isTauriRuntime() && bootstrapChannelId
+      ? { channelId: bootstrapChannelId }
+      : {};
     const { payload, measurement } = perf
-      ? await apiInvokeMeasured<Bootstrap>("bootstrap")
-      : { payload: await apiInvoke<Bootstrap>("bootstrap"), measurement: null };
+      ? await apiInvokeMeasured<Bootstrap>("bootstrap", bootstrapArgs)
+      : { payload: await apiInvoke<Bootstrap>("bootstrap", bootstrapArgs), measurement: null };
     const backendMs = payload.__perf?.total_ms;
     if (perf && measurement) {
       perf.backend = payload.__perf;
@@ -1092,7 +1102,8 @@ function App() {
         currentOnlyMessages = currentOnlyMessages.filter((message) => (
           refreshedChannelIds.has(message.channel_id)
           && (loadedHistoricalMessageIdsRef.current.has(message.id)
-            || paginatedChannelIdsRef.current.has(message.channel_id))
+            || paginatedChannelIdsRef.current.has(message.channel_id)
+            || initializedOlderChannelIdsRef.current.has(message.channel_id))
         ));
         for (const message of currentOnlyMessages) {
           loadedHistoricalMessageIdsRef.current.add(message.id);
@@ -1152,6 +1163,62 @@ function App() {
       refreshTimerRef.current = null;
       refreshWithError(fallback);
     }, UI_REFRESH_DEBOUNCE_MS);
+  }
+
+  async function loadChannelMessages(channelId: string) {
+    if (
+      isTauriRuntime()
+      || initializedOlderChannelIdsRef.current.has(channelId)
+      || loadingOlderChannelIdsRef.current.has(channelId)
+    ) {
+      return;
+    }
+    const requestEpoch = (olderChannelRequestEpochRef.current.get(channelId) ?? 0) + 1;
+    olderChannelRequestEpochRef.current.set(channelId, requestEpoch);
+    loadingOlderChannelIdsRef.current.add(channelId);
+    setLoadingOlderChannelIds((current) => new Set(current).add(channelId));
+    try {
+      const page = await apiInvoke<ChannelMessagePage>("load_channel_messages", { channelId });
+      if (olderChannelRequestEpochRef.current.get(channelId) !== requestEpoch) return;
+
+      initializedOlderChannelIdsRef.current.add(channelId);
+      if (page.has_more && page.next_before_seq !== null) {
+        olderChannelBeforeSeqRef.current.set(channelId, page.next_before_seq);
+        setExhaustedOlderChannelIds((current) => {
+          if (!current.has(channelId)) return current;
+          const next = new Set(current);
+          next.delete(channelId);
+          return next;
+        });
+      } else {
+        olderChannelBeforeSeqRef.current.delete(channelId);
+        paginatedChannelIdsRef.current.add(channelId);
+        setExhaustedOlderChannelIds((current) => new Set(current).add(channelId));
+      }
+      for (const message of page.messages) {
+        knownMessageIdsRef.current?.add(message.id);
+      }
+      if (page.messages.length > 0) {
+        setData((current) => {
+          if (!current || !current.channels.some((channel) => channel.id === channelId)) return current;
+          return { ...current, messages: mergedSortedMessages(current.messages, page.messages) };
+        });
+      }
+    } catch (err) {
+      if (olderChannelRequestEpochRef.current.get(channelId) === requestEpoch) {
+        setAppError(errorMessage(err, "Failed to load channel messages"));
+        console.error(err);
+      }
+    } finally {
+      if (olderChannelRequestEpochRef.current.get(channelId) === requestEpoch) {
+        loadingOlderChannelIdsRef.current.delete(channelId);
+        setLoadingOlderChannelIds((current) => {
+          const next = new Set(current);
+          next.delete(channelId);
+          return next;
+        });
+      }
+    }
   }
 
   async function loadOlderRootMessages(channelId: string) {
@@ -1217,6 +1284,7 @@ function App() {
     olderChannelBeforeSeqRef.current.delete(channelId);
     paginatedChannelIdsRef.current.delete(channelId);
     initializedOlderChannelIdsRef.current.delete(channelId);
+    pendingChannelRestoreRef.current.delete(channelId);
     loadingOlderChannelIdsRef.current.delete(channelId);
     setLoadingOlderChannelIds((current) => {
       if (!current.has(channelId)) return current;
@@ -1905,6 +1973,12 @@ function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
+    if (activeChannelId) {
+      window.localStorage.setItem(ACTIVE_CHANNEL_STORAGE_KEY, activeChannelId);
+    }
+  }, [activeChannelId]);
+
+  useEffect(() => {
     window.localStorage.setItem(CHANNEL_THREAD_MEMORY_STORAGE_KEY, JSON.stringify(channelThreadMemory));
   }, [channelThreadMemory]);
 
@@ -2054,7 +2128,7 @@ function App() {
 
   const channel = useMemo(() => {
     return data?.channels.find((c) => c.id === activeChannelId) ?? data?.channels[0] ?? null;
-  }, [activeChannelId, data]);
+  }, [activeChannelId, data?.channels]);
 
   useEffect(() => {
     if (!data || !window.location.hash.startsWith("#/message/")) return;
@@ -2367,10 +2441,24 @@ function App() {
   );
   const isLoadingOlderRootMessages = Boolean(channel && loadingOlderChannelIds.has(channel.id));
 
+  useEffect(() => {
+    if (
+      !activeChannelId
+      || !pendingChannelRestoreRef.current.has(activeChannelId)
+      || !initializedOlderChannelIdsRef.current.has(activeChannelId)
+      || loadingOlderChannelIdsRef.current.has(activeChannelId)
+    ) {
+      return;
+    }
+    pendingChannelRestoreRef.current.delete(activeChannelId);
+    restoreRememberedThreadForChannel(activeChannelId);
+  }, [activeChannelId, data?.messages, loadingOlderChannelIds]);
+
   const activeRoot = activeThreadId ? rootMessages.find((m) => m.id === activeThreadId) ?? null : null;
 
   useEffect(() => {
     if (!data || !activeChannelId || !activeThreadId) return;
+    if (!isTauriRuntime() && !initializedOlderChannelIdsRef.current.has(activeChannelId)) return;
     const rootExists = data.messages.some((message) => (
       message.id === activeThreadId
       && message.channel_id === activeChannelId
@@ -2931,9 +3019,22 @@ function App() {
   }, [channel?.id, channel?.kind]);
 
   useEffect(() => {
-    if (!activeChannelId) return;
+    if (
+      !data
+      || !activeChannelId
+      || isTauriRuntime()
+      || initializedOlderChannelIdsRef.current.has(activeChannelId)
+      || !data.channels.some((item) => item.id === activeChannelId)
+    ) {
+      return;
+    }
+    void loadChannelMessages(activeChannelId);
+  }, [activeChannelId, data?.channels]);
+
+  useEffect(() => {
+    if (!data || !activeChannelId || !data.channels.some((item) => item.id === activeChannelId)) return;
     apiInvoke("mark_channel_read", { channelId: activeChannelId }).catch((err) => console.error(err));
-  }, [activeChannelId, activeChannelMessageCount]);
+  }, [activeChannelId, activeChannelMessageCount, data?.channels]);
 
   async function createChannel() {
     if (createChannelSubmittingRef.current) return;
@@ -3197,6 +3298,8 @@ function App() {
 
   function selectChannel(channelId: string) {
     const nextChannel = data?.channels.find((item) => item.id === channelId) ?? null;
+    const needsMessageLoad = !isTauriRuntime()
+      && !initializedOlderChannelIdsRef.current.has(channelId);
     historyFocusedMessageIdRef.current = null;
     setSelectedAgentId(null);
     setActiveChannelId(channelId);
@@ -3204,7 +3307,13 @@ function App() {
     if (nextChannel?.kind === "dm") {
       setActiveTab("chat");
     }
-    restoreRememberedThreadForChannel(channelId);
+    if (needsMessageLoad) {
+      pendingChannelRestoreRef.current.add(channelId);
+      setActiveThreadId(null);
+      setFocusedMessageId(null);
+    } else {
+      restoreRememberedThreadForChannel(channelId);
+    }
   }
 
   function openThread(threadId: string | null, channelId = activeChannelId) {

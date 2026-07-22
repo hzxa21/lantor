@@ -8,7 +8,7 @@ use std::{
 
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Path as AxumPath, State},
+    extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
     http::{header, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive},
@@ -45,7 +45,8 @@ use crate::launch_agent;
 use crate::lifecycle_commands::start_agent_in_pool;
 use crate::message_store::{
     load_artifact, load_older_channel_messages_without_artifact_content,
-    send_owner_message_in_pool, set_message_saved_in_pool,
+    load_recent_channel_message_page_without_artifact_content, send_owner_message_in_pool,
+    set_message_saved_in_pool, WEB_BOOTSTRAP_ROOT_MESSAGES_PER_CHANNEL,
 };
 use crate::models::AttachmentUpload;
 use crate::owner_inbox::{
@@ -89,6 +90,18 @@ struct LoadOlderChannelMessagesRequest {
     channel_id: Uuid,
     before_seq: i64,
     limit: i64,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BootstrapQuery {
+    channel_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoadChannelMessagesRequest {
+    channel_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -319,6 +332,10 @@ fn web_router(state: Arc<WebState>, dist_dir: PathBuf) -> Router {
             "/api/load_older_channel_messages",
             post(api_load_older_channel_messages).layer(CompressionLayer::new()),
         )
+        .route(
+            "/api/load_channel_messages",
+            post(api_load_channel_messages).layer(CompressionLayer::new()),
+        )
         .route("/api/create_channel", post(api_create_channel))
         .route("/api/update_channel", post(api_update_channel))
         .route("/api/delete_channel", post(api_delete_channel))
@@ -413,8 +430,15 @@ async fn api_health() -> impl IntoResponse {
     Json(json!({ "ok": true }))
 }
 
-async fn api_bootstrap(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, Response> {
-    load_web_bootstrap(&state.pool, state.db_url.clone())
+async fn api_bootstrap(
+    State(state): State<Arc<WebState>>,
+    Query(query): Query<BootstrapQuery>,
+) -> Result<impl IntoResponse, Response> {
+    let channel_id = query
+        .channel_id
+        .as_deref()
+        .and_then(|channel_id| Uuid::parse_str(channel_id).ok());
+    load_web_bootstrap(&state.pool, state.db_url.clone(), channel_id)
         .await
         .map(Json)
         .map_err(api_error)
@@ -455,6 +479,20 @@ async fn api_load_older_channel_messages(
         request.channel_id,
         request.before_seq,
         request.limit,
+    )
+    .await
+    .map(Json)
+    .map_err(api_error)
+}
+
+async fn api_load_channel_messages(
+    State(state): State<Arc<WebState>>,
+    Json(request): Json<LoadChannelMessagesRequest>,
+) -> Result<impl IntoResponse, Response> {
+    load_recent_channel_message_page_without_artifact_content(
+        &state.pool,
+        request.channel_id,
+        WEB_BOOTSTRAP_ROOT_MESSAGES_PER_CHANNEL,
     )
     .await
     .map(Json)

@@ -26,28 +26,34 @@ pub(crate) async fn load_messages(pool: &SqlitePool) -> CommandResult<Vec<Messag
     load_messages_with_scope(pool, MessageLoadScope::All, true).await
 }
 
-pub(crate) async fn load_recent_messages_per_channel(
+pub(crate) async fn load_recent_channel_messages_without_artifact_content(
     pool: &SqlitePool,
-    per_channel_limit: i64,
+    channel_id: Uuid,
+    limit: i64,
 ) -> CommandResult<Vec<Message>> {
     load_messages_with_scope(
         pool,
-        MessageLoadScope::RecentPerChannel(per_channel_limit),
-        true,
+        MessageLoadScope::RecentChannel(channel_id, limit),
+        false,
     )
     .await
 }
 
-pub(crate) async fn load_recent_messages_per_channel_without_artifact_content(
+pub(crate) async fn load_recent_channel_message_page_without_artifact_content(
     pool: &SqlitePool,
-    per_channel_limit: i64,
-) -> CommandResult<Vec<Message>> {
-    load_messages_with_scope(
-        pool,
-        MessageLoadScope::RecentPerChannel(per_channel_limit),
-        false,
-    )
-    .await
+    channel_id: Uuid,
+    limit: i64,
+) -> CommandResult<ChannelMessagePage> {
+    let messages =
+        load_recent_channel_messages_without_artifact_content(pool, channel_id, limit).await?;
+    let history = channel_message_history_from_messages(&messages, limit)
+        .into_iter()
+        .find(|history| history.channel_id == channel_id);
+    Ok(ChannelMessagePage {
+        messages,
+        next_before_seq: history.as_ref().and_then(|history| history.before_seq),
+        has_more: history.is_some_and(|history| history.has_more),
+    })
 }
 
 pub(crate) async fn load_older_channel_messages(
@@ -197,7 +203,7 @@ pub(crate) fn channel_message_history_from_messages(
 
 enum MessageLoadScope {
     All,
-    RecentPerChannel(i64),
+    RecentChannel(Uuid, i64),
 }
 
 async fn load_messages_with_scope(
@@ -205,7 +211,7 @@ async fn load_messages_with_scope(
     scope: MessageLoadScope,
     include_artifact_content: bool,
 ) -> CommandResult<Vec<Message>> {
-    let (sql, limit) = match scope {
+    let (sql, channel_id, limit) = match scope {
         MessageLoadScope::All => (
             r#"
             select
@@ -230,47 +236,43 @@ async fn load_messages_with_scope(
             order by m.seq asc
             "#,
             None,
+            None,
         ),
-        MessageLoadScope::RecentPerChannel(limit) => (
+        MessageLoadScope::RecentChannel(channel_id, limit) => (
             r#"
-            with ranked_recent_messages as (
-                select
-                    id,
-                    thread_root_id,
-                    row_number() over (
-                        partition by channel_id
-                        order by seq desc
-                    ) as message_rank
+            with recent_messages as (
+                select id
                 from messages
+                where channel_id = $1
+                order by seq desc
+                limit $2
             ),
-            ranked_root_messages as (
-                select
-                    id,
-                    row_number() over (
-                        partition by channel_id
-                        order by seq desc
-                    ) as message_rank
+            recent_root_messages as (
+                select id
                 from messages
-                where thread_root_id is null
+                where channel_id = $1
+                  and thread_root_id is null
+                order by seq desc
+                limit $2
             ),
             recent_work_items as (
                 select source_message_id, thread_root_id
                 from agent_work_items
+                where channel_id = $1
                 order by julianday(created_at) desc, created_at desc
                 limit 80
             ),
             base_selected_message_ids as (
-                select id
-                from ranked_recent_messages
-                where message_rank <= $1
+                select id from recent_messages
                 union
-                select id
-                from ranked_root_messages
-                where message_rank <= $1
+                select id from recent_root_messages
                 union
-                select message_id from saved_messages
+                select saved.message_id
+                from saved_messages saved
+                join messages saved_message on saved_message.id = saved.message_id
+                where saved_message.channel_id = $1
                 union
-                select message_id from tasks
+                select message_id from tasks where tasks.channel_id = $1
                 union
                 select source_message_id from recent_work_items where source_message_id is not null
                 union
@@ -313,13 +315,18 @@ async fn load_messages_with_scope(
                 m.updated_at
             from messages m
             left join tasks t on t.message_id = m.id
-            where m.id in (select id from selected_message_ids)
+            where m.channel_id = $1
+              and m.id in (select id from selected_message_ids)
             order by m.seq asc
             "#,
+            Some(channel_id),
             Some(limit),
         ),
     };
     let mut query = sqlx::query(sql);
+    if let Some(channel_id) = channel_id {
+        query = query.bind(channel_id);
+    }
     if let Some(limit) = limit {
         query = query.bind(limit);
     }
@@ -1137,11 +1144,82 @@ mod tests {
 
     use super::{
         channel_message_history_from_messages, load_messages, load_older_channel_messages,
-        load_older_channel_messages_without_artifact_content, load_recent_messages_per_channel,
+        load_older_channel_messages_without_artifact_content,
+        load_recent_channel_message_page_without_artifact_content,
+        load_recent_channel_messages_without_artifact_content,
     };
 
     #[tokio::test]
-    async fn recent_messages_per_channel_keeps_limited_replies_and_their_roots() {
+    async fn recent_channel_message_page_only_loads_the_requested_channel() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let requested_channel_id = insert_test_channel(&pool, "requested-channel").await?;
+            let other_channel_id = insert_test_channel(&pool, "other-channel").await?;
+            let requested_root_id: uuid::Uuid = sqlx::query_scalar(
+                r#"
+                insert into messages (
+                    channel_id, sender_name, sender_role, body, is_task, created_at
+                )
+                values ($1, 'Dylan', 'owner', 'requested root', false, '2026-01-01T00:00:00.000+00:00')
+                returning id
+                "#,
+            )
+            .bind(requested_channel_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into messages (
+                    channel_id, thread_root_id, sender_name, sender_role, body, is_task, created_at
+                )
+                values ($1, $2, 'agent', 'agent', 'requested reply', false, '2026-01-01T00:00:01.000+00:00')
+                "#,
+            )
+            .bind(requested_channel_id)
+            .bind(requested_root_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            sqlx::query(
+                r#"
+                insert into messages (
+                    channel_id, sender_name, sender_role, body, is_task, created_at
+                )
+                values ($1, 'Dylan', 'owner', 'other root', false, '2026-01-01T00:00:02.000+00:00')
+                "#,
+            )
+            .bind(other_channel_id)
+            .execute(&pool)
+            .await
+            .map_err(|err| err.to_string())?;
+
+            let page = load_recent_channel_message_page_without_artifact_content(
+                &pool,
+                requested_channel_id,
+                1,
+            )
+            .await?;
+            assert_eq!(page.messages.len(), 2);
+            assert!(page
+                .messages
+                .iter()
+                .all(|message| message.channel_id == requested_channel_id));
+            assert!(page
+                .messages
+                .iter()
+                .any(|message| message.body == "requested reply"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recent_channel_messages_keep_limited_replies_and_their_roots() {
         let Some((pool, schema)) = test_pool().await else {
             return;
         };
@@ -1185,7 +1263,9 @@ mod tests {
             let full = load_messages(&pool).await?;
             assert_eq!(full.len(), 4);
 
-            let recent = load_recent_messages_per_channel(&pool, 2).await?;
+            let recent =
+                load_recent_channel_messages_without_artifact_content(&pool, channel_id, 2)
+                    .await?;
             let bodies: Vec<&str> = recent.iter().map(|message| message.body.as_str()).collect();
             assert_eq!(bodies, vec!["old root", "reply 1", "reply 2", "reply 3"]);
             assert!(recent.iter().any(|message| message.id == root_id));
@@ -1197,7 +1277,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recent_messages_per_channel_keeps_limited_root_timeline_messages() {
+    async fn recent_channel_messages_keep_limited_root_timeline_messages() {
         let Some((pool, schema)) = test_pool().await else {
             return;
         };
@@ -1266,7 +1346,9 @@ mod tests {
                 .map_err(|err| err.to_string())?;
             }
 
-            let recent = load_recent_messages_per_channel(&pool, 2).await?;
+            let recent =
+                load_recent_channel_messages_without_artifact_content(&pool, channel_id, 2)
+                    .await?;
             let bodies: Vec<&str> = recent.iter().map(|message| message.body.as_str()).collect();
             assert!(bodies.contains(&"middle root"));
             assert!(bodies.contains(&"newest root"));
@@ -1463,7 +1545,9 @@ mod tests {
             .await
             .map_err(|err| err.to_string())?;
 
-            let recent = load_recent_messages_per_channel(&pool, 80).await?;
+            let recent =
+                load_recent_channel_messages_without_artifact_content(&pool, channel_id, 80)
+                    .await?;
             assert!(recent.iter().any(|message| message.id == roots[0].0));
             let history = channel_message_history_from_messages(&recent, 80);
             let channel_history = history

@@ -578,6 +578,17 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "create index if not exists artifacts_message_id_idx on artifacts(message_id)",
         "create index if not exists artifacts_channel_id_idx on artifacts(channel_id)",
         "create index if not exists agent_activities_agent_created_idx on agent_activities(agent_id, agent_handle, created_at desc)",
+        r#"
+        create index if not exists agent_activities_owner_instant_idx on agent_activities(
+            coalesce(
+                case when agent_id is null then null else lower(hex(agent_id)) end,
+                nullif(agent_handle, ''),
+                'unknown'
+            ),
+            julianday(created_at) desc,
+            created_at desc
+        )
+        "#,
         "create index if not exists reminders_due_idx on reminders(status, due_at)",
         "create index if not exists agent_schedules_due_idx on agent_schedules(status, next_run_at)",
         "create index if not exists agent_inbox_items_agent_state_idx on agent_inbox_items(agent_id, state, priority desc, created_at)",

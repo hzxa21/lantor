@@ -5,6 +5,7 @@ use std::{
 };
 
 use sqlx::SqlitePool;
+use uuid::Uuid;
 
 use crate::{
     activity_store::{
@@ -18,8 +19,7 @@ use crate::{
     launch_agent,
     message_store::{
         channel_message_history_from_messages, load_artifact_summaries, load_artifacts,
-        load_messages, load_recent_messages_per_channel,
-        load_recent_messages_per_channel_without_artifact_content, load_saved_messages,
+        load_messages, load_recent_channel_messages_without_artifact_content, load_saved_messages,
         WEB_BOOTSTRAP_ROOT_MESSAGES_PER_CHANNEL,
     },
     models::{
@@ -67,13 +67,15 @@ pub(crate) async fn load_bootstrap(pool: &SqlitePool, db_url: String) -> Command
 pub(crate) async fn load_web_bootstrap(
     pool: &SqlitePool,
     db_url: String,
+    requested_channel_id: Option<Uuid>,
 ) -> CommandResult<Bootstrap> {
     load_bootstrap_with_options(
         pool,
         db_url,
         BootstrapLoadOptions {
             runtime: "web",
-            messages: BootstrapMessageLoad::RecentPerChannel(
+            messages: BootstrapMessageLoad::RecentChannel(
+                requested_channel_id,
                 WEB_BOOTSTRAP_ROOT_MESSAGES_PER_CHANNEL,
             ),
             include_run_logs: false,
@@ -95,14 +97,14 @@ struct BootstrapLoadOptions {
 #[derive(Clone, Copy)]
 enum BootstrapMessageLoad {
     All,
-    RecentPerChannel(i64),
+    RecentChannel(Option<Uuid>, i64),
 }
 
 impl BootstrapMessageLoad {
     fn label(self) -> String {
         match self {
             BootstrapMessageLoad::All => "All".to_owned(),
-            BootstrapMessageLoad::RecentPerChannel(limit) => format!("RecentPerChannel({limit})"),
+            BootstrapMessageLoad::RecentChannel(_, limit) => format!("RecentChannel({limit})"),
         }
     }
 }
@@ -171,16 +173,22 @@ async fn load_bootstrap_with_options(
     let started_at = Instant::now();
     let messages = match options.messages {
         BootstrapMessageLoad::All => load_messages(pool).await?,
-        BootstrapMessageLoad::RecentPerChannel(limit) if options.include_artifact_content => {
-            load_recent_messages_per_channel(pool, limit).await?
-        }
-        BootstrapMessageLoad::RecentPerChannel(limit) => {
-            load_recent_messages_per_channel_without_artifact_content(pool, limit).await?
+        BootstrapMessageLoad::RecentChannel(requested_channel_id, limit) => {
+            let channel_id = requested_channel_id
+                .filter(|channel_id| channels.iter().any(|channel| channel.id == *channel_id))
+                .or_else(|| channels.first().map(|channel| channel.id));
+            match channel_id {
+                Some(channel_id) => {
+                    load_recent_channel_messages_without_artifact_content(pool, channel_id, limit)
+                        .await?
+                }
+                None => Vec::new(),
+            }
         }
     };
     let channel_message_history = match options.messages {
         BootstrapMessageLoad::All => Vec::new(),
-        BootstrapMessageLoad::RecentPerChannel(limit) => {
+        BootstrapMessageLoad::RecentChannel(_, limit) => {
             channel_message_history_from_messages(&messages, limit)
         }
     };
@@ -358,6 +366,55 @@ mod tests {
     use super::{load_bootstrap, load_web_bootstrap};
 
     #[tokio::test]
+    async fn web_bootstrap_only_loads_messages_for_the_requested_channel() {
+        let Some((pool, schema)) = test_pool().await else {
+            return;
+        };
+        let result: Result<(), String> = async {
+            let requested_channel_id = insert_test_channel(&pool, "bootstrap-requested").await?;
+            let other_channel_id = insert_test_channel(&pool, "bootstrap-other").await?;
+            for (channel_id, body) in [
+                (requested_channel_id, "requested message"),
+                (other_channel_id, "other message"),
+            ] {
+                sqlx::query(
+                    r#"
+                    insert into messages (
+                        channel_id, sender_name, sender_role, body, is_task, created_at
+                    )
+                    values ($1, 'Dylan', 'owner', $2, false, '2026-01-01T00:00:00.000+00:00')
+                    "#,
+                )
+                .bind(channel_id)
+                .bind(body)
+                .execute(&pool)
+                .await
+                .map_err(|err| err.to_string())?;
+            }
+
+            let web =
+                load_web_bootstrap(&pool, "sqlite:test".to_owned(), Some(requested_channel_id))
+                    .await?;
+            assert!(web
+                .messages
+                .iter()
+                .all(|message| message.channel_id == requested_channel_id));
+            assert!(web
+                .messages
+                .iter()
+                .any(|message| message.body == "requested message"));
+            assert!(!web
+                .messages
+                .iter()
+                .any(|message| message.body == "other message"));
+            Ok(())
+        }
+        .await;
+        drop_test_schema(pool, schema).await;
+        result.unwrap();
+    }
+
+    #[tokio::test]
     async fn web_bootstrap_omits_artifact_content() {
         let Some((pool, schema)) = test_pool().await else {
             return;
@@ -409,7 +466,8 @@ mod tests {
                 .expect("desktop bootstrap should include the nested message artifact");
             assert_eq!(desktop_message_artifact.content, artifact_content);
 
-            let web = load_web_bootstrap(&pool, "sqlite:test".to_owned()).await?;
+            let web =
+                load_web_bootstrap(&pool, "sqlite:test".to_owned(), Some(channel_id)).await?;
             let web_artifact = web
                 .artifacts
                 .iter()

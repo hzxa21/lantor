@@ -37,13 +37,20 @@ function apiPath(command: string) {
   return `/api/${command}`;
 }
 
+function bootstrapApiPath(args: Record<string, unknown>) {
+  const channelId = typeof args.channelId === "string" ? args.channelId.trim() : "";
+  if (!channelId) return apiPath("bootstrap");
+  const params = new URLSearchParams({ channelId });
+  return `${apiPath("bootstrap")}?${params.toString()}`;
+}
+
 export async function apiInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   if (isTauriRuntime()) {
     return tauriInvoke<T>(command, args);
   }
 
   const response = command === "bootstrap"
-    ? await fetch(apiPath("bootstrap"))
+    ? await fetch(bootstrapApiPath(args))
     : await fetch(apiPath(command), {
       method: "POST",
       headers: {
@@ -87,7 +94,7 @@ export async function apiInvokeMeasured<T>(
   }
 
   const response = command === "bootstrap"
-    ? await fetch(apiPath("bootstrap"))
+    ? await fetch(bootstrapApiPath(args))
     : await fetch(apiPath(command), {
       method: "POST",
       headers: {

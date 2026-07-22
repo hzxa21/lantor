@@ -158,16 +158,26 @@ async fn load_agent_activities_with_limit(
             metadata as metadata,
             created_at
         from (
-            select
-                agent_activities.*,
-                row_number() over (
-                    partition by coalesce(case when agent_id is null then null else lower(hex(agent_id)) end, nullif(agent_handle, ''), 'unknown')
-                    order by julianday(created_at) desc, created_at desc
-                ) as activity_rank
+            select distinct
+                coalesce(
+                    case when agent_id is null then null else lower(hex(agent_id)) end,
+                    nullif(agent_handle, ''),
+                    'unknown'
+                ) as owner_key
             from agent_activities
-        ) ranked
-        where activity_rank <= $1
-        order by julianday(created_at) desc, created_at desc
+        ) owners
+        join agent_activities activity on activity.id in (
+            select recent.id
+            from agent_activities recent
+            where coalesce(
+                case when recent.agent_id is null then null else lower(hex(recent.agent_id)) end,
+                nullif(recent.agent_handle, ''),
+                'unknown'
+            ) = owners.owner_key
+            order by julianday(recent.created_at) desc, recent.created_at desc
+            limit $1
+        )
+        order by julianday(activity.created_at) desc, activity.created_at desc
         "#,
     )
     .bind(limit_per_agent)
