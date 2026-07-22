@@ -39,6 +39,18 @@ pub(crate) async fn load_recent_channel_messages_without_artifact_content(
     .await
 }
 
+pub(crate) async fn load_recent_messages_per_channel_without_artifact_content(
+    pool: &SqlitePool,
+    per_channel_limit: i64,
+) -> CommandResult<Vec<Message>> {
+    load_messages_with_scope(
+        pool,
+        MessageLoadScope::RecentPerChannel(per_channel_limit),
+        false,
+    )
+    .await
+}
+
 pub(crate) async fn load_recent_channel_message_page_without_artifact_content(
     pool: &SqlitePool,
     channel_id: Uuid,
@@ -203,6 +215,7 @@ pub(crate) fn channel_message_history_from_messages(
 
 enum MessageLoadScope {
     All,
+    RecentPerChannel(i64),
     RecentChannel(Uuid, i64),
 }
 
@@ -237,6 +250,94 @@ async fn load_messages_with_scope(
             "#,
             None,
             None,
+        ),
+        MessageLoadScope::RecentPerChannel(limit) => (
+            r#"
+            with ranked_recent_messages as (
+                select
+                    id,
+                    thread_root_id,
+                    row_number() over (
+                        partition by channel_id
+                        order by seq desc
+                    ) as message_rank
+                from messages
+            ),
+            ranked_root_messages as (
+                select
+                    id,
+                    row_number() over (
+                        partition by channel_id
+                        order by seq desc
+                    ) as message_rank
+                from messages
+                where thread_root_id is null
+            ),
+            recent_work_items as (
+                select source_message_id, thread_root_id
+                from agent_work_items
+                order by julianday(created_at) desc, created_at desc
+                limit 80
+            ),
+            base_selected_message_ids as (
+                select id
+                from ranked_recent_messages
+                where message_rank <= $1
+                union
+                select id
+                from ranked_root_messages
+                where message_rank <= $1
+                union
+                select message_id from saved_messages
+                union
+                select message_id from tasks
+                union
+                select source_message_id from recent_work_items where source_message_id is not null
+                union
+                select thread_root_id from recent_work_items where thread_root_id is not null
+            ),
+            selected_thread_root_ids as (
+                select id
+                from base_selected_message_ids
+                where id is not null
+                union
+                select m.thread_root_id
+                from messages m
+                join base_selected_message_ids selected on selected.id = m.id
+                where m.thread_root_id is not null
+            ),
+            selected_message_ids as (
+                select id
+                from selected_thread_root_ids
+                union
+                select m.id
+                from messages m
+                join selected_thread_root_ids selected on selected.id = m.thread_root_id
+            )
+            select
+                m.id,
+                m.seq,
+                m.channel_id,
+                m.thread_root_id,
+                m.sender_agent_id,
+                m.sender_name,
+                m.sender_role,
+                m.body,
+                m.is_task,
+                m.thread_followed,
+                m.delivery_state,
+                m.stream_key,
+                t.number as task_number,
+                t.status as task_status,
+                m.created_at,
+                m.updated_at
+            from messages m
+            left join tasks t on t.message_id = m.id
+            where m.id in (select id from selected_message_ids)
+            order by m.seq asc
+            "#,
+            None,
+            Some(limit),
         ),
         MessageLoadScope::RecentChannel(channel_id, limit) => (
             r#"

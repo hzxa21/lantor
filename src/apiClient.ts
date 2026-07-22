@@ -39,8 +39,10 @@ function apiPath(command: string) {
 
 function bootstrapApiPath(args: Record<string, unknown>) {
   const channelId = typeof args.channelId === "string" ? args.channelId.trim() : "";
-  if (!channelId) return apiPath("bootstrap");
-  const params = new URLSearchParams({ channelId });
+  const params = new URLSearchParams();
+  if (args.currentChannelOnly === true) params.set("currentChannelOnly", "true");
+  if (channelId) params.set("channelId", channelId);
+  if (params.size === 0) return apiPath("bootstrap");
   return `${apiPath("bootstrap")}?${params.toString()}`;
 }
 

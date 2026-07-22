@@ -1054,8 +1054,11 @@ function App() {
     const perf = shouldEnablePerfTelemetry() ? createPerfDraft("full-refresh") : null;
     const refreshInvalidation = refreshInvalidationRef.current;
     const bootstrapChannelId = preferredActiveChannelId || activeChannelId;
-    const bootstrapArgs = !isTauriRuntime() && bootstrapChannelId
-      ? { channelId: bootstrapChannelId }
+    const bootstrapArgs = !isTauriRuntime()
+      ? {
+        currentChannelOnly: true,
+        ...(bootstrapChannelId ? { channelId: bootstrapChannelId } : {}),
+      }
       : {};
     const { payload, measurement } = perf
       ? await apiInvokeMeasured<Bootstrap>("bootstrap", bootstrapArgs)

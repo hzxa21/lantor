@@ -96,6 +96,8 @@ struct LoadOlderChannelMessagesRequest {
 #[serde(rename_all = "camelCase")]
 struct BootstrapQuery {
     channel_id: Option<String>,
+    #[serde(default)]
+    current_channel_only: bool,
 }
 
 #[derive(Deserialize)]
@@ -434,14 +436,24 @@ async fn api_bootstrap(
     State(state): State<Arc<WebState>>,
     Query(query): Query<BootstrapQuery>,
 ) -> Result<impl IntoResponse, Response> {
+    let current_channel_only = query.current_channel_only
+        || query
+            .channel_id
+            .as_deref()
+            .is_some_and(|channel_id| !channel_id.trim().is_empty());
     let channel_id = query
         .channel_id
         .as_deref()
         .and_then(|channel_id| Uuid::parse_str(channel_id).ok());
-    load_web_bootstrap(&state.pool, state.db_url.clone(), channel_id)
-        .await
-        .map(Json)
-        .map_err(api_error)
+    load_web_bootstrap(
+        &state.pool,
+        state.db_url.clone(),
+        channel_id,
+        current_channel_only,
+    )
+    .await
+    .map(Json)
+    .map_err(api_error)
 }
 
 async fn api_check_runtime(
